@@ -11,14 +11,16 @@ Architecture-first scaffold for a deterministic US stock research and mock portf
 - Deterministic hot path
 - LLMs only for research, validation, explanation, reporting, and controlled maintenance
 
-## 7 Roles
-1. Data Guardian
-2. Scholar Researcher
-3. Backtest Validator
-4. Code Maintainer
-5. Strategist
-6. Mock Portfolio Executor
-7. Daily Reporter
+## Trading Agent Layout
+- `trading` -> project/runtime workspace owner
+- `trading-orchestrator` -> supervisor/dispatcher
+- `trading-data-guardian`
+- `trading-scholar`
+- `trading-backtest-validator`
+- `trading-code-maintainer`
+- `trading-strategist`
+- `trading-executor`
+- `trading-daily-reporter`
 
 ## Build Plan
 Phase 1 in this commit:

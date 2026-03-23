@@ -1,13 +1,13 @@
 # Persistent OpenClaw Agents
 
 Created for this project:
-- `data-guardian` → `~/.openclaw/workspace-data-guardian`
-- `scholar-researcher` → `~/.openclaw/workspace-scholar-researcher`
-- `backtest-validator` → `~/.openclaw/workspace-backtest-validator`
-- `code-maintainer` → `~/.openclaw/workspace-code-maintainer`
-- `strategist` → `~/.openclaw/workspace-strategist`
-- `mock-portfolio-executor` → `~/.openclaw/workspace-mock-portfolio-executor`
-- `daily-reporter` → `~/.openclaw/workspace-daily-reporter`
+- `trading-data-guardian` → `~/.openclaw/workspace-trading-data-guardian`
+- `trading-scholar` → `~/.openclaw/workspace-trading-scholar`
+- `trading-backtest-validator` → `~/.openclaw/workspace-trading-backtest-validator`
+- `trading-code-maintainer` → `~/.openclaw/workspace-trading-code-maintainer`
+- `trading-strategist` → `~/.openclaw/workspace-trading-strategist`
+- `trading-executor` → `~/.openclaw/workspace-trading-executor`
+- `trading-daily-reporter` → `~/.openclaw/workspace-trading-daily-reporter`
 - `trading-orchestrator` → `~/.openclaw/workspace-trading-orchestrator`
 
 ## Notes

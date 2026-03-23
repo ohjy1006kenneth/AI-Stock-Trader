@@ -8,6 +8,12 @@
 
 ## Role Overview
 
+Agent IDs used in OpenClaw for the trading system:
+- workspace/runtime owner: `trading`
+- supervisor: `trading-orchestrator`
+- specialist agents: `trading-data-guardian`, `trading-scholar`, `trading-backtest-validator`, `trading-code-maintainer`, `trading-strategist`, `trading-executor`, `trading-daily-reporter`
+
+
 ### 1) Data Guardian
 Purpose:
 - Monitor data ingestion health and schema integrity.
