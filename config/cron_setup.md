@@ -5,10 +5,15 @@
 - Destination: `-1003845783711:topic:7`
 - Timezone: `America/Chicago`
 
-## Jobs
-1. Main trading pipeline
-2. Trade alert dispatch
-3. Morning daily summary
+## Production-safe jobs
+1. `trading-preflight-alert`
+   - `9 18 * * 1-5`
+2. `trading-pipeline-after-close`
+   - `10 18 * * 1-5`
+3. `trading-mock-trade-alerts`
+   - `11 18 * * 1-5`
+4. `trading-daily-summary-7am`
+   - `0 7 * * 1-5`
 
 ## Verification commands
 ```bash
@@ -16,3 +21,9 @@ openclaw cron status
 openclaw cron list
 openclaw cron runs --limit 20
 ```
+
+## Notes
+- The preflight alert job announces only on failure.
+- The main pipeline job is gated by `scripts/preflight_check.py`.
+- The trade alert job announces only when new executed BUY/SELL records exist.
+- The daily summary job announces the latest dated summary report.

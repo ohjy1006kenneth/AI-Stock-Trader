@@ -32,3 +32,9 @@ openclaw cron status
 openclaw cron list
 openclaw cron runs --limit 20
 ```
+
+## Runtime setup verification
+
+```bash
+.venv/bin/python scripts/preflight_check.py
+```
