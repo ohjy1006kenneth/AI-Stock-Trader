@@ -29,3 +29,6 @@ Phase 1 in this commit:
 
 Phase 2:
 - deterministic script logic
+
+## Convenience Commands
+- `python3 scripts/portfolio_status.py` -> quick mock portfolio inspection
