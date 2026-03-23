@@ -1,0 +1,18 @@
+{
+  "portfolio_id": "mock-us-core-satellite",
+  "base_currency": "USD",
+  "starting_cash": 100000.0,
+  "cash": 100000.0,
+  "total_equity": 100000.0,
+  "realized_pnl": 0.0,
+  "unrealized_pnl": 0.0,
+  "open_positions": [],
+  "trade_history": [],
+  "last_updated": null,
+  "metadata": {
+    "broker_connected": false,
+    "mode": "mock",
+    "market": "US_STOCKS",
+    "framework": "CORE_SATELLITE"
+  }
+}

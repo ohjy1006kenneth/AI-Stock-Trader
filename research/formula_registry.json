@@ -1,0 +1,45 @@
+{
+  "registry_version": "v1-draft",
+  "last_updated": null,
+  "factors": [
+    {
+      "factor_name": "momentum_12_1",
+      "status": "draft",
+      "approved_for_production": false,
+      "exact_formula": "total_return(t-252, t-21)",
+      "required_fields": ["adj_close"],
+      "data_source": "price_history",
+      "rebalance_frequency": "monthly",
+      "known_risks": ["momentum crashes", "rebalance timing sensitivity"],
+      "implementation_notes": "Exclude the most recent 21 trading days to approximate 12-1 momentum.",
+      "source_citation_note": "To be populated from trusted research source",
+      "failure_modes": ["insufficient history", "corporate action errors"]
+    },
+    {
+      "factor_name": "realized_vol_30d",
+      "status": "draft",
+      "approved_for_production": false,
+      "exact_formula": "std(log_return_t over trailing 30 trading days) * sqrt(252)",
+      "required_fields": ["adj_close"],
+      "data_source": "price_history",
+      "rebalance_frequency": "daily",
+      "known_risks": ["volatility regime shifts"],
+      "implementation_notes": "Use adjusted closes and trading-day aligned window.",
+      "source_citation_note": "Common risk statistic; source note to be added",
+      "failure_modes": ["missing prices", "split adjustment issues"]
+    },
+    {
+      "factor_name": "rsi_14",
+      "status": "draft",
+      "approved_for_production": false,
+      "exact_formula": "100 - 100 / (1 + RS), where RS = avg_gain_14 / avg_loss_14",
+      "required_fields": ["close"],
+      "data_source": "price_history",
+      "rebalance_frequency": "daily",
+      "known_risks": ["range-bound false signals", "trend persistence"],
+      "implementation_notes": "Use RSI as contextual information, not sole entry driver.",
+      "source_citation_note": "Classic technical indicator; exact source note to be added",
+      "failure_modes": ["flat series", "bad price data"]
+    }
+  ]
+}

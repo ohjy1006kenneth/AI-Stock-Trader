@@ -1,0 +1,16 @@
+{
+  "status": "placeholder",
+  "benchmark": "SPY",
+  "metrics": {
+    "cagr": null,
+    "annualized_volatility": null,
+    "sharpe_ratio": null,
+    "max_drawdown": null,
+    "win_rate": null,
+    "number_of_trades": null,
+    "average_holding_period_days": null,
+    "turnover": null,
+    "benchmark_relative_return": null
+  },
+  "by_year": []
+}

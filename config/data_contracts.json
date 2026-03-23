@@ -1,0 +1,18 @@
+{
+  "price_data": {
+    "required_columns": ["date", "ticker", "open", "high", "low", "close", "adj_close", "volume"],
+    "freshness_days_max": 3
+  },
+  "fundamental_data": {
+    "required_fields": ["ticker", "as_of_date", "revenue_growth", "net_margin", "operating_margin", "debt_to_equity", "free_cash_flow", "return_on_equity"],
+    "staleness_days_max": 120
+  },
+  "outputs": {
+    "required_files": [
+      "outputs/alpha_rankings.json",
+      "outputs/qualified_universe.json",
+      "outputs/strategist_decisions.json",
+      "outputs/sentry_events.json"
+    ]
+  }
+}
