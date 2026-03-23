@@ -54,3 +54,12 @@ Suggested initial defaults:
 - max sleeve allocation CORE: 70%
 - max sleeve allocation SWING: 30%
 - maintain cash buffer: 5%
+
+## V1 Deterministic Ranking Scaffold
+- Alpha score = 0.45 * momentum_rank + 0.20 * low_vol_rank + 0.20 * trend_bonus + 0.15 * quality_proxy
+- `momentum_rank` is based on 12-1 momentum
+- `low_vol_rank` rewards lower 30-day realized volatility
+- `trend_bonus` = 1 if close > 200-day simple moving average, else 0
+- `quality_proxy` = 1 if profitability proxy is available and positive, else 0
+
+This ranking is a conservative scaffold for research operations, not a profitability claim.

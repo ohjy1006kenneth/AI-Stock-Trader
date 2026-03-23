@@ -32,7 +32,8 @@ Python handles:
 - backtests
 - position sizing
 - monitoring
-- ledger persistence
+- deterministic decision application
+- mark-to-market ledger persistence
 
 LLMs handle:
 - research synthesis

@@ -1,0 +1,28 @@
+{
+  "generated_at": "2026-03-23T23:00:31.748751+00:00",
+  "market": "US_STOCKS",
+  "selection_method": "static_seed_universe_v1",
+  "tickers": [
+    "AAPL",
+    "MSFT",
+    "GOOGL",
+    "AMZN",
+    "META",
+    "NVDA",
+    "LLY",
+    "V",
+    "MA",
+    "COST",
+    "ADBE",
+    "CRM",
+    "UNH",
+    "ISRG",
+    "ABBV",
+    "SPGI",
+    "MSCI",
+    "ROP",
+    "TT",
+    "ETN"
+  ],
+  "notes": "Seed universe only. Replace with a rules-based universe builder later."
+}

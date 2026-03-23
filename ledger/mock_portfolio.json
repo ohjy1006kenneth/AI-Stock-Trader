@@ -8,11 +8,21 @@
   "unrealized_pnl": 0.0,
   "open_positions": [],
   "trade_history": [],
+  "daily_marks": [],
+  "risk_limits": {
+    "max_total_positions": 15,
+    "max_core_weight": 0.12,
+    "max_swing_weight": 0.06,
+    "max_core_allocation": 0.7,
+    "max_swing_allocation": 0.3,
+    "min_cash_buffer": 0.05
+  },
   "last_updated": null,
   "metadata": {
     "broker_connected": false,
     "mode": "mock",
     "market": "US_STOCKS",
-    "framework": "CORE_SATELLITE"
+    "framework": "CORE_SATELLITE",
+    "strategy_version": "v1"
   }
 }

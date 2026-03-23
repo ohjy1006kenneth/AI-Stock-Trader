@@ -18,6 +18,8 @@ Scripts produce stable, inspectable outputs:
 - `scripts/portfolio_strategist.py`
 - `scripts/backtest_engine.py`
 - `scripts/sentry_monitor.py`
+- `scripts/apply_mock_decisions.py`
+- `scripts/mark_to_market.py`
 - `scripts/daily_report.py`
 
 ### Agent Layer
