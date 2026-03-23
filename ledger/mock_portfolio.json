@@ -10,10 +10,10 @@
   "trade_history": [],
   "last_updated": null,
   "portfolio_rules": {
-    "max_total_positions": null,
-    "max_core_allocation": null,
-    "max_swing_allocation": null,
-    "max_position_weight": null,
-    "cash_buffer_rule": null
+    "max_total_positions": 15,
+    "max_core_allocation": 0.7,
+    "max_swing_allocation": 0.3,
+    "max_position_weight": 0.12,
+    "cash_buffer_rule": 0.05
   }
 }
