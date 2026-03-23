@@ -24,3 +24,11 @@ Behavior:
 - prefers latest snapshot prices for mark-to-market display
 - falls back to stored `last_price` values if snapshot pricing is unavailable
 - never mutates the ledger
+
+## Automation verification
+
+```bash
+openclaw cron status
+openclaw cron list
+openclaw cron runs --limit 20
+```
