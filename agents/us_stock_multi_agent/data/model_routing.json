@@ -1,0 +1,22 @@
+{
+  "macro_scout": {
+    "model": "github-copilot/claude-3-haiku",
+    "thinking": "low"
+  },
+  "technical_analyst": {
+    "model": "github-copilot/claude-3-haiku",
+    "thinking": "low"
+  },
+  "portfolio_risk_manager": {
+    "model": "openai-codex/gpt-5.4",
+    "thinking": "low"
+  },
+  "mock_execution_agent": {
+    "model": "openai-codex/gpt-5.4",
+    "thinking": "low"
+  },
+  "final_execution_analysis": {
+    "model": "openai-codex/gpt-5.4",
+    "thinking": "medium"
+  }
+}

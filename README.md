@@ -2,12 +2,15 @@
 
 US-stock-only, paper-trading investment stack for OpenClaw.
 
+This version is now designed for **true OpenClaw multi-agent orchestration** with an **event-driven trigger system**.
+
 ## Layers
 
-1. Macro Scout → builds a fundamentally screened watchlist
-2. Technical Analyst → finds entry setups on the watchlist
-3. Portfolio Risk Manager → classifies trades and sizes positions
-4. Mock Execution Agent → simulates fills and tracks portfolio state
+1. Sentry → non-LLM trigger scanner running every 15 minutes
+2. Macro Scout → builds or refreshes fundamentally screened watchlist context
+3. Technical Analyst → finds entry setups on triggered watchlist names
+4. Portfolio Risk Manager → classifies trades and sizes positions
+5. Mock Execution Agent → simulates fills and tracks portfolio state
 
 ## Guardrails
 
@@ -28,12 +31,15 @@ US-stock-only, paper-trading investment stack for OpenClaw.
 
 ## Typical flow
 
-1. Run `macro_scout.py`
-2. Review `context/macro_watchlist.md`
-3. Run `technical_analyst.py`
-4. Run `portfolio_risk_manager.py`
-5. Run `mock_execution_agent.py`
-6. Run `reporting.py` for summary output
+1. Run `macro_scout.py` weekly to refresh the watchlist
+2. `sentry.py` checks the watchlist every 15 minutes during market hours
+3. If no trigger fires, stop there
+4. If a trigger fires, the OpenClaw orchestrator wakes the 4 agents
+5. Review `context/macro_watchlist.md`
+6. Review `context/technical_signals.md`
+7. Review `context/risk_decisions.md`
+8. `mock_execution_agent.py` simulates trades
+9. `reporting.py` writes the summary output
 
 ## Quick start
 
@@ -44,6 +50,8 @@ source .venv/bin/activate
 pip install -r requirements.txt
 python3 agents/us_stock_multi_agent/scripts/bootstrap_data.py
 python3 agents/us_stock_multi_agent/scripts/macro_scout.py
+python3 agents/us_stock_multi_agent/scripts/sentry.py
+python3 agents/us_stock_multi_agent/scripts/orchestrator.py
 python3 agents/us_stock_multi_agent/scripts/technical_analyst.py
 python3 agents/us_stock_multi_agent/scripts/portfolio_risk_manager.py
 python3 agents/us_stock_multi_agent/scripts/mock_execution_agent.py
@@ -54,7 +62,11 @@ python3 agents/us_stock_multi_agent/scripts/reporting.py
 
 Use `America/New_York` for cron jobs.
 
-- Macro Scout: Monday 9:00 AM New York time
-- Technical stack: hourly during market hours
+- Macro Scout refresh: Monday 9:00 AM New York time
+- Sentry: every 15 minutes during US market hours
+- LLM agents: only on trigger
+- Final summary: after market close
 
-See `agents/us_stock_multi_agent/cron/openclaw_cron_commands.md`.
+See:
+- `agents/us_stock_multi_agent/cron/openclaw_cron_commands.md`
+- `agents/us_stock_multi_agent/OPENCLAW_MULTI_AGENT_PLAN.md`
