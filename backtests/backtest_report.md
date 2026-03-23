@@ -1,17 +1,17 @@
 # Backtest Report
 
-Status: placeholder
+Placeholder template.
 
-This report should eventually include:
-- hypothesis
-- universe
-- data windows
-- assumptions
-- benchmark
-- transaction costs
+Required sections:
+- strategy / factor version
+- universe definition
+- data sources
+- in-sample period
+- out-of-sample period
+- walk-forward design if applicable
+- transaction cost assumptions
 - slippage assumptions
-- in-sample / out-of-sample split
-- walk-forward design if used
-- key metrics
-- failure analysis
-- validator verdict link
+- benchmark comparison
+- yearly breakdown
+- bias checks
+- validator verdict reference

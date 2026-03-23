@@ -1,36 +1,22 @@
-# Maintenance and Promotion Policy
+# Maintenance and Promotion Workflow
 
 ## 1. Research Proposal
-- Trigger: new paper, source, or factor idea
-- Owner: Scholar Researcher
-- Output: formula proposal with exact definitions and implementation notes
-- Requirement: trustworthy source citation and explicit assumptions
+- Scholar Researcher proposes factor/source update.
 
-## 2. Backtest Validation
-- Owner: Backtest Validator
-- Requirement:
-  - no look-ahead bias
-  - no survivorship bias where possible
-  - in-sample vs out-of-sample separation
-  - realistic cost and slippage assumptions
-  - benchmark comparison
-- Output: approve / reject / revise verdict
+## 2. Validation
+- Backtest Validator reviews robustness, bias controls, and realism.
 
 ## 3. Code Update
-- Owner: Code Maintainer
-- Input: approved research + validator verdict
-- Output: minimal code diff, tests, change note
+- Code Maintainer prepares minimal deterministic code changes.
 
 ## 4. Approval Gate
-- Strategy logic is not promoted unless:
-  - research record exists
-  - backtest verdict is approval or conditional approval
-  - code tests pass
-  - change note is written
+- Changes affecting strategy logic require explicit approval after validation.
 
-## 5. Production Promotion
-- Update version markers in config and registry
-- Archive prior version assumptions
-- Record activation date and affected scripts
-- Daily operation may only use approved production factors and rules
-- Portfolio ledger mutations must remain isolated to the deterministic Mock Portfolio Executor
+## 5. Promotion
+- Only validated and approved changes reach production scripts.
+
+Rules:
+- no silent strategy drift
+- no daily formula reinvention
+- no direct ledger edits outside executor
+- no LLM in the hot path

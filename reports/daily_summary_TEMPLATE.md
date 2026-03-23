@@ -5,28 +5,25 @@ Date: {{date}}
 ## Portfolio Snapshot
 - Current portfolio value:
 - Current cash:
-- Realized PnL:
-- Unrealized PnL:
 
 ## Open CORE Positions
-- None / list
+- None
 
 ## Open SWING Positions
-- None / list
+- None
 
 ## Activity Today
-- Entries:
-- Exits:
-- Stop-loss events:
-- Take-profit events:
+- Entries today:
+- Exits today:
+- Stop-loss / take-profit events:
 
-## Signal / Watchlist Changes
-- Notable changes:
-- Upcoming watchlist:
+## Signals And Watchlist
+- Notable signal changes:
+- Watchlist for tomorrow:
 
 ## Data Quality
-- Warnings:
-- Fallback data used: yes/no
+- Data-quality warnings:
+- Fallback data usage notes:
 
 ## Plan For Tomorrow
-- Brief factual plan
+- Brief, factual, skeptical plan.

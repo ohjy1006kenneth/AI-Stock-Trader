@@ -1,1 +1,1 @@
-date,ticker,side,qty,price,notional,strategy,sleeve,reason
+date,ticker,action,sleeve,shares,price,notional,reason_code

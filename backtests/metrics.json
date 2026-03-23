@@ -1,6 +1,7 @@
 {
-  "status": "placeholder",
+  "strategy_version": "v1-draft",
   "benchmark": "SPY",
+  "generated_at": null,
   "metrics": {
     "cagr": null,
     "annualized_volatility": null,
@@ -8,9 +9,9 @@
     "max_drawdown": null,
     "win_rate": null,
     "number_of_trades": null,
-    "average_holding_period_days": null,
+    "average_holding_period": null,
     "turnover": null,
-    "benchmark_relative_return": null
+    "benchmark_relative_comparison": null
   },
-  "by_year": []
+  "yearly_breakdown": []
 }

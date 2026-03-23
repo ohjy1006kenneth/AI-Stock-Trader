@@ -1,18 +1,18 @@
 {
-  "price_data": {
-    "required_columns": ["date", "ticker", "open", "high", "low", "close", "adj_close", "volume"],
-    "freshness_days_max": 3
+  "price_snapshot": {
+    "required_fields": ["generated_at", "source", "items"],
+    "item_required_fields": ["ticker", "timestamp", "open", "high", "low", "close", "adj_close", "volume"],
+    "fallback_source_allowed": true
   },
-  "fundamental_data": {
-    "required_fields": ["ticker", "as_of_date", "revenue_growth", "net_margin", "operating_margin", "debt_to_equity", "free_cash_flow", "return_on_equity"],
-    "staleness_days_max": 120
+  "fundamental_snapshot": {
+    "required_fields": ["generated_at", "source", "items"],
+    "item_required_fields": ["ticker", "timestamp"],
+    "fallback_source_allowed": true
   },
-  "outputs": {
-    "required_files": [
-      "outputs/alpha_rankings.json",
-      "outputs/qualified_universe.json",
-      "outputs/strategist_decisions.json",
-      "outputs/sentry_events.json"
-    ]
+  "strategist_decisions": {
+    "required_fields": ["generated_at", "decision_schema_version", "decisions"]
+  },
+  "execution_log": {
+    "required_fields": ["generated_at", "execution_schema_version", "items"]
   }
 }

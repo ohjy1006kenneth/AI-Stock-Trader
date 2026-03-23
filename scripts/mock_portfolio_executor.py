@@ -3,7 +3,7 @@ from __future__ import annotations
 
 def main() -> None:
     """Starter skeleton only. Deterministic logic will be implemented in the next step."""
-    print("daily_report: starter skeleton only")
+    print("mock_portfolio_executor: starter skeleton only")
 
 
 if __name__ == "__main__":
