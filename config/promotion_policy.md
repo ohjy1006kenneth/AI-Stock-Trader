@@ -33,3 +33,4 @@
 - Archive prior version assumptions
 - Record activation date and affected scripts
 - Daily operation may only use approved production factors and rules
+- Portfolio ledger mutations must remain isolated to the deterministic Mock Portfolio Executor

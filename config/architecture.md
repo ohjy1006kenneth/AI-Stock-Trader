@@ -80,7 +80,18 @@ Scripts produce stable, inspectable outputs:
   - rule conflict
 - Escalate to GPT-5.4 on ambiguous, conflicting, or high-impact decisions
 
-#### 6) Daily Reporter
+#### 6) Mock Portfolio Executor
+- Purpose: apply strategist decisions deterministically to the ledger
+- Runtime: deterministic Python by default; no LLM in normal operation
+- Reads: `outputs/strategist_decisions.json`, `ledger/mock_portfolio.json`, `data/price_history.json`, `config/portfolio_rules.md`
+- Writes: `outputs/execution_log.json`, `ledger/mock_portfolio.json`
+- Wake events:
+  - new strategist decisions available
+  - scheduled mock execution cycle
+  - rule validation required
+- LLM use: only for debugging execution failures, defaulting to Claude Haiku and escalating to GPT-5.4 only for persistent conflicts or schema issues
+
+#### 7) Daily Reporter
 - Purpose: concise factual EOD summary
 - Default model: Claude Haiku
 - Reads: ledger, outputs, logs, report template
@@ -96,5 +107,6 @@ Scripts produce stable, inspectable outputs:
 3. If no issue/event, no LLM wake-up is required.
 4. If event exists:
    - Data Guardian for data-quality issues
-   - Strategist for portfolio action review
+   - Strategist for structured portfolio action review
+   - Mock Portfolio Executor applies only the approved structured decisions deterministically
 5. Research and code changes follow explicit proposal -> validation -> promotion flow.

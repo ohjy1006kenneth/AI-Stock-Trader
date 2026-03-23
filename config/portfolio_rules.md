@@ -63,3 +63,9 @@ Suggested initial defaults:
 - `quality_proxy` = 1 if profitability proxy is available and positive, else 0
 
 This ranking is a conservative scaffold for research operations, not a profitability claim.
+
+## Mutation Boundary
+- The Strategist may only write structured decisions.
+- The Strategist must never mutate the portfolio ledger directly.
+- Only the deterministic Mock Portfolio Executor may update `ledger/mock_portfolio.json`.
+- All execution outcomes must be written to `outputs/execution_log.json`.
