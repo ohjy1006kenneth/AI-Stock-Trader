@@ -1,5 +1,307 @@
 {
-  "generated_at": null,
-  "model_version": "v1-draft",
-  "items": []
+  "generated_at": "2026-03-24T19:04:20.426745+00:00",
+  "model_version": "v1",
+  "items": [
+    {
+      "ticker": "GOOGL",
+      "timestamp": "2026-03-24T19:04:20.426653+00:00",
+      "alpha_model_version": "v1",
+      "alpha_score": 0.957895,
+      "factors": {
+        "ticker": "GOOGL",
+        "momentum_12_1": 0.8994449649393998,
+        "realized_vol_30d": 0.23908748730219037,
+        "rsi_14": 39.50717089335358,
+        "trend_filter_pass": true,
+        "current_close": 292.57000732421875,
+        "is_quality_eligible": true
+      }
+    },
+    {
+      "ticker": "NVDA",
+      "timestamp": "2026-03-24T19:04:20.426663+00:00",
+      "alpha_model_version": "v1",
+      "alpha_score": 0.676316,
+      "factors": {
+        "ticker": "NVDA",
+        "momentum_12_1": 0.6274427189321907,
+        "realized_vol_30d": 0.3231466848582414,
+        "rsi_14": 38.6854474315698,
+        "trend_filter_pass": false,
+        "current_close": 174.60499572753906,
+        "is_quality_eligible": true
+      }
+    },
+    {
+      "ticker": "TT",
+      "timestamp": "2026-03-24T19:04:20.426704+00:00",
+      "alpha_model_version": "v1",
+      "alpha_score": 0.671053,
+      "factors": {
+        "ticker": "TT",
+        "momentum_12_1": 0.3249408971397485,
+        "realized_vol_30d": 0.2849292323011121,
+        "rsi_14": 41.14796770753269,
+        "trend_filter_pass": true,
+        "current_close": 429.7049865722656,
+        "is_quality_eligible": false
+      }
+    },
+    {
+      "ticker": "COST",
+      "timestamp": "2026-03-24T19:04:20.426677+00:00",
+      "alpha_model_version": "v1",
+      "alpha_score": 0.665789,
+      "factors": {
+        "ticker": "COST",
+        "momentum_12_1": 0.08442030765810427,
+        "realized_vol_30d": 0.19748197224795008,
+        "rsi_14": 37.65404566068327,
+        "trend_filter_pass": true,
+        "current_close": 975.0800170898438,
+        "is_quality_eligible": false
+      }
+    },
+    {
+      "ticker": "AAPL",
+      "timestamp": "2026-03-24T19:04:20.426601+00:00",
+      "alpha_model_version": "v1",
+      "alpha_score": 0.644737,
+      "factors": {
+        "ticker": "AAPL",
+        "momentum_12_1": 0.21949872848087493,
+        "realized_vol_30d": 0.2628794952393651,
+        "rsi_14": 35.112027599001166,
+        "trend_filter_pass": true,
+        "current_close": 252.4199981689453,
+        "is_quality_eligible": false
+      }
+    },
+    {
+      "ticker": "LLY",
+      "timestamp": "2026-03-24T19:04:20.426666+00:00",
+      "alpha_model_version": "v1",
+      "alpha_score": 0.634211,
+      "factors": {
+        "ticker": "LLY",
+        "momentum_12_1": 0.26384666277094526,
+        "realized_vol_30d": 0.30995575131243663,
+        "rsi_14": 22.10377664447546,
+        "trend_filter_pass": true,
+        "current_close": 900.4600219726562,
+        "is_quality_eligible": false
+      }
+    },
+    {
+      "ticker": "ETN",
+      "timestamp": "2026-03-24T19:04:20.426707+00:00",
+      "alpha_model_version": "v1",
+      "alpha_score": 0.586842,
+      "factors": {
+        "ticker": "ETN",
+        "momentum_12_1": 0.22546027890983744,
+        "realized_vol_30d": 0.3345198209705049,
+        "rsi_14": 61.78371055518472,
+        "trend_filter_pass": true,
+        "current_close": 370.8699951171875,
+        "is_quality_eligible": false
+      }
+    },
+    {
+      "ticker": "META",
+      "timestamp": "2026-03-24T19:04:20.426659+00:00",
+      "alpha_model_version": "v1",
+      "alpha_score": 0.586842,
+      "factors": {
+        "ticker": "META",
+        "momentum_12_1": 0.06876310272536679,
+        "realized_vol_30d": 0.26168135904037704,
+        "rsi_14": 23.890838919323414,
+        "trend_filter_pass": false,
+        "current_close": 593.1099853515625,
+        "is_quality_eligible": true
+      }
+    },
+    {
+      "ticker": "ISRG",
+      "timestamp": "2026-03-24T19:04:20.426687+00:00",
+      "alpha_model_version": "v1",
+      "alpha_score": 0.555263,
+      "factors": {
+        "ticker": "ISRG",
+        "momentum_12_1": -0.0007918620451022873,
+        "realized_vol_30d": 0.23401264566268207,
+        "rsi_14": 30.153328380038644,
+        "trend_filter_pass": false,
+        "current_close": 469.6000061035156,
+        "is_quality_eligible": true
+      }
+    },
+    {
+      "ticker": "MSFT",
+      "timestamp": "2026-03-24T19:04:20.426648+00:00",
+      "alpha_model_version": "v1",
+      "alpha_score": 0.55,
+      "factors": {
+        "ticker": "MSFT",
+        "momentum_12_1": -0.017354210436658857,
+        "realized_vol_30d": 0.21981342092436318,
+        "rsi_14": 20.699018080676794,
+        "trend_filter_pass": false,
+        "current_close": 372.7550048828125,
+        "is_quality_eligible": true
+      }
+    },
+    {
+      "ticker": "ABBV",
+      "timestamp": "2026-03-24T19:04:20.426691+00:00",
+      "alpha_model_version": "v1",
+      "alpha_score": 0.478947,
+      "factors": {
+        "ticker": "ABBV",
+        "momentum_12_1": 0.09270987919610363,
+        "realized_vol_30d": 0.2622033416845771,
+        "rsi_14": 6.671227961851983,
+        "trend_filter_pass": false,
+        "current_close": 204.4949951171875,
+        "is_quality_eligible": false
+      }
+    },
+    {
+      "ticker": "AMZN",
+      "timestamp": "2026-03-24T19:04:20.426656+00:00",
+      "alpha_model_version": "v1",
+      "alpha_score": 0.378947,
+      "factors": {
+        "ticker": "AMZN",
+        "momentum_12_1": 0.046175002541057664,
+        "realized_vol_30d": 0.26364031453073766,
+        "rsi_14": 38.280558735905494,
+        "trend_filter_pass": false,
+        "current_close": 207.30499267578125,
+        "is_quality_eligible": false
+      }
+    },
+    {
+      "ticker": "V",
+      "timestamp": "2026-03-24T19:04:20.426670+00:00",
+      "alpha_model_version": "v1",
+      "alpha_score": 0.310526,
+      "factors": {
+        "ticker": "V",
+        "momentum_12_1": -0.08681408070820129,
+        "realized_vol_30d": 0.2273249206053129,
+        "rsi_14": 26.227129538859174,
+        "trend_filter_pass": false,
+        "current_close": 304.1000061035156,
+        "is_quality_eligible": false
+      }
+    },
+    {
+      "ticker": "MA",
+      "timestamp": "2026-03-24T19:04:20.426673+00:00",
+      "alpha_model_version": "v1",
+      "alpha_score": 0.263158,
+      "factors": {
+        "ticker": "MA",
+        "momentum_12_1": -0.07403536276831557,
+        "realized_vol_30d": 0.26692798128686335,
+        "rsi_14": 34.385381638756996,
+        "trend_filter_pass": false,
+        "current_close": 500.3599853515625,
+        "is_quality_eligible": false
+      }
+    },
+    {
+      "ticker": "SPGI",
+      "timestamp": "2026-03-24T19:04:20.426694+00:00",
+      "alpha_model_version": "v1",
+      "alpha_score": 0.255263,
+      "factors": {
+        "ticker": "SPGI",
+        "momentum_12_1": -0.18699286010778615,
+        "realized_vol_30d": 0.41026910636742864,
+        "rsi_14": 30.93796601666078,
+        "trend_filter_pass": false,
+        "current_close": 415.260009765625,
+        "is_quality_eligible": true
+      }
+    },
+    {
+      "ticker": "MSCI",
+      "timestamp": "2026-03-24T19:04:20.426697+00:00",
+      "alpha_model_version": "v1",
+      "alpha_score": 0.215789,
+      "factors": {
+        "ticker": "MSCI",
+        "momentum_12_1": -0.04296427583733198,
+        "realized_vol_30d": 0.3435943781191477,
+        "rsi_14": 32.5953441097826,
+        "trend_filter_pass": false,
+        "current_close": 543.4400024414062,
+        "is_quality_eligible": false
+      }
+    },
+    {
+      "ticker": "CRM",
+      "timestamp": "2026-03-24T19:04:20.426684+00:00",
+      "alpha_model_version": "v1",
+      "alpha_score": 0.213158,
+      "factors": {
+        "ticker": "CRM",
+        "momentum_12_1": -0.36512006712953804,
+        "realized_vol_30d": 0.4100097187064123,
+        "rsi_14": 41.23321381246089,
+        "trend_filter_pass": false,
+        "current_close": 184.26499938964844,
+        "is_quality_eligible": true
+      }
+    },
+    {
+      "ticker": "ROP",
+      "timestamp": "2026-03-24T19:04:20.426700+00:00",
+      "alpha_model_version": "v1",
+      "alpha_score": 0.121053,
+      "factors": {
+        "ticker": "ROP",
+        "momentum_12_1": -0.4132964862382884,
+        "realized_vol_30d": 0.2792436041048049,
+        "rsi_14": 35.35695106278365,
+        "trend_filter_pass": false,
+        "current_close": 348.6549987792969,
+        "is_quality_eligible": false
+      }
+    },
+    {
+      "ticker": "ADBE",
+      "timestamp": "2026-03-24T19:04:20.426680+00:00",
+      "alpha_model_version": "v1",
+      "alpha_score": 0.1,
+      "factors": {
+        "ticker": "ADBE",
+        "momentum_12_1": -0.3630119649455277,
+        "realized_vol_30d": 0.38964553745746244,
+        "rsi_14": 25.328504869044238,
+        "trend_filter_pass": false,
+        "current_close": 238.9499969482422,
+        "is_quality_eligible": false
+      }
+    },
+    {
+      "ticker": "UNH",
+      "timestamp": "2026-03-24T19:04:20.426710+00:00",
+      "alpha_model_version": "v1",
+      "alpha_score": 0.084211,
+      "factors": {
+        "ticker": "UNH",
+        "momentum_12_1": -0.453729303135189,
+        "realized_vol_30d": 0.28180665818965484,
+        "rsi_14": 31.26920511590353,
+        "trend_filter_pass": false,
+        "current_close": 272.4200134277344,
+        "is_quality_eligible": false
+      }
+    }
+  ],
+  "notes": "Deterministic V1 ranking scaffold. Not a profitability claim. RSI is contextual, not a sole driver."
 }

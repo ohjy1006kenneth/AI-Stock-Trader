@@ -3,9 +3,9 @@ from __future__ import annotations
 from common import OUTPUTS_DIR, now_iso, read_json, safe_float, write_json
 
 THRESHOLDS = {
-    "net_margin_min": 0.15,
-    "debt_to_equity_max": 0.5,
-    "revenue_growth_min": 0.08,
+    "net_margin_min": 0.12,
+    "debt_to_equity_max": 40.0,
+    "revenue_growth_min": 0.05,
     "average_volume_min": 1_000_000,
     "market_cap_min": 5_000_000_000,
 }

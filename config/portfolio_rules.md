@@ -7,6 +7,15 @@ Entry requirements:
 - pass portfolio/risk limits
 - no explicit exclusion event
 
+Current V1 quality screen thresholds:
+- net margin > 12%
+- debt/equity < 40.0 in current source units (yfinance-style field; treat as source-specific until SEC/XBRL normalization lands)
+- revenue growth > 5%
+- average volume >= 1,000,000
+- market cap >= $5B
+- free cash flow must be positive
+- must be U.S. common equity
+
 Characteristics:
 - months-or-longer default holding period
 - lower turnover

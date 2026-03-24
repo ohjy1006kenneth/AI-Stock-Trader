@@ -22,9 +22,9 @@ ASSUMPTIONS = {
     "swing_max_holding_days": 20,
     "signal_decay_threshold": 0.35,
     "quality_thresholds": {
-        "net_margin_min": 0.15,
-        "debt_to_equity_max": 0.5,
-        "revenue_growth_min": 0.08,
+        "net_margin_min": 0.12,
+        "debt_to_equity_max": 40.0,
+        "revenue_growth_min": 0.05,
         "market_cap_min": 5_000_000_000,
         "average_volume_min": 1_000_000,
         "free_cash_flow_positive": True,

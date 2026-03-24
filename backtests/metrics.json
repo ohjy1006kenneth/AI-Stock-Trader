@@ -1,17 +1,66 @@
 {
-  "strategy_version": "v1-draft",
+  "strategy_version": "v1",
   "benchmark": "SPY",
-  "generated_at": null,
+  "generated_at": "2026-03-24T19:04:21.883909+00:00",
   "metrics": {
-    "cagr": null,
-    "annualized_volatility": null,
-    "sharpe_ratio": null,
-    "max_drawdown": null,
+    "cagr": -0.11746012483886958,
+    "annualized_volatility": 0.10340323002174924,
+    "sharpe_ratio": -1.1666552599410398,
+    "max_drawdown": -0.09249114034427741,
     "win_rate": null,
-    "number_of_trades": null,
+    "number_of_trades": 5,
     "average_holding_period": null,
-    "turnover": null,
-    "benchmark_relative_comparison": null
+    "turnover": 0.5920047162882125,
+    "benchmark_relative_comparison": -0.049177999999999944
   },
-  "yearly_breakdown": []
+  "yearly_breakdown": [
+    {
+      "year": "2025",
+      "portfolio_return": 0.014046100000000061,
+      "benchmark_return": 0.03037080000000003
+    },
+    {
+      "year": "2026",
+      "portfolio_return": -0.07068896391633384,
+      "benchmark_return": -0.04092682121113922
+    }
+  ],
+  "assumptions": {
+    "benchmark": "SPY",
+    "transaction_cost_bps": 10,
+    "slippage_bps": 5,
+    "starting_cash": 100000.0,
+    "rebalance_frequency": "monthly",
+    "max_core_positions": 5,
+    "max_swing_positions": 5,
+    "core_target_weight": 0.12,
+    "swing_target_weight": 0.06,
+    "swing_trailing_stop_pct": 0.1,
+    "swing_take_profit_pct": 0.15,
+    "swing_max_holding_days": 20,
+    "signal_decay_threshold": 0.35,
+    "quality_thresholds": {
+      "net_margin_min": 0.12,
+      "debt_to_equity_max": 40.0,
+      "revenue_growth_min": 0.05,
+      "market_cap_min": 5000000000,
+      "average_volume_min": 1000000,
+      "free_cash_flow_positive": true
+    },
+    "bias_controls": [
+      "signals use trailing history only",
+      "monthly entries use information available on the rebalance date",
+      "daily exits use same-day close approximation for deterministic simplicity",
+      "survivorship bias remains unsolved in the static seed universe",
+      "fundamentals are not point-in-time clean in V1"
+    ]
+  },
+  "limitations": [
+    "survivorship bias is not solved",
+    "yfinance remains fallback data",
+    "fundamentals are not point-in-time clean",
+    "same-day close execution is a simplifying assumption",
+    "win-rate and pair-level analytics are incomplete in V1"
+  ],
+  "status": "deterministic_v1_backtest"
 }
