@@ -137,4 +137,4 @@ No other component may mutate the ledger.
 - `trading-quant-researcher`: strong reasoning model
 - `trading-backtest-validator`: strong reasoning model
 - `trading-portfolio-strategist`: strong reasoning model
-- `trading-executor-reporter`: deterministic Python in hot path; LLM only for debugging or explanation
+- `trading-executor-reporter`: `github-copilot/gpt-4o`; deterministic Python in hot path, LLM only for debugging or explanation
