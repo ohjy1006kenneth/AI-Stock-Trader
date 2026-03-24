@@ -1,23 +1,129 @@
-# 7-Role Multi-Agent Architecture
+# Trading Architecture
 
-## Design Principles
-- Repeated calculations, ranking, monitoring, backtesting, and ledger mutation are deterministic Python tasks.
-- LLMs are event-driven and never used inside monitoring or numeric loops.
-- Strategy logic is versioned and must not change without validation and promotion.
+## Design principles to preserve
+- Repeated calculations, ranking, monitoring, backtesting, and ledger mutation remain deterministic Python tasks.
+- LLMs are event-driven and never used inside monitoring loops or numeric hot paths.
+- Strategy logic is versioned and should change only through documented research, backtesting, and promotion.
 - The ledger mutation boundary is strict: only the deterministic Mock Portfolio Executor may update `ledger/mock_portfolio.json`.
-- `trading` is the only canonical artifact-owning workspace.
+- `trading` remains the only canonical artifact-owning workspace.
 - `trading-orchestrator` supervises and dispatches; it is not the general artifact store.
-- `trading-*` specialist agents are role workspaces only and must not become a second source of truth.
+- `trading-*` specialist agents are role workspaces only and must never become a second source of truth.
 
-## Role Overview
+## Keep vs refactor
 
+### Infrastructure to preserve
+These are the stable bones of the system and should only be changed if clearly broken.
+
+- deterministic executor boundary
+- `scripts/mock_portfolio_executor.py`
+- `ledger/mock_portfolio.json`
+- `scripts/portfolio_status.py`
+- cron/runtime wrappers and preflight scripts
+- reporting structure in `reports/`
+- delegation map and role architecture docs
+- deterministic file flow contract
+- strategist -> executor mutation boundary
+- canonical `trading` workspace ownership
+
+### Quant core to refactor selectively
+These are the parts that should evolve without deleting the runtime.
+
+- `scripts/quality_filter.py`
+- `scripts/calculate_alpha_score.py`
+- `scripts/backtest_engine.py`
+- `research/formula_registry.json`
+- `research/factor_notes.md`
+- CORE/SWING thresholds and rule definitions
+- research -> validation -> promotion workflow
+- factor documentation and promotion criteria
+
+### Optional cleanup
+Safe, non-urgent cleanup that should not drive architecture decisions.
+
+- stale report phrasing
+- duplicated notes across docs
+- placeholder registry metadata
+- low-value prompt wording
+- non-canonical artifacts that can be regenerated
+
+## Runtime role map
 Agent IDs used in OpenClaw for the trading system:
 - workspace/runtime owner: `trading`
 - supervisor: `trading-orchestrator`
 - specialist agents: `trading-data-guardian`, `trading-scholar`, `trading-backtest-validator`, `trading-code-maintainer`, `trading-strategist`, `trading-executor`, `trading-daily-reporter`
 
+## Simplified conceptual quant workflow
+The system should be understood as four main quant roles, even though several specialist workspaces still exist underneath.
 
-### 1) Data Guardian
+### 1) Quant Researcher
+Primary conceptual job:
+- define, document, and refine formulas and rule candidates
+
+Mapped agents:
+- `trading-scholar`
+- `trading-data-guardian` for data sanity and source caveats
+- `trading-code-maintainer` when deterministic implementation is needed
+
+What this role owns:
+- factor definitions
+- formula registry
+- source caveats
+- candidate rule changes
+
+### 2) Backtest Validator
+Primary conceptual job:
+- decide whether a formula or rule deserves trust
+
+Mapped agents:
+- `trading-backtest-validator`
+
+What this role owns:
+- realism review
+- in-sample vs out-of-sample discipline
+- bias control review
+- promotion gating
+
+### 3) Portfolio Strategist
+Primary conceptual job:
+- translate approved deterministic research outputs into actual portfolio decisions
+
+Mapped agents:
+- `trading-strategist`
+- `trading-orchestrator` when cross-role coordination or conflict resolution is needed
+
+What this role owns:
+- BUY/SELL/HOLD/REVIEW decisions
+- CORE vs SWING interpretation
+- decision notes
+
+### 4) Executor / Reporter
+Primary conceptual job:
+- apply decisions deterministically and communicate the result
+
+Mapped agents:
+- `trading-executor`
+- `trading-daily-reporter`
+- runtime owner `trading`
+
+What this role owns:
+- ledger mutation
+- execution logging
+- daily summaries
+- cron/runtime operation
+
+## Plain-English workflow
+1. A factor or rule idea is proposed and documented by the Quant Researcher.
+2. Deterministic code implements that idea without putting LLMs into the hot path.
+3. The Backtest Validator checks whether the change is realistic, biased, overfit, or still provisional.
+4. Only approved deterministic outputs flow into the Portfolio Strategist.
+5. The Portfolio Strategist writes decisions but never mutates the ledger.
+6. The Executor / Reporter layer applies valid decisions, updates the mock ledger, and publishes summaries.
+
+This keeps the runtime stable while letting the quant brain mature.
+
+## Agent detail and model posture
+
+### Data Guardian
 Purpose:
 - Monitor data ingestion health and schema integrity.
 
@@ -37,12 +143,12 @@ Writes:
 - `reports/data_guardian_note.md`
 
 Default model:
-- Claude Haiku
+- `github-copilot/gpt-4.1`
 
 Escalation:
-- GPT-5.4 only for persistent schema mismatch, repeated data corruption, or cross-file debugging.
+- `openai-codex/gpt-5.4` only for persistent schema mismatch, repeated corruption, or cross-file debugging.
 
-### 2) Scholar Researcher
+### Scholar Researcher
 Purpose:
 - Extract precise formulas from trusted sources and maintain a versioned formula registry.
 
@@ -61,9 +167,9 @@ Writes:
 - `reports/research_update.md`
 
 Default model:
-- GPT-5.4
+- `openai-codex/gpt-5.4`
 
-### 3) Backtest Validator
+### Backtest Validator
 Purpose:
 - Validate factor ideas, rule changes, and code changes before promotion.
 
@@ -81,9 +187,9 @@ Writes:
 - `reports/backtest_verdict.md`
 
 Default model:
-- GPT-5.4
+- `openai-codex/gpt-5.4`
 
-### 4) Code Maintainer
+### Code Maintainer
 Purpose:
 - Maintain deterministic code conservatively.
 
@@ -103,9 +209,9 @@ Writes:
 - `reports/code_change_note.md`
 
 Default model:
-- GPT-5.4 for important changes, Claude Haiku for low-risk cleanup.
+- `openai-codex/gpt-5.4` for important changes, lighter models acceptable for low-risk cleanup.
 
-### 5) Strategist
+### Strategist
 Purpose:
 - Convert approved deterministic outputs into structured portfolio decisions.
 
@@ -128,12 +234,14 @@ Writes:
 - `reports/strategist_note.md`
 
 Default model:
-- Claude Haiku
+- `openai-codex/gpt-5.4`
 
-Escalation:
-- GPT-5.4 only for rule conflict, high ambiguity, or unusually high-impact contradictions.
+Why upgraded:
+- strategist sits at the boundary between research outputs and actual portfolio intent
+- stronger reasoning is justified here even though the hot path remains deterministic Python
+- ledger mutation still remains outside the strategist
 
-### 6) Mock Portfolio Executor
+### Mock Portfolio Executor
 Purpose:
 - Deterministically apply approved strategist decisions to the mock ledger.
 
@@ -154,12 +262,12 @@ Writes:
 - `outputs/execution_log.json`
 
 Runtime:
-- Deterministic Python only in normal operation.
+- deterministic Python only in normal operation
 
 LLM use:
-- Only for debugging/explaining failures, default Claude Haiku, escalate to GPT-5.4 only for persistent conflicts.
+- only for debugging or explaining failures; operational hot path stays non-LLM
 
-### 7) Daily Reporter
+### Daily Reporter
 Purpose:
 - Produce concise end-of-day summary after execution completes.
 
@@ -177,9 +285,9 @@ Writes:
 - `reports/daily_summary_YYYY-MM-DD.md`
 
 Default model:
-- Claude Haiku
+- `github-copilot/gpt-4.1`
 
-## Deterministic File Flow Contract
+## Deterministic file flow contract
 1. Data scripts produce:
    - `outputs/alpha_rankings.json`
    - `outputs/qualified_universe.json`
@@ -198,3 +306,12 @@ Default model:
    - `reports/daily_summary_YYYY-MM-DD.md`
 
 No other component may mutate the ledger.
+
+## Research -> promotion workflow
+1. Propose factor or rule in the research layer.
+2. Document exact formula, fields, lag rules, and caveats in `research/formula_registry.json` and `research/factor_notes.md`.
+3. Implement deterministic Python logic.
+4. Backtest on historical data with explicit assumptions and costs.
+5. Validate in-sample vs out-of-sample behavior and bias controls.
+6. Reject, revise, or promote.
+7. Only promoted logic influences production decision rules.
