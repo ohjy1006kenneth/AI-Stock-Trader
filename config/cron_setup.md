@@ -22,8 +22,8 @@ openclaw cron runs --limit 20
 
 ## Notes
 - `trading` owns cron-triggered execution and canonical runtime artifacts.
-- `trading-orchestrator` is the conceptual supervisor/dispatcher.
-- Specialist delegation targets are `trading-data-guardian`, `trading-scholar`, `trading-backtest-validator`, `trading-code-maintainer`, `trading-strategist`, `trading-executor`, and `trading-daily-reporter`.
+- `trading` is the supervisor/dispatcher and canonical runtime owner.
+- Specialist delegation targets are `trading-quant-researcher`, `trading-backtest-validator`, `trading-portfolio-strategist`, and `trading-executor-reporter`.
 - All cron jobs must execute using the project virtual environment at `.venv/bin/python`.
 - Never depend on ambient system Python for project jobs.
 - Never hardcode container-only or host-only absolute paths if a repo-relative path can be used.
