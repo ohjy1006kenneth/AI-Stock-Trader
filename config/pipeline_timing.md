@@ -76,8 +76,10 @@ The main pipeline runs:
 No LLM is used for repeated math, monitoring, or ledger mutation.
 
 ## Runtime note
-Cron uses the project virtualenv Python:
-- `/home/node/.openclaw/workspace-trading/.venv/bin/python`
+- All cron jobs must execute using the project virtual environment at `.venv/bin/python`.
+- Never depend on ambient system Python for project jobs.
+- Never hardcode container-only or host-only absolute paths if a repo-relative path can be used.
+- Wrapper scripts resolve repo root dynamically and then execute Python via `$ROOT_DIR/.venv/bin/python`.
 
 ## Delivery target
 - channel: `telegram`

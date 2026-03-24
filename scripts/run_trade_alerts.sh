@@ -1,14 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cd /home/node/.openclaw/workspace-trading
-PYTHON_BIN="/home/node/.openclaw/workspace-trading/.venv/bin/python"
 
-if [ ! -x "$PYTHON_BIN" ]; then
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+VENV_PY="$ROOT_DIR/.venv/bin/python"
+
+echo "[runtime] root=$ROOT_DIR"
+echo "[runtime] python=$VENV_PY"
+
+if [ ! -x "$VENV_PY" ]; then
   echo "No new trade alerts"
   exit 0
 fi
 
-OUT=$($PYTHON_BIN scripts/trade_alerts.py)
+cd "$ROOT_DIR"
+OUT=$("$VENV_PY" scripts/trade_alerts.py)
 if [ "$OUT" = "No new trade alerts" ]; then
   exit 0
 fi

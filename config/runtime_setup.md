@@ -25,6 +25,14 @@ python -m pip install -r requirements.txt
 
 ## Manual pipeline run
 
+Preferred one-shot test:
+
+```bash
+./scripts/run_pipeline.sh
+```
+
+Individual Python steps if needed:
+
 ```bash
 .venv/bin/python scripts/build_universe.py
 .venv/bin/python scripts/fetch_price_data.py
@@ -39,6 +47,9 @@ python -m pip install -r requirements.txt
 ```
 
 ## Notes
-- The cron automation should use `.venv/bin/python`, not the host `python3`.
+- All cron jobs must execute using the project virtual environment at `.venv/bin/python`.
+- Never depend on ambient system Python for project jobs.
+- Never hardcode container-only or host-only absolute paths if a repo-relative path can be used.
+- Wrapper scripts should resolve their own `SCRIPT_DIR`, derive `ROOT_DIR`, and execute Python through `"$ROOT_DIR/.venv/bin/python"`.
 - `yfinance` is required for V1 runtime.
 - If preflight fails, the main pipeline must not run.

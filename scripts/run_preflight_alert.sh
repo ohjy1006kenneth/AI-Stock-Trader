@@ -1,17 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cd /home/node/.openclaw/workspace-trading
-PYTHON_BIN="/home/node/.openclaw/workspace-trading/.venv/bin/python"
 
-if [ ! -x "$PYTHON_BIN" ]; then
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+VENV_PY="$ROOT_DIR/.venv/bin/python"
+
+echo "[runtime] root=$ROOT_DIR"
+echo "[runtime] python=$VENV_PY"
+
+if [ ! -x "$VENV_PY" ]; then
   echo "PREFLIGHT FAILED"
   echo ""
   echo "Errors:"
-  echo "- missing_virtualenv_python:$PYTHON_BIN"
+  echo "- missing_virtualenv_python:$VENV_PY"
   exit 1
 fi
 
-if "$PYTHON_BIN" scripts/preflight_check.py; then
+cd "$ROOT_DIR"
+if "$VENV_PY" scripts/preflight_check.py; then
   exit 0
 else
   cat outputs/preflight_status.txt

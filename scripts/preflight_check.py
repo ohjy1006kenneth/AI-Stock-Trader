@@ -46,6 +46,9 @@ def main() -> None:
     errors: list[str] = []
     warnings: list[str] = []
 
+    python_executable = sys.executable
+    project_root = str(ROOT)
+
     for pkg in REQUIRED_PACKAGES:
         try:
             importlib.import_module(pkg)
@@ -81,16 +84,30 @@ def main() -> None:
         "warnings": warnings,
         "required_packages": REQUIRED_PACKAGES,
         "required_paths_checked": [str(p) for p in REQUIRED_PATHS],
+        "python_executable": python_executable,
+        "project_root": project_root,
     }
     write_json(STATUS_PATH, status)
 
+    header = [
+        f"[runtime] root={project_root}",
+        f"[runtime] python={python_executable}",
+    ]
+
     if status["ok"]:
-        text = "PREFLIGHT OK\n- runtime ready\n- required packages installed\n- required files present\n- JSON files readable\n- Telegram delivery target configured\n"
+        text = "\n".join(header + [
+            "PREFLIGHT OK",
+            "- runtime ready",
+            "- required packages installed",
+            "- required files present",
+            "- JSON files readable",
+            "- Telegram delivery target configured",
+        ]) + "\n"
         TEXT_PATH.write_text(text)
         print(text.strip())
         return
 
-    lines = ["PREFLIGHT FAILED", "", "Errors:"]
+    lines = header + ["PREFLIGHT FAILED", "", "Errors:"]
     lines.extend([f"- {e}" for e in errors] or ["- none"])
     lines.append("")
     lines.append("Warnings:")

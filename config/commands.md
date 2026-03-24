@@ -37,7 +37,13 @@ openclaw cron runs --limit 20
 
 ```bash
 .venv/bin/python scripts/preflight_check.py
+./scripts/run_preflight_alert.sh
 ```
+
+Rule:
+- All cron jobs must execute using the project virtual environment at `.venv/bin/python`.
+- Never depend on ambient system Python for project jobs.
+- Never hardcode container-only or host-only absolute paths if a repo-relative path can be used.
 
 ## Useful inspection commands
 
