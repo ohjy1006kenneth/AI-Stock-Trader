@@ -38,3 +38,12 @@ openclaw cron runs --limit 20
 ```bash
 .venv/bin/python scripts/preflight_check.py
 ```
+
+## Useful inspection commands
+
+```bash
+python3 scripts/portfolio_status.py
+cat outputs/execution_log.json
+ls -1t reports/daily_summary_*.md | head -n 1
+openclaw cron list
+```

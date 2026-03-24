@@ -23,6 +23,9 @@ openclaw cron runs --limit 20
 ```
 
 ## Notes
+- `trading` owns cron-triggered execution and canonical runtime artifacts.
+- `trading-orchestrator` is the conceptual supervisor/dispatcher.
+- Specialist delegation targets are `trading-data-guardian`, `trading-scholar`, `trading-backtest-validator`, `trading-code-maintainer`, `trading-strategist`, `trading-executor`, and `trading-daily-reporter`.
 - The preflight alert job announces only on failure.
 - The main pipeline job is gated by `scripts/preflight_check.py`.
 - The trade alert job announces only when new executed BUY/SELL records exist.

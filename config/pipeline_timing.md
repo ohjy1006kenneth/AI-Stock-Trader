@@ -10,6 +10,17 @@
 
 ## Final production-safe cron flow
 
+Delegation targets in the conceptual system:
+- runtime data and schema issues -> `trading-data-guardian`
+- factor/formula work -> `trading-scholar`
+- backtest/rule validation -> `trading-backtest-validator`
+- code maintenance and runtime fixes -> `trading-code-maintainer`
+- structured decision generation -> `trading-strategist`
+- mock ledger mutation validation/execution -> `trading-executor`
+- summary wording -> `trading-daily-reporter`
+
+The cron-triggered hot path still runs inside `trading`, which remains the canonical artifact-owning runtime workspace.
+
 ### 1) Preflight alert
 - Weekdays
 - 6:09 PM America/Chicago

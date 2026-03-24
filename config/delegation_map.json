@@ -1,0 +1,149 @@
+{
+  "canonical_workspace_owner": "trading",
+  "supervisor_agent": "trading-orchestrator",
+  "rules": [
+    {
+      "workflow_category": "runtime data issue",
+      "responsibility": "Diagnose runtime data fetch failures, stale snapshots, missing delivery artifacts, and broken deterministic pipeline prerequisites.",
+      "target_agent": "trading-data-guardian",
+      "reads_from": ["outputs/price_snapshot.json", "outputs/fundamental_snapshot.json", "outputs/preflight_status.json", "logs/", "config/data_contracts.json"],
+      "writes_to": ["outputs/data_quality_status.json", "reports/data_guardian_note.md"],
+      "can_write_to_canonical_trading_workspace": true,
+      "advisory_only": false,
+      "escalation_target_if_needed": "trading-code-maintainer",
+      "notes": "Specialist work is diagnostic and bounded. Canonical artifacts remain in trading workspace."
+    },
+    {
+      "workflow_category": "schema/data-quality issue",
+      "responsibility": "Investigate malformed JSON, missing fields, unreadable files, fallback source usage, and schema drift.",
+      "target_agent": "trading-data-guardian",
+      "reads_from": ["config/data_contracts.json", "outputs/*.json", "ledger/mock_portfolio.json", "logs/"],
+      "writes_to": ["outputs/data_quality_status.json", "reports/data_guardian_note.md"],
+      "can_write_to_canonical_trading_workspace": true,
+      "advisory_only": false,
+      "escalation_target_if_needed": "trading-code-maintainer",
+      "notes": "May write diagnostics in trading workspace, but does not become a second source of truth."
+    },
+    {
+      "workflow_category": "factor research update",
+      "responsibility": "Research new factor ideas from trusted sources and summarize exact, implementable candidates.",
+      "target_agent": "trading-scholar",
+      "reads_from": ["research/trusted_sources.md", "research/formula_registry.json", "external trusted source notes"],
+      "writes_to": ["research/factor_notes.md", "reports/research_update.md"],
+      "can_write_to_canonical_trading_workspace": true,
+      "advisory_only": true,
+      "escalation_target_if_needed": "trading-backtest-validator",
+      "notes": "Advisory until validated. Does not change hot-path behavior directly."
+    },
+    {
+      "workflow_category": "formula registry change",
+      "responsibility": "Propose or revise exact factor definitions, source notes, lag rules, and approval state.",
+      "target_agent": "trading-scholar",
+      "reads_from": ["research/formula_registry.json", "research/trusted_sources.md"],
+      "writes_to": ["research/formula_registry.json", "reports/research_update.md"],
+      "can_write_to_canonical_trading_workspace": true,
+      "advisory_only": true,
+      "escalation_target_if_needed": "trading-backtest-validator",
+      "notes": "Registry changes are canonical research artifacts in trading workspace, but require validation before promotion."
+    },
+    {
+      "workflow_category": "backtest validation",
+      "responsibility": "Review deterministic backtest behavior, realism, bias controls, and robustness.",
+      "target_agent": "trading-backtest-validator",
+      "reads_from": ["backtests/backtest_report.md", "backtests/metrics.json", "backtests/trade_log.csv", "backtests/equity_curve.csv", "research/formula_registry.json"],
+      "writes_to": ["reports/backtest_verdict.md"],
+      "can_write_to_canonical_trading_workspace": true,
+      "advisory_only": true,
+      "escalation_target_if_needed": "trading-orchestrator",
+      "notes": "Validation output is authoritative for promotion gating, but does not directly mutate trading logic."
+    },
+    {
+      "workflow_category": "strategy-rule validation",
+      "responsibility": "Check whether proposed strategy-rule changes are justified, stable, and not obviously overfit.",
+      "target_agent": "trading-backtest-validator",
+      "reads_from": ["config/portfolio_rules.md", "backtests/metrics.json", "reports/research_update.md", "reports/code_change_note.md"],
+      "writes_to": ["reports/backtest_verdict.md"],
+      "can_write_to_canonical_trading_workspace": true,
+      "advisory_only": true,
+      "escalation_target_if_needed": "trading-orchestrator",
+      "notes": "Promotion gate, not a hot-path runtime role."
+    },
+    {
+      "workflow_category": "code maintenance",
+      "responsibility": "Implement approved deterministic code changes, schema fixes, runtime repairs, and refactors.",
+      "target_agent": "trading-code-maintainer",
+      "reads_from": ["scripts/", "config/", "reports/backtest_verdict.md", "reports/data_guardian_note.md"],
+      "writes_to": ["scripts/", "reports/code_change_note.md", "tests/"],
+      "can_write_to_canonical_trading_workspace": true,
+      "advisory_only": false,
+      "escalation_target_if_needed": "trading-orchestrator",
+      "notes": "May modify canonical code in trading workspace when maintenance is approved."
+    },
+    {
+      "workflow_category": "portfolio decision generation",
+      "responsibility": "Generate structured BUY/SELL/HOLD/REVIEW decisions from approved deterministic outputs.",
+      "target_agent": "trading-strategist",
+      "reads_from": ["outputs/alpha_rankings.json", "outputs/qualified_universe.json", "outputs/sentry_events.json", "outputs/price_snapshot.json", "outputs/fundamental_snapshot.json", "ledger/mock_portfolio.json", "config/portfolio_rules.md"],
+      "writes_to": ["outputs/strategist_decisions.json", "reports/strategist_note.md"],
+      "can_write_to_canonical_trading_workspace": true,
+      "advisory_only": true,
+      "escalation_target_if_needed": "trading-orchestrator",
+      "notes": "Decision output is canonical, but strategist never mutates the ledger."
+    },
+    {
+      "workflow_category": "mock ledger mutation",
+      "responsibility": "Validate strategist decisions and perform deterministic portfolio ledger updates.",
+      "target_agent": "trading-executor",
+      "reads_from": ["outputs/strategist_decisions.json", "outputs/price_snapshot.json", "ledger/mock_portfolio.json", "config/portfolio_rules.md"],
+      "writes_to": ["ledger/mock_portfolio.json", "outputs/execution_log.json"],
+      "can_write_to_canonical_trading_workspace": true,
+      "advisory_only": false,
+      "escalation_target_if_needed": "trading-orchestrator",
+      "notes": "This is the only workflow category allowed to mutate the ledger."
+    },
+    {
+      "workflow_category": "trade alert generation",
+      "responsibility": "Generate deterministic post-execution BUY/SELL alerts from the execution log and ledger.",
+      "target_agent": "trading",
+      "reads_from": ["outputs/execution_log.json", "ledger/mock_portfolio.json"],
+      "writes_to": ["outputs/trade_alerts_latest.json", "outputs/trade_alerts_latest.txt", "data/alert_state.json"],
+      "can_write_to_canonical_trading_workspace": true,
+      "advisory_only": false,
+      "escalation_target_if_needed": "trading-orchestrator",
+      "notes": "Pure deterministic runtime task owned by trading workspace."
+    },
+    {
+      "workflow_category": "daily reporting",
+      "responsibility": "Produce concise human-readable morning or end-of-day portfolio summaries from canonical artifacts.",
+      "target_agent": "trading-daily-reporter",
+      "reads_from": ["ledger/mock_portfolio.json", "outputs/execution_log.json", "outputs/sentry_events.json", "outputs/alpha_rankings.json", "reports/daily_summary_TEMPLATE.md"],
+      "writes_to": ["reports/daily_summary_YYYY-MM-DD.md"],
+      "can_write_to_canonical_trading_workspace": true,
+      "advisory_only": true,
+      "escalation_target_if_needed": "trading-orchestrator",
+      "notes": "Summary wording role. Canonical source data remains in trading workspace."
+    },
+    {
+      "workflow_category": "cron/runtime operations",
+      "responsibility": "Own cron-triggered execution, preflight gating, wrapper scripts, and runtime automation wiring.",
+      "target_agent": "trading",
+      "reads_from": ["config/runtime_setup.md", "config/pipeline_timing.md", "config/cron_setup.md", "scripts/run_pipeline.sh", "scripts/run_preflight_alert.sh", "scripts/run_daily_summary.sh", "scripts/run_trade_alerts.sh"],
+      "writes_to": ["config/runtime_setup.md", "config/pipeline_timing.md", "config/cron_setup.md", "outputs/preflight_status.json", "outputs/preflight_status.txt"],
+      "can_write_to_canonical_trading_workspace": true,
+      "advisory_only": false,
+      "escalation_target_if_needed": "trading-orchestrator",
+      "notes": "Runtime ownership belongs to trading, not to specialist role workspaces."
+    },
+    {
+      "workflow_category": "dependency/runtime environment issue",
+      "responsibility": "Diagnose missing packages, broken virtualenvs, path issues, and runtime blockers on host.",
+      "target_agent": "trading-code-maintainer",
+      "reads_from": ["config/runtime_setup.md", "outputs/preflight_status.json", "outputs/preflight_status.txt", "requirements.txt"],
+      "writes_to": ["reports/code_change_note.md", "config/runtime_setup.md"],
+      "can_write_to_canonical_trading_workspace": true,
+      "advisory_only": false,
+      "escalation_target_if_needed": "trading-data-guardian",
+      "notes": "Environment fixes can update canonical runtime docs or support scripts, but should not duplicate project state elsewhere."
+    }
+  ]
+}

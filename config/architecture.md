@@ -5,6 +5,9 @@
 - LLMs are event-driven and never used inside monitoring or numeric loops.
 - Strategy logic is versioned and must not change without validation and promotion.
 - The ledger mutation boundary is strict: only the deterministic Mock Portfolio Executor may update `ledger/mock_portfolio.json`.
+- `trading` is the only canonical artifact-owning workspace.
+- `trading-orchestrator` supervises and dispatches; it is not the general artifact store.
+- `trading-*` specialist agents are role workspaces only and must not become a second source of truth.
 
 ## Role Overview
 
