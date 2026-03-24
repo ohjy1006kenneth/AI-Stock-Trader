@@ -21,39 +21,30 @@ Delegation targets in the conceptual system:
 
 The cron-triggered hot path still runs inside `trading`, which remains the canonical artifact-owning runtime workspace.
 
-### 1) Preflight alert
-- Weekdays
-- 6:09 PM America/Chicago
-- Script: `scripts/run_preflight_alert.sh`
-- Purpose:
-  - verify runtime before the main pipeline
-  - check Python package availability
-  - check required files/folders
-  - check JSON readability
-  - check Telegram target configuration
-- Delivery:
-  - sends an alert only if preflight fails
-
-### 2) Main trading pipeline
+### 1) Main trading pipeline
 - Weekdays
 - 6:10 PM America/Chicago
 - Script: `scripts/run_pipeline.sh`
 - Purpose:
+  - run preflight
   - run the deterministic after-close pipeline
   - generate and dispatch mock BUY/SELL alerts only after the executor completes successfully
 - Behavior:
   - runs `scripts/preflight_check.py` first
-  - aborts immediately if preflight fails
+  - aborts immediately if preflight fails and returns the failure text
   - runs `scripts/trade_alerts.py` at the end of the pipeline
   - emits alert text only when new executed BUY/SELL records exist
   - otherwise returns `PIPELINE OK`
 
-### 3) Daily summary
+### 2) Daily summary
 - Weekdays
 - 7:00 AM America/Chicago
 - Script: `scripts/run_daily_summary.sh`
+- Runtime agent: `trading`
 - Purpose:
   - send morning mock portfolio summary based on deterministic artifacts
+- Note:
+  - the cron must execute in `trading`, because the canonical scripts and reports live in the trading workspace
 
 ## Deterministic hot path
 The main pipeline runs:
