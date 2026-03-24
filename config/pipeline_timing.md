@@ -40,20 +40,15 @@ The cron-triggered hot path still runs inside `trading`, which remains the canon
 - Script: `scripts/run_pipeline.sh`
 - Purpose:
   - run the deterministic after-close pipeline
+  - generate and dispatch mock BUY/SELL alerts only after the executor completes successfully
 - Behavior:
   - runs `scripts/preflight_check.py` first
   - aborts immediately if preflight fails
-  - does not announce normal success output
+  - runs `scripts/trade_alerts.py` at the end of the pipeline
+  - emits alert text only when new executed BUY/SELL records exist
+  - otherwise returns `PIPELINE OK`
 
-### 3) Trade alert dispatch
-- Weekdays
-- 6:11 PM America/Chicago
-- Script: `scripts/run_trade_alerts.sh`
-- Purpose:
-  - read deterministic execution results
-  - send only new executed mock BUY/SELL alerts
-
-### 4) Daily summary
+### 3) Daily summary
 - Weekdays
 - 7:00 AM America/Chicago
 - Script: `scripts/run_daily_summary.sh`
