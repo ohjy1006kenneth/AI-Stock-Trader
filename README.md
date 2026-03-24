@@ -5,11 +5,11 @@ A deterministic mock-money quant trading workspace.
 ## Active architecture
 - `trading` is the only orchestrator the user talks to.
 - `trading` is also the canonical workspace and runtime owner.
-- Four specialist roles sit under `trading`:
-  1. Quant Researcher
-  2. Backtest Validator
-  3. Portfolio Strategist
-  4. Executor / Reporter
+- Four specialist agents sit under `trading`:
+  1. `trading-quant-researcher`
+  2. `trading-backtest-validator`
+  3. `trading-portfolio-strategist`
+  4. `trading-executor-reporter`
 
 ## What is preserved
 - deterministic Python hot path

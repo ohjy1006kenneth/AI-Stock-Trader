@@ -27,10 +27,10 @@ Exactly four specialist roles sit under `trading`:
 
 ### Active roles
 - `trading` -> orchestrator + canonical runtime owner
-- `trading-scholar` -> **Quant Researcher**
+- `trading-quant-researcher` -> **Quant Researcher**
 - `trading-backtest-validator` -> **Backtest Validator**
-- `trading-strategist` -> **Portfolio Strategist**
-- `trading-executor` -> **Executor / Reporter**
+- `trading-portfolio-strategist` -> **Portfolio Strategist**
+- `trading-executor-reporter` -> **Executor / Reporter**
 
 ### Folded responsibilities
 The following old conceptual roles are no longer active standalone roles in the project design:
@@ -138,7 +138,7 @@ No other component may mutate the ledger.
 
 ## Model posture
 - `trading`: orchestrator / runtime owner, current strong model acceptable
-- `trading-scholar`: strong reasoning model
+- `trading-quant-researcher`: strong reasoning model
 - `trading-backtest-validator`: strong reasoning model
-- `trading-strategist`: strong reasoning model
-- `trading-executor`: deterministic Python in hot path; LLM only for debugging or explanation
+- `trading-portfolio-strategist`: strong reasoning model
+- `trading-executor-reporter`: deterministic Python in hot path; LLM only for debugging or explanation

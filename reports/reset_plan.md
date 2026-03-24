@@ -42,10 +42,10 @@ The reset preserves working infrastructure while removing or archiving redundant
 
 ## Final simplified agent architecture
 - `trading` = orchestrator + canonical runtime owner
-- `trading-scholar` = Quant Researcher
+- `trading-quant-researcher` = Quant Researcher
 - `trading-backtest-validator` = Backtest Validator
-- `trading-strategist` = Portfolio Strategist
-- `trading-executor` = Executor / Reporter
+- `trading-portfolio-strategist` = Portfolio Strategist
+- `trading-executor-reporter` = Executor / Reporter
 
 ## Final cleaned file structure
 
