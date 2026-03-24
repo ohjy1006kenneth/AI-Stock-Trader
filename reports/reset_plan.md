@@ -32,10 +32,7 @@ The reset preserves working infrastructure while removing or archiving redundant
 | `prompts/data_guardian.md` | Archive | Folded into simpler design |
 | `prompts/code_maintainer.md` | Archive | Folded into simpler design |
 | `prompts/daily_reporter.md` | Archive | Folded into Executor / Reporter |
-| external workspace `trading-orchestrator` | Archive | `trading` is now the orchestrator |
-| external workspace `trading-data-guardian` | Archive | responsibility folded into simpler roles |
-| external workspace `trading-code-maintainer` | Archive | responsibility folded into simpler roles |
-| external workspace `trading-daily-reporter` | Archive | responsibility folded into Executor / Reporter |
+| retired external specialist workspaces | Archive | responsibilities folded into the simplified four-role design |
 | `BOOTSTRAP.md` | Archive | first-run scaffolding, no longer useful |
 | `reports/daily_summary_2026-03-24.md` | Archive | old generated artifact not needed in live root |
 | `scripts/__pycache__/` | Delete | dead generated cache |
@@ -106,10 +103,7 @@ The reset preserves working infrastructure while removing or archiving redundant
 - `archive/20260324_simplify/reports/daily_summary_2026-03-24.md`
 
 ### Archived outside canonical repo
-- `/home/node/.openclaw/archived-trading-workspaces/20260324_simplify/workspace-trading-orchestrator`
-- `/home/node/.openclaw/archived-trading-workspaces/20260324_simplify/workspace-trading-data-guardian`
-- `/home/node/.openclaw/archived-trading-workspaces/20260324_simplify/workspace-trading-code-maintainer`
-- `/home/node/.openclaw/archived-trading-workspaces/20260324_simplify/workspace-trading-daily-reporter`
+- retired specialist workspaces were archived under `/home/node/.openclaw/archived-trading-workspaces/20260324_simplify/`
 
 ### Removed
 - `scripts/__pycache__/` bytecode cache

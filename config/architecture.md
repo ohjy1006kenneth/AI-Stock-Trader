@@ -5,7 +5,7 @@
 - This is the only orchestrator the user talks to.
 - This is the only canonical workspace and runtime owner.
 - It supervises the specialist roles directly.
-- There is no longer a separate `trading-orchestrator` project role in the active architecture.
+- There is no longer a separate secondary orchestrator role in the active architecture.
 
 ## Hard constraints
 - Keep the system mock-money only.
@@ -33,11 +33,7 @@ Exactly four specialist roles sit under `trading`:
 - `trading-executor-reporter` -> **Executor / Reporter**
 
 ### Folded responsibilities
-The following old conceptual roles are no longer active standalone roles in the project design:
-- `trading-orchestrator`
-- `trading-data-guardian`
-- `trading-code-maintainer`
-- `trading-daily-reporter`
+Several older conceptual roles are no longer active standalone roles in the project design.
 
 Their useful responsibilities are absorbed as follows:
 - data sanity / schema vigilance -> Quant Researcher + `trading` runtime supervision
