@@ -2,13 +2,45 @@
   "portfolio_id": "mock-us-core-satellite",
   "base_currency": "USD",
   "starting_cash": 100000,
-  "cash": 100000,
-  "total_equity": 100000,
+  "cash": 94260.86,
+  "total_equity": 99819.69,
   "realized_pnl": 0,
-  "unrealized_pnl": 0,
-  "positions": [],
-  "trade_history": [],
-  "last_updated": null,
+  "unrealized_pnl": -180.31,
+  "positions": [
+    {
+      "ticker": "GOOGL",
+      "sleeve": "SWING",
+      "shares": 19,
+      "avg_cost": 302.05999755859375,
+      "last_price": 292.57000732421875,
+      "market_value": 5558.83,
+      "unrealized_pnl": -180.31,
+      "entry_date": "2026-03-24T00:31:43.805289+00:00",
+      "thesis_summary": "Strong approved alpha signal for tactical swing sleeve.",
+      "stop_rule": {
+        "type": "trailing_stop_pct",
+        "value": 0.1
+      },
+      "take_profit_rule": {
+        "type": "take_profit_pct",
+        "value": 0.15
+      },
+      "max_holding_period_days": 20,
+      "holding_days": 0
+    }
+  ],
+  "trade_history": [
+    {
+      "timestamp": "2026-03-24T00:31:43.805323+00:00",
+      "ticker": "GOOGL",
+      "action": "BUY",
+      "shares": 19,
+      "price": 302.05999755859375,
+      "notional": 5739.14,
+      "reason_code": "strong_alpha_tactical"
+    }
+  ],
+  "last_updated": "2026-03-24T17:42:45.170075+00:00",
   "portfolio_rules": {
     "max_total_positions": 15,
     "max_core_allocation": 0.7,

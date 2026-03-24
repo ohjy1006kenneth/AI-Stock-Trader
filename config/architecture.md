@@ -1,317 +1,144 @@
-# Trading Architecture
+# Simplified Trading Architecture
 
-## Design principles to preserve
-- Repeated calculations, ranking, monitoring, backtesting, and ledger mutation remain deterministic Python tasks.
-- LLMs are event-driven and never used inside monitoring loops or numeric hot paths.
-- Strategy logic is versioned and should change only through documented research, backtesting, and promotion.
-- The ledger mutation boundary is strict: only the deterministic Mock Portfolio Executor may update `ledger/mock_portfolio.json`.
-- `trading` remains the only canonical artifact-owning workspace.
-- `trading-orchestrator` supervises and dispatches; it is not the general artifact store.
-- `trading-*` specialist agents are role workspaces only and must never become a second source of truth.
+## Canonical runtime owner
+- `trading`
+- This is the only orchestrator the user talks to.
+- This is the only canonical workspace and runtime owner.
+- It supervises the specialist roles directly.
+- There is no longer a separate `trading-orchestrator` project role in the active architecture.
 
-## Keep vs refactor
+## Hard constraints
+- Keep the system mock-money only.
+- Keep repeated calculations in deterministic Python.
+- Do not put LLM reasoning into the numeric hot path.
+- Preserve the deterministic ledger boundary.
+- The executor remains the only ledger mutator.
+- Specialist role workspaces must not become second sources of truth.
 
-### Infrastructure to preserve
-These are the stable bones of the system and should only be changed if clearly broken.
+## Final specialist model
+Exactly four specialist roles sit under `trading`:
 
-- deterministic executor boundary
-- `scripts/mock_portfolio_executor.py`
-- `ledger/mock_portfolio.json`
-- `scripts/portfolio_status.py`
-- cron/runtime wrappers and preflight scripts
-- reporting structure in `reports/`
-- delegation map and role architecture docs
-- deterministic file flow contract
-- strategist -> executor mutation boundary
-- canonical `trading` workspace ownership
+1. **Quant Researcher**
+2. **Backtest Validator**
+3. **Portfolio Strategist**
+4. **Executor / Reporter**
 
-### Quant core to refactor selectively
-These are the parts that should evolve without deleting the runtime.
+## Role mapping from the old scaffold
 
-- `scripts/quality_filter.py`
-- `scripts/calculate_alpha_score.py`
-- `scripts/backtest_engine.py`
-- `research/formula_registry.json`
-- `research/factor_notes.md`
-- CORE/SWING thresholds and rule definitions
-- research -> validation -> promotion workflow
-- factor documentation and promotion criteria
+### Active roles
+- `trading` -> orchestrator + canonical runtime owner
+- `trading-scholar` -> **Quant Researcher**
+- `trading-backtest-validator` -> **Backtest Validator**
+- `trading-strategist` -> **Portfolio Strategist**
+- `trading-executor` -> **Executor / Reporter**
 
-### Optional cleanup
-Safe, non-urgent cleanup that should not drive architecture decisions.
-
-- stale report phrasing
-- duplicated notes across docs
-- placeholder registry metadata
-- low-value prompt wording
-- non-canonical artifacts that can be regenerated
-
-## Runtime role map
-Agent IDs used in OpenClaw for the trading system:
-- workspace/runtime owner: `trading`
-- supervisor: `trading-orchestrator`
-- specialist agents: `trading-data-guardian`, `trading-scholar`, `trading-backtest-validator`, `trading-code-maintainer`, `trading-strategist`, `trading-executor`, `trading-daily-reporter`
-
-## Simplified conceptual quant workflow
-The system should be understood as four main quant roles, even though several specialist workspaces still exist underneath.
-
-### 1) Quant Researcher
-Primary conceptual job:
-- define, document, and refine formulas and rule candidates
-
-Mapped agents:
-- `trading-scholar`
-- `trading-data-guardian` for data sanity and source caveats
-- `trading-code-maintainer` when deterministic implementation is needed
-
-What this role owns:
-- factor definitions
-- formula registry
-- source caveats
-- candidate rule changes
-
-### 2) Backtest Validator
-Primary conceptual job:
-- decide whether a formula or rule deserves trust
-
-Mapped agents:
-- `trading-backtest-validator`
-
-What this role owns:
-- realism review
-- in-sample vs out-of-sample discipline
-- bias control review
-- promotion gating
-
-### 3) Portfolio Strategist
-Primary conceptual job:
-- translate approved deterministic research outputs into actual portfolio decisions
-
-Mapped agents:
-- `trading-strategist`
-- `trading-orchestrator` when cross-role coordination or conflict resolution is needed
-
-What this role owns:
-- BUY/SELL/HOLD/REVIEW decisions
-- CORE vs SWING interpretation
-- decision notes
-
-### 4) Executor / Reporter
-Primary conceptual job:
-- apply decisions deterministically and communicate the result
-
-Mapped agents:
-- `trading-executor`
+### Folded responsibilities
+The following old conceptual roles are no longer active standalone roles in the project design:
+- `trading-orchestrator`
+- `trading-data-guardian`
+- `trading-code-maintainer`
 - `trading-daily-reporter`
-- runtime owner `trading`
 
-What this role owns:
-- ledger mutation
-- execution logging
-- daily summaries
-- cron/runtime operation
+Their useful responsibilities are absorbed as follows:
+- data sanity / schema vigilance -> Quant Researcher + `trading` runtime supervision
+- deterministic code maintenance -> `trading` + Quant Researcher workflow, using deterministic Python changes in the canonical repo
+- daily reporting -> Executor / Reporter
+- orchestration -> `trading`
 
-## Plain-English workflow
-1. A factor or rule idea is proposed and documented by the Quant Researcher.
-2. Deterministic code implements that idea without putting LLMs into the hot path.
-3. The Backtest Validator checks whether the change is realistic, biased, overfit, or still provisional.
-4. Only approved deterministic outputs flow into the Portfolio Strategist.
-5. The Portfolio Strategist writes decisions but never mutates the ledger.
-6. The Executor / Reporter layer applies valid decisions, updates the mock ledger, and publishes summaries.
+## Simplified workflow
+1. **Quant Researcher** defines formulas, curates the formula registry, and proposes factor/rule changes.
+2. **Backtest Validator** tests realism, historical usefulness, and overfitting risk before promotion.
+3. **Portfolio Strategist** converts approved deterministic outputs into CORE/SWING decisions.
+4. **Executor / Reporter** applies decisions to the mock ledger and produces human-readable reporting.
 
-This keeps the runtime stable while letting the quant brain mature.
+`trading` supervises all four directly.
 
-## Agent detail and model posture
+## Active project structure
+The active project should be thought of in four layers:
 
-### Data Guardian
+### 1) Research
 Purpose:
-- Monitor data ingestion health and schema integrity.
+- factor ideas, formula definitions, source notes, and promotion rationale
 
-Responsibilities:
-- Validate price and fundamental snapshots.
-- Detect stale values, malformed data, missing fields, symbol mapping issues, and fallback source usage.
-- Write data-quality incidents and maintenance alerts.
-
-Reads:
-- `outputs/price_snapshot.json`
-- `outputs/fundamental_snapshot.json`
-- `config/data_contracts.json`
-- `logs/`
-
-Writes:
-- `outputs/data_quality_status.json`
-- `reports/data_guardian_note.md`
-
-Default model:
-- `github-copilot/gpt-4.1`
-
-Escalation:
-- `openai-codex/gpt-5.4` only for persistent schema mismatch, repeated corruption, or cross-file debugging.
-
-### Scholar Researcher
-Purpose:
-- Extract precise formulas from trusted sources and maintain a versioned formula registry.
-
-Responsibilities:
-- Research factors, document assumptions, required fields, and implementation constraints.
-- Reject unimplementable formulas.
-
-Reads:
-- `research/trusted_sources.md`
-- `research/formula_registry.json`
-- source papers/notes
-
-Writes:
+Primary files:
 - `research/formula_registry.json`
 - `research/factor_notes.md`
-- `reports/research_update.md`
+- `research/trusted_sources.md`
 
-Default model:
-- `openai-codex/gpt-5.4`
-
-### Backtest Validator
+### 2) Backtest
 Purpose:
-- Validate factor ideas, rule changes, and code changes before promotion.
+- historical simulation, metrics, validation artifacts
 
-Responsibilities:
-- Review backtest realism, bias controls, OOS design, turnover, drawdown, and cost assumptions.
-- Produce explicit verdicts.
-
-Reads:
+Primary files:
+- `scripts/backtest_engine.py`
 - `backtests/backtest_report.md`
 - `backtests/metrics.json`
-- `research/formula_registry.json`
-- change notes / diffs
-
-Writes:
+- `backtests/equity_curve.csv`
+- `backtests/trade_log.csv`
 - `reports/backtest_verdict.md`
 
-Default model:
-- `openai-codex/gpt-5.4`
-
-### Code Maintainer
+### 3) Strategy
 Purpose:
-- Maintain deterministic code conservatively.
+- universe construction, data snapshots, quality screen, alpha ranking, strategist decision logic, and strategy rules
 
-Responsibilities:
-- Update scripts, tests, schema handling, and version notes.
-- Never silently rewrite strategy rules.
-
-Reads:
-- `scripts/`
-- `reports/backtest_verdict.md`
-- `reports/data_guardian_note.md`
-- relevant config/research files
-
-Writes:
-- `scripts/`
-- `tests/` if added later
-- `reports/code_change_note.md`
-
-Default model:
-- `openai-codex/gpt-5.4` for important changes, lighter models acceptable for low-risk cleanup.
-
-### Strategist
-Purpose:
-- Convert approved deterministic outputs into structured portfolio decisions.
-
-Responsibilities:
-- Classify names into BUY/SELL/HOLD/REVIEW with sleeve labels.
-- Read approved outputs only.
-- Never mutate the ledger.
-
-Reads:
-- `outputs/alpha_rankings.json`
-- `outputs/qualified_universe.json`
+Primary files:
+- `scripts/build_universe.py`
+- `scripts/fetch_price_data.py`
+- `scripts/fetch_fundamental_data.py`
+- `scripts/quality_filter.py`
+- `scripts/calculate_alpha_score.py`
+- `scripts/portfolio_strategist.py`
+- `scripts/sentry_monitor.py`
+- `config/portfolio_rules.md`
+- `outputs/universe.json`
 - `outputs/price_snapshot.json`
 - `outputs/fundamental_snapshot.json`
-- `outputs/sentry_events.json`
-- `ledger/mock_portfolio.json`
-- `config/portfolio_rules.md`
-
-Writes:
-- `outputs/strategist_decisions.json`
-- `reports/strategist_note.md`
-
-Default model:
-- `openai-codex/gpt-5.4`
-
-Why upgraded:
-- strategist sits at the boundary between research outputs and actual portfolio intent
-- stronger reasoning is justified here even though the hot path remains deterministic Python
-- ledger mutation still remains outside the strategist
-
-### Mock Portfolio Executor
-Purpose:
-- Deterministically apply approved strategist decisions to the mock ledger.
-
-Responsibilities:
-- Validate decision schema and rule compliance.
-- Reject invalid actions.
-- Update cash, positions, PnL fields, and trade history.
-- Write execution audit logs.
-
-Reads:
-- `outputs/strategist_decisions.json`
-- `ledger/mock_portfolio.json`
-- `outputs/price_snapshot.json`
-- `config/portfolio_rules.md`
-
-Writes:
-- `ledger/mock_portfolio.json`
-- `outputs/execution_log.json`
-
-Runtime:
-- deterministic Python only in normal operation
-
-LLM use:
-- only for debugging or explaining failures; operational hot path stays non-LLM
-
-### Daily Reporter
-Purpose:
-- Produce concise end-of-day summary after execution completes.
-
-Responsibilities:
-- Summarize portfolio state, entries/exits, stop/take-profit events, signal changes, data warnings, fallback usage, and tomorrow focus.
-
-Reads:
-- `ledger/mock_portfolio.json`
-- `outputs/execution_log.json`
-- `outputs/sentry_events.json`
+- `outputs/qualified_universe.json`
 - `outputs/alpha_rankings.json`
+- `outputs/sentry_events.json`
+- `outputs/strategist_decisions.json`
+
+### 4) Execution / Reporting
+Purpose:
+- deterministic mock execution, portfolio inspection, alerts, summaries, runtime wrappers
+
+Primary files:
+- `scripts/mock_portfolio_executor.py`
+- `scripts/portfolio_status.py`
+- `scripts/trade_alerts.py`
+- `scripts/daily_report.py`
+- `scripts/preflight_check.py`
+- `scripts/run_pipeline.sh`
+- `scripts/run_preflight_alert.sh`
+- `scripts/run_trade_alerts.sh`
+- `scripts/run_daily_summary.sh`
+- `ledger/mock_portfolio.json`
+- `outputs/execution_log.json`
+- `outputs/trade_alerts_latest.json`
+- `reports/current_pipeline_explanation.md`
+- `reports/quality_filter_diagnosis.md`
 - `reports/daily_summary_TEMPLATE.md`
 
-Writes:
-- `reports/daily_summary_YYYY-MM-DD.md`
-
-Default model:
-- `github-copilot/gpt-4.1`
-
 ## Deterministic file flow contract
-1. Data scripts produce:
-   - `outputs/alpha_rankings.json`
-   - `outputs/qualified_universe.json`
-   - `outputs/price_snapshot.json`
-   - `outputs/fundamental_snapshot.json`
-2. Strategist reads approved outputs and writes:
-   - `outputs/strategist_decisions.json`
-3. Mock Portfolio Executor reads:
-   - `outputs/strategist_decisions.json`
-   - `ledger/mock_portfolio.json`
-   - `outputs/price_snapshot.json`
-4. Mock Portfolio Executor writes:
-   - `ledger/mock_portfolio.json`
-   - `outputs/execution_log.json`
-5. Daily Reporter reads final state and writes:
-   - `reports/daily_summary_YYYY-MM-DD.md`
+1. Data and strategy scripts write canonical outputs.
+2. The strategist reads approved outputs and writes decisions only.
+3. The executor reads strategist decisions and the ledger.
+4. The executor is the only component allowed to mutate `ledger/mock_portfolio.json`.
+5. Reporting reads final deterministic artifacts and produces summaries.
 
 No other component may mutate the ledger.
 
-## Research -> promotion workflow
-1. Propose factor or rule in the research layer.
-2. Document exact formula, fields, lag rules, and caveats in `research/formula_registry.json` and `research/factor_notes.md`.
-3. Implement deterministic Python logic.
-4. Backtest on historical data with explicit assumptions and costs.
-5. Validate in-sample vs out-of-sample behavior and bias controls.
-6. Reject, revise, or promote.
-7. Only promoted logic influences production decision rules.
+## Promotion workflow
+1. Researcher proposes or revises a formula.
+2. Formula is documented in the registry with fields, lag rules, and caveats.
+3. Deterministic Python implementation is updated.
+4. Backtest engine is run on historical data.
+5. Backtest Validator decides whether the idea is weak, provisional, or promotion-worthy.
+6. Only promoted logic influences strategist decisions.
+
+## Model posture
+- `trading`: orchestrator / runtime owner, current strong model acceptable
+- `trading-scholar`: strong reasoning model
+- `trading-backtest-validator`: strong reasoning model
+- `trading-strategist`: strong reasoning model
+- `trading-executor`: deterministic Python in hot path; LLM only for debugging or explanation
