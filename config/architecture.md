@@ -103,6 +103,7 @@ Primary files:
 - `scripts/portfolio_status.py`
 - `scripts/trade_alerts.py`
 - `scripts/daily_report.py`
+- `scripts/pipeline_run_summary.py`
 - `scripts/preflight_check.py`
 - `scripts/run_pipeline.sh`
 - `scripts/run_preflight_alert.sh`

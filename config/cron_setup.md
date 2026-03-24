@@ -8,7 +8,7 @@
 ## Production-safe jobs
 1. `trading-pipeline-after-close`
    - `10 18 * * 1-5`
-   - runs preflight + deterministic pipeline + end-of-pipeline trade alerts
+   - runs the single after-close workflow: preflight + deterministic pipeline + daily report + pipeline run summary + trade alerts
 2. `trading-daily-summary-7am`
    - `0 7 * * 1-5`
    - runs in `trading` because the canonical scripts and reports live there
