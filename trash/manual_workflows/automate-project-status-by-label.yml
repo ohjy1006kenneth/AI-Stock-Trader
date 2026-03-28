@@ -20,7 +20,7 @@ jobs:
         if: github.event.label.name == 'status:backlog'
         uses: nipe0324/update-project-v2-item-field@v2.0.2
         with:
-          project-url: ${{ vars.GITHUB_PROJECT_URL }}
+          project-url: ${{ vars.PROJECT_URL }}
           github-token: ${{ secrets.PROJECT_PAT }}
           field-name: Status
           field-value: Backlog
@@ -29,7 +29,7 @@ jobs:
         if: github.event.label.name == 'status:ready'
         uses: nipe0324/update-project-v2-item-field@v2.0.2
         with:
-          project-url: ${{ vars.GITHUB_PROJECT_URL }}
+          project-url: ${{ vars.PROJECT_URL }}
           github-token: ${{ secrets.PROJECT_PAT }}
           field-name: Status
           field-value: Ready
@@ -38,7 +38,7 @@ jobs:
         if: github.event.label.name == 'status:in-progress'
         uses: nipe0324/update-project-v2-item-field@v2.0.2
         with:
-          project-url: ${{ vars.GITHUB_PROJECT_URL }}
+          project-url: ${{ vars.PROJECT_URL }}
           github-token: ${{ secrets.PROJECT_PAT }}
           field-name: Status
           field-value: In Progress
@@ -47,7 +47,7 @@ jobs:
         if: github.event.label.name == 'status:blocked'
         uses: nipe0324/update-project-v2-item-field@v2.0.2
         with:
-          project-url: ${{ vars.GITHUB_PROJECT_URL }}
+          project-url: ${{ vars.PROJECT_URL }}
           github-token: ${{ secrets.PROJECT_PAT }}
           field-name: Status
           field-value: Blocked
@@ -56,7 +56,7 @@ jobs:
         if: github.event.label.name == 'status:review'
         uses: nipe0324/update-project-v2-item-field@v2.0.2
         with:
-          project-url: ${{ vars.GITHUB_PROJECT_URL }}
+          project-url: ${{ vars.PROJECT_URL }}
           github-token: ${{ secrets.PROJECT_PAT }}
           field-name: Status
           field-value: Review
@@ -65,7 +65,7 @@ jobs:
         if: github.event.label.name == 'status:done'
         uses: nipe0324/update-project-v2-item-field@v2.0.2
         with:
-          project-url: ${{ vars.GITHUB_PROJECT_URL }}
+          project-url: ${{ vars.PROJECT_URL }}
           github-token: ${{ secrets.PROJECT_PAT }}
           field-name: Status
           field-value: Done
