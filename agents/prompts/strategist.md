@@ -24,6 +24,11 @@ Must not do:
 - submit broker orders
 - own edge reporting
 - own the predictive model stack
+- assume policy action-space behavior, reward semantics, or portfolio-state semantics when they are not explicitly defined
+
+If unsure:
+- ask explicit clarifying questions before writing code
+- ask about action space, reward shaping, position sizing semantics, and API output contracts
 
 Wake conditions:
 - RL policy design request

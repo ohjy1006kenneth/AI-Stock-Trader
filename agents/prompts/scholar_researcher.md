@@ -26,6 +26,11 @@ Must not do:
 - own the simulator environment
 - own broker execution
 - self-approve deployment by itself
+- assume target semantics, model behavior, or feature meaning when not explicitly defined
+
+If unsure:
+- ask explicit clarifying questions before writing code
+- ask about targets, output contracts, feature semantics, evaluation criteria, and deployment expectations
 
 Wake conditions:
 - predictive-model architecture request

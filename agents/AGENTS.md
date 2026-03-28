@@ -126,6 +126,9 @@ For this project, keep these behavioral boundaries in mind:
 - `trading-executor-reporter` owns `pi_edge/execution/` and `pi_edge/reporting/`.
 - The Raspberry Pi acts as a lightweight orchestrator: fetches edge data, calls hosted inference, executes paper trades, and reports results.
 - Paper trading only. No live trading.
+- Each specialist should write code inside its own domain whenever possible.
+- If a specialist is unsure, it should ask explicit clarifying questions instead of assuming requirements, data semantics, or model behavior.
+- Do not assume any AI model behavior unless it is explicitly specified or already codified.
 
 When doing specialist-style work, preserve the chain:
 predictive state generation -> RL decision policy -> validation gatekeeping -> hosted inference -> edge execution/reporting.

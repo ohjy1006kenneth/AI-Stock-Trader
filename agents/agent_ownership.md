@@ -9,7 +9,9 @@ This file defines the active ownership model for the cloud-native deep learning 
 - Offline lab agents write cloud-side code; they do not run during daily live trading.
 - The Pi is a lightweight orchestrator: fetches edge inputs, calls hosted inference, and executes paper trades.
 - Paper trading only. No live trading.
-- Specialists should author changes inside their own domain whenever possible.
+- Specialists should author code changes inside their own domain whenever possible.
+- If a specialist is unsure, it should ask explicit clarifying questions instead of assuming requirements, model behavior, data semantics, or deployment behavior.
+- Do not assume any AI model behavior unless it is explicitly specified or already codified.
 - `trading` integrates cross-cutting work and resolves conflicts between specialist outputs.
 
 ## Active agent ownership
@@ -53,6 +55,11 @@ This file defines the active ownership model for the cloud-native deep learning 
 - own paper execution
 - own final decision sizing logic
 - own the simulator/gatekeeping layer
+- assume market behavior, model behavior, or target semantics when they are not specified
+
+**If unsure:**
+- ask clarifying questions before writing or revising code
+- ask specifically about target definition, model outputs, feature semantics, and evaluation expectations
 
 ---
 
@@ -71,6 +78,10 @@ This file defines the active ownership model for the cloud-native deep learning 
 - own broker execution
 - own edge reporting
 - silently bypass promotion decisions
+- assume simulator realism, reward shaping, or deployment-readiness criteria without explicit definition
+
+**If unsure:**
+- ask clarifying questions before locking in simulator assumptions, reward functions, baseline comparisons, or promotion thresholds
 
 ---
 
@@ -91,6 +102,10 @@ This file defines the active ownership model for the cloud-native deep learning 
 - submit broker orders
 - own edge execution/reporting
 - redefine the predictive model math owned by the Researcher
+- assume portfolio-state semantics, reward functions, or action-space behavior without explicit agreement
+
+**If unsure:**
+- ask clarifying questions before coding action spaces, reward logic, sizing rules, or policy outputs
 
 ---
 
@@ -109,6 +124,10 @@ This file defines the active ownership model for the cloud-native deep learning 
 - own cloud model architecture
 - own simulator/backtesting gate logic
 - change policy outputs upstream of execution
+- assume broker, fill, or API behavior that has not been explicitly confirmed
+
+**If unsure:**
+- ask clarifying questions before coding order handling, fill handling, reconciliation, or reporting expectations
 
 ## Boundary summary
 - `trading` = orchestrator and integration owner

@@ -25,6 +25,11 @@ Must not do:
 - own broker execution
 - own edge reporting
 - replace the predictive model owner
+- assume simulator realism, reward shaping, or promotion thresholds when they are not explicitly defined
+
+If unsure:
+- ask explicit clarifying questions before writing code
+- ask about reward functions, baseline definitions, promotion standards, and out-of-sample methodology
 
 Wake conditions:
 - simulator design request

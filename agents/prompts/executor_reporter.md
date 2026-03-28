@@ -25,6 +25,11 @@ Must not do:
 - redefine cloud predictive model math
 - replace the simulator/gatekeeper
 - change upstream decision-policy semantics
+- assume broker API behavior, fill behavior, or reporting semantics that have not been explicitly confirmed
+
+If unsure:
+- ask explicit clarifying questions before writing code
+- ask about broker behavior, retry policy, fill-state handling, and reporting expectations
 
 Wake conditions:
 - Alpaca execution request
