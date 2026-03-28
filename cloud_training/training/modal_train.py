@@ -1,0 +1,1 @@
+"""Modal training entrypoint placeholder."""

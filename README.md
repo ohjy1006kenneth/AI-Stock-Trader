@@ -1,50 +1,14 @@
 # Trading
 
-A deterministic paper-trading trading workspace with OpenClaw orchestration.
+Cloud-native deep learning trading system.
 
-## Active architecture
-- `trading` is the orchestrator the user talks to and the canonical project owner.
-- Specialists sit under `trading`:
-  1. `trading-quant-researcher`
-  2. `trading-backtest-validator`
-  3. `trading-portfolio-strategist`
-  4. `trading-executor-reporter`
+## Top-level areas
+- `agents/` — agent behavior and prompts
+- `config/` — execution config, Alpaca env, S&P 500 snapshot
+- `cloud_training/` — PyTorch training lab
+- `cloud_inference/` — hosted inference endpoint logic
+- `pi_edge/` — Raspberry Pi fetch/orchestrate/execute/report runtime
+- `docs/` — concise architecture and setup notes
+- `tests/` — edge integration tests
 
-## What is preserved
-- deterministic Python hot path
-- strict executor-only ledger mutation boundary
-- CORE / SWING distinction
-- paper trading only
-- runtime wrappers, preflight checks, and reporting
-
-## Project layout
-
-### Research
-- `research/` for formula definitions, factor notes, and trusted-source references
-
-### Backtest
-- `backtests/engine/` for deterministic historical simulation
-- `backtests/outputs/` for generated validation artifacts
-
-### Runtime data + execution
-- `runtime/pi/data/` for runtime data collection steps
-- `strategy/` for screening, ranking, sentry, and decision-policy logic
-- `runtime/pi/execution/` for paper execution and status
-- `runtime/pi/reporting/` for reports and alerts
-- `runtime/pi/wrappers/` for repo-relative runtime entrypoints
-- `data/runtime/` for generated runtime artifacts
-- `ledger/` for local paper portfolio state
-- `reports/` for human-readable summaries and diagnostics
-
-## Deterministic file flow
-1. The runtime universe is built from the local S&P 500 snapshot at `config/sp500_constituents.json`.
-2. Runtime data steps refresh market and fundamental artifacts.
-3. Strategy logic writes approved screening, ranking, sentry, and decision artifacts.
-4. The executor reads decisions and is the only ledger mutator.
-5. Reporting reads final artifacts and summarizes the paper system state.
-
-## Notes
-- Cloud is intended for training, heavy backtesting, validation prep, and artifact export.
-- Raspberry Pi is intended for runtime: fresh data, runtime features, artifact loading, inference, decision conversion, paper execution, and reporting.
-- S&P 500 membership refresh uses Wikipedia as the membership source and Alpaca active tradable U.S. equities as the tradability filter; the generated snapshot in `config/sp500_constituents.json` is the runtime source of truth.
-- Older multi-agent scaffolding has been archived under `archive/`.
+Archived legacy local-quant logic lives under `archive/legacy_local_quant/`.

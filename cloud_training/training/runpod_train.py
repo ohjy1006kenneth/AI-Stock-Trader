@@ -1,0 +1,1 @@
+"""RunPod training entrypoint placeholder."""

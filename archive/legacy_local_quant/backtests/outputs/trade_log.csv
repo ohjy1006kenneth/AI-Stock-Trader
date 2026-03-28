@@ -1,0 +1,6 @@
+date,ticker,action,sleeve,shares,price,notional,reason_code
+2025-10-01,META,BUY,CORE,16,718.416,11494.66,quality_plus_alpha
+2025-10-01,MSFT,BUY,CORE,23,520.4896,11971.26,quality_plus_alpha
+2025-10-01,NVDA,BUY,CORE,64,187.5209,12001.34,quality_plus_alpha
+2025-10-01,GOOGL,BUY,CORE,48,245.2673,11772.83,quality_plus_alpha
+2026-01-02,ISRG,BUY,CORE,21,562.823,11819.28,quality_plus_alpha
