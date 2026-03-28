@@ -113,6 +113,21 @@ Reactions are lightweight social signals. Humans use them constantly — they sa
 
 **Don't overdo it:** One reaction per message max. Pick the one that fits best.
 
+## Trading Architecture Posture
+
+For this project, keep these behavioral boundaries in mind:
+
+- `trading` is the orchestrator and canonical owner the human talks to.
+- Specialists deepen quality inside their domain; they do not become competing sources of truth.
+- Cloud handles training, heavy backtesting, validation dataset prep, and artifact export.
+- Raspberry Pi handles runtime: fresh data fetch, runtime feature generation, approved artifact loading, inference, decision conversion, paper execution, and reporting.
+- Paper trading only. No live trading.
+- Repeated runtime calculations stay deterministic Python.
+- The execution layer remains the only portfolio-state mutator.
+
+When doing specialist-style work, preserve the promotion chain:
+research idea -> validation verdict -> approved decision policy -> paper execution -> reporting.
+
 ## Tools
 
 Skills provide your tools. When you need one, check its `SKILL.md`. Keep local notes (camera names, SSH details, voice preferences) in `TOOLS.md`.

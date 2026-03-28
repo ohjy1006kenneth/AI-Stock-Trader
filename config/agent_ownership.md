@@ -3,200 +3,194 @@
 This file defines the active ownership model for the trading system.
 
 ## Global rules
-- `trading` is the only canonical runtime and artifact-owning workspace.
-- Specialists work inside their domains but must not become second sources of truth.
-- Repeated calculations stay in deterministic Python.
+- `trading` is the only canonical project owner and orchestrator the user talks to.
+- Specialists exist to deepen quality inside their domains, not to become second sources of truth.
+- Repeated runtime calculations stay in deterministic Python.
 - LLMs do not go into the numeric hot path.
-- `trading-executor-reporter` remains the only runtime ledger mutator through `runtime/pi/execution/mock_portfolio_executor.py`.
-- Specialists should author code in their own specialty whenever possible.
-- `trading` coordinates, integrates, and resolves cross-cutting design or implementation conflicts.
-- `trading-executor-reporter` is intentionally lightweight and should not be the default author for complex cross-cutting code.
+- Paper trading only. No live trading.
+- The executor remains the only portfolio-state mutator.
+- Cloud handles training and heavy validation compute.
+- Raspberry Pi handles runtime execution: fresh data, runtime features, approved artifact loading, inference, decision conversion, paper execution, and reporting.
+- Specialists should author changes inside their specialty whenever possible.
+- `trading` integrates cross-cutting work and resolves conflicts between specialist outputs.
 
 ## Active agent ownership
 
 ### 1) trading
-**Role:** orchestrator + canonical runtime owner
+**Role:** orchestrator + canonical project owner
+
+**What it is for:**
+- the user-facing coordinator
+- the canonical source of truth for project behavior
+- the integration owner across research, validation, strategy, runtime, and reporting
 
 **Responsibilities:**
 - coordinate specialist work
-- integrate approved changes into the canonical workspace
-- preserve source of truth and deterministic file flow
-- own runtime wiring, cron wrappers, and cross-cutting glue
-- take over implementation when a task spans multiple specialist domains
-- take over execution/reporting changes when they become architectural or nontrivially cross-cutting
+- preserve coherence across the system
+- own cross-cutting design, integration, and final decisions
+- step in when work spans multiple specialties
+- prevent duplicated authority across specialists
+- keep the system aligned with the cloud-training + Pi-runtime plan
 
-**Reads:**
-- entire canonical workspace as needed for integration
+**Should usually handle directly when:**
+- the task is architectural
+- the task changes boundaries between agents
+- the task spans research + validation + strategy + execution
+- the task affects canonical workflow or project direction
 
-**Writes:**
-- any canonical file when integration or cross-cutting changes are required
-- runtime/config/integration docs and wrapper scripts
-
-**Must not outsource away:**
-- final integration decisions
-- source-of-truth artifact ownership
-
-**Conceptual script ownership:**
-- `runtime/pi/wrappers/run_pipeline.sh`
-- `runtime/pi/wrappers/run_preflight_alert.sh`
-- `runtime/pi/wrappers/run_trade_alerts.sh`
-- `runtime/pi/wrappers/run_daily_summary.sh`
-- `runtime/pi/preflight/preflight_check.py`
-- cross-cutting integration glue and orchestration-facing config
+**Must preserve:**
+- paper-trading-only posture
+- deterministic runtime boundaries
+- executor-only mutation boundary
+- clear promotion flow from idea -> validation -> approved runtime behavior
 
 ---
 
 ### 2) trading-quant-researcher
-**Role:** formula research, factor design, and research documentation
+**Role:** research / formula / feature specialist
+
+**What it is for:**
+- deciding what is worth testing
+- defining candidate signals, features, targets, and model ideas
+- maintaining research-backed design inputs for experiments
 
 **Responsibilities:**
-- own factor definitions and research notes
-- improve formula registry structure and factor documentation
-- author factor computation logic where appropriate
-- propose research-facing utilities for factor exploration or diagnostics
-- surface source/field caveats that affect factor validity
+- define features and factor ideas
+- read papers and trusted sources
+- propose target variables
+- propose candidate model families
+- maintain the formula and feature registry
+- decide what belongs in cloud training experiments
+- design research notes and feature-schema ideas for training/inference compatibility
 
-**Reads:**
-- `research/`
-- `runtime/pi/data/`
-- `strategy/calculate_alpha_score.py`
-- `data/runtime/market/`
-- `strategy/portfolio_rules.md`
+**Typical questions it answers:**
+- What should we predict?
+- Which features should we test?
+- Is a factor implementable and research-backed?
+- Should the next experiment be tree-based, sequence-based, linear, or something else?
 
-**Writes:**
-- `research/formula_registry.json`
-- `research/factor_notes.md`
-- `research/trusted_sources.md`
-- factor-related Python logic, primarily `strategy/calculate_alpha_score.py`
-- future research helpers under `research/` or training-side folders
+**Owns conceptually:**
+- formula registry
+- factor notes
+- feature definitions
+- experiment proposals
+- research-backed model ideas
+- training feature schema design
 
-**Must not touch directly:**
-- `ledger/mock_portfolio.json`
-- `data/runtime/execution/execution_log.json`
-- `runtime/pi/execution/mock_portfolio_executor.py` except for narrow consultation comments or review
+**Must not do:**
+- mutate portfolio state
+- act as the paper-trading executor
+- self-approve promotion into runtime by itself
 
 ---
 
 ### 3) trading-backtest-validator
-**Role:** backtesting, validation, and anti-overfitting
+**Role:** validation / promotion gate
+
+**What it is for:**
+- deciding whether research outputs and cloud experiment results are trustworthy enough to move forward
 
 **Responsibilities:**
-- own backtest methodology and validation logic
-- improve metrics, evaluation workflow, and validation utilities
-- author out-of-sample or robustness-testing support
-- interpret backtest results conservatively
-- gate promotion from research idea to strategist-usable rule
+- review backtest realism
+- look for leakage, overfitting, and bias-control failures
+- compare honestly against baselines
+- evaluate whether results justify promotion, revision, or rejection
+- gate movement from research idea to approved runtime candidate
 
-**Reads:**
-- `backtests/engine/backtest_engine.py`
-- `research/formula_registry.json`
-- `research/factor_notes.md`
-- `backtests/`
-- `strategy/portfolio_rules.md`
-- relevant strategy scripts where needed for validation context
+**Typical questions it answers:**
+- Was the backtest done correctly?
+- Is the result likely overfit?
+- Was there leakage?
+- Did it beat the baseline honestly?
+- Is it ready for paper-runtime use, candidate-only use, or rejection?
 
-**Writes:**
-- `backtests/engine/backtest_engine.py`
-- validation utilities under `backtests/`
-- `backtests/outputs/metrics.json`
-- `backtests/outputs/backtest_report.md`
-- `backtests/outputs/equity_curve.csv`
-- `backtests/outputs/trade_log.csv`
-- `reports/backtests/backtest_verdict.md`
+**Owns conceptually:**
+- validation verdicts
+- promotion / reject / revise recommendations
+- robustness checks
+- cautionary interpretation of strong-looking results
 
-**Must not touch directly:**
-- `ledger/mock_portfolio.json`
-- `data/runtime/execution/execution_log.json`
-- runtime wrapper scripts unless the change is clearly backtest-methodology related and coordinated by `trading`
+**Must not do:**
+- mutate portfolio state
+- silently promote a model or rule into runtime
+- replace the strategist or executor
 
 ---
 
 ### 4) trading-portfolio-strategist
-**Role:** portfolio logic, entry/exit rules, CORE/SWING definitions, and decision logic
+**Role:** decision-policy specialist
+
+**What it is for:**
+- translating approved outputs into policy-level portfolio decisions
+- defining how scores/signals become BUY / SELL / HOLD / REVIEW under portfolio rules
 
 **Responsibilities:**
-- own quality-filter logic
-- own alpha-to-decision mapping
-- own CORE/SWING eligibility rules and decision schemas
-- author strategist output logic and portfolio rule interpretation
-- define how approved research becomes decision behavior
+- own decision policy
+- own CORE / SWING interpretation rules
+- define how approved research or model outputs become structured decisions
+- interpret quality, alpha, sentry, and portfolio constraints together
+- maintain decision schemas and reason-code clarity
 
-**Reads:**
-- `strategy/quality_filter.py`
-- `strategy/portfolio_strategist.py`
-- `strategy/sentry_monitor.py`
-- `strategy/portfolio_rules.md`
-- `data/runtime/strategy/alpha_rankings.json`
-- `data/runtime/strategy/qualified_universe.json`
-- `data/runtime/strategy/sentry_events.json`
-- `data/runtime/market/price_snapshot.json`
-- `data/runtime/market/fundamental_snapshot.json`
-- `ledger/mock_portfolio.json` (read-only for position awareness)
-- `reports/backtests/backtest_verdict.md`
+**Typical questions it answers:**
+- Given approved outputs, what action should we take?
+- Does this belong in CORE or SWING?
+- Is this a buy, sell, hold, or review?
+- How should inference outputs be converted into decisions under policy constraints?
 
-**Writes:**
-- `strategy/quality_filter.py`
-- `strategy/portfolio_strategist.py`
-- `strategy/sentry_monitor.py`
-- `strategy/portfolio_rules.md`
-- `data/runtime/strategy/strategist_decisions.json`
+**Owns conceptually:**
+- decision-policy logic
+- decision thresholds at the policy layer
+- reason-code clarity
+- CORE / SWING portfolio behavior
+- decision conversion from approved deterministic/model outputs
 
-**Must not touch directly:**
-- `ledger/mock_portfolio.json`
-- `data/runtime/execution/execution_log.json`
-- `runtime/pi/execution/mock_portfolio_executor.py` except for narrow schema coordination reviewed by `trading`
+**Must not do:**
+- mutate portfolio state
+- become the backtest promotion gate
+- bypass validation governance
 
 ---
 
 ### 5) trading-executor-reporter
-**Role:** execution, reporting, and runtime status only
+**Role:** execution / reporting specialist
+
+**What it is for:**
+- paper execution and runtime reporting only
+- enforcing the mutation boundary without becoming a strategy owner
 
 **Responsibilities:**
-- own mock execution logic
-- own ledger update helpers and execution logging behavior
-- own status/report formatting and alert/report utilities
+- own paper execution behavior
+- own ledger mutation logic
+- own execution logs, status views, alerts, and summaries
+- explain or debug execution/reporting issues when requested
 - stay narrow and efficient
 
-**Reads:**
-- `runtime/pi/execution/mock_portfolio_executor.py`
-- `runtime/pi/reporting/daily_report.py`
-- `runtime/pi/execution/portfolio_status.py`
-- `runtime/pi/reporting/trade_alerts.py`
-- `ledger/mock_portfolio.json`
-- `data/runtime/strategy/strategist_decisions.json`
-- `data/runtime/market/price_snapshot.json`
-- `data/runtime/execution/execution_log.json`
-- `data/runtime/strategy/sentry_events.json`
-- `data/runtime/strategy/alpha_rankings.json`
-- `reports/templates/daily_summary_template.md`
+**Typical questions it answers:**
+- Why was a decision rejected?
+- Did the paper portfolio update correctly?
+- What happened in execution today?
+- What should the runtime report or alert say?
 
-**Writes:**
-- `runtime/pi/execution/mock_portfolio_executor.py`
-- `runtime/pi/reporting/daily_report.py`
-- `runtime/pi/execution/portfolio_status.py`
-- `runtime/pi/reporting/trade_alerts.py`
-- `ledger/mock_portfolio.json` (runtime mutation only via executor)
-- `data/runtime/execution/execution_log.json`
-- `data/runtime/alerts/trade_alerts_latest.json`
-- `data/runtime/alerts/trade_alerts_latest.txt`
-- `reports/daily/daily_summary_YYYY-MM-DD.md`
+**Owns conceptually:**
+- executor behavior
+- execution logging
+- runtime reports and alerts
+- read-only status inspection
 
-**Must not touch directly:**
-- `research/formula_registry.json`
-- `research/factor_notes.md`
-- `strategy/calculate_alpha_score.py`
-- `backtests/engine/backtest_engine.py`
-- `strategy/quality_filter.py`
-- `strategy/portfolio_strategist.py`
-- broad architectural config except narrow execution/reporting notes
+**Must not do:**
+- define research direction
+- approve promotions from research to runtime
+- take over strategy policy unless explicitly asked by `trading`
+- bypass deterministic execution rules
 
-## Boundary summary
-- `trading` = orchestrator + runtime integration owner
-- `trading-quant-researcher` = `research/` + factor logic
-- `trading-backtest-validator` = `backtests/` + validation outputs
-- `trading-portfolio-strategist` = `strategy/` + strategist runtime artifacts
-- `trading-executor-reporter` = `runtime/pi/execution/`, `runtime/pi/reporting/`, and ledger mutation path
+## System flow to preserve
+1. Research ideas are proposed and refined.
+2. Validation decides whether they are weak, provisional, or promotion-worthy.
+3. Approved outputs are converted into policy decisions.
+4. The executor applies only valid paper decisions.
+5. Reporting summarizes the runtime state.
 
 ## Non-negotiable rule
 - No agent may bypass the deterministic ledger boundary.
-- `runtime/pi/execution/mock_portfolio_executor.py` remains the only portfolio-state mutator.
+- The execution layer remains the only portfolio-state mutator.
+- Training happens outside the runtime node; runtime consumes approved artifacts and deterministic logic only.
