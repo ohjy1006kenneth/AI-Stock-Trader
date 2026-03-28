@@ -28,7 +28,7 @@ openclaw cron runs --limit 20
 - Never depend on ambient system Python for project jobs.
 - Never hardcode container-only or host-only absolute paths if a repo-relative path can be used.
 - The preflight alert job announces only on failure.
-- The main pipeline job is gated by `scripts/preflight_check.py`.
+- The main pipeline job is gated by the runtime preflight step in the current pipeline wrapper.
 - The main pipeline job also generates and dispatches trade alerts after the executor completes successfully.
 - The separate trade-alert cron job is no longer needed.
 - The daily summary job announces the latest dated summary report.

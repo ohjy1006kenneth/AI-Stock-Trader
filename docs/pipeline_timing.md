@@ -21,12 +21,12 @@ The cron-triggered hot path still runs inside `trading`, which remains the canon
 ### 1) Main trading pipeline
 - Weekdays
 - 6:10 PM America/Chicago
-- Script: `scripts/run_pipeline.sh`
+- Script: `runtime/pi/wrappers/run_pipeline.sh`
 - Purpose:
   - run the single end-to-end after-close workflow
   - include preflight, deterministic trading stages, daily report generation, pipeline run summary generation, and trade alert generation
 - Behavior:
-  - runs `scripts/preflight_check.py` first
+  - runs the runtime preflight step first
   - aborts immediately if preflight fails
   - if preflight passes, runs universe build, data fetch, quality filter, alpha scoring, sentry checks, strategist decision generation, executor mutation, daily report generation, trade alert generation, and pipeline summary generation in one flow
   - writes a human-readable run summary to `reports/pipeline_run_summary_YYYY-MM-DD.md`
@@ -36,7 +36,7 @@ The cron-triggered hot path still runs inside `trading`, which remains the canon
 ### 2) Daily summary
 - Weekdays
 - 7:00 AM America/Chicago
-- Script: `scripts/run_daily_summary.sh`
+- Script: `runtime/pi/wrappers/run_daily_summary.sh`
 - Runtime agent: `trading`
 - Purpose:
   - send morning mock portfolio summary based on deterministic artifacts
@@ -45,16 +45,12 @@ The cron-triggered hot path still runs inside `trading`, which remains the canon
 
 ## Deterministic hot path
 The main pipeline runs:
-- `scripts/build_universe.py`
-- `scripts/fetch_price_data.py`
-- `scripts/fetch_fundamental_data.py`
-- `scripts/quality_filter.py`
-- `scripts/calculate_alpha_score.py`
-- `scripts/sentry_monitor.py`
-- `scripts/portfolio_strategist.py`
-- `scripts/mock_portfolio_executor.py`
-- `scripts/daily_report.py`
-- `scripts/trade_alerts.py`
+- runtime data fetch/build steps
+- strategy screening, ranking, and sentry steps
+- strategist decision generation
+- paper execution
+- daily reporting
+- trade alert generation
 
 No LLM is used for repeated math, monitoring, or ledger mutation.
 
