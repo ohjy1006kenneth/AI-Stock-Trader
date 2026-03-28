@@ -1,0 +1,28 @@
+{
+  "execution_mode": "local_simulated",
+  "broker": "alpaca_paper",
+  "paper_trading_only": true,
+  "market_hours": {
+    "timezone": "America/New_York",
+    "enforce": true,
+    "allow_queued_orders_outside_market_hours": true
+  },
+  "duplicate_order_prevention": {
+    "enabled": true,
+    "check_open_broker_orders": true,
+    "check_existing_positions": true
+  },
+  "risk_limits": {
+    "max_total_positions": 15,
+    "max_core_allocation": 0.7,
+    "max_swing_allocation": 0.3,
+    "max_position_weight": 0.12,
+    "cash_buffer_rule": 0.05
+  },
+  "order_defaults": {
+    "buy_order_type": "market",
+    "sell_order_type": "market",
+    "time_in_force": "day",
+    "extended_hours": false
+  }
+}

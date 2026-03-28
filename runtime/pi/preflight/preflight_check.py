@@ -15,7 +15,7 @@ import importlib
 import json
 import sys
 
-from runtime.common.common import CONFIG_DIR, DIAGNOSTICS_DATA_DIR, EXECUTION_DATA_DIR, LEDGER_DIR, MARKET_DATA_DIR, ROOT, STRATEGY_DATA_DIR, load_contracts, now_iso, read_json, write_json
+from runtime.common.common import CONFIG_DIR, DIAGNOSTICS_DATA_DIR, EXECUTION_DATA_DIR, LEDGER_DIR, MARKET_DATA_DIR, ROOT, STRATEGY_DATA_DIR, env_str, load_contracts, load_execution_config, now_iso, read_json, write_json
 
 REQUIRED_PACKAGES = ["yfinance"]
 REQUIRED_PATHS = [
@@ -42,6 +42,7 @@ REQUIRED_PATHS = [
     STRATEGY_DATA_DIR / "strategist_decisions.json",
     EXECUTION_DATA_DIR / "execution_log.json",
     CONFIG_DIR / "automation_target.json",
+    CONFIG_DIR / "execution.json",
 ]
 JSON_PATHS = [
     LEDGER_DIR / "mock_portfolio.json",
@@ -81,6 +82,18 @@ def main() -> None:
     contracts = load_contracts()
     if not contracts:
         warnings.append("data_contracts_not_loaded")
+
+    execution_cfg = load_execution_config()
+    execution_mode = execution_cfg.get("execution_mode", "local_simulated")
+    if execution_mode == "alpaca_paper":
+        if not env_str("ALPACA_API_KEY"):
+            errors.append("missing_env:ALPACA_API_KEY")
+        if not env_str("ALPACA_API_SECRET"):
+            errors.append("missing_env:ALPACA_API_SECRET")
+        if execution_cfg.get("paper_trading_only") is not True:
+            errors.append("paper_trading_only_must_be_true")
+    elif execution_mode != "local_simulated":
+        errors.append(f"unsupported_execution_mode:{execution_mode}")
 
     target = read_json(CONFIG_DIR / "automation_target.json", {})
     if not target.get("channel") or not target.get("to"):

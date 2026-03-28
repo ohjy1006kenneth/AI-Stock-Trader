@@ -70,6 +70,9 @@ def main() -> None:
     decisions = strategist.get("decisions", [])
     action_counts = count_strategist_actions(decisions)
     executed, rejected, buys, sells = count_execution_results(execution.get("items", []))
+    execution_mode = execution.get("execution_mode") or portfolio.get("execution_mode") or "local_simulated"
+    broker_orders_sent = sum(1 for x in execution.get("items", []) if x.get("requested_action") in {"BUY", "SELL"} and x.get("broker_order_id"))
+    broker_fills = sum(1 for x in execution.get("items", []) if x.get("broker_status") == "filled")
     report_path = DAILY_REPORTS_DIR / f"daily_summary_{ts[:10]}.md"
     report_status = "produced" if report_path.exists() else "missing"
     alert_items = alerts.get("items", [])
@@ -101,6 +104,8 @@ def main() -> None:
         f"- Alpha ranking: {len(rankings.get('items', []))} ranked, {len(strong_alpha)} strong-alpha names",
         f"- Strategy result: BUY={action_counts['BUY']}, SELL={action_counts['SELL']}, HOLD={action_counts['HOLD']}, REVIEW={action_counts['REVIEW']}",
         f"- Execution result: executed={executed}, rejected={rejected}, buys={buys}, sells={sells}",
+        f"- Execution mode: {execution_mode}",
+        f"- Broker orders sent: {broker_orders_sent}, broker fills observed: {broker_fills}",
         f"- Sentry events: {len(sentry.get('events', []))}",
         f"- Report result: {report_status}",
         f"- Alert result: {alert_status}",
@@ -131,6 +136,7 @@ def main() -> None:
         "",
         "### trading-executor-reporter",
         f"- Ledger activity: executed={executed}, rejected={rejected}, buys={buys}, sells={sells}.",
+        f"- Broker path: mode={execution_mode}, orders_sent={broker_orders_sent}, fills_observed={broker_fills}.",
         f"- End-of-run portfolio snapshot: cash={portfolio.get('cash')}, total_equity={portfolio.get('total_equity')}, open_positions={len(portfolio.get('positions', []))}.",
         f"- Trade alerts: {alert_status}.",
         f"- Daily report status: {report_status} at `{report_path.name}`.",

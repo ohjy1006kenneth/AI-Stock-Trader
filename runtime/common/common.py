@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG_DIR = ROOT / "config"
@@ -140,6 +142,23 @@ def validate_required_fields(obj: dict, required_fields: list[str]) -> list[str]
 
 def load_contracts() -> dict:
     return read_json(CONFIG_DIR / "data_contracts.json", {})
+
+
+def load_execution_config() -> dict:
+    return read_json(CONFIG_DIR / "execution.json", {})
+
+
+def env_str(name: str, default: str | None = None) -> str | None:
+    value = os.environ.get(name)
+    return value if value not in (None, "") else default
+
+
+def market_is_open_now(tz_name: str = "America/New_York") -> bool:
+    now_local = datetime.now(ZoneInfo(tz_name))
+    if now_local.weekday() >= 5:
+        return False
+    cur = now_local.time()
+    return time(9, 30) <= cur <= time(16, 0)
 
 
 def latest_price_from_snapshot(snapshot: dict, ticker: str) -> float | None:

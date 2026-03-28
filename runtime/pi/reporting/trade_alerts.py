@@ -41,6 +41,7 @@ def main() -> None:
         reason_code = row.get("notes")
         cash_after = row.get("cash_after")
         total_equity = portfolio.get("total_equity")
+        broker_status = row.get("broker_status")
         payload = {
             "timestamp": row.get("timestamp"),
             "ticker": row.get("ticker"),
@@ -52,16 +53,23 @@ def main() -> None:
             "remaining_cash": cash_after,
             "total_equity_after": total_equity,
             "execution_id": execution_id,
+            "execution_mode": row.get("execution_mode"),
+            "broker_name": row.get("broker_name"),
+            "broker_order_id": row.get("broker_order_id"),
+            "broker_status": broker_status,
         }
         items.append(payload)
         text_lines.extend([
-            "MOCK TRADE ALERT",
+            "PAPER EXECUTION ALERT" if payload.get("execution_mode") == "alpaca_paper" else "LOCAL EXECUTION ALERT",
             f"- timestamp: {payload['timestamp']}",
             f"- ticker: {payload['ticker']}",
             f"- action: {payload['action']}",
             f"- sleeve: {payload['sleeve']}",
             f"- shares: {payload['shares']}",
             f"- execution price: {payload['execution_price']}",
+            f"- broker: {payload.get('broker_name')}",
+            f"- broker status: {payload.get('broker_status')}",
+            f"- broker order id: {payload.get('broker_order_id')}",
             f"- reason code: {payload['reason_code']}",
             f"- remaining cash: {payload['remaining_cash']}",
             f"- total equity after: {payload['total_equity_after']}",
@@ -69,7 +77,7 @@ def main() -> None:
         ])
         alerted.add(execution_id)
 
-    write_json(ALERT_REPORT_PATH, {"generated_at": now_iso(), "items": items})
+    write_json(ALERT_REPORT_PATH, {"generated_at": now_iso(), "execution_mode": execution.get("execution_mode"), "items": items})
     write_text(ALERT_TEXT_PATH, "\n".join(text_lines).strip() + ("\n" if text_lines else ""))
     write_json(STATE_PATH, {"alerted_execution_ids": sorted(alerted)})
     print("No new trade alerts" if not items else "\n".join(text_lines).strip())

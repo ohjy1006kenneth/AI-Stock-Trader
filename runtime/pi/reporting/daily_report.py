@@ -29,8 +29,11 @@ def main() -> None:
     sentry = read_json(STRATEGY_DATA_DIR / "sentry_events.json", {"events": []})
     rankings = read_json(STRATEGY_DATA_DIR / "alpha_rankings.json", {"items": []})
     positions = portfolio.get("positions", [])
+    execution_mode = execution.get("execution_mode") or portfolio.get("execution_mode") or "local_simulated"
     entries = [x for x in execution.get("items", []) if x.get("requested_action") == "BUY" and x.get("execution_status") == "EXECUTED"]
     exits = [x for x in execution.get("items", []) if x.get("requested_action") == "SELL" and x.get("execution_status") == "EXECUTED"]
+    broker_orders_sent = sum(1 for x in execution.get("items", []) if x.get("broker_order_id"))
+    broker_fills = sum(1 for x in execution.get("items", []) if x.get("broker_status") == "filled")
     stop_take = [x for x in sentry.get("events", []) if x.get("event_type") in {"trailing_stop_hit", "take_profit_hit"}]
     watchlist = [x["ticker"] for x in rankings.get("items", [])[:5]]
     lines = [
@@ -49,8 +52,11 @@ def main() -> None:
         *fmt_positions(positions, "SWING"),
         "",
         "## Activity Today",
+        f"- Execution mode: {execution_mode}",
         f"- Entries today: {len(entries)}",
         f"- Exits today: {len(exits)}",
+        f"- Broker orders sent: {broker_orders_sent}",
+        f"- Broker fills observed: {broker_fills}",
         f"- Stop-loss / take-profit events: {len(stop_take)}",
         "",
         "## Signals And Watchlist",
