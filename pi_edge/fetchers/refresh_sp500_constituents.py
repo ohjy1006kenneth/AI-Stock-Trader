@@ -15,7 +15,7 @@ import urllib.request
 from html.parser import HTMLParser
 
 from runtime.common.common import CONFIG_DIR, now_iso, write_json
-from runtime.pi.execution.alpaca_paper import AlpacaPaperClient
+from pi_edge.execution.alpaca_paper import AlpacaPaperClient
 
 SNAPSHOT_PATH = CONFIG_DIR / "sp500_constituents.json"
 WIKIPEDIA_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"

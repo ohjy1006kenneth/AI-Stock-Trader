@@ -14,7 +14,7 @@ if str(ROOT_DIR) not in sys.path:
 from typing import Any
 
 from runtime.common.common import EXECUTION_DATA_DIR, LEDGER_DIR, MARKET_DATA_DIR, STRATEGY_DATA_DIR, env_str, gen_id, latest_price_from_snapshot, load_execution_config, market_is_open_now, now_iso, read_json, safe_float, validate_required_fields, write_json
-from runtime.pi.execution.alpaca_paper import AlpacaPaperClient, build_broker_snapshot
+from pi_edge.execution.alpaca_paper import AlpacaPaperClient, build_broker_snapshot
 
 DECISION_REQUIRED = [
     "decision_id", "timestamp", "ticker", "action", "sleeve", "reason_code",

@@ -13,7 +13,7 @@ if str(ROOT_DIR) not in sys.path:
 
 import json
 
-from runtime.pi.execution.alpaca_paper import AlpacaPaperClient, build_broker_snapshot
+from pi_edge.execution.alpaca_paper import AlpacaPaperClient, build_broker_snapshot
 
 
 def main() -> None:

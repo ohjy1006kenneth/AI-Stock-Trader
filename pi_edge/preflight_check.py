@@ -13,43 +13,31 @@ if str(ROOT_DIR) not in sys.path:
 
 import importlib
 import json
-import sys
 
-from runtime.common.common import CONFIG_DIR, DIAGNOSTICS_DATA_DIR, EXECUTION_DATA_DIR, LEDGER_DIR, ROOT, STRATEGY_DATA_DIR, env_str, load_contracts, load_execution_config, load_local_env_file, now_iso, read_json, write_json
+from runtime.common.common import CONFIG_DIR, DIAGNOSTICS_DATA_DIR, EXECUTION_DATA_DIR, LEDGER_DIR, ROOT, MARKET_DATA_DIR, env_str, load_contracts, load_execution_config, load_local_env_file, now_iso, read_json, write_json
 
 REQUIRED_PACKAGES = ["yfinance"]
 REQUIRED_PATHS = [
-    ROOT / "runtime",
-    ROOT / "strategy",
-    ROOT / "config",
-    ROOT / "data",
-    ROOT / "ledger",
-    ROOT / "reports",
-    ROOT / "backtests",
-    ROOT / "research",
-    ROOT / "requirements.txt",
-    ROOT / "runtime" / "pi" / "data" / "build_universe.py",
-    ROOT / "runtime" / "pi" / "data" / "fetch_price_data.py",
-    ROOT / "runtime" / "pi" / "data" / "fetch_fundamental_data.py",
-    ROOT / "strategy" / "quality_filter.py",
-    ROOT / "strategy" / "calculate_alpha_score.py",
-    ROOT / "strategy" / "sentry_monitor.py",
-    ROOT / "strategy" / "portfolio_strategist.py",
-    ROOT / "runtime" / "pi" / "execution" / "paper_portfolio_executor.py",
-    ROOT / "runtime" / "pi" / "reporting" / "daily_report.py",
-    ROOT / "runtime" / "pi" / "reporting" / "trade_alerts.py",
-    LEDGER_DIR / "paper_portfolio.json",
-    STRATEGY_DATA_DIR / "strategist_decisions.json",
-    EXECUTION_DATA_DIR / "execution_log.json",
-    CONFIG_DIR / "automation_target.json",
+    ROOT / "pi_edge" / "fetchers" / "build_universe.py",
+    ROOT / "pi_edge" / "fetchers" / "refresh_sp500_constituents.py",
+    ROOT / "pi_edge" / "fetchers" / "fetch_price_data.py",
+    ROOT / "pi_edge" / "fetchers" / "fetch_fundamental_data.py",
+    ROOT / "pi_edge" / "execution" / "alpaca_paper.py",
+    ROOT / "pi_edge" / "execution" / "paper_portfolio_executor.py",
+    ROOT / "pi_edge" / "reporting" / "daily_report.py",
+    ROOT / "pi_edge" / "reporting" / "trade_alerts.py",
+    ROOT / "pi_edge" / "reporting" / "pipeline_run_summary.py",
+    ROOT / "pi_edge" / "run_daily_cron.sh",
     CONFIG_DIR / "execution.json",
+    CONFIG_DIR / "sp500_constituents.json",
+    CONFIG_DIR / "automation_target.json",
+    LEDGER_DIR / "paper_portfolio.json",
 ]
 JSON_PATHS = [
-    LEDGER_DIR / "paper_portfolio.json",
-    STRATEGY_DATA_DIR / "strategist_decisions.json",
-    EXECUTION_DATA_DIR / "execution_log.json",
-    CONFIG_DIR / "automation_target.json",
     CONFIG_DIR / "execution.json",
+    CONFIG_DIR / "sp500_constituents.json",
+    CONFIG_DIR / "automation_target.json",
+    LEDGER_DIR / "paper_portfolio.json",
 ]
 STATUS_PATH = DIAGNOSTICS_DATA_DIR / "preflight_status.json"
 TEXT_PATH = DIAGNOSTICS_DATA_DIR / "preflight_status.txt"
@@ -58,9 +46,6 @@ TEXT_PATH = DIAGNOSTICS_DATA_DIR / "preflight_status.txt"
 def main() -> None:
     errors: list[str] = []
     warnings: list[str] = []
-
-    python_executable = sys.executable
-    project_root = str(ROOT)
 
     for pkg in REQUIRED_PACKAGES:
         try:
@@ -80,10 +65,6 @@ def main() -> None:
         except Exception as exc:
             errors.append(f"unreadable_json:{path}:{exc}")
 
-    contracts = load_contracts()
-    if not contracts:
-        warnings.append("data_contracts_not_loaded")
-
     load_local_env_file(CONFIG_DIR / "alpaca.env")
     execution_cfg = load_execution_config()
     if execution_cfg.get("broker") != "alpaca":
@@ -95,49 +76,50 @@ def main() -> None:
     if execution_cfg.get("paper_trading_only") is not True:
         errors.append("paper_trading_only_must_be_true")
 
-    target = read_json(CONFIG_DIR / "automation_target.json", {})
-    if not target.get("channel") or not target.get("to"):
-        errors.append("telegram_delivery_target_not_configured")
-    elif target.get("channel") != "telegram":
-        warnings.append("delivery_channel_not_telegram")
+    contracts = load_contracts()
+    if not contracts:
+        warnings.append("data_contracts_not_loaded")
+
+    snapshot = read_json(CONFIG_DIR / "sp500_constituents.json", {})
+    if len(snapshot.get("tickers", [])) < 400:
+        errors.append("sp500_snapshot_too_small")
 
     status = {
         "generated_at": now_iso(),
         "ok": len(errors) == 0,
         "errors": errors,
         "warnings": warnings,
-        "required_packages": REQUIRED_PACKAGES,
-        "required_paths_checked": [str(p) for p in REQUIRED_PATHS],
-        "python_executable": python_executable,
-        "project_root": project_root,
+        "python_executable": sys.executable,
+        "project_root": str(ROOT),
+        "market_snapshot_present": (MARKET_DATA_DIR / "universe.json").exists(),
+        "execution_log_present": (EXECUTION_DATA_DIR / "execution_log.json").exists(),
     }
     write_json(STATUS_PATH, status)
 
-    header = [
-        f"[runtime] root={project_root}",
-        f"[runtime] python={python_executable}",
-    ]
-
     if status["ok"]:
-        text = "\n".join(header + [
+        text = "\n".join([
+            f"[runtime] root={ROOT}",
+            f"[runtime] python={sys.executable}",
             "PREFLIGHT OK",
-            "- runtime ready",
-            "- required packages installed",
-            "- required files present",
-            "- JSON files readable",
+            "- pi_edge runtime files present",
             "- Alpaca paper credentials configured",
-            "- Telegram delivery target configured",
+            "- S&P 500 snapshot present",
         ]) + "\n"
         TEXT_PATH.write_text(text)
         print(text.strip())
         return
 
-    lines = header + ["PREFLIGHT FAILED", "", "Errors:"]
-    lines.extend([f"- {e}" for e in errors] or ["- none"])
-    lines.append("")
-    lines.append("Warnings:")
-    lines.extend([f"- {w}" for w in warnings] or ["- none"])
-    text = "\n".join(lines) + "\n"
+    text = "\n".join([
+        f"[runtime] root={ROOT}",
+        f"[runtime] python={sys.executable}",
+        "PREFLIGHT FAILED",
+        "",
+        "Errors:",
+        *[f"- {e}" for e in errors],
+        "",
+        "Warnings:",
+        *([f"- {w}" for w in warnings] if warnings else ["- none"]),
+    ]) + "\n"
     TEXT_PATH.write_text(text)
     print(text.strip())
     sys.exit(1)

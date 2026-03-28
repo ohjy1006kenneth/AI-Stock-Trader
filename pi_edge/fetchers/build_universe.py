@@ -33,10 +33,10 @@ def dedupe_keep_order(symbols: list[str]) -> list[str]:
 def load_snapshot_tickers() -> tuple[list[str], dict]:
     payload = read_json(SNAPSHOT_PATH, {})
     if not payload:
-        raise SystemExit("Missing S&P 500 snapshot: run .venv/bin/python runtime/pi/data/refresh_sp500_constituents.py")
+        raise SystemExit("Missing S&P 500 snapshot: run .venv/bin/python pi_edge/fetchers/refresh_sp500_constituents.py")
     tickers = dedupe_keep_order([normalize_ticker(x) for x in payload.get("tickers", [])])
     if len(tickers) < 400:
-        raise SystemExit("Invalid S&P 500 snapshot: snapshot too small or malformed; refresh it with runtime/pi/data/refresh_sp500_constituents.py")
+        raise SystemExit("Invalid S&P 500 snapshot: snapshot too small or malformed; refresh it with pi_edge/fetchers/refresh_sp500_constituents.py")
     return tickers, payload
 
 
