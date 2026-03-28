@@ -1,4 +1,50 @@
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
 .venv/
 .env
+.openclaw/
+
+# Runtime-generated state
+/data/runtime/**
+!/data/runtime/
+!/data/runtime/.gitkeep
+!/data/runtime/market/.gitkeep
+!/data/runtime/strategy/.gitkeep
+!/data/runtime/execution/.gitkeep
+!/data/runtime/diagnostics/.gitkeep
+!/data/runtime/alerts/.gitkeep
+
+# Runtime-local portfolio state
+/ledger/*.json
+!/ledger/.gitkeep
+
+# Generated reports
+/reports/daily/*.md
+/reports/pipeline/*.md
+/reports/diagnostics/*.md
+/reports/backtests/*.md
+!/reports/daily/.gitkeep
+!/reports/pipeline/.gitkeep
+!/reports/diagnostics/.gitkeep
+!/reports/backtests/.gitkeep
+!/reports/templates/**
+
+# Backtest outputs
+/backtests/outputs/*
+!/backtests/outputs/.gitkeep
+
+# Logs and local caches
+/logs/*
+!/logs/README.md
+/data/cache/*
+!/data/cache/.gitkeep
+/data/raw/*
+!/data/raw/.gitkeep
+/data/processed/*
+!/data/processed/.gitkeep
+
+# Artifacts: keep structure, not model payloads by default
+/artifacts/bundles/*
+!/artifacts/bundles/.gitkeep

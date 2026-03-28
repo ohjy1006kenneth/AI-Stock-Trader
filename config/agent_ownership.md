@@ -7,7 +7,7 @@ This file defines the active ownership model for the trading system.
 - Specialists work inside their domains but must not become second sources of truth.
 - Repeated calculations stay in deterministic Python.
 - LLMs do not go into the numeric hot path.
-- `trading-executor-reporter` remains the only runtime ledger mutator through `scripts/mock_portfolio_executor.py`.
+- `trading-executor-reporter` remains the only runtime ledger mutator through `runtime/pi/execution/mock_portfolio_executor.py`.
 - Specialists should author code in their own specialty whenever possible.
 - `trading` coordinates, integrates, and resolves cross-cutting design or implementation conflicts.
 - `trading-executor-reporter` is intentionally lightweight and should not be the default author for complex cross-cutting code.
@@ -37,25 +37,17 @@ This file defines the active ownership model for the trading system.
 - source-of-truth artifact ownership
 
 **Conceptual script ownership:**
-- `scripts/run_pipeline.sh`
-- `scripts/run_preflight_alert.sh`
-- `scripts/run_trade_alerts.sh`
-- `scripts/run_daily_summary.sh`
-- `scripts/preflight_check.py`
-- cross-cutting integration glue and orchestration-facing docs
-
-**When trading should take over:**
-- a change spans research + backtest + strategy + execution boundaries
-- multiple specialists disagree or produce conflicting changes
-- execution/reporting work is too complex for the lightweight executor/reporter
-- runtime, cron, or integration behavior must change
+- `runtime/pi/wrappers/run_pipeline.sh`
+- `runtime/pi/wrappers/run_preflight_alert.sh`
+- `runtime/pi/wrappers/run_trade_alerts.sh`
+- `runtime/pi/wrappers/run_daily_summary.sh`
+- `runtime/pi/preflight/preflight_check.py`
+- cross-cutting integration glue and orchestration-facing config
 
 ---
 
 ### 2) trading-quant-researcher
 **Role:** formula research, factor design, and research documentation
-
-**Default model:** `openai-codex/gpt-5.4`
 
 **Responsibilities:**
 - own factor definitions and research notes
@@ -66,41 +58,27 @@ This file defines the active ownership model for the trading system.
 
 **Reads:**
 - `research/`
-- `scripts/calculate_alpha_score.py`
-- `scripts/build_universe.py`
-- `scripts/fetch_price_data.py`
-- `scripts/fetch_fundamental_data.py`
-- `outputs/price_snapshot.json`
-- `outputs/fundamental_snapshot.json`
-- `config/portfolio_rules.md`
+- `runtime/pi/data/`
+- `strategy/calculate_alpha_score.py`
+- `data/runtime/market/`
+- `strategy/portfolio_rules.md`
 
 **Writes:**
 - `research/formula_registry.json`
 - `research/factor_notes.md`
 - `research/trusted_sources.md`
-- `reports/research_update.md`
-- factor-related Python logic, primarily `scripts/calculate_alpha_score.py`
-- research-facing helper scripts if added later
+- factor-related Python logic, primarily `strategy/calculate_alpha_score.py`
+- future research helpers under `research/` or training-side folders
 
 **Must not touch directly:**
 - `ledger/mock_portfolio.json`
-- `outputs/execution_log.json`
-- `scripts/mock_portfolio_executor.py` except for narrow consultation comments or review
-
-**Conceptual script ownership:**
-- `scripts/calculate_alpha_score.py`
-- research-facing utilities if added later
-
-**When trading should override or integrate:**
-- a factor change also requires broad strategy-rule or runtime integration work
-- a research code change ripples into backtest, strategist, and execution layers simultaneously
+- `data/runtime/execution/execution_log.json`
+- `runtime/pi/execution/mock_portfolio_executor.py` except for narrow consultation comments or review
 
 ---
 
 ### 3) trading-backtest-validator
 **Role:** backtesting, validation, and anti-overfitting
-
-**Default model:** `openai-codex/gpt-5.4`
 
 **Responsibilities:**
 - own backtest methodology and validation logic
@@ -110,42 +88,31 @@ This file defines the active ownership model for the trading system.
 - gate promotion from research idea to strategist-usable rule
 
 **Reads:**
-- `scripts/backtest_engine.py`
+- `backtests/engine/backtest_engine.py`
 - `research/formula_registry.json`
 - `research/factor_notes.md`
 - `backtests/`
-- `reports/research_update.md`
-- `config/portfolio_rules.md`
+- `strategy/portfolio_rules.md`
 - relevant strategy scripts where needed for validation context
 
 **Writes:**
-- `scripts/backtest_engine.py`
-- validation utilities under `scripts/` or `backtests/` if added later
-- `backtests/metrics.json`
-- `backtests/backtest_report.md`
-- `backtests/equity_curve.csv`
-- `backtests/trade_log.csv`
-- `reports/backtest_verdict.md`
+- `backtests/engine/backtest_engine.py`
+- validation utilities under `backtests/`
+- `backtests/outputs/metrics.json`
+- `backtests/outputs/backtest_report.md`
+- `backtests/outputs/equity_curve.csv`
+- `backtests/outputs/trade_log.csv`
+- `reports/backtests/backtest_verdict.md`
 
 **Must not touch directly:**
 - `ledger/mock_portfolio.json`
-- `outputs/execution_log.json`
+- `data/runtime/execution/execution_log.json`
 - runtime wrapper scripts unless the change is clearly backtest-methodology related and coordinated by `trading`
-
-**Conceptual script ownership:**
-- `scripts/backtest_engine.py`
-- validation/metrics helper code added later
-
-**When trading should override or integrate:**
-- validation changes require cross-cutting runtime or strategist integration
-- backtest methodology changes must be merged with broader system-wide updates
 
 ---
 
 ### 4) trading-portfolio-strategist
 **Role:** portfolio logic, entry/exit rules, CORE/SWING definitions, and decision logic
-
-**Default model:** `openai-codex/gpt-5.4`
 
 **Responsibilities:**
 - own quality-filter logic
@@ -155,45 +122,34 @@ This file defines the active ownership model for the trading system.
 - define how approved research becomes decision behavior
 
 **Reads:**
-- `scripts/quality_filter.py`
-- `scripts/portfolio_strategist.py`
-- `scripts/sentry_monitor.py`
-- `config/portfolio_rules.md`
-- `outputs/alpha_rankings.json`
-- `outputs/qualified_universe.json`
-- `outputs/sentry_events.json`
-- `outputs/price_snapshot.json`
-- `outputs/fundamental_snapshot.json`
+- `strategy/quality_filter.py`
+- `strategy/portfolio_strategist.py`
+- `strategy/sentry_monitor.py`
+- `strategy/portfolio_rules.md`
+- `data/runtime/strategy/alpha_rankings.json`
+- `data/runtime/strategy/qualified_universe.json`
+- `data/runtime/strategy/sentry_events.json`
+- `data/runtime/market/price_snapshot.json`
+- `data/runtime/market/fundamental_snapshot.json`
 - `ledger/mock_portfolio.json` (read-only for position awareness)
-- `reports/backtest_verdict.md`
+- `reports/backtests/backtest_verdict.md`
 
 **Writes:**
-- `scripts/quality_filter.py`
-- `scripts/portfolio_strategist.py`
-- `config/portfolio_rules.md`
-- `reports/strategist_note.md`
-- `outputs/strategist_decisions.json`
+- `strategy/quality_filter.py`
+- `strategy/portfolio_strategist.py`
+- `strategy/sentry_monitor.py`
+- `strategy/portfolio_rules.md`
+- `data/runtime/strategy/strategist_decisions.json`
 
 **Must not touch directly:**
 - `ledger/mock_portfolio.json`
-- `outputs/execution_log.json`
-- `scripts/mock_portfolio_executor.py` except for narrow schema coordination reviewed by `trading`
-
-**Conceptual script ownership:**
-- `scripts/quality_filter.py`
-- `scripts/portfolio_strategist.py`
-- decision-schema logic tightly tied to strategist outputs
-
-**When trading should override or integrate:**
-- strategy-rule changes require simultaneous research, backtest, and runtime integration
-- strategist changes affect executor contracts or broader orchestration logic
+- `data/runtime/execution/execution_log.json`
+- `runtime/pi/execution/mock_portfolio_executor.py` except for narrow schema coordination reviewed by `trading`
 
 ---
 
 ### 5) trading-executor-reporter
 **Role:** execution, reporting, and runtime status only
-
-**Default model:** `github-copilot/gpt-4o`
 
 **Responsibilities:**
 - own mock execution logic
@@ -202,90 +158,45 @@ This file defines the active ownership model for the trading system.
 - stay narrow and efficient
 
 **Reads:**
-- `scripts/mock_portfolio_executor.py`
-- `scripts/daily_report.py`
-- `scripts/portfolio_status.py`
-- `scripts/trade_alerts.py`
+- `runtime/pi/execution/mock_portfolio_executor.py`
+- `runtime/pi/reporting/daily_report.py`
+- `runtime/pi/execution/portfolio_status.py`
+- `runtime/pi/reporting/trade_alerts.py`
 - `ledger/mock_portfolio.json`
-- `outputs/strategist_decisions.json`
-- `outputs/price_snapshot.json`
-- `outputs/execution_log.json`
-- `outputs/sentry_events.json`
-- `outputs/alpha_rankings.json`
-- `reports/daily_summary_TEMPLATE.md`
+- `data/runtime/strategy/strategist_decisions.json`
+- `data/runtime/market/price_snapshot.json`
+- `data/runtime/execution/execution_log.json`
+- `data/runtime/strategy/sentry_events.json`
+- `data/runtime/strategy/alpha_rankings.json`
+- `reports/templates/daily_summary_template.md`
 
 **Writes:**
-- `scripts/mock_portfolio_executor.py`
-- `scripts/daily_report.py`
-- `scripts/portfolio_status.py`
-- `scripts/trade_alerts.py`
+- `runtime/pi/execution/mock_portfolio_executor.py`
+- `runtime/pi/reporting/daily_report.py`
+- `runtime/pi/execution/portfolio_status.py`
+- `runtime/pi/reporting/trade_alerts.py`
 - `ledger/mock_portfolio.json` (runtime mutation only via executor)
-- `outputs/execution_log.json`
-- `outputs/trade_alerts_latest.json`
-- `outputs/trade_alerts_latest.txt`
-- `reports/daily_summary_YYYY-MM-DD.md`
-- execution/report formatting helpers if added later
+- `data/runtime/execution/execution_log.json`
+- `data/runtime/alerts/trade_alerts_latest.json`
+- `data/runtime/alerts/trade_alerts_latest.txt`
+- `reports/daily/daily_summary_YYYY-MM-DD.md`
 
 **Must not touch directly:**
 - `research/formula_registry.json`
 - `research/factor_notes.md`
-- `scripts/calculate_alpha_score.py`
-- `scripts/backtest_engine.py`
-- `scripts/quality_filter.py`
-- `scripts/portfolio_strategist.py`
-- broad architectural docs except narrow execution/reporting notes
+- `strategy/calculate_alpha_score.py`
+- `backtests/engine/backtest_engine.py`
+- `strategy/quality_filter.py`
+- `strategy/portfolio_strategist.py`
+- broad architectural config except narrow execution/reporting notes
 
-**Conceptual script ownership:**
-- `scripts/mock_portfolio_executor.py`
-- `scripts/daily_report.py`
-- `scripts/portfolio_status.py`
-- `scripts/trade_alerts.py`
+## Boundary summary
+- `trading` = orchestrator + runtime integration owner
+- `trading-quant-researcher` = `research/` + factor logic
+- `trading-backtest-validator` = `backtests/` + validation outputs
+- `trading-portfolio-strategist` = `strategy/` + strategist runtime artifacts
+- `trading-executor-reporter` = `runtime/pi/execution/`, `runtime/pi/reporting/`, and ledger mutation path
 
-**When trading should override or integrate:**
-- execution/reporting work is cross-cutting, architectural, or materially complex
-- a change reaches into research, backtest, or strategist logic
-- runtime and integration constraints dominate over local execution concerns
-
-## File-to-agent mapping
-
-### Research / factor side
-- `research/formula_registry.json` -> `trading-quant-researcher`
-- `research/factor_notes.md` -> `trading-quant-researcher`
-- `scripts/calculate_alpha_score.py` -> `trading-quant-researcher`
-
-### Backtest / validation side
-- `scripts/backtest_engine.py` -> `trading-backtest-validator`
-- `backtests/metrics.json` -> `trading-backtest-validator`
-- `backtests/backtest_report.md` -> `trading-backtest-validator`
-- `reports/backtest_verdict.md` -> `trading-backtest-validator`
-
-### Strategy side
-- `scripts/quality_filter.py` -> `trading-portfolio-strategist`
-- `scripts/portfolio_strategist.py` -> `trading-portfolio-strategist`
-- `outputs/strategist_decisions.json` -> `trading-portfolio-strategist`
-- `reports/strategist_note.md` -> `trading-portfolio-strategist`
-
-### Execution / reporting side
-- `scripts/mock_portfolio_executor.py` -> `trading-executor-reporter`
-- `scripts/daily_report.py` -> `trading-executor-reporter`
-- `scripts/portfolio_status.py` -> `trading-executor-reporter`
-- `scripts/trade_alerts.py` -> `trading-executor-reporter`
-- `ledger/mock_portfolio.json` -> runtime-owned by `trading-executor-reporter`
-- `outputs/execution_log.json` -> `trading-executor-reporter`
-- `reports/daily_summary_YYYY-MM-DD.md` -> `trading-executor-reporter`
-
-### Orchestrator / integration side
-- `config/architecture.md` -> `trading`
-- `config/pipeline_timing.md` -> `trading`
-- `config/commands.md` -> `trading`
-- `config/delegation_map.json` -> archived / inactive legacy artifact
-- integration glue and cross-cutting coordination logic -> `trading`
-
-## Code-writing policy
-- Specialists should write the code inside their specialty.
-- `trading` coordinates, reviews integration points, and preserves the canonical source of truth.
-- `trading-executor-reporter` is lightweight and should not be the default author of complex system-wide code.
-- If execution/reporting changes are simple and local, `trading-executor-reporter` may own them directly.
-- If execution/reporting changes are complex, architectural, or cross-cutting, `trading` should implement or integrate them instead.
-- No specialist may bypass the deterministic ledger boundary.
-- No specialist may create a second source of truth outside the canonical trading workspace.
+## Non-negotiable rule
+- No agent may bypass the deterministic ledger boundary.
+- `runtime/pi/execution/mock_portfolio_executor.py` remains the only portfolio-state mutator.
