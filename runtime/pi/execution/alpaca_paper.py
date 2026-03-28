@@ -69,6 +69,9 @@ class AlpacaPaperClient:
     def list_orders(self, status: str = "open", limit: int = 100) -> list[dict[str, Any]]:
         return self._request("GET", "/v2/orders", params={"status": status, "limit": limit, "direction": "desc"})
 
+    def list_assets(self, status: str = "active", asset_class: str = "us_equity") -> list[dict[str, Any]]:
+        return self._request("GET", "/v2/assets", params={"status": status, "asset_class": asset_class})
+
     def submit_order(self, *, symbol: str, side: str, qty: int, order_type: str = "market", time_in_force: str = "day", client_order_id: str | None = None, extended_hours: bool = False) -> dict[str, Any]:
         payload = {
             "symbol": symbol,

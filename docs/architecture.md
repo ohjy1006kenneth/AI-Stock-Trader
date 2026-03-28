@@ -65,6 +65,7 @@ Primary examples:
 
 ### 3) Runtime strategy
 Primary examples:
+- snapshot-driven universe build
 - runtime data collection
 - quality screen
 - alpha ranking

@@ -1,8 +1,30 @@
 {
-  "source": "wikipedia_sp500_table",
-  "source_url": "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
-  "retrieved_at": "2026-03-28T03:12:47.545127+00:00",
-  "count": 503,
+  "generated_at": "2026-03-28T03:33:36.216530+00:00",
+  "source": {
+    "membership": {
+      "name": "wikipedia_sp500_constituents",
+      "url": "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+    },
+    "tradability_filter": {
+      "name": "alpaca_assets",
+      "status": "active",
+      "asset_class": "us_equity",
+      "tradable": true
+    }
+  },
+  "counts": {
+    "wikipedia_constituents": 503,
+    "alpaca_active_tradable_us_equities": 12631,
+    "final_intersection": 503,
+    "dropped_from_wikipedia_after_alpaca_filter": 0
+  },
+  "normalization": {
+    "rule": "uppercase_and_replace_dot_with_dash",
+    "examples": [
+      "BRK.B -> BRK-B",
+      "BF.B -> BF-B"
+    ]
+  },
   "tickers": [
     "MMM",
     "AOS",
@@ -507,5 +529,6 @@
     "ZBRA",
     "ZBH",
     "ZTS"
-  ]
+  ],
+  "dropped": []
 }

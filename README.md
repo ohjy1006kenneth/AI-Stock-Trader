@@ -37,12 +37,14 @@ A deterministic paper-trading trading workspace with OpenClaw orchestration.
 - `reports/` for human-readable summaries and diagnostics
 
 ## Deterministic file flow
-1. Runtime data steps refresh market and fundamental artifacts.
-2. Strategy logic writes approved screening, ranking, sentry, and decision artifacts.
-3. The executor reads decisions and is the only ledger mutator.
-4. Reporting reads final artifacts and summarizes the mock system state.
+1. The runtime universe is built from the local S&P 500 snapshot at `config/sp500_constituents.json`.
+2. Runtime data steps refresh market and fundamental artifacts.
+3. Strategy logic writes approved screening, ranking, sentry, and decision artifacts.
+4. The executor reads decisions and is the only ledger mutator.
+5. Reporting reads final artifacts and summarizes the paper system state.
 
 ## Notes
 - Cloud is intended for training, heavy backtesting, validation prep, and artifact export.
 - Raspberry Pi is intended for runtime: fresh data, runtime features, artifact loading, inference, decision conversion, paper execution, and reporting.
+- S&P 500 membership refresh uses Wikipedia as the membership source and Alpaca active tradable U.S. equities as the tradability filter; the generated snapshot in `config/sp500_constituents.json` is the runtime source of truth.
 - Older multi-agent scaffolding has been archived under `archive/`.

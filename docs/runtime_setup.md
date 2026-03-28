@@ -23,6 +23,19 @@ python -m pip install -r requirements.txt
 .venv/bin/python runtime/pi/preflight/preflight_check.py
 ```
 
+## S&P 500 snapshot refresh
+
+Refresh the runtime S&P 500 snapshot explicitly when you want to update membership:
+
+```bash
+.venv/bin/python runtime/pi/data/refresh_sp500_constituents.py
+```
+
+This uses:
+- Wikipedia as the S&P 500 membership source
+- Alpaca active tradable U.S. equities as the tradability filter
+- `config/sp500_constituents.json` as the runtime source of truth
+
 ## Manual pipeline run
 
 Preferred one-shot test:
