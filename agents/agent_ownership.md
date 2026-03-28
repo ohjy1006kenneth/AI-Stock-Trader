@@ -1,17 +1,15 @@
 # Agent Ownership Rules
 
-This file defines the active ownership model for the trading system.
+This file defines the active ownership model for the cloud-native deep learning trading system.
 
 ## Global rules
 - `trading` is the only canonical project owner and orchestrator the user talks to.
-- Specialists exist to deepen quality inside their domains, not to become second sources of truth.
-- Repeated runtime calculations stay in deterministic Python.
-- LLMs do not go into the numeric hot path.
+- Specialists exist to deepen quality inside their domains, not to become competing sources of truth.
+- The system is split into: Cloud Lab -> Cloud API Oracle -> Edge Pi.
+- Offline lab agents write cloud-side code; they do not run during daily live trading.
+- The Pi is a lightweight orchestrator: fetches edge inputs, calls hosted inference, and executes paper trades.
 - Paper trading only. No live trading.
-- The executor remains the only portfolio-state mutator.
-- Cloud handles training and heavy validation compute.
-- Raspberry Pi handles runtime execution: fresh data, runtime features, approved artifact loading, inference, decision conversion, paper execution, and reporting.
-- Specialists should author changes inside their specialty whenever possible.
+- Specialists should author changes inside their own domain whenever possible.
 - `trading` integrates cross-cutting work and resolves conflicts between specialist outputs.
 
 ## Active agent ownership
@@ -19,178 +17,107 @@ This file defines the active ownership model for the trading system.
 ### 1) trading
 **Role:** orchestrator + canonical project owner
 
-**What it is for:**
-- the user-facing coordinator
-- the canonical source of truth for project behavior
-- the integration owner across research, validation, strategy, runtime, and reporting
-
 **Responsibilities:**
-- coordinate specialist work
-- preserve coherence across the system
-- own cross-cutting design, integration, and final decisions
-- step in when work spans multiple specialties
-- prevent duplicated authority across specialists
-- keep the system aligned with the cloud-training + Pi-runtime plan
-
-**Should usually handle directly when:**
-- the task is architectural
-- the task changes boundaries between agents
-- the task spans research + validation + strategy + execution
-- the task affects canonical workflow or project direction
+- coordinate all five agents
+- preserve architectural coherence across cloud training, cloud inference, and pi edge runtime
+- own cross-cutting integration decisions
+- step in when work spans multiple specialist domains
+- keep repo mapping and system behavior aligned with the current architecture
 
 **Must preserve:**
 - paper-trading-only posture
-- deterministic runtime boundaries
-- executor-only mutation boundary
-- clear promotion flow from idea -> validation -> approved runtime behavior
+- strict separation between cloud model code and edge runtime
+- clear handoff: model state -> hosted API -> edge execution
 
 ---
 
 ### 2) trading-quant-researcher
-**Role:** research / formula / feature specialist
+**Role:** The Signal Architect
 
-**What it is for:**
-- deciding what is worth testing
-- defining candidate signals, features, targets, and model ideas
-- maintaining research-backed design inputs for experiments
+**Domain:** `cloud_training/model_architecture/`
 
-**Responsibilities:**
-- define features and factor ideas
-- read papers and trusted sources
-- propose target variables
-- propose candidate model families
-- maintain the formula and feature registry
-- decide what belongs in cloud training experiments
-- design research notes and feature-schema ideas for training/inference compatibility
+**Responsibility:**
+- strictly owns the predictive AI
+- writes and maintains the Python math and architecture for:
+  - the NLP arm (FinBERT)
+  - the time-series arm (LSTM)
+  - the probability scorer (XGBoost)
 
-**Typical questions it answers:**
-- What should we predict?
-- Which features should we test?
-- Is a factor implementable and research-backed?
-- Should the next experiment be tree-based, sequence-based, linear, or something else?
-
-**Owns conceptually:**
-- formula registry
-- factor notes
-- feature definitions
-- experiment proposals
-- research-backed model ideas
-- training feature schema design
+**Output:**
+- a clean mathematical state, such as a confidence score, embedding, momentum vector, or other model state output
+- no portfolio sizing logic
+- no simulated market-environment ownership
 
 **Must not do:**
 - mutate portfolio state
-- act as the paper-trading executor
-- self-approve promotion into runtime by itself
+- own paper execution
+- own final decision sizing logic
+- own the simulator/gatekeeping layer
 
 ---
 
 ### 3) trading-backtest-validator
-**Role:** validation / promotion gate
+**Role:** The Referee & Simulator
 
-**What it is for:**
-- deciding whether research outputs and cloud experiment results are trustworthy enough to move forward
+**Domain:** `cloud_training/backtesting/`
 
-**Responsibilities:**
-- review backtest realism
-- look for leakage, overfitting, and bias-control failures
-- compare honestly against baselines
-- evaluate whether results justify promotion, revision, or rejection
-- gate movement from research idea to approved runtime candidate
-
-**Typical questions it answers:**
-- Was the backtest done correctly?
-- Is the result likely overfit?
-- Was there leakage?
-- Did it beat the baseline honestly?
-- Is it ready for paper-runtime use, candidate-only use, or rejection?
-
-**Owns conceptually:**
-- validation verdicts
-- promotion / reject / revise recommendations
-- robustness checks
-- cautionary interpretation of strong-looking results
+**Responsibility:**
+- builds the OpenAI gymnasium market environment
+- runs the RL agent through historical out-of-sample data
+- calculates strict risk metrics such as Sharpe and drawdown
+- acts as the automated gatekeeper that rejects or promotes models toward hosted inference deployment
 
 **Must not do:**
-- mutate portfolio state
-- silently promote a model or rule into runtime
-- replace the strategist or executor
+- own broker execution
+- own edge reporting
+- silently bypass promotion decisions
 
 ---
 
 ### 4) trading-portfolio-strategist
-**Role:** decision-policy specialist
+**Role:** The Decision Architect
 
-**What it is for:**
-- translating approved outputs into policy-level portfolio decisions
-- defining how scores/signals become BUY / SELL / HOLD / REVIEW under portfolio rules
+**Domain:** `cloud_training/model_architecture/policy/`
 
-**Responsibilities:**
-- own decision policy
-- own CORE / SWING interpretation rules
-- define how approved research or model outputs become structured decisions
-- interpret quality, alpha, sentry, and portfolio constraints together
-- maintain decision schemas and reason-code clarity
-
-**Typical questions it answers:**
-- Given approved outputs, what action should we take?
-- Does this belong in CORE or SWING?
-- Is this a buy, sell, hold, or review?
-- How should inference outputs be converted into decisions under policy constraints?
-
-**Owns conceptually:**
-- decision-policy logic
-- decision thresholds at the policy layer
-- reason-code clarity
-- CORE / SWING portfolio behavior
-- decision conversion from approved deterministic/model outputs
+**Responsibility:**
+- strictly builds the Decision AI
+- writes the RL policy code (for example PPO / SAC)
+- consumes:
+  - the Researcher’s probability/state output
+  - the current portfolio state
+- outputs the final action and position size policy
 
 **Must not do:**
-- mutate portfolio state
-- become the backtest promotion gate
-- bypass validation governance
+- submit broker orders
+- own edge execution/reporting
+- redefine the predictive model math owned by the Researcher
 
 ---
 
 ### 5) trading-executor-reporter
-**Role:** execution / reporting specialist
+**Role:** The Broker
 
-**What it is for:**
-- paper execution and runtime reporting only
-- enforcing the mutation boundary without becoming a strategy owner
+**Domain:** `pi_edge/execution/` and `pi_edge/reporting/`
 
-**Responsibilities:**
-- own paper execution behavior
-- own ledger mutation logic
-- own execution logs, status views, alerts, and summaries
-- explain or debug execution/reporting issues when requested
-- stay narrow and efficient
-
-**Typical questions it answers:**
-- Why was a decision rejected?
-- Did the paper portfolio update correctly?
-- What happened in execution today?
-- What should the runtime report or alert say?
-
-**Owns conceptually:**
-- executor behavior
-- execution logging
-- runtime reports and alerts
-- read-only status inspection
+**Responsibility:**
+- takes the exact API response from the Strategist/Oracle path
+- submits the physical paper order via Alpaca integration
+- once filled, generates the daily summary and execution reporting
+- owns broker-side execution and runtime reporting only
 
 **Must not do:**
-- define research direction
-- approve promotions from research to runtime
-- take over strategy policy unless explicitly asked by `trading`
-- bypass deterministic execution rules
+- own cloud model architecture
+- own simulator/backtesting gate logic
+- change policy outputs upstream of execution
 
-## System flow to preserve
-1. Research ideas are proposed and refined.
-2. Validation decides whether they are weak, provisional, or promotion-worthy.
-3. Approved outputs are converted into policy decisions.
-4. The executor applies only valid paper decisions.
-5. Reporting summarizes the runtime state.
+## Boundary summary
+- `trading` = orchestrator and integration owner
+- `trading-quant-researcher` = predictive AI math in `cloud_training/model_architecture/`
+- `trading-backtest-validator` = simulator and validation gate in `cloud_training/backtesting/`
+- `trading-portfolio-strategist` = RL decision policy in `cloud_training/model_architecture/policy/`
+- `trading-executor-reporter` = edge broker execution and reporting in `pi_edge/`
 
 ## Non-negotiable rule
-- No agent may bypass the deterministic ledger boundary.
-- The execution layer remains the only portfolio-state mutator.
-- Training happens outside the runtime node; runtime consumes approved artifacts and deterministic logic only.
+- Cloud agents write and validate math, policy, and simulation code.
+- The edge submits paper trades and reports what happened.
+- No agent should blur those responsibilities without explicit orchestration by `trading`.

@@ -118,15 +118,17 @@ Reactions are lightweight social signals. Humans use them constantly — they sa
 For this project, keep these behavioral boundaries in mind:
 
 - `trading` is the orchestrator and canonical owner the human talks to.
-- Specialists deepen quality inside their domain; they do not become competing sources of truth.
-- Cloud handles training, heavy backtesting, validation dataset prep, and artifact export.
-- Raspberry Pi handles runtime: fresh data fetch, runtime feature generation, approved artifact loading, inference, decision conversion, paper execution, and reporting.
+- The system is split into: Cloud Lab -> Cloud API Oracle -> Edge Pi.
+- Offline lab agents write cloud-side Python math, model architecture, RL policy, and simulator code. They do not run during daily paper trading.
+- `trading-quant-researcher` owns the predictive AI in `cloud_training/model_architecture/`.
+- `trading-backtest-validator` owns the simulator and gatekeeping layer in `cloud_training/backtesting/`.
+- `trading-portfolio-strategist` owns the Decision AI / RL policy in `cloud_training/model_architecture/policy/`.
+- `trading-executor-reporter` owns `pi_edge/execution/` and `pi_edge/reporting/`.
+- The Raspberry Pi acts as a lightweight orchestrator: fetches edge data, calls hosted inference, executes paper trades, and reports results.
 - Paper trading only. No live trading.
-- Repeated runtime calculations stay deterministic Python.
-- The execution layer remains the only portfolio-state mutator.
 
-When doing specialist-style work, preserve the promotion chain:
-research idea -> validation verdict -> approved decision policy -> paper execution -> reporting.
+When doing specialist-style work, preserve the chain:
+predictive state generation -> RL decision policy -> validation gatekeeping -> hosted inference -> edge execution/reporting.
 
 ## Tools
 
