@@ -84,15 +84,15 @@ def main() -> None:
         warnings.append("data_contracts_not_loaded")
 
     execution_cfg = load_execution_config()
-    execution_mode = execution_cfg.get("execution_mode", "local_simulated")
-    if execution_mode == "alpaca_paper":
+    execution_mode = execution_cfg.get("execution_mode", "mock")
+    if execution_mode == "paper":
         if not env_str("ALPACA_API_KEY"):
             errors.append("missing_env:ALPACA_API_KEY")
         if not env_str("ALPACA_API_SECRET"):
             errors.append("missing_env:ALPACA_API_SECRET")
         if execution_cfg.get("paper_trading_only") is not True:
             errors.append("paper_trading_only_must_be_true")
-    elif execution_mode != "local_simulated":
+    elif execution_mode != "mock":
         errors.append(f"unsupported_execution_mode:{execution_mode}")
 
     target = read_json(CONFIG_DIR / "automation_target.json", {})

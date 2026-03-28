@@ -95,7 +95,7 @@ def sync_ledger_from_broker(portfolio: dict, snapshot: dict[str, Any], execution
     account = snapshot.get("account", {})
     positions = snapshot.get("positions", [])
     portfolio["execution_mode"] = execution_mode
-    portfolio["broker"] = "alpaca_paper"
+    portfolio["broker"] = "paper"
     portfolio["cash"] = round(safe_float(account.get("cash"), portfolio.get("cash", 0.0)) or 0.0, 2)
     portfolio["total_equity"] = round(safe_float(account.get("equity"), portfolio.get("total_equity", 0.0)) or 0.0, 2)
     portfolio["buying_power"] = round(safe_float(account.get("buying_power"), 0.0) or 0.0, 2)
@@ -128,7 +128,7 @@ def build_target_shares(decision: dict, price: float) -> int:
 
 def main() -> None:
     config = load_execution_config()
-    execution_mode = config.get("execution_mode", "local_simulated")
+    execution_mode = config.get("execution_mode", "mock")
     if config.get("paper_trading_only") is not True:
         raise SystemExit("paper_trading_only_must_remain_true")
 
@@ -159,7 +159,7 @@ def main() -> None:
 
     conflicted = {ticker for ticker, actions in by_ticker.items() if "BUY" in actions and "SELL" in actions}
 
-    if execution_mode == "alpaca_paper":
+    if execution_mode == "paper":
         client = AlpacaPaperClient()
         broker_snapshot = build_broker_snapshot(client)
         open_orders = client.list_orders(status="open") if config.get("duplicate_order_prevention", {}).get("check_open_broker_orders", True) else []
@@ -176,7 +176,7 @@ def main() -> None:
         return sum(float(p.get("market_value", 0.0)) for p in positions if p.get("sleeve") == sleeve)
 
     total_equity = float(portfolio.get("total_equity", cash)) or cash
-    if execution_mode == "alpaca_paper":
+    if execution_mode == "paper":
         total_equity = float(safe_float(broker_snapshot.get("account", {}).get("equity"), total_equity) or total_equity)
 
     market_cfg = config.get("market_hours", {})
@@ -200,7 +200,7 @@ def main() -> None:
                 requested_action=action, execution_status="EXECUTED", rejection_reason=None, execution_price=price,
                 shares_filled=0, cash_before=cash, cash_after=cash, position_before=position_before, position_after=position_before,
                 realized_pnl_change=0.0, notes=d.get("reason_code")
-            ), execution_mode=execution_mode, broker_name=("alpaca_paper" if execution_mode == "alpaca_paper" else "local_simulated"), broker_status="noop"))
+            ), execution_mode=execution_mode, broker_name=("paper" if execution_mode == "paper" else "mock"), broker_status="noop"))
             continue
 
         if not market_open and not allow_queue:
@@ -250,7 +250,7 @@ def main() -> None:
                        execution_mode=execution_mode, broker_order_id=duplicate_open.get("id"), broker_status=duplicate_open.get("status"))
                 continue
 
-        if execution_mode == "alpaca_paper":
+        if execution_mode == "paper":
             side = "buy" if action == "BUY" else "sell"
             broker_resp = client.submit_order(
                 symbol=ticker,
@@ -270,7 +270,7 @@ def main() -> None:
                 rejection_reason=(None if broker_status not in {"rejected"} else broker_resp.get("reject_reason")), execution_price=fill_price,
                 shares_filled=filled_qty, cash_before=cash, cash_after=cash, position_before=position_before, position_after=None,
                 realized_pnl_change=0.0, notes=d.get("reason_code")
-            ), execution_mode="alpaca_paper", broker_name="alpaca_paper", broker_order_id=broker_resp.get("id"), broker_client_order_id=broker_resp.get("client_order_id"), broker_status=broker_status, broker_response=broker_resp, queued_for_next_session=(not market_open)))
+            ), execution_mode="paper", broker_name="paper", broker_order_id=broker_resp.get("id"), broker_client_order_id=broker_resp.get("client_order_id"), broker_status=broker_status, broker_response=broker_resp, queued_for_next_session=(not market_open)))
             if broker_status in FINAL_BROKER_STATUSES and broker_status != "rejected":
                 open_orders = [o for o in open_orders if o.get("id") != broker_resp.get("id")]
             else:
@@ -303,7 +303,7 @@ def main() -> None:
                     requested_action="BUY", execution_status="EXECUTED", rejection_reason=None, execution_price=price,
                     shares_filled=target_shares, cash_before=cash_before, cash_after=cash, position_before=None, position_after=pos,
                     realized_pnl_change=0.0, notes=d.get("reason_code")
-                ), execution_mode="local_simulated", broker_name="local_simulated", broker_status="filled"))
+                ), execution_mode="mock", broker_name="mock", broker_status="filled"))
             else:
                 shares = int(position_before.get("shares", 0)) if position_before else target_shares
                 notional = round(shares * price, 2)
@@ -318,9 +318,9 @@ def main() -> None:
                     requested_action="SELL", execution_status="EXECUTED", rejection_reason=None, execution_price=price,
                     shares_filled=shares, cash_before=cash_before, cash_after=cash, position_before=position_before, position_after=None,
                     realized_pnl_change=realized, notes=d.get("reason_code")
-                ), execution_mode="local_simulated", broker_name="local_simulated", broker_status="filled"))
+                ), execution_mode="mock", broker_name="mock", broker_status="filled"))
 
-    if execution_mode == "alpaca_paper":
+    if execution_mode == "paper":
         synced_snapshot = build_broker_snapshot(client)
         portfolio = sync_ledger_from_broker(portfolio, synced_snapshot, execution_mode)
         positions_count = len(synced_snapshot.get("positions", []))
@@ -345,7 +345,7 @@ def main() -> None:
         portfolio["cash"] = cash
         portfolio["total_equity"] = round(total_equity, 2)
         portfolio["unrealized_pnl"] = round(unrealized, 2)
-        portfolio["execution_mode"] = "local_simulated"
+        portfolio["execution_mode"] = "mock"
         portfolio["last_updated"] = now_iso()
 
     write_json(LEDGER_DIR / "mock_portfolio.json", portfolio)

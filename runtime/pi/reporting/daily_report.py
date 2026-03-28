@@ -29,7 +29,7 @@ def main() -> None:
     sentry = read_json(STRATEGY_DATA_DIR / "sentry_events.json", {"events": []})
     rankings = read_json(STRATEGY_DATA_DIR / "alpha_rankings.json", {"items": []})
     positions = portfolio.get("positions", [])
-    execution_mode = execution.get("execution_mode") or portfolio.get("execution_mode") or "local_simulated"
+    execution_mode = execution.get("execution_mode") or portfolio.get("execution_mode") or "mock"
     entries = [x for x in execution.get("items", []) if x.get("requested_action") == "BUY" and x.get("execution_status") == "EXECUTED"]
     exits = [x for x in execution.get("items", []) if x.get("requested_action") == "SELL" and x.get("execution_status") == "EXECUTED"]
     broker_orders_sent = sum(1 for x in execution.get("items", []) if x.get("broker_order_id"))

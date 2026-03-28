@@ -70,7 +70,7 @@ def main() -> None:
     decisions = strategist.get("decisions", [])
     action_counts = count_strategist_actions(decisions)
     executed, rejected, buys, sells = count_execution_results(execution.get("items", []))
-    execution_mode = execution.get("execution_mode") or portfolio.get("execution_mode") or "local_simulated"
+    execution_mode = execution.get("execution_mode") or portfolio.get("execution_mode") or "mock"
     broker_orders_sent = sum(1 for x in execution.get("items", []) if x.get("requested_action") in {"BUY", "SELL"} and x.get("broker_order_id"))
     broker_fills = sum(1 for x in execution.get("items", []) if x.get("broker_status") == "filled")
     report_path = DAILY_REPORTS_DIR / f"daily_summary_{ts[:10]}.md"

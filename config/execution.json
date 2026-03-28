@@ -1,6 +1,6 @@
 {
-  "execution_mode": "local_simulated",
-  "broker": "alpaca_paper",
+  "execution_mode": "mock",
+  "broker": "alpaca",
   "paper_trading_only": true,
   "market_hours": {
     "timezone": "America/New_York",

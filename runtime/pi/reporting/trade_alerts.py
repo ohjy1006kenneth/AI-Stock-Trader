@@ -60,7 +60,7 @@ def main() -> None:
         }
         items.append(payload)
         text_lines.extend([
-            "PAPER EXECUTION ALERT" if payload.get("execution_mode") == "alpaca_paper" else "LOCAL EXECUTION ALERT",
+            "PAPER EXECUTION ALERT" if payload.get("execution_mode") == "paper" else "MOCK EXECUTION ALERT",
             f"- timestamp: {payload['timestamp']}",
             f"- ticker: {payload['ticker']}",
             f"- action: {payload['action']}",
