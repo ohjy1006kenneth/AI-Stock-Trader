@@ -57,7 +57,7 @@ def main() -> None:
     strategist = read_json(STRATEGY_DATA_DIR / "strategist_decisions.json", {"decisions": []})
     execution = read_json(EXECUTION_DATA_DIR / "execution_log.json", {"items": []})
     alerts = read_json(EXECUTION_DATA_DIR.parent / "alerts" / "trade_alerts_latest.json", {"items": []})
-    portfolio = read_json(LEDGER_DIR / "mock_portfolio.json", {})
+    portfolio = read_json(LEDGER_DIR / "paper_portfolio.json", {})
 
     universe_size = len(universe.get("tickers", []))
     price_count = len(prices.get("items", []))

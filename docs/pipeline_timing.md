@@ -1,10 +1,10 @@
 # Pipeline Timing
 
 ## Goals
-- Fully mock-only automation
+- Fully paper-only automation
 - Low token cost
 - Deterministic hot path
-- Alerts for executed mock BUY/SELL actions
+- Alerts for executed paper BUY/SELL actions
 - Daily summary every weekday at 7:00 AM America/Chicago
 - Preflight gate before the main pipeline
 
@@ -39,7 +39,7 @@ The cron-triggered hot path still runs inside `trading`, which remains the canon
 - Script: `runtime/pi/wrappers/run_daily_summary.sh`
 - Runtime agent: `trading`
 - Purpose:
-  - send morning mock portfolio summary based on deterministic artifacts
+  - send morning paper portfolio summary based on deterministic artifacts
 - Note:
   - the cron must execute in `trading`, because the canonical scripts and reports live in the trading workspace
 

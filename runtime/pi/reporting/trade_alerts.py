@@ -20,7 +20,7 @@ ALERT_TEXT_PATH = ALERTS_DATA_DIR / "trade_alerts_latest.txt"
 
 def main() -> None:
     execution = read_json(EXECUTION_DATA_DIR / "execution_log.json", {"items": []})
-    portfolio = read_json(LEDGER_DIR / "mock_portfolio.json", {})
+    portfolio = read_json(LEDGER_DIR / "paper_portfolio.json", {})
     state = read_json(STATE_PATH, {"alerted_execution_ids": []})
     alerted = set(state.get("alerted_execution_ids", []))
 
@@ -60,7 +60,7 @@ def main() -> None:
         }
         items.append(payload)
         text_lines.extend([
-            "PAPER EXECUTION ALERT" if payload.get("execution_mode") == "paper" else "MOCK EXECUTION ALERT",
+            "PAPER EXECUTION ALERT" if payload.get("execution_mode") == "paper" else "PAPER EXECUTION ALERT",
             f"- timestamp: {payload['timestamp']}",
             f"- ticker: {payload['ticker']}",
             f"- action: {payload['action']}",

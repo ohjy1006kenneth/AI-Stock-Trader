@@ -24,7 +24,7 @@ def fmt_positions(positions: list[dict], sleeve: str) -> list[str]:
 
 
 def main() -> None:
-    portfolio = read_json(LEDGER_DIR / "mock_portfolio.json", {})
+    portfolio = read_json(LEDGER_DIR / "paper_portfolio.json", {})
     execution = read_json(EXECUTION_DATA_DIR / "execution_log.json", {"items": []})
     sentry = read_json(STRATEGY_DATA_DIR / "sentry_events.json", {"events": []})
     rankings = read_json(STRATEGY_DATA_DIR / "alpha_rankings.json", {"items": []})
@@ -68,7 +68,7 @@ def main() -> None:
         "- Fallback data usage notes: yfinance convenience data used in V1",
         "",
         "## Plan For Tomorrow",
-        "- Re-run deterministic pipeline, inspect rejected executions, and review top-ranked names skeptically before any mock changes.",
+        "- Re-run deterministic pipeline, inspect rejected executions, and review top-ranked names skeptically before any paper changes.",
     ]
     write_text(DAILY_REPORTS_DIR / f"daily_summary_{today_iso()}.md", "\n".join(lines) + "\n")
     print("Daily report written")

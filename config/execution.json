@@ -1,5 +1,4 @@
 {
-  "execution_mode": "mock",
   "broker": "alpaca",
   "paper_trading_only": true,
   "market_hours": {

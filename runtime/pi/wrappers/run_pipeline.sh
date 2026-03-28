@@ -5,6 +5,12 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd -- "$SCRIPT_DIR/../../.." && pwd)"
 VENV_PY="$ROOT_DIR/.venv/bin/python"
 
+if [ -f "$ROOT_DIR/config/alpaca.env" ]; then
+  set -a
+  . "$ROOT_DIR/config/alpaca.env"
+  set +a
+fi
+
 echo "[runtime] root=$ROOT_DIR" >&2
 echo "[runtime] python=$VENV_PY" >&2
 
@@ -32,7 +38,7 @@ fi
 "$VENV_PY" strategy/calculate_alpha_score.py >&2
 "$VENV_PY" strategy/sentry_monitor.py >&2
 "$VENV_PY" strategy/portfolio_strategist.py >&2
-"$VENV_PY" runtime/pi/execution/mock_portfolio_executor.py >&2
+"$VENV_PY" runtime/pi/execution/paper_portfolio_executor.py >&2
 "$VENV_PY" runtime/pi/reporting/daily_report.py >&2
 "$VENV_PY" runtime/pi/reporting/trade_alerts.py >/tmp/trading_trade_alerts_latest.txt
 "$VENV_PY" runtime/pi/reporting/pipeline_run_summary.py

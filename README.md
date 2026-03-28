@@ -1,6 +1,6 @@
 # Trading
 
-A deterministic mock-money trading workspace with OpenClaw orchestration.
+A deterministic paper-trading trading workspace with OpenClaw orchestration.
 
 ## Active architecture
 - `trading` is the orchestrator the user talks to and the canonical project owner.

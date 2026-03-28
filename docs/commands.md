@@ -2,7 +2,7 @@
 
 ## Portfolio status
 
-Quick read-only inspection of the mock portfolio:
+Quick read-only inspection of the paper portfolio:
 
 ```bash
 .venv/bin/python runtime/pi/execution/portfolio_status.py
@@ -17,7 +17,7 @@ Options:
 ```
 
 Reads:
-- `ledger/mock_portfolio.json`
+- `ledger/paper_portfolio.json`
 - `data/runtime/market/price_snapshot.json`
 
 Behavior:

@@ -26,7 +26,7 @@ def main() -> None:
         "universe_version": "v1",
         "selection_method": "static_seed_universe_v1",
         "tickers": SEED_UNIVERSE,
-        "notes": "Conservative starter universe for research and mock portfolio development."
+        "notes": "Conservative starter universe for research and paper-trading system development."
     })
     print(f"Universe built: {len(SEED_UNIVERSE)} tickers")
 

@@ -30,7 +30,7 @@ def latest_prices() -> tuple[dict[str, float], bool]:
 
 
 def build_status() -> dict[str, Any]:
-    portfolio = read_json(LEDGER_DIR / "mock_portfolio.json", {})
+    portfolio = read_json(LEDGER_DIR / "paper_portfolio.json", {})
     prices, has_snapshot_prices = latest_prices()
 
     starting_cash = float(portfolio.get("starting_cash", 0.0) or 0.0)
@@ -117,7 +117,7 @@ def print_positions(positions: list[dict[str, Any]]) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Read-only mock portfolio status")
+    parser = argparse.ArgumentParser(description="Read-only paper portfolio status")
     parser.add_argument("--json", action="store_true", dest="as_json", help="print machine-readable JSON")
     parser.add_argument("--summary", action="store_true", help="print only account summary")
     parser.add_argument("--positions", action="store_true", help="print only open positions")

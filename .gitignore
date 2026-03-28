@@ -48,3 +48,6 @@ __pycache__/
 # Artifacts: keep structure, not model payloads by default
 /artifacts/bundles/*
 !/artifacts/bundles/.gitkeep
+
+# Local broker credentials
+/config/alpaca.env
