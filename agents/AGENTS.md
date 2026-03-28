@@ -119,16 +119,23 @@ For this project, keep these behavioral boundaries in mind:
 
 - `trading` is the orchestrator and canonical owner the human talks to.
 - The system is split into: Cloud Lab -> Cloud API Oracle -> Edge Pi.
-- Offline lab agents write cloud-side Python math, model architecture, RL policy, and simulator code. They do not run during daily paper trading.
-- `trading-quant-researcher` owns the predictive AI in `cloud_training/model_architecture/`.
-- `trading-backtest-validator` owns the simulator and gatekeeping layer in `cloud_training/backtesting/`.
-- `trading-portfolio-strategist` owns the Decision AI / RL policy in `cloud_training/model_architecture/policy/`.
-- `trading-executor-reporter` owns `pi_edge/execution/` and `pi_edge/reporting/`.
-- The Raspberry Pi acts as a lightweight orchestrator: fetches edge data, calls hosted inference, executes paper trades, and reports results.
+- Cloud Lab trains models and policies.
+- Cloud Oracle serves inference via API.
+- Edge Pi fetches data, calls the API, executes paper trades, and reports.
+- Training does not happen on the Pi.
+- The Pi should stay lightweight.
 - Paper trading only. No live trading.
-- Each specialist should write code inside its own domain whenever possible.
-- If a specialist is unsure, it should ask explicit clarifying questions instead of assuming requirements, data semantics, or model behavior.
-- Do not assume any AI model behavior unless it is explicitly specified or already codified.
+- Specialists should write code only inside their own domain.
+- No agent should assume another agent's model behavior.
+- No agent should silently invent schemas, targets, outputs, reward functions, action semantics, horizons, label definitions, sizing behavior, or API contracts.
+- If uncertain, agents must ask explicit clarifying questions aggressively before coding or documenting assumptions.
+
+Responsibility summary:
+- `trading` = top-level coordinator and cross-cutting integrator
+- `trading-quant-researcher` = predictive AI only
+- `trading-backtest-validator` = simulation and validation only
+- `trading-portfolio-strategist` = RL decision policy only
+- `trading-executor-reporter` = edge execution/reporting only
 
 When doing specialist-style work, preserve the chain:
 predictive state generation -> RL decision policy -> validation gatekeeping -> hosted inference -> edge execution/reporting.
