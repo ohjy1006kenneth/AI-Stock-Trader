@@ -20,7 +20,7 @@ python -m pip install -r requirements.txt
 ```bash
 .venv/bin/python --version
 .venv/bin/python -m pip show yfinance
-.venv/bin/python scripts/preflight_check.py
+.venv/bin/python runtime/pi/preflight/preflight_check.py
 ```
 
 ## Manual pipeline run
@@ -28,22 +28,23 @@ python -m pip install -r requirements.txt
 Preferred one-shot test:
 
 ```bash
-./scripts/run_pipeline.sh
+./runtime/pi/wrappers/run_pipeline.sh
 ```
 
 Individual Python steps if needed:
 
 ```bash
-.venv/bin/python scripts/build_universe.py
-.venv/bin/python scripts/fetch_price_data.py
-.venv/bin/python scripts/fetch_fundamental_data.py
-.venv/bin/python scripts/quality_filter.py
-.venv/bin/python scripts/calculate_alpha_score.py
-.venv/bin/python scripts/sentry_monitor.py
-.venv/bin/python scripts/portfolio_strategist.py
-.venv/bin/python scripts/mock_portfolio_executor.py
-.venv/bin/python scripts/daily_report.py
-.venv/bin/python scripts/trade_alerts.py
+.venv/bin/python runtime/pi/data/build_universe.py
+.venv/bin/python runtime/pi/data/fetch_price_data.py
+.venv/bin/python runtime/pi/data/fetch_fundamental_data.py
+.venv/bin/python strategy/quality_filter.py
+.venv/bin/python strategy/calculate_alpha_score.py
+.venv/bin/python strategy/sentry_monitor.py
+.venv/bin/python strategy/portfolio_strategist.py
+.venv/bin/python runtime/pi/execution/mock_portfolio_executor.py
+.venv/bin/python runtime/pi/reporting/daily_report.py
+.venv/bin/python runtime/pi/reporting/trade_alerts.py
+.venv/bin/python runtime/pi/reporting/pipeline_run_summary.py
 ```
 
 ## Notes

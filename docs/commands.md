@@ -5,20 +5,20 @@
 Quick read-only inspection of the mock portfolio:
 
 ```bash
-python3 scripts/portfolio_status.py
+.venv/bin/python runtime/pi/execution/portfolio_status.py
 ```
 
 Options:
 
 ```bash
-python3 scripts/portfolio_status.py --json
-python3 scripts/portfolio_status.py --summary
-python3 scripts/portfolio_status.py --positions
+.venv/bin/python runtime/pi/execution/portfolio_status.py --json
+.venv/bin/python runtime/pi/execution/portfolio_status.py --summary
+.venv/bin/python runtime/pi/execution/portfolio_status.py --positions
 ```
 
 Reads:
 - `ledger/mock_portfolio.json`
-- `outputs/price_snapshot.json`
+- `data/runtime/market/price_snapshot.json`
 
 Behavior:
 - prefers latest snapshot prices for mark-to-market display
@@ -36,8 +36,8 @@ openclaw cron runs --limit 20
 ## Runtime setup verification
 
 ```bash
-.venv/bin/python scripts/preflight_check.py
-./scripts/run_preflight_alert.sh
+.venv/bin/python runtime/pi/preflight/preflight_check.py
+./runtime/pi/wrappers/run_preflight_alert.sh
 ```
 
 Rule:
@@ -48,9 +48,9 @@ Rule:
 ## Useful inspection commands
 
 ```bash
-python3 scripts/portfolio_status.py
-cat outputs/execution_log.json
-ls -1t reports/daily_summary_*.md | head -n 1
-ls -1t reports/pipeline_run_summary_*.md | head -n 1
+.venv/bin/python runtime/pi/execution/portfolio_status.py
+cat data/runtime/execution/execution_log.json
+ls -1t reports/daily/daily_summary_*.md | head -n 1
+ls -1t reports/pipeline/pipeline_run_summary_*.md | head -n 1
 openclaw cron list
 ```
