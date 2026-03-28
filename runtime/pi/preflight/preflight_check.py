@@ -15,7 +15,7 @@ import importlib
 import json
 import sys
 
-from runtime.common.common import CONFIG_DIR, DIAGNOSTICS_DATA_DIR, EXECUTION_DATA_DIR, LEDGER_DIR, ROOT, STRATEGY_DATA_DIR, env_str, load_contracts, load_execution_config, now_iso, read_json, write_json
+from runtime.common.common import CONFIG_DIR, DIAGNOSTICS_DATA_DIR, EXECUTION_DATA_DIR, LEDGER_DIR, ROOT, STRATEGY_DATA_DIR, env_str, load_contracts, load_execution_config, load_local_env_file, now_iso, read_json, write_json
 
 REQUIRED_PACKAGES = ["yfinance"]
 REQUIRED_PATHS = [
@@ -84,6 +84,7 @@ def main() -> None:
     if not contracts:
         warnings.append("data_contracts_not_loaded")
 
+    load_local_env_file(CONFIG_DIR / "alpaca.env")
     execution_cfg = load_execution_config()
     if execution_cfg.get("broker") != "alpaca":
         errors.append("unsupported_broker")

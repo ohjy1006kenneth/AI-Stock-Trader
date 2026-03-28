@@ -17,11 +17,12 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
-from runtime.common.common import env_str
+from runtime.common.common import CONFIG_DIR, env_str, load_local_env_file
 
 
 class AlpacaPaperClient:
     def __init__(self) -> None:
+        load_local_env_file(CONFIG_DIR / "alpaca.env")
         self.api_key = env_str("ALPACA_API_KEY")
         self.api_secret = env_str("ALPACA_API_SECRET")
         self.base_url = env_str("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
