@@ -16,6 +16,15 @@ Cloud Lab -> Cloud API Oracle -> Edge Pi
 - When uncertain, agents must ask questions explicitly and aggressively.
 - Specialists should write code only inside their own domain.
 - `trading` integrates cross-cutting work and owns final coordination.
+- Predictive target is next-day log return.
+- Signal is a normalized probability in [0,1] of a positive next-day return.
+- Confidence is derived from predictive variance.
+- Cloud keeps embeddings internal.
+- Cloud Oracle operates on one portfolio-level batch request covering the full eligible universe.
+- Pi rebalances once per day based on returned target weights.
+- Pi applies no shadow confidence filter.
+- Long-only, with per-ticker target weights constrained to [0.0, 0.20].
+- If total target weights exceed 1.0, the Oracle payload is invalid and edge execution must reject it.
 
 ## Agent responsibility matrix
 
