@@ -16,10 +16,10 @@ GitHub Issues are the primary task-management system for this project.
 Use labels to represent lifecycle state:
 - `status:backlog` -> not yet selected
 - `status:ready` -> clarified and ready to start
-- `status:in-progress` -> actively being worked
+- `status:in-progress` -> actively being worked by the specialist owner
 - `status:blocked` -> cannot proceed without dependency or decision
-- `status:review` -> implementation done, awaiting review/integration/validation
-- `status:done` -> completed and closed
+- `status:review` -> specialist implementation is done and the issue is awaiting orchestrator review by `trading`
+- `status:done` -> orchestrator review passed; completed and closed
 
 ## How lifecycle is represented
 ### Labels
@@ -79,6 +79,17 @@ Use comments for:
 - blocker explanation
 - handoff to next specialist
 - review outcome
+
+## Review rule
+The expected lifecycle is:
+1. specialist completes bounded implementation work
+2. issue moves to `status:review`
+3. `trading` performs orchestrator review against done criteria and dependency readiness
+4. `trading` then moves the issue to:
+   - `status:done` if review passes
+   - `status:in-progress` if fixes are required
+   - `status:blocked` if a true blocker or decision gap is discovered
+5. if non-blocking extra work remains, create a follow-up issue instead of stretching the original issue indefinitely
 
 ## How trading should orchestrate
 `trading` should:
