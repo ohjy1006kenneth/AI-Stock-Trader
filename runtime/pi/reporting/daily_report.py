@@ -64,7 +64,7 @@ def main() -> None:
         "## Plan For Tomorrow",
         "- Re-run deterministic pipeline, inspect rejected executions, and review top-ranked names skeptically before any mock changes.",
     ]
-    write_text(DAILY_DAILY_REPORTS_DIR / f"daily_summary_{today_iso()}.md", "\n".join(lines) + "\n")
+    write_text(DAILY_REPORTS_DIR / f"daily_summary_{today_iso()}.md", "\n".join(lines) + "\n")
     print("Daily report written")
 
 

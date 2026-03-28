@@ -32,7 +32,7 @@ def count_execution_results(items: list[dict]) -> tuple[int, int, int, int]:
 
 
 def read_recent_validation_note() -> str:
-    path = BACKTEST_BACKTEST_REPORTS_DIR / "backtest_verdict.md"
+    path = BACKTEST_REPORTS_DIR / "backtest_verdict.md"
     if not path.exists():
         return "No validation memo found."
     lines = [line.strip() for line in path.read_text().splitlines() if line.strip()]
@@ -70,7 +70,7 @@ def main() -> None:
     decisions = strategist.get("decisions", [])
     action_counts = count_strategist_actions(decisions)
     executed, rejected, buys, sells = count_execution_results(execution.get("items", []))
-    report_path = DAILY_DAILY_REPORTS_DIR / f"daily_summary_{ts[:10]}.md"
+    report_path = DAILY_REPORTS_DIR / f"daily_summary_{ts[:10]}.md"
     report_status = "produced" if report_path.exists() else "missing"
     alert_items = alerts.get("items", [])
     alert_status = f"{len(alert_items)} new trade alert(s) generated" if alert_items else "no new trade alerts"
@@ -139,7 +139,7 @@ def main() -> None:
         *warning_lines,
     ]
 
-    out_path = PIPELINE_PIPELINE_REPORTS_DIR / f"pipeline_run_summary_{ts[:10]}.md"
+    out_path = PIPELINE_REPORTS_DIR / f"pipeline_run_summary_{ts[:10]}.md"
     write_text(out_path, "\n".join(lines) + "\n")
     print("\n".join(lines))
 
