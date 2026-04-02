@@ -23,12 +23,13 @@ def count_strategist_actions(decisions: list[dict]) -> dict[str, int]:
     return counts
 
 
-def count_execution_results(items: list[dict]) -> tuple[int, int, int, int]:
+def count_execution_results(items: list[dict]) -> tuple[int, int, int, int, int]:
     executed = sum(1 for x in items if x.get("execution_status") == "EXECUTED")
+    pending = sum(1 for x in items if x.get("execution_status") == "PENDING")
     rejected = sum(1 for x in items if x.get("execution_status") == "REJECTED")
     buys = sum(1 for x in items if x.get("execution_status") == "EXECUTED" and x.get("requested_action") == "BUY")
     sells = sum(1 for x in items if x.get("execution_status") == "EXECUTED" and x.get("requested_action") == "SELL")
-    return executed, rejected, buys, sells
+    return executed, pending, rejected, buys, sells
 
 
 def read_recent_validation_note() -> str:
@@ -69,7 +70,7 @@ def main() -> None:
     swing_candidates = [x.get("ticker") for x in rankings.get("items", []) if x.get("alpha_score") is not None and x.get("alpha_score") >= 0.80 and x.get("factors", {}).get("trend_filter_pass")]
     decisions = strategist.get("decisions", [])
     action_counts = count_strategist_actions(decisions)
-    executed, rejected, buys, sells = count_execution_results(execution.get("items", []))
+    executed, pending, rejected, buys, sells = count_execution_results(execution.get("items", []))
     execution_mode = execution.get("execution_mode") or portfolio.get("execution_mode") or "mock"
     broker_orders_sent = sum(1 for x in execution.get("items", []) if x.get("requested_action") in {"BUY", "SELL"} and x.get("broker_order_id"))
     broker_fills = sum(1 for x in execution.get("items", []) if x.get("broker_status") == "filled")
@@ -82,6 +83,8 @@ def main() -> None:
         warning_lines.append("- No names passed the quality filter.")
     if not strong_alpha:
         warning_lines.append("- No names cleared the strong-alpha threshold.")
+    if pending:
+        warning_lines.append(f"- {pending} broker order(s) remain pending/unfilled at report time.")
     if rejected:
         warning_lines.append(f"- {rejected} execution record(s) were rejected.")
     if report_status != "produced":
@@ -103,7 +106,7 @@ def main() -> None:
         f"- Quality filter: {quality_pass} passed, {quality_reject} rejected",
         f"- Alpha ranking: {len(rankings.get('items', []))} ranked, {len(strong_alpha)} strong-alpha names",
         f"- Strategy result: BUY={action_counts['BUY']}, SELL={action_counts['SELL']}, HOLD={action_counts['HOLD']}, REVIEW={action_counts['REVIEW']}",
-        f"- Execution result: executed={executed}, rejected={rejected}, buys={buys}, sells={sells}",
+        f"- Execution result: executed={executed}, pending={pending}, rejected={rejected}, buys={buys}, sells={sells}",
         f"- Execution mode: {execution_mode}",
         f"- Broker orders sent: {broker_orders_sent}, broker fills observed: {broker_fills}",
         f"- Sentry events: {len(sentry.get('events', []))}",
@@ -135,7 +138,7 @@ def main() -> None:
         f"- Decisions generated: BUY={action_counts['BUY']}, SELL={action_counts['SELL']}, HOLD={action_counts['HOLD']}, REVIEW={action_counts['REVIEW']}.",
         "",
         "### trading-executor-reporter",
-        f"- Ledger activity: executed={executed}, rejected={rejected}, buys={buys}, sells={sells}.",
+        f"- Ledger activity: executed={executed}, pending={pending}, rejected={rejected}, buys={buys}, sells={sells}.",
         f"- Broker path: mode={execution_mode}, orders_sent={broker_orders_sent}, fills_observed={broker_fills}.",
         f"- End-of-run portfolio snapshot: cash={portfolio.get('cash')}, total_equity={portfolio.get('total_equity')}, open_positions={len(portfolio.get('positions', []))}.",
         f"- Trade alerts: {alert_status}.",

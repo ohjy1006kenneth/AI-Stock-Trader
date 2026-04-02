@@ -3,28 +3,24 @@
 Last updated: 2026-04-02 UTC
 
 ## Current Milestone
-- **Milestone 2 — First Operational AI Paper-Trading Loop**
+- **Milestone 2 — First Operational AI Paper-Trading Loop** ✅ completed
 
 ## Active Issues
-- **#17 — Daily autonomous paper loop acceptance**
-  - Status: in-progress
-  - Owner: `trading-executor-reporter`
-  - Current focus: validate the end-to-end daily autonomous paper-trading loop across cloud oracle, decision/risk layers, edge execution, and reporting
 - **#14 — Online Oracle refresh for XGBoost model**
   - Status: in-progress
   - Owner: `trading-executor-reporter`
   - Current stance: packaging/runtime-selection hardening done locally; final acceptance waits on an accepted #12 artifact and live endpoint validation
 
 ## Next Issue
-- **Primary next issue:** #17
-- With #16 completed, the next dependency-ready issue is full daily autonomous paper loop acceptance.
+- **Primary next issue:** #20
+- Milestone 2 loop acceptance is complete. The remaining open follow-up is #20, which stays blocked until a future model candidate passes validation/promotion and is ready for live Oracle refresh.
 
 ## Current Blockers
-- The current model candidate is not promotion-worthy.
-- A new follow-up issue for live Oracle refresh will remain blocked until a future candidate passes validation/promotion.
+- #20 remains blocked until a future candidate passes validation/promotion and is approved for live Oracle refresh.
 - No Pi-hosted AI-heavy training/build work is allowed.
 
 ## Completed Issues
+- #17 Daily autonomous paper loop acceptance
 - #16 Risk engine hard-rule layer
 - #15 First operational decision layer pre-RL
 - #14 Online Oracle refresh for XGBoost model (integration-hardening portion completed; live-refresh follow-up split out)
@@ -69,6 +65,9 @@ Last updated: 2026-04-02 UTC
 ## Important Decisions
 - Prediction and decision are now explicitly separated in the cloud path: predictive model produces signal/confidence, then the non-RL constrained long-only policy layer converts those into target weights.
 - A hard-rule risk layer now sits between oracle response and execution, enforcing configured caps on per-name weight, total positions, and cash buffer before paper orders are translated/submitted.
+- The daily autonomous paper loop is now acceptance-ready end-to-end: preflight -> S&P snapshot refresh -> universe build -> market/fundamental fetch -> cloud oracle call -> hard-risk layer -> paper execution -> reporting.
+- HF oracle calls now retry transient upstream failures (`429/500/502/503/504` and network errors) with backoff / Retry-After support.
+- Reporting semantics distinguish `PENDING` accepted orders from actually `EXECUTED` filled orders.
 - AI-heavy training, dataset building, and model execution must run in the cloud, not on the Raspberry Pi.
 - The Hugging Face architecture is now split correctly: Space = control plane/UI only, HF Jobs = long-running training runner, HF model repo = canonical artifact registry, HF Inference Endpoint = Oracle for the Pi.
 - The existing Hugging Face Space remains the control-plane entrypoint for Issue #12 work.

@@ -16,6 +16,8 @@ class _StubHFHandler(BaseHTTPRequestHandler):
     ready_manifest_payload: dict = {}
     captured_headers: dict[str, str] = {}
     captured_body: dict = {}
+    post_status_sequence: list[int] = []
+    post_call_count: int = 0
 
     def do_GET(self) -> None:  # noqa: N802
         if self.path != "/ready.json":
@@ -32,6 +34,16 @@ class _StubHFHandler(BaseHTTPRequestHandler):
         raw_body = self.rfile.read(content_length).decode("utf-8")
         _StubHFHandler.captured_headers = {k: v for k, v in self.headers.items()}
         _StubHFHandler.captured_body = json.loads(raw_body)
+        _StubHFHandler.post_call_count += 1
+
+        if _StubHFHandler.post_status_sequence:
+            status = _StubHFHandler.post_status_sequence.pop(0)
+            if status != 200:
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": f"{status} temporary failure"}).encode("utf-8"))
+                return
 
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -43,6 +55,12 @@ class _StubHFHandler(BaseHTTPRequestHandler):
 
 
 class TestIssue13HFOracleSmoke(unittest.TestCase):
+    def setUp(self) -> None:
+        _StubHFHandler.post_status_sequence = []
+        _StubHFHandler.post_call_count = 0
+        _StubHFHandler.captured_headers = {}
+        _StubHFHandler.captured_body = {}
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.server = ThreadingHTTPServer(("127.0.0.1", 0), _StubHFHandler)
@@ -206,6 +224,51 @@ class TestIssue13HFOracleSmoke(unittest.TestCase):
             oracle_response = call_oracle(request_payload)
 
         self.assertEqual(oracle_response["model_version"], "different-bundle")
+
+    def test_call_oracle_retries_transient_503_and_succeeds(self) -> None:
+        request_payload = {
+            "portfolio": {"cash": 1000.0, "positions": []},
+            "universe": [
+                {
+                    "ticker": "MSFT",
+                    "history": [
+                        {"date": "2026-04-01", "open": 49.0, "high": 51.0, "low": 48.0, "close": 50.0, "volume": 2000},
+                    ],
+                    "news": [],
+                },
+            ],
+        }
+        _StubHFHandler.ready_manifest_payload = {
+            "manifest_version": "oracle_endpoint_ready_v1",
+            "repo_id": "FunkMonk87/ai-stock-trader-oracle",
+            "endpoint": "cloud_oracle",
+            "approved_bundle": {
+                "artifact_name": "retry-bundle",
+                "repo_path": "bundles/retry-bundle.bundle.json",
+                "bundle_manifest_path": "manifests/bundles/retry-bundle.manifest.json",
+                "approved_manifest_path": "channels/approved/manifest.json",
+            },
+        }
+        _StubHFHandler.response_payload = {
+            "model_version": "retry-bundle",
+            "generated_at": "2026-04-02T04:00:00+00:00",
+            "request_id": "req-retry-smoke",
+            "predictions": [
+                {"ticker": "MSFT", "target_weight": 0.1, "confidence": 0.8, "signal_type": "long"},
+            ],
+        }
+        _StubHFHandler.post_status_sequence = [503, 200]
+
+        with patch.dict(os.environ, {
+            "HF_INFERENCE_URL": self.base_url,
+            "HF_API_TOKEN": "stub-token",
+            "HF_MODEL_REPO_READY_MANIFEST_URL": f"{self.base_url}/ready.json",
+            "HF_ENFORCE_READY_MANIFEST": "true",
+        }, clear=False), patch("pi_edge.network.hf_api_client.time.sleep", return_value=None):
+            oracle_response = call_oracle(request_payload)
+
+        self.assertEqual(oracle_response["model_version"], "retry-bundle")
+        self.assertEqual(_StubHFHandler.post_call_count, 2)
 
 
 if __name__ == "__main__":

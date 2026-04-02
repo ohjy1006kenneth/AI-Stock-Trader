@@ -27,10 +27,11 @@ def main() -> None:
     items = []
     text_lines = []
     for row in execution.get("items", []):
-        if row.get("execution_status") != "EXECUTED":
-            continue
         if row.get("requested_action") not in {"BUY", "SELL"}:
             continue
+        if row.get("execution_status") not in {"EXECUTED", "PENDING"}:
+            continue
+        broker_status = row.get("broker_status")
         execution_id = row.get("execution_id")
         if execution_id in alerted:
             continue
@@ -41,7 +42,6 @@ def main() -> None:
         reason_code = row.get("notes")
         cash_after = row.get("cash_after")
         total_equity = portfolio.get("total_equity")
-        broker_status = row.get("broker_status")
         payload = {
             "timestamp": row.get("timestamp"),
             "ticker": row.get("ticker"),
@@ -59,8 +59,9 @@ def main() -> None:
             "broker_status": broker_status,
         }
         items.append(payload)
+        alert_title = "PAPER ORDER FILLED" if row.get("execution_status") == "EXECUTED" else "PAPER ORDER ACCEPTED"
         text_lines.extend([
-            "PAPER EXECUTION ALERT" if payload.get("execution_mode") == "paper" else "PAPER EXECUTION ALERT",
+            alert_title,
             f"- timestamp: {payload['timestamp']}",
             f"- ticker: {payload['ticker']}",
             f"- action: {payload['action']}",

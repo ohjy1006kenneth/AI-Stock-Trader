@@ -32,6 +32,7 @@ def main() -> None:
     execution_mode = execution.get("execution_mode") or portfolio.get("execution_mode") or "mock"
     entries = [x for x in execution.get("items", []) if x.get("requested_action") == "BUY" and x.get("execution_status") == "EXECUTED"]
     exits = [x for x in execution.get("items", []) if x.get("requested_action") == "SELL" and x.get("execution_status") == "EXECUTED"]
+    pending_orders = [x for x in execution.get("items", []) if x.get("requested_action") in {"BUY", "SELL"} and x.get("execution_status") == "PENDING"]
     broker_orders_sent = sum(1 for x in execution.get("items", []) if x.get("broker_order_id"))
     broker_fills = sum(1 for x in execution.get("items", []) if x.get("broker_status") == "filled")
     stop_take = [x for x in sentry.get("events", []) if x.get("event_type") in {"trailing_stop_hit", "take_profit_hit"}]
@@ -55,6 +56,7 @@ def main() -> None:
         f"- Execution mode: {execution_mode}",
         f"- Entries today: {len(entries)}",
         f"- Exits today: {len(exits)}",
+        f"- Pending broker orders: {len(pending_orders)}",
         f"- Broker orders sent: {broker_orders_sent}",
         f"- Broker fills observed: {broker_fills}",
         f"- Stop-loss / take-profit events: {len(stop_take)}",

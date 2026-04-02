@@ -38,6 +38,8 @@ EXEC_REQUIRED = [
     "position_before", "position_after", "realized_pnl_change", "notes"
 ]
 FINAL_BROKER_STATUSES = {"filled", "canceled", "expired", "rejected", "done_for_day"}
+FILLED_BROKER_STATUSES = {"filled"}
+REJECTED_BROKER_STATUSES = {"rejected", "canceled", "expired"}
 ORACLE_HISTORY_BARS = 21
 
 
@@ -262,10 +264,20 @@ def main() -> None:
         broker_status = str(broker_resp.get("status") or "submitted")
         filled_qty = int(float(broker_resp.get("filled_qty") or 0))
         fill_price = safe_float(broker_resp.get("filled_avg_price"), price) or price
+        if broker_status in FILLED_BROKER_STATUSES:
+            execution_status = "EXECUTED"
+            rejection_reason = None
+        elif broker_status in REJECTED_BROKER_STATUSES:
+            execution_status = "REJECTED"
+            rejection_reason = broker_resp.get("reject_reason") or broker_status
+        else:
+            execution_status = "PENDING"
+            rejection_reason = None
+
         logs.append(append_extra(make_log(
             execution_id=gen_id("exe"), linked_decision_id=risk_checked_response.get("request_id"), timestamp=now_iso(), ticker=ticker,
-            requested_action=action, execution_status=("EXECUTED" if broker_status not in {"rejected"} else "REJECTED"),
-            rejection_reason=(None if broker_status not in {"rejected"} else broker_resp.get("reject_reason")), execution_price=fill_price,
+            requested_action=action, execution_status=execution_status,
+            rejection_reason=rejection_reason, execution_price=fill_price,
             shares_filled=filled_qty, cash_before=cash, cash_after=cash, position_before=position_before, position_after=None,
             realized_pnl_change=0.0, notes="oracle_target_weight_rebalance"
         ), execution_mode="paper", broker_name="alpaca", broker_order_id=broker_resp.get("id"), broker_client_order_id=broker_resp.get("client_order_id"), broker_status=broker_status, broker_response=broker_resp, queued_for_next_session=(not market_open), rebalance=action_row, oracle_request_id=risk_checked_response.get("request_id"), oracle_model_version=risk_checked_response.get("model_version"), risk_summary=risk_summary))

@@ -12,6 +12,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 import json
+import time
 import uuid
 import urllib.error
 import urllib.parse
@@ -25,6 +26,7 @@ READY_MANIFEST_ENV = "HF_MODEL_REPO_READY_MANIFEST_URL"
 MODEL_REPO_ID_ENV = "HF_MODEL_REPO_ID"
 ENFORCE_READY_MANIFEST_ENV = "HF_ENFORCE_READY_MANIFEST"
 DEFAULT_READY_MANIFEST_PATH = "endpoints/oracle/ready.json"
+DEFAULT_RETRYABLE_HTTP_CODES = {429, 500, 502, 503, 504}
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -34,26 +36,46 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _http_json_request(url: str, *, token: str | None = None, method: str = "GET", payload: dict[str, Any] | None = None, timeout: int = 60, extra_headers: dict[str, str] | None = None) -> dict[str, Any]:
-    headers = {
-        "Accept": "application/json",
-        **(extra_headers or {}),
-    }
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    data = None
-    if payload is not None:
-        headers["Content-Type"] = "application/json"
-        data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(url, data=data, method=method, headers=headers)
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as response:
-            body = response.read().decode("utf-8")
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8") if exc.fp else ""
-        raise RuntimeError(f"hf_http_{exc.code}:{body}") from exc
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"hf_network_error:{exc}") from exc
+def _retry_delay_seconds(*, attempt: int, retry_after_header: str | None) -> float:
+    if retry_after_header:
+        try:
+            parsed = float(retry_after_header.strip())
+            if parsed >= 0:
+                return min(parsed, 30.0)
+        except Exception:
+            pass
+    return min(2 ** max(attempt - 1, 0), 30)
+
+
+def _http_json_request(url: str, *, token: str | None = None, method: str = "GET", payload: dict[str, Any] | None = None, timeout: int = 60, extra_headers: dict[str, str] | None = None, max_attempts: int = 1, retryable_http_codes: set[int] | None = None) -> dict[str, Any]:
+    retryable_http_codes = retryable_http_codes or DEFAULT_RETRYABLE_HTTP_CODES
+    for attempt in range(1, max_attempts + 1):
+        headers = {
+            "Accept": "application/json",
+            **(extra_headers or {}),
+        }
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        data = None
+        if payload is not None:
+            headers["Content-Type"] = "application/json"
+            data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(url, data=data, method=method, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as response:
+                body = response.read().decode("utf-8")
+            break
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8") if exc.fp else ""
+            if exc.code in retryable_http_codes and attempt < max_attempts:
+                time.sleep(_retry_delay_seconds(attempt=attempt, retry_after_header=exc.headers.get("Retry-After") if exc.headers else None))
+                continue
+            raise RuntimeError(f"hf_http_{exc.code}:{body}") from exc
+        except urllib.error.URLError as exc:
+            if attempt < max_attempts:
+                time.sleep(_retry_delay_seconds(attempt=attempt, retry_after_header=None))
+                continue
+            raise RuntimeError(f"hf_network_error:{exc}") from exc
 
     try:
         parsed = json.loads(body) if body else {}
@@ -141,6 +163,7 @@ def call_oracle(payload: dict[str, Any]) -> dict[str, Any]:
         payload=transport_payload,
         timeout=60,
         extra_headers={"X-Request-Id": request_id},
+        max_attempts=3,
     )
 
     universe_tickers = [item["ticker"] for item in payload.get("universe", [])]
