@@ -6,14 +6,18 @@ Last updated: 2026-04-02 UTC
 - **Milestone 2 — First Operational AI Paper-Trading Loop**
 
 ## Active Issues
+- **#16 — Risk engine hard-rule layer**
+  - Status: in-progress
+  - Owner: `trading-portfolio-strategist`
+  - Current focus: add the hard-rule risk layer on top of the new pre-RL decision layer before daily loop acceptance
 - **#14 — Online Oracle refresh for XGBoost model**
   - Status: in-progress
   - Owner: `trading-executor-reporter`
   - Current stance: packaging/runtime-selection hardening done locally; final acceptance waits on an accepted #12 artifact and live endpoint validation
 
 ## Next Issue
-- **Primary next issue:** #15
-- With #14 split and the integration-hardening portion completed, the next dependency-ready implementation issue is #15 while the new live-refresh follow-up remains blocked on a future promoted candidate.
+- **Primary next issue:** #16
+- With #15 completed, the next dependency-ready implementation issue is the hard-rule risk engine layer before daily loop acceptance.
 
 ## Current Blockers
 - The current model candidate is not promotion-worthy.
@@ -21,6 +25,7 @@ Last updated: 2026-04-02 UTC
 - No Pi-hosted AI-heavy training/build work is allowed.
 
 ## Completed Issues
+- #15 First operational decision layer pre-RL
 - #14 Online Oracle refresh for XGBoost model (integration-hardening portion completed; live-refresh follow-up split out)
 - #13 Predictive calibration and validation gate (completed with reject / do not promote decision for current candidate)
 - #12 First serious XGBoost predictive model
@@ -61,6 +66,7 @@ Last updated: 2026-04-02 UTC
   - canonical model repo contract and endpoint-readiness manifests now exist for approved artifact flow
 
 ## Important Decisions
+- Prediction and decision are now explicitly separated in the cloud path: predictive model produces signal/confidence, then the non-RL constrained long-only policy layer converts those into target weights.
 - AI-heavy training, dataset building, and model execution must run in the cloud, not on the Raspberry Pi.
 - The Hugging Face architecture is now split correctly: Space = control plane/UI only, HF Jobs = long-running training runner, HF model repo = canonical artifact registry, HF Inference Endpoint = Oracle for the Pi.
 - The existing Hugging Face Space remains the control-plane entrypoint for Issue #12 work.
