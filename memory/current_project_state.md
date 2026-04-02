@@ -6,10 +6,6 @@ Last updated: 2026-04-02 UTC
 - **Milestone 2 — First Operational AI Paper-Trading Loop**
 
 ## Active Issues
-- **#12 — First serious XGBoost predictive model**
-  - Status: blocked on current Hugging Face Space long-run observability / completion reporting path
-  - Owner: `trading-quant-researcher`
-  - Current focus: resume the cloud dataset -> train -> export path using the new job/control-plane contract from Issue #19 instead of the old fragile direct Gradio run flow
 - **#13 — Predictive calibration and validation gate**
   - Status: in-progress
   - Owner: `trading-backtest-validator`
@@ -20,16 +16,16 @@ Last updated: 2026-04-02 UTC
   - Current stance: packaging/runtime-selection hardening done locally; final acceptance waits on an accepted #12 artifact and live endpoint validation
 
 ## Next Issue
-- **Primary next issue:** #12
-- With #19 completed, the next active work is to apply the new HF Jobs + durable run-status path to unblock the real Issue #12 cloud run.
-- After #12 produces an accepted candidate, re-run #13 review and continue #14 live cloud/inference integration.
+- **Primary next issue:** #13
+- Validate the freshly produced real Issue #12 candidate, then continue #14 live cloud/inference integration if validation is acceptable.
 
 ## Current Blockers
-- #12 is currently blocked on replacing the fragile direct Space-trigger path with the new durable HF Jobs / control-plane execution path from #19.
-- HF Space build/runtime has been fixed to Python 3.11 and reaches RUNNING, but old long-running Gradio session observability was insufficient.
+- No blocker on #12 execution path right now; the real cloud Issue #12 run completed successfully.
+- #13 validation now decides whether the produced candidate is promotion-worthy.
 - No Pi-hosted AI-heavy training/build work is allowed.
 
 ## Completed Issues
+- #12 First serious XGBoost predictive model
 - #19 HF Jobs training control plane and durable run-status contract
 - #1 Predictive dataset builder
 - #2 First predictive model training scaffold
@@ -45,13 +41,14 @@ Last updated: 2026-04-02 UTC
 - #18 Wire Hugging Face Space training environment
 
 ## Latest Model / Artifact / Runtime State
-- Latest real non-smoke local candidate produced before cloud-only correction:
-  - report: `reports/pipeline/issue12_cloud_pipeline_20260402T043343Z.json`
-  - artifact: `data/processed/models/issue12_xgb_baseline_20260402T043343Z.artifact.json`
-  - metrics: `data/processed/models/issue12_xgb_baseline_20260402T043343Z.metrics.json`
-  - diagnostics: `data/processed/models/issue12_xgb_baseline_20260402T043343Z.diagnostics.json`
-  - bundle: `artifacts/bundles/predictive_signal_bundle_v1_20260402T043343Z.bundle.json`
-- Quality of that local real candidate was weak (near-random AUC), so it is not promotion-ready.
+- Latest real cloud Issue #12 candidate:
+  - report: `reports/pipeline/issue12_cloud_pipeline_20260402T154647Z.json`
+  - dataset: `data/processed/training/issue12_aligned_offline_20260402T154641Z.jsonl`
+  - artifact: `data/processed/models/issue12_xgb_baseline_20260402T154647Z.artifact.json`
+  - metrics: `data/processed/models/issue12_xgb_baseline_20260402T154647Z.metrics.json`
+  - diagnostics: `data/processed/models/issue12_xgb_baseline_20260402T154647Z.diagnostics.json`
+  - bundle: `artifacts/bundles/predictive_signal_bundle_v1_20260402T154647Z.bundle.json`
+- This candidate was produced by the real cloud dataset->train->export path with `dataset_mode = built_predictive_dataset`.
 - Cloud handoff status:
   - HF Space repo: `FunkMonk87/AI-Stock-Trader-Lab`
   - fresh snapshot handoff uploaded to the Space repo
@@ -64,6 +61,7 @@ Last updated: 2026-04-02 UTC
 - AI-heavy training, dataset building, and model execution must run in the cloud, not on the Raspberry Pi.
 - The Hugging Face architecture is now split correctly: Space = control plane/UI only, HF Jobs = long-running training runner, HF model repo = canonical artifact registry, HF Inference Endpoint = Oracle for the Pi.
 - The existing Hugging Face Space remains the control-plane entrypoint for Issue #12 work.
+- A successful real cloud Issue #12 run is sufficient to move #12 out of execution work and into validation/review; model quality/promotion is decided by Issue #13, not by holding #12 open forever.
 - PM status changes are never terminal by themselves; after every PM action, immediately continue with the next operational step in the same cycle.
 - Valid user-facing update boundaries are only:
   1. code-change boundary with concrete files + checks
