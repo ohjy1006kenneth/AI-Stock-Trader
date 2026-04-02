@@ -12,15 +12,16 @@ Last updated: 2026-04-02 UTC
   - Current stance: packaging/runtime-selection hardening done locally; final acceptance waits on an accepted #12 artifact and live endpoint validation
 
 ## Next Issue
-- **Primary next issue:** #14
-- With #13 complete and the current candidate rejected for promotion, the next active work is to keep #14 focused on cloud/oracle integration hardening while waiting for a stronger future model candidate.
+- **Primary next issue:** #15
+- With #14 split and the integration-hardening portion completed, the next dependency-ready implementation issue is #15 while the new live-refresh follow-up remains blocked on a future promoted candidate.
 
 ## Current Blockers
-- The canonical cloud artifact path is now correct and published, but the current model candidate is not promotion-worthy.
-- #14 can continue on integration hardening, but final production promotion still waits on a stronger future candidate.
+- The current model candidate is not promotion-worthy.
+- A new follow-up issue for live Oracle refresh will remain blocked until a future candidate passes validation/promotion.
 - No Pi-hosted AI-heavy training/build work is allowed.
 
 ## Completed Issues
+- #14 Online Oracle refresh for XGBoost model (integration-hardening portion completed; live-refresh follow-up split out)
 - #13 Predictive calibration and validation gate (completed with reject / do not promote decision for current candidate)
 - #12 First serious XGBoost predictive model
 - #19 HF Jobs training control plane and durable run-status contract
