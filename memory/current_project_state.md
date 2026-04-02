@@ -6,25 +6,22 @@ Last updated: 2026-04-02 UTC
 - **Milestone 2 — First Operational AI Paper-Trading Loop**
 
 ## Active Issues
-- **#13 — Predictive calibration and validation gate**
-  - Status: in-progress
-  - Owner: `trading-backtest-validator`
-  - Current stance: current candidate rejected for promotion; waiting on a stronger real Issue #12 candidate
 - **#14 — Online Oracle refresh for XGBoost model**
   - Status: in-progress
   - Owner: `trading-executor-reporter`
   - Current stance: packaging/runtime-selection hardening done locally; final acceptance waits on an accepted #12 artifact and live endpoint validation
 
 ## Next Issue
-- **Primary next issue:** #13
-- Validate the freshly produced real Issue #12 candidate, then continue #14 live cloud/inference integration if validation is acceptable.
+- **Primary next issue:** #14
+- With #13 complete and the current candidate rejected for promotion, the next active work is to keep #14 focused on cloud/oracle integration hardening while waiting for a stronger future model candidate.
 
 ## Current Blockers
-- No blocker on #12 execution path right now; the real cloud Issue #12 run completed successfully.
-- #13 validation now decides whether the produced candidate is promotion-worthy.
+- The canonical cloud artifact path is now correct and published, but the current model candidate is not promotion-worthy.
+- #14 can continue on integration hardening, but final production promotion still waits on a stronger future candidate.
 - No Pi-hosted AI-heavy training/build work is allowed.
 
 ## Completed Issues
+- #13 Predictive calibration and validation gate (completed with reject / do not promote decision for current candidate)
 - #12 First serious XGBoost predictive model
 - #19 HF Jobs training control plane and durable run-status contract
 - #1 Predictive dataset builder
@@ -41,14 +38,19 @@ Last updated: 2026-04-02 UTC
 - #18 Wire Hugging Face Space training environment
 
 ## Latest Model / Artifact / Runtime State
-- Latest real cloud Issue #12 candidate:
-  - report: `reports/pipeline/issue12_cloud_pipeline_20260402T154647Z.json`
-  - dataset: `data/processed/training/issue12_aligned_offline_20260402T154641Z.jsonl`
-  - artifact: `data/processed/models/issue12_xgb_baseline_20260402T154647Z.artifact.json`
-  - metrics: `data/processed/models/issue12_xgb_baseline_20260402T154647Z.metrics.json`
-  - diagnostics: `data/processed/models/issue12_xgb_baseline_20260402T154647Z.diagnostics.json`
-  - bundle: `artifacts/bundles/predictive_signal_bundle_v1_20260402T154647Z.bundle.json`
-- This candidate was produced by the real cloud dataset->train->export path with `dataset_mode = built_predictive_dataset`.
+- Canonical cloud artifact path is now established at HF model repo `FunkMonk87/ai-stock-trader-oracle`.
+- Published canonical bundle/manifests for current candidate:
+  - `bundles/issue12_xgb_date_split_fix_bundle_20260402T200937Z.bundle.json`
+  - `manifests/bundles/issue12_xgb_date_split_fix_bundle_20260402T200937Z.manifest.json`
+  - `manifest.json`
+  - `channels/approved/manifest.json`
+  - `endpoints/oracle/ready.json`
+- Cloud-source snapshot commit used for validation:
+  - `6f39dba2f5bf8a703805af47da77c8e9341537e1`
+- Validation outcome for the current candidate remains reject / do not promote:
+  - fails minimum backtest days
+  - fails sharpe threshold
+  - lacks walk-forward window
 - Cloud handoff status:
   - HF Space repo: `FunkMonk87/AI-Stock-Trader-Lab`
   - fresh snapshot handoff uploaded to the Space repo
