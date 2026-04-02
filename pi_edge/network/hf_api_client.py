@@ -14,13 +14,59 @@ if str(ROOT_DIR) not in sys.path:
 import json
 import uuid
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any
 
+from cloud_inference.contracts import validate_request_payload, validate_response_payload
 from runtime.common.common import CONFIG_DIR, env_str, load_local_env_file
 
-REQUEST_SCHEMA_PATH = CONFIG_DIR / "cloud_oracle_request.schema.json"
-RESPONSE_SCHEMA_PATH = CONFIG_DIR / "cloud_oracle_response.schema.json"
+READY_MANIFEST_ENV = "HF_MODEL_REPO_READY_MANIFEST_URL"
+MODEL_REPO_ID_ENV = "HF_MODEL_REPO_ID"
+ENFORCE_READY_MANIFEST_ENV = "HF_ENFORCE_READY_MANIFEST"
+DEFAULT_READY_MANIFEST_PATH = "endpoints/oracle/ready.json"
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = env_str(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _http_json_request(url: str, *, token: str | None = None, method: str = "GET", payload: dict[str, Any] | None = None, timeout: int = 60, extra_headers: dict[str, str] | None = None) -> dict[str, Any]:
+    headers = {
+        "Accept": "application/json",
+        **(extra_headers or {}),
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    data = None
+    if payload is not None:
+        headers["Content-Type"] = "application/json"
+        data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(url, data=data, method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            body = response.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8") if exc.fp else ""
+        raise RuntimeError(f"hf_http_{exc.code}:{body}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"hf_network_error:{exc}") from exc
+
+    try:
+        parsed = json.loads(body) if body else {}
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"hf_invalid_json_response:{exc}") from exc
+    if not isinstance(parsed, dict):
+        raise RuntimeError("hf_response_must_be_json_object")
+    return parsed
+
+
+def _build_model_repo_ready_manifest_url(repo_id: str) -> str:
+    quoted_repo = "/".join(urllib.parse.quote(part, safe="") for part in repo_id.split("/"))
+    return f"https://huggingface.co/{quoted_repo}/resolve/main/{DEFAULT_READY_MANIFEST_PATH}"
 
 
 def require_hf_config() -> tuple[str, str]:
@@ -34,91 +80,83 @@ def require_hf_config() -> tuple[str, str]:
     return endpoint, token
 
 
-def _load_schema(path: Path) -> dict[str, Any]:
-    return json.loads(path.read_text())
+def resolve_ready_manifest_url() -> str | None:
+    load_local_env_file(CONFIG_DIR / "alpaca.env")
+    explicit = env_str(READY_MANIFEST_ENV)
+    if explicit:
+        return explicit
+    repo_id = env_str(MODEL_REPO_ID_ENV)
+    if repo_id:
+        return _build_model_repo_ready_manifest_url(repo_id)
+    return None
 
 
-def _require(cond: bool, message: str) -> None:
-    if not cond:
-        raise RuntimeError(message)
+def fetch_endpoint_ready_manifest(*, token: str | None = None, timeout: int = 30) -> dict[str, Any] | None:
+    url = resolve_ready_manifest_url()
+    if not url:
+        return None
+    manifest = _http_json_request(url, token=token, timeout=timeout)
+    approved_bundle = manifest.get("approved_bundle", {})
+    if manifest.get("manifest_version") != "oracle_endpoint_ready_v1":
+        raise RuntimeError(f"hf_ready_manifest_invalid_version:{manifest.get('manifest_version')}")
+    if manifest.get("endpoint") != "cloud_oracle":
+        raise RuntimeError(f"hf_ready_manifest_invalid_endpoint:{manifest.get('endpoint')}")
+    artifact_name = approved_bundle.get("artifact_name")
+    repo_path = approved_bundle.get("repo_path")
+    if not isinstance(artifact_name, str) or not artifact_name:
+        raise RuntimeError("hf_ready_manifest_missing_artifact_name")
+    if not isinstance(repo_path, str) or not repo_path:
+        raise RuntimeError("hf_ready_manifest_missing_repo_path")
+    return manifest
 
 
-def validate_request_payload(payload: dict[str, Any]) -> None:
-    schema = _load_schema(REQUEST_SCHEMA_PATH)
-    _require(isinstance(payload, dict), "request_payload_must_be_object")
-    _require("portfolio" in payload and "universe" in payload, "request_missing_top_level_fields")
-    portfolio = payload["portfolio"]
-    universe = payload["universe"]
-    _require(isinstance(portfolio, dict), "portfolio_must_be_object")
-    _require(isinstance(universe, list) and len(universe) > 0, "universe_must_be_nonempty_array")
-    _require("cash" in portfolio and "positions" in portfolio, "portfolio_missing_fields")
-    _require(float(portfolio["cash"]) >= 0, "portfolio_cash_must_be_nonnegative")
-    _require(isinstance(portfolio["positions"], list), "portfolio_positions_must_be_array")
-    for pos in portfolio["positions"]:
-        _require(all(k in pos for k in ("ticker", "qty", "entry_price")), "position_missing_required_fields")
-        _require(int(pos["qty"]) >= 0, "position_qty_must_be_nonnegative")
-        _require(float(pos["entry_price"]) >= 0, "position_entry_price_must_be_nonnegative")
-    for item in universe:
-        _require(all(k in item for k in ("ticker", "history", "news")), "universe_item_missing_required_fields")
-        _require(isinstance(item["history"], list) and len(item["history"]) > 0, "history_must_be_nonempty_array")
-        _require(isinstance(item["news"], list), "news_must_be_array")
-        for bar in item["history"]:
-            _require(all(k in bar for k in ("date", "open", "high", "low", "close", "volume")), "history_bar_missing_required_fields")
-        for news_item in item["news"]:
-            _require(all(k in news_item for k in ("date", "headline", "summary")), "news_item_missing_required_fields")
-    _ = schema
-
-
-def validate_response_payload(payload: dict[str, Any], request_universe: list[str], current_positions: list[str]) -> None:
-    schema = _load_schema(RESPONSE_SCHEMA_PATH)
-    _require(isinstance(payload, dict), "response_payload_must_be_object")
-    _require(all(k in payload for k in ("model_version", "generated_at", "request_id", "predictions")), "response_missing_top_level_fields")
-    preds = payload["predictions"]
-    _require(isinstance(preds, list) and len(preds) > 0, "predictions_must_be_nonempty_array")
-    seen = set()
-    total_weight = 0.0
-    allowed = set(request_universe) | set(current_positions)
-    for row in preds:
-        _require(all(k in row for k in ("ticker", "target_weight", "confidence", "signal_type")), "prediction_missing_required_fields")
-        ticker = str(row["ticker"])
-        _require(ticker in allowed, f"prediction_contains_unknown_ticker:{ticker}")
-        _require(ticker not in seen, f"duplicate_prediction_ticker:{ticker}")
-        seen.add(ticker)
-        weight = float(row["target_weight"])
-        confidence = float(row["confidence"])
-        _require(0.0 <= weight <= 0.2, f"invalid_target_weight:{ticker}")
-        _require(0.0 <= confidence <= 1.0, f"invalid_confidence:{ticker}")
-        _require(str(row["signal_type"]) == "long", f"invalid_signal_type:{ticker}")
-        total_weight += weight
-    _require(total_weight <= 1.0 + 1e-9, "invalid_total_target_weight_exceeds_one")
-    _ = schema
+def validate_response_against_ready_manifest(response_payload: dict[str, Any], ready_manifest: dict[str, Any]) -> dict[str, Any]:
+    approved_bundle = ready_manifest.get("approved_bundle", {})
+    expected_artifact = approved_bundle.get("artifact_name")
+    actual_model_version = response_payload.get("model_version")
+    if actual_model_version != expected_artifact:
+        raise RuntimeError(
+            f"hf_model_version_mismatch:expected={expected_artifact}:actual={actual_model_version}"
+        )
+    return {
+        "manifest_version": ready_manifest.get("manifest_version"),
+        "endpoint": ready_manifest.get("endpoint"),
+        "expected_artifact_name": expected_artifact,
+        "expected_repo_path": approved_bundle.get("repo_path"),
+        "approved_manifest_path": approved_bundle.get("approved_manifest_path"),
+        "bundle_manifest_path": approved_bundle.get("bundle_manifest_path"),
+        "repo_id": ready_manifest.get("repo_id"),
+    }
 
 
 def call_oracle(payload: dict[str, Any]) -> dict[str, Any]:
     endpoint, token = require_hf_config()
     validate_request_payload(payload)
     request_id = str(uuid.uuid4())
-    req = urllib.request.Request(
+    transport_payload = {"inputs": payload, "request_id": request_id}
+    parsed = _http_json_request(
         endpoint,
-        data=json.dumps(payload).encode("utf-8"),
+        token=token,
         method="POST",
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-            "X-Request-Id": request_id,
-        },
+        payload=transport_payload,
+        timeout=60,
+        extra_headers={"X-Request-Id": request_id},
     )
-    try:
-        with urllib.request.urlopen(req, timeout=60) as response:
-            body = response.read().decode("utf-8")
-            parsed = json.loads(body) if body else {}
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8") if exc.fp else ""
-        raise RuntimeError(f"hf_http_{exc.code}:{body}") from exc
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"hf_network_error:{exc}") from exc
 
     universe_tickers = [item["ticker"] for item in payload.get("universe", [])]
     current_positions = [item["ticker"] for item in payload.get("portfolio", {}).get("positions", [])]
-    validate_response_payload(parsed, universe_tickers, current_positions)
+    try:
+        validate_response_payload(parsed, universe_tickers, current_positions)
+    except ValueError as exc:
+        raise RuntimeError(f"hf_invalid_response:{exc}") from exc
+
+    ready_manifest = fetch_endpoint_ready_manifest(token=token)
+    if ready_manifest is not None:
+        enforcement_enabled = _env_flag(ENFORCE_READY_MANIFEST_ENV, default=False)
+        try:
+            validate_response_against_ready_manifest(parsed, ready_manifest)
+        except RuntimeError:
+            if enforcement_enabled:
+                raise
+
     return parsed

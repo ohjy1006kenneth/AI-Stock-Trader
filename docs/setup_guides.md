@@ -6,6 +6,10 @@
 - Configure Hugging Face access in `config/alpaca.env` with:
   - `HF_INFERENCE_URL`
   - `HF_API_TOKEN`
+  - optional canonical model-repo contract check:
+    - `HF_MODEL_REPO_ID` (preferred; builds the canonical `endpoints/oracle/ready.json` URL automatically)
+    - or `HF_MODEL_REPO_READY_MANIFEST_URL` (explicit manifest URL)
+    - `HF_ENFORCE_READY_MANIFEST=true` if the Pi should fail closed when the live endpoint response model does not match the current canonical ready manifest
 
 ## Cloud / edge contract
 The Pi edge sends one portfolio-level batch payload containing:

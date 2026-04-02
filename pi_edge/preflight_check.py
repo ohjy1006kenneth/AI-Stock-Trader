@@ -14,6 +14,7 @@ if str(ROOT_DIR) not in sys.path:
 import importlib
 import json
 
+from pi_edge.network.hf_api_client import fetch_endpoint_ready_manifest, resolve_ready_manifest_url
 from runtime.common.common import CONFIG_DIR, DIAGNOSTICS_DATA_DIR, EXECUTION_DATA_DIR, LEDGER_DIR, ROOT, MARKET_DATA_DIR, env_str, load_contracts, load_execution_config, load_local_env_file, now_iso, read_json, write_json
 
 REQUIRED_PACKAGES = ["yfinance"]
@@ -76,6 +77,21 @@ def main() -> None:
     if execution_cfg.get("paper_trading_only") is not True:
         errors.append("paper_trading_only_must_be_true")
 
+    ready_manifest_url = resolve_ready_manifest_url()
+    if ready_manifest_url:
+        try:
+            ready_manifest = fetch_endpoint_ready_manifest(timeout=15)
+        except Exception as exc:
+            errors.append(f"hf_ready_manifest_unavailable:{exc}")
+        else:
+            status_hint = ready_manifest.get("approved_bundle", {}).get("artifact_name")
+            if not status_hint:
+                errors.append("hf_ready_manifest_missing_approved_bundle")
+            else:
+                warnings.append(f"hf_ready_manifest_ok:{status_hint}")
+    else:
+        warnings.append("hf_ready_manifest_not_configured")
+
     contracts = load_contracts()
     if not contracts:
         warnings.append("data_contracts_not_loaded")
@@ -104,6 +120,7 @@ def main() -> None:
             "- pi_edge runtime files present",
             "- Alpaca paper credentials configured",
             "- S&P 500 snapshot present",
+            f"- hf_ready_manifest={'configured' if ready_manifest_url else 'not_configured'}",
         ]) + "\n"
         TEXT_PATH.write_text(text)
         print(text.strip())
