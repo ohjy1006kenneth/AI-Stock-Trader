@@ -13,21 +13,32 @@ if str(ROOT_DIR) not in sys.path:
 
 from typing import Any
 
-from runtime.common.common import EXECUTION_DATA_DIR, LEDGER_DIR, MARKET_DATA_DIR, STRATEGY_DATA_DIR, env_str, gen_id, latest_price_from_snapshot, load_execution_config, market_is_open_now, now_iso, read_json, safe_float, validate_required_fields, write_json
 from pi_edge.execution.alpaca_paper import AlpacaPaperClient, build_broker_snapshot
+from pi_edge.execution.decision_adapter import translate_oracle_response_to_execution_intents
+from pi_edge.execution.risk_engine import apply_hard_risk_constraints
+from pi_edge.network.hf_api_client import call_oracle
+from runtime.common.common import (
+    EXECUTION_DATA_DIR,
+    LEDGER_DIR,
+    MARKET_DATA_DIR,
+    env_str,
+    gen_id,
+    load_execution_config,
+    market_is_open_now,
+    now_iso,
+    read_json,
+    safe_float,
+    validate_required_fields,
+    write_json,
+)
 
-DECISION_REQUIRED = [
-    "decision_id", "timestamp", "ticker", "action", "sleeve", "reason_code",
-    "thesis_summary", "trigger_source", "confidence_label", "requires_executor_validation"
-]
 EXEC_REQUIRED = [
     "execution_id", "linked_decision_id", "timestamp", "ticker", "requested_action", "execution_status",
     "rejection_reason", "execution_price", "shares_filled", "cash_before", "cash_after",
     "position_before", "position_after", "realized_pnl_change", "notes"
 ]
-VALID_ACTIONS = {"BUY", "SELL", "HOLD", "REVIEW"}
-VALID_SLEEVES = {"CORE", "SWING"}
 FINAL_BROKER_STATUSES = {"filled", "canceled", "expired", "rejected", "done_for_day"}
+ORACLE_HISTORY_BARS = 21
 
 
 def make_log(**kwargs):
@@ -43,25 +54,13 @@ def append_extra(log: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
     return log
 
 
-def reject(items, decision, reason, cash_before, cash_after, position_before, position_after, execution_price=None, **extra):
+def reject(items, ticker, requested_action, reason, cash_before, cash_after, position_before, position_after, execution_price=None, **extra):
     items.append(append_extra(make_log(
-        execution_id=gen_id("exe"), linked_decision_id=decision.get("decision_id"), timestamp=now_iso(), ticker=decision.get("ticker"),
-        requested_action=decision.get("action"), execution_status="REJECTED", rejection_reason=reason, execution_price=execution_price,
+        execution_id=gen_id("exe"), linked_decision_id=extra.get("linked_decision_id"), timestamp=now_iso(), ticker=ticker,
+        requested_action=requested_action, execution_status="REJECTED", rejection_reason=reason, execution_price=execution_price,
         shares_filled=0, cash_before=cash_before, cash_after=cash_after, position_before=position_before, position_after=position_after,
-        realized_pnl_change=0.0, notes=decision.get("reason_code")
+        realized_pnl_change=0.0, notes=extra.get("notes") or reason
     ), **extra))
-
-
-def load_portfolio_rules(portfolio: dict, config: dict) -> dict:
-    rules = dict(config.get("risk_limits", {}))
-    rules.update(portfolio.get("portfolio_rules", {}))
-    return {
-        "max_total_positions": rules.get("max_total_positions", 15),
-        "max_core_allocation": rules.get("max_core_allocation", 0.7),
-        "max_swing_allocation": rules.get("max_swing_allocation", 0.3),
-        "max_position_weight": rules.get("max_position_weight", 0.12),
-        "cash_buffer_rule": rules.get("cash_buffer_rule", 0.05),
-    }
 
 
 def normalize_broker_positions(raw_positions: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -117,18 +116,70 @@ def sync_ledger_from_broker(portfolio: dict, snapshot: dict[str, Any]) -> dict:
     return portfolio
 
 
-def build_target_shares(decision: dict, price: float) -> int:
-    if decision.get("target_shares"):
-        return int(decision["target_shares"])
-    target_notional = safe_float(decision.get("target_notional"), 0.0) or 0.0
-    if price <= 0:
-        return 0
-    return int(target_notional // price)
-
-
 def ensure_paper_credentials() -> None:
     if not env_str("ALPACA_API_KEY") or not env_str("ALPACA_API_SECRET"):
         raise SystemExit("missing_alpaca_credentials")
+
+
+def _trim_history(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    trimmed = history[-ORACLE_HISTORY_BARS:]
+    return [
+        {
+            "date": row["date"],
+            "open": row["open"],
+            "high": row["high"],
+            "low": row["low"],
+            "close": row["close"],
+            "volume": row["volume"],
+        }
+        for row in trimmed
+        if {"date", "open", "high", "low", "close", "volume"}.issubset(row.keys())
+    ]
+
+
+def build_oracle_payload(price_snapshot: dict[str, Any], broker_snapshot: dict[str, Any]) -> dict[str, Any]:
+    account = broker_snapshot.get("account", {})
+    broker_positions = broker_snapshot.get("positions", [])
+    universe = []
+    for item in price_snapshot.get("items", []):
+        ticker = item.get("ticker")
+        history = _trim_history(item.get("history", []))
+        if not ticker or not history:
+            continue
+        universe.append({
+            "ticker": ticker,
+            "history": history,
+            "news": [],
+        })
+    if not universe:
+        raise ValueError("oracle_request_universe_empty")
+
+    portfolio_positions = []
+    for pos in broker_positions:
+        ticker = pos.get("symbol")
+        if not ticker:
+            continue
+        portfolio_positions.append({
+            "ticker": ticker,
+            "qty": int(float(pos.get("qty") or 0)),
+            "entry_price": float(pos.get("avg_entry_price") or 0.0),
+        })
+
+    return {
+        "portfolio": {
+            "cash": float(account.get("cash") or 0.0),
+            "positions": portfolio_positions,
+        },
+        "universe": universe,
+    }
+
+
+def compute_rebalance_actions(*, predictions_payload: dict[str, Any], broker_snapshot: dict[str, Any], price_snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    return translate_oracle_response_to_execution_intents(
+        oracle_response=predictions_payload,
+        broker_snapshot=broker_snapshot,
+        price_snapshot=price_snapshot,
+    )
 
 
 def main() -> None:
@@ -139,131 +190,85 @@ def main() -> None:
         raise SystemExit("unsupported_broker")
     ensure_paper_credentials()
 
-    decisions_payload = read_json(STRATEGY_DATA_DIR / "strategist_decisions.json", {"decisions": []})
     price_snapshot = read_json(MARKET_DATA_DIR / "price_snapshot.json", {"items": []})
     portfolio = read_json(LEDGER_DIR / "paper_portfolio.json", {})
-    decisions = decisions_payload.get("decisions", [])
     logs: list[dict[str, Any]] = []
 
-    rules = load_portfolio_rules(portfolio, config)
     client = AlpacaPaperClient()
     broker_snapshot = build_broker_snapshot(client)
-    open_orders = client.list_orders(status="open") if config.get("duplicate_order_prevention", {}).get("check_open_broker_orders", True) else []
-    broker_positions = {p.get("symbol"): p for p in broker_snapshot.get("positions", [])}
     account = broker_snapshot.get("account", {})
-    positions = normalize_broker_positions(broker_snapshot.get("positions", []))
     cash = float(safe_float(account.get("cash"), portfolio.get("cash", 0.0)) or 0.0)
-    total_equity = float(safe_float(account.get("equity"), portfolio.get("total_equity", cash)) or cash)
+    open_orders = client.list_orders(status="open") if config.get("duplicate_order_prevention", {}).get("check_open_broker_orders", True) else []
+    broker_positions = {p.get("symbol"): p for p in broker_snapshot.get("positions", []) if p.get("symbol")}
 
-    by_ticker = {}
-    for d in decisions:
-        missing = validate_required_fields(d, DECISION_REQUIRED)
-        if missing:
-            reject(logs, d, f"malformed_decision_schema:{','.join(missing)}", cash, cash, None, None, execution_mode="paper")
-            continue
-        if d.get("action") not in VALID_ACTIONS:
-            reject(logs, d, "invalid_action", cash, cash, None, None, execution_mode="paper")
-            continue
-        if d.get("sleeve") not in VALID_SLEEVES:
-            reject(logs, d, "invalid_sleeve", cash, cash, None, None, execution_mode="paper")
-            continue
-        by_ticker.setdefault(d["ticker"], []).append(d["action"])
-
-    conflicted = {ticker for ticker, actions in by_ticker.items() if "BUY" in actions and "SELL" in actions}
-
-    def sleeve_value(sleeve: str) -> float:
-        return sum(float(p.get("market_value", 0.0)) for p in positions if p.get("sleeve") == sleeve)
+    oracle_payload = build_oracle_payload(price_snapshot, broker_snapshot)
+    oracle_response = call_oracle(oracle_payload)
+    risk_checked_response, risk_summary = apply_hard_risk_constraints(
+        oracle_response=oracle_response,
+        request_universe=[str(item.get("ticker")) for item in oracle_payload.get("universe", []) if item.get("ticker")],
+        current_positions=[str(pos.get("symbol")) for pos in broker_snapshot.get("positions", []) if pos.get("symbol")],
+        execution_config=config,
+    )
+    rebalance_actions = compute_rebalance_actions(
+        predictions_payload=risk_checked_response,
+        broker_snapshot=broker_snapshot,
+        price_snapshot=price_snapshot,
+    )
 
     market_cfg = config.get("market_hours", {})
     market_open = market_is_open_now(market_cfg.get("timezone", "America/New_York")) if market_cfg.get("enforce", True) else True
     allow_queue = market_cfg.get("allow_queued_orders_outside_market_hours", True)
 
-    for d in decisions:
-        ticker = d.get("ticker")
-        action = d.get("action")
-        price = latest_price_from_snapshot(price_snapshot, ticker)
-        position_before = next((p for p in positions if p.get("ticker") == ticker), None)
-        if ticker in conflicted:
-            reject(logs, d, "conflicting_buy_sell_instructions", cash, cash, position_before, position_before, price, execution_mode="paper")
-            continue
-        if price is None:
-            reject(logs, d, "missing_execution_price", cash, cash, position_before, position_before, price, execution_mode="paper")
-            continue
-        if action in {"HOLD", "REVIEW"}:
+    for action_row in rebalance_actions:
+        ticker = action_row["ticker"]
+        action = action_row["action"]
+        price = action_row["current_price"]
+        position_before = broker_positions.get(ticker)
+        if action == "HOLD":
             logs.append(append_extra(make_log(
-                execution_id=gen_id("exe"), linked_decision_id=d["decision_id"], timestamp=now_iso(), ticker=ticker,
+                execution_id=gen_id("exe"), linked_decision_id=risk_checked_response.get("request_id"), timestamp=now_iso(), ticker=ticker,
                 requested_action=action, execution_status="EXECUTED", rejection_reason=None, execution_price=price,
                 shares_filled=0, cash_before=cash, cash_after=cash, position_before=position_before, position_after=position_before,
-                realized_pnl_change=0.0, notes=d.get("reason_code")
-            ), execution_mode="paper", broker_name="alpaca", broker_status="noop"))
+                realized_pnl_change=0.0, notes="rebalance_already_at_target"
+            ), execution_mode="paper", broker_name="alpaca", broker_status="noop", rebalance=action_row, oracle_request_id=risk_checked_response.get("request_id"), oracle_model_version=risk_checked_response.get("model_version"), risk_summary=risk_summary))
             continue
         if not market_open and not allow_queue:
-            reject(logs, d, "market_closed_submission_blocked", cash, cash, position_before, position_before, price, execution_mode="paper")
+            reject(logs, ticker, action, "market_closed_submission_blocked", cash, cash, position_before, position_before, price,
+                   execution_mode="paper", rebalance=action_row, oracle_request_id=risk_checked_response.get("request_id"), oracle_model_version=risk_checked_response.get("model_version"), risk_summary=risk_summary)
             continue
-
-        target_shares = build_target_shares(d, price)
-        if action == "BUY":
-            if config.get("duplicate_order_prevention", {}).get("check_existing_positions", True) and (position_before is not None or ticker in broker_positions):
-                reject(logs, d, "duplicate_existing_position", cash, cash, position_before, position_before, price, execution_mode="paper")
-                continue
-            if len(positions) >= int(rules["max_total_positions"]):
-                reject(logs, d, "max_total_positions_exceeded", cash, cash, None, None, price, execution_mode="paper")
-                continue
-            if target_shares <= 0:
-                reject(logs, d, "non_positive_share_request", cash, cash, None, None, price, execution_mode="paper")
-                continue
-            notional = round(target_shares * price, 2)
-            if notional > cash * (1.0 - float(rules["cash_buffer_rule"])):
-                reject(logs, d, "insufficient_cash_buffer", cash, cash, None, None, price, execution_mode="paper")
-                continue
-            if (notional / max(total_equity, 1.0)) > float(rules["max_position_weight"]):
-                reject(logs, d, "position_weight_exceeded", cash, cash, None, None, price, execution_mode="paper")
-                continue
-            if d["sleeve"] == "CORE" and ((sleeve_value("CORE") + notional) / max(total_equity, 1.0)) > float(rules["max_core_allocation"]):
-                reject(logs, d, "core_allocation_exceeded", cash, cash, None, None, price, execution_mode="paper")
-                continue
-            if d["sleeve"] == "SWING" and ((sleeve_value("SWING") + notional) / max(total_equity, 1.0)) > float(rules["max_swing_allocation"]):
-                reject(logs, d, "swing_allocation_exceeded", cash, cash, None, None, price, execution_mode="paper")
-                continue
-        elif action == "SELL":
-            if target_shares <= 0 and position_before is not None:
-                target_shares = int(position_before.get("shares", 0) or 0)
-            if position_before is None and ticker not in broker_positions:
-                reject(logs, d, "selling_nonexistent_position", cash, cash, None, None, price, execution_mode="paper")
-                continue
-            if target_shares <= 0:
-                target_shares = int(float((broker_positions.get(ticker) or {}).get("qty", 0) or 0))
-            if target_shares <= 0:
-                reject(logs, d, "non_positive_share_request", cash, cash, position_before, position_before, price, execution_mode="paper")
-                continue
+        if action_row["order_qty"] <= 0:
+            reject(logs, ticker, action, "non_positive_share_request", cash, cash, position_before, position_before, price,
+                   execution_mode="paper", rebalance=action_row, oracle_request_id=risk_checked_response.get("request_id"), oracle_model_version=risk_checked_response.get("model_version"), risk_summary=risk_summary)
+            continue
 
         if config.get("duplicate_order_prevention", {}).get("check_open_broker_orders", True):
             duplicate_open = next((o for o in open_orders if o.get("symbol") == ticker and o.get("side", "").upper() == action), None)
             if duplicate_open is not None:
-                reject(logs, d, "duplicate_open_broker_order", cash, cash, position_before, position_before, price,
-                       execution_mode="paper", broker_order_id=duplicate_open.get("id"), broker_status=duplicate_open.get("status"))
+                reject(logs, ticker, action, "duplicate_open_broker_order", cash, cash, position_before, position_before, price,
+                       execution_mode="paper", broker_order_id=duplicate_open.get("id"), broker_status=duplicate_open.get("status"), rebalance=action_row,
+                       oracle_request_id=risk_checked_response.get("request_id"), oracle_model_version=risk_checked_response.get("model_version"), risk_summary=risk_summary)
                 continue
 
         side = "buy" if action == "BUY" else "sell"
         broker_resp = client.submit_order(
             symbol=ticker,
             side=side,
-            qty=target_shares,
+            qty=int(action_row["order_qty"]),
             order_type=config.get("order_defaults", {}).get(f"{side}_order_type", "market"),
             time_in_force=config.get("order_defaults", {}).get("time_in_force", "day"),
-            client_order_id=d["decision_id"],
+            client_order_id=f"{risk_checked_response.get('request_id', 'oracle')}-{ticker}",
             extended_hours=bool(config.get("order_defaults", {}).get("extended_hours", False)),
         )
         broker_status = str(broker_resp.get("status") or "submitted")
         filled_qty = int(float(broker_resp.get("filled_qty") or 0))
         fill_price = safe_float(broker_resp.get("filled_avg_price"), price) or price
         logs.append(append_extra(make_log(
-            execution_id=gen_id("exe"), linked_decision_id=d["decision_id"], timestamp=now_iso(), ticker=ticker,
+            execution_id=gen_id("exe"), linked_decision_id=risk_checked_response.get("request_id"), timestamp=now_iso(), ticker=ticker,
             requested_action=action, execution_status=("EXECUTED" if broker_status not in {"rejected"} else "REJECTED"),
             rejection_reason=(None if broker_status not in {"rejected"} else broker_resp.get("reject_reason")), execution_price=fill_price,
             shares_filled=filled_qty, cash_before=cash, cash_after=cash, position_before=position_before, position_after=None,
-            realized_pnl_change=0.0, notes=d.get("reason_code")
-        ), execution_mode="paper", broker_name="alpaca", broker_order_id=broker_resp.get("id"), broker_client_order_id=broker_resp.get("client_order_id"), broker_status=broker_status, broker_response=broker_resp, queued_for_next_session=(not market_open)))
+            realized_pnl_change=0.0, notes="oracle_target_weight_rebalance"
+        ), execution_mode="paper", broker_name="alpaca", broker_order_id=broker_resp.get("id"), broker_client_order_id=broker_resp.get("client_order_id"), broker_status=broker_status, broker_response=broker_resp, queued_for_next_session=(not market_open), rebalance=action_row, oracle_request_id=risk_checked_response.get("request_id"), oracle_model_version=risk_checked_response.get("model_version"), risk_summary=risk_summary))
         if broker_status in FINAL_BROKER_STATUSES and broker_status != "rejected":
             open_orders = [o for o in open_orders if o.get("id") != broker_resp.get("id")]
         else:
@@ -281,11 +286,16 @@ def main() -> None:
     write_json(LEDGER_DIR / "paper_portfolio.json", portfolio)
     write_json(EXECUTION_DATA_DIR / "execution_log.json", {
         "generated_at": now_iso(),
-        "execution_schema_version": "v3",
+        "execution_schema_version": "v5",
         "execution_mode": "paper",
+        "oracle_request": oracle_payload,
+        "oracle_response_raw": oracle_response,
+        "oracle_response": risk_checked_response,
+        "risk_summary": risk_summary,
+        "rebalance_actions": rebalance_actions,
         "items": logs,
     })
-    print(f"Executor finished: {len(logs)} execution log records (mode=paper)")
+    print(f"Executor finished: {len(logs)} execution log records (mode=paper, oracle_rebalance=true)")
 
 
 if __name__ == "__main__":
