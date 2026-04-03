@@ -74,6 +74,32 @@ def _job_command_issue12_pipeline(smoke_mode: bool, dataset_limit: int, train_li
     return command
 
 
+def _job_command_issue21_pipeline(dataset_limit: int, train_limit: int, ensemble_size: int, epochs: int, news_lookback_days: int) -> list[str]:
+    command = [
+        sys.executable,
+        "-m",
+        "cloud_training.training.run_issue21_cloud_pipeline",
+        "--build-dataset",
+        "--export-bundle",
+        "--dataset-sentiment-scorer",
+        "finbert",
+        "--dataset-ticker-selection",
+        "coverage",
+        "--exclude-market-proxy-target",
+        "--dataset-news-lookback-days",
+        str(news_lookback_days),
+        "--ensemble-size",
+        str(ensemble_size),
+        "--epochs",
+        str(epochs),
+    ]
+    if dataset_limit > 0:
+        command.extend(["--dataset-max-tickers", str(dataset_limit)])
+    if train_limit > 0:
+        command.extend(["--limit", str(train_limit)])
+    return command
+
+
 def _job_command_publish_latest_bundle() -> tuple[list[str] | None, str | None]:
     repo_id = os.getenv("HF_ARTIFACT_REPO_ID", "").strip()
     if not repo_id:
@@ -111,6 +137,31 @@ def enqueue_issue12_pipeline(smoke_mode: bool, dataset_limit: int, train_limit: 
     )
 
 
+def enqueue_issue21_pipeline(dataset_limit: int, train_limit: int, ensemble_size: int, epochs: int, news_lookback_days: int) -> tuple[str, str, str]:
+    command = _job_command_issue21_pipeline(
+        int(dataset_limit),
+        int(train_limit),
+        int(ensemble_size),
+        int(epochs),
+        int(news_lookback_days),
+    )
+    return enqueue_job(
+        "issue21_cloud_pipeline",
+        "Issue #21 real FinBERT high-coverage pipeline",
+        command,
+        meta={
+            "dataset_limit": int(dataset_limit),
+            "train_limit": int(train_limit),
+            "ensemble_size": int(ensemble_size),
+            "epochs": int(epochs),
+            "news_lookback_days": int(news_lookback_days),
+            "dataset_sentiment_scorer": "finbert",
+            "dataset_ticker_selection": "coverage",
+            "exclude_market_proxy_target": True,
+        },
+    )
+
+
 def enqueue_publish_latest_bundle() -> tuple[str, str, str]:
     command, error = _job_command_publish_latest_bundle()
     if error:
@@ -142,15 +193,25 @@ if gr is not None:
             "This Space no longer acts as the long-running trainer itself. It submits durable file-backed jobs that execute the repo's existing job-style entrypoints, then lets you inspect status, results, and logs."
         )
 
+        gr.Markdown("## Issue #12 pipeline controls")
         with gr.Row():
-            dataset_limit = gr.Number(label="Dataset max tickers (0 = default script behavior)", value=0, precision=0)
-            train_limit = gr.Number(label="Training sample limit (0 = full)", value=0, precision=0)
-            ensemble_size = gr.Number(label="Ensemble size", value=3, precision=0)
-            epochs = gr.Number(label="Epochs", value=250, precision=0)
+            dataset_limit = gr.Number(label="Issue #12 dataset max tickers (0 = default script behavior)", value=0, precision=0)
+            train_limit = gr.Number(label="Issue #12 training sample limit (0 = full)", value=0, precision=0)
+            ensemble_size = gr.Number(label="Issue #12 ensemble size", value=3, precision=0)
+            epochs = gr.Number(label="Issue #12 epochs", value=250, precision=0)
             smoke_mode = gr.Checkbox(label="Issue #12 smoke mode (synthetic dataset)", value=False)
+
+        gr.Markdown("## Issue #21 real FinBERT high-coverage controls")
+        with gr.Row():
+            issue21_dataset_limit = gr.Number(label="Issue #21 dataset max tickers (0 = full coverage-ranked set)", value=6, precision=0)
+            issue21_train_limit = gr.Number(label="Issue #21 training sample limit (0 = full history)", value=0, precision=0)
+            issue21_ensemble_size = gr.Number(label="Issue #21 ensemble size", value=1, precision=0)
+            issue21_epochs = gr.Number(label="Issue #21 epochs", value=250, precision=0)
+            issue21_news_lookback_days = gr.Number(label="Issue #21 news lookback days", value=7, precision=0)
 
         with gr.Row():
             pipeline_button = gr.Button("Submit Issue #12 dataset→train→export job", variant="primary")
+            issue21_pipeline_button = gr.Button("Submit Issue #21 real FinBERT cloud pipeline", variant="primary")
             publish_bundle_button = gr.Button("Submit publish-latest-bundle job", variant="secondary")
             refresh_button = gr.Button("Refresh status")
 
@@ -162,6 +223,11 @@ if gr is not None:
         log_box = gr.Textbox(label="Selected job log or status payload", lines=24)
 
         pipeline_button.click(enqueue_issue12_pipeline, inputs=[smoke_mode, dataset_limit, train_limit, ensemble_size, epochs], outputs=[command_status, status_box, log_box])
+        issue21_pipeline_button.click(
+            enqueue_issue21_pipeline,
+            inputs=[issue21_dataset_limit, issue21_train_limit, issue21_ensemble_size, issue21_epochs, issue21_news_lookback_days],
+            outputs=[command_status, status_box, log_box],
+        )
         publish_bundle_button.click(enqueue_publish_latest_bundle, inputs=[], outputs=[command_status, status_box, log_box])
         inspect_job_button.click(inspect_job, inputs=[selected_job_id], outputs=[command_status, status_box, log_box])
         refresh_button.click(lambda: ("refreshed", status_payload(), LOG_PATH.read_text() if LOG_PATH.exists() else ""), inputs=[], outputs=[command_status, status_box, log_box])

@@ -5,12 +5,11 @@ GitHub Issues are the primary task-management system for this project.
 ## Core operating model
 - `trading` is the orchestrator and issue manager.
 - Specialist agents work from bounded GitHub Issues.
-- Chat is reserved mainly for:
-  - human decisions
-  - blocker resolution
-  - milestone summaries
-  - important integration updates
 - Active work tracking should live in GitHub Issues, not only in chat.
+- While a specialist is actively working an issue, `trading` should stay quiet in chat unless blocked or a human decision is required.
+- When an issue is completed, `trading` should send a concise issue-completion summary.
+- When a milestone is completed, `trading` should send a milestone summary.
+- If a blocker or human decision is required, `trading` should ask immediately and clearly.
 
 ## Issue lifecycle
 Use labels to represent lifecycle state:
@@ -118,5 +117,40 @@ When a specialist is blocked by a real decision or ambiguity:
 Use chat mainly for:
 - answering blocker issues
 - confirming milestone-level direction
-- receiving concise progress summaries
+- issue-completion summaries
+- milestone summaries
 - handling integration decisions that cannot be resolved from issues alone
+
+Do not send constant progress chatter while work is actively underway.
+
+## Required issue-completion summary format
+For each completed issue, use exactly this structure:
+- Issue: [number and title]
+- Owner specialist: [agent name]
+- Status: completed / moved to review / blocked
+- What changed: short but useful summary
+- Files changed: list
+- Checks/tests run: list
+- Any follow-up issues created: list
+- Next issue selected: [number and title]
+
+Issue summaries must make specialist work visible through concrete file changes, implementation details, and checks. Do not hide work behind vague phrasing like "the agent worked on it".
+
+## Parallelization policy
+- Maintain one primary critical-path issue at all times.
+- Allow up to 2 additional parallel issues only when they are dependency-safe.
+- Never assign more than one active issue to the same specialist at once.
+- Do not start an issue in parallel if it depends on outputs or contracts that are not ready yet.
+- If a parallel issue is only safe as scaffolding, keep it explicitly limited to scaffolding and contract preparation.
+- Do not activate the whole issue set at once; keep concurrency disciplined and dependency-aware.
+
+## Active issue selection rule
+When selecting active work, `trading` should explicitly classify the issue set into:
+1. one primary critical-path issue
+2. up to two additional parallel-safe issues
+3. blocked issues waiting on dependencies or human decisions
+
+For each active or blocked issue, record:
+- owning specialist
+- dependency reason
+- why it is active now or why it must wait

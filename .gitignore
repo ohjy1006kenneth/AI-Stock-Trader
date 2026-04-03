@@ -1,14 +1,43 @@
+# Python
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
-.venv/
-.env
-.openclaw/
+*.py[cod]
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
-# Runtime-generated state
+# Virtualenv / local tooling
+.venv/
+.openclaw/
+.env
+
+# OpenClaw local workspace files
+/AGENTS.md
+/SOUL.md
+/USER.md
+/TOOLS.md
+/HEARTBEAT.md
+/IDENTITY.md
+/memory/
+
+# Temp scratch files
+/.tmp_*.md
+*.tmp
+
+# Local credentials
+/config/alpaca.env
+
+# Runtime / generated state
+/logs/*
+!/logs/README.md
+
+/data/cache/**
+!/data/cache/.gitkeep
+/data/raw/**
+!/data/raw/.gitkeep
+/data/processed/**
+!/data/processed/.gitkeep
 /data/runtime/**
-!/data/runtime/
 !/data/runtime/.gitkeep
 !/data/runtime/market/.gitkeep
 !/data/runtime/strategy/.gitkeep
@@ -16,38 +45,34 @@ __pycache__/
 !/data/runtime/diagnostics/.gitkeep
 !/data/runtime/alerts/.gitkeep
 
-# Runtime-local portfolio state
+# Local portfolio state
 /ledger/*.json
 !/ledger/.gitkeep
 
-# Generated reports
-/reports/daily/*.md
-/reports/pipeline/*.md
-/reports/diagnostics/*.md
-/reports/backtests/*.md
-!/reports/daily/.gitkeep
-!/reports/pipeline/.gitkeep
-!/reports/diagnostics/.gitkeep
-!/reports/backtests/.gitkeep
-!/reports/templates/**
-
-# Backtest outputs
-/backtests/outputs/*
-!/backtests/outputs/.gitkeep
-
-# Logs and local caches
-/logs/*
-!/logs/README.md
-/data/cache/*
-!/data/cache/.gitkeep
-/data/raw/*
-!/data/raw/.gitkeep
-/data/processed/*
-!/data/processed/.gitkeep
-
-# Artifacts: keep structure, not model payloads by default
-/artifacts/bundles/*
+# Generated artifacts
+/artifacts/bundles/**
 !/artifacts/bundles/.gitkeep
+/artifacts/deployments/**
+!/artifacts/deployments/.gitkeep
 
-# Local broker credentials
-/config/alpaca.env
+# Generated reports
+/reports/backtests/**/*.json
+/reports/backtests/**/*.csv
+/reports/backtests/**/*.md
+!/reports/backtests/.gitkeep
+/reports/pipeline/**/*.json
+/reports/pipeline/**/*.log
+/reports/pipeline/**/*.md
+!/reports/pipeline/.gitkeep
+/reports/diagnostics/**/*.json
+/reports/diagnostics/**/*.log
+/reports/diagnostics/**/*.md
+!/reports/diagnostics/.gitkeep
+/reports/daily/**/*.md
+!/reports/daily/.gitkeep
+/reports/integration/**
+!/reports/integration/.gitkeep
+
+# Ignore old local cleanup areas if recreated
+/archive/
+/trash/

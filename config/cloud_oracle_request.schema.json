@@ -64,6 +64,30 @@
                 "summary": { "type": "string" }
               }
             }
+          },
+          "market_history": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["date", "open", "high", "low", "close", "volume"],
+              "additionalProperties": false,
+              "properties": {
+                "date": { "type": "string" },
+                "open": { "type": "number" },
+                "high": { "type": "number" },
+                "low": { "type": "number" },
+                "close": { "type": "number" },
+                "volume": { "type": "integer", "minimum": 0 }
+              }
+            }
+          },
+          "context": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "precomputed_features": {
+            "type": "object",
+            "additionalProperties": { "type": "number" }
           }
         }
       }

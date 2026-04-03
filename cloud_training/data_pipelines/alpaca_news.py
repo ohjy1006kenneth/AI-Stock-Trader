@@ -3,15 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 
-ROOT_DIR = Path(__file__).resolve()
-for _ in range(6):
-    if (ROOT_DIR / ".gitignore").exists():
-        break
-    ROOT_DIR = ROOT_DIR.parent
+ROOT_DIR = Path(__file__).resolve().parents[2]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 import json
+import time
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
@@ -20,6 +17,7 @@ from typing import Any
 from runtime.common.common import CONFIG_DIR, env_str, load_local_env_file, now_iso
 
 NEWS_CACHE_DIR = ROOT_DIR / "data" / "raw" / "alpaca_news"
+MAX_NEWS_HTTP_RETRIES = 5
 
 
 def _alpaca_headers() -> dict[str, str]:
@@ -40,21 +38,74 @@ def _news_base_url() -> str:
     return env_str("ALPACA_DATA_URL", "https://data.alpaca.markets")
 
 
+def _retry_after_seconds(error: Exception, attempt: int) -> float:
+    headers = getattr(error, "headers", None)
+    retry_after = headers.get("Retry-After") if headers is not None else None
+    if retry_after:
+        try:
+            return max(float(retry_after), 1.0)
+        except (TypeError, ValueError):
+            pass
+    return min(2.0 ** max(attempt - 1, 0), 30.0)
+
+
+def _fetch_news_page(url: str, headers: dict[str, str]) -> dict[str, Any]:
+    req = urllib.request.Request(url, headers=headers, method="GET")
+    last_error: Exception | None = None
+    for attempt in range(1, MAX_NEWS_HTTP_RETRIES + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=60) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as error:
+            if error.code != 429 or attempt >= MAX_NEWS_HTTP_RETRIES:
+                raise
+            last_error = error
+            time.sleep(_retry_after_seconds(error, attempt))
+        except urllib.error.URLError as error:
+            if attempt >= MAX_NEWS_HTTP_RETRIES:
+                raise
+            last_error = error
+            time.sleep(min(2.0 ** max(attempt - 1, 0), 15.0))
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("unexpected_news_fetch_retry_state")
+
+
 def fetch_news(*, symbols: list[str], start_iso: str, end_iso: str, limit: int = 50) -> list[dict[str, Any]]:
     base = _news_base_url()
-    query = urllib.parse.urlencode({
-        "symbols": ",".join(symbols),
-        "start": start_iso,
-        "end": end_iso,
-        "limit": limit,
-        "sort": "asc",
-        "include_content": "false",
-    })
-    url = f"{base}/v1beta1/news?{query}"
-    req = urllib.request.Request(url, headers=_alpaca_headers(), method="GET")
-    with urllib.request.urlopen(req, timeout=60) as response:
-        payload = json.loads(response.read().decode("utf-8"))
-    news_items = payload.get("news", [])
+    headers = _alpaca_headers()
+    remaining = max(int(limit), 0)
+    page_size = 50 if remaining == 0 else min(50, remaining)
+    next_page_token: str | None = None
+    news_items: list[dict[str, Any]] = []
+
+    while True:
+        query_params = {
+            "symbols": ",".join(symbols),
+            "start": start_iso,
+            "end": end_iso,
+            "limit": page_size,
+            "sort": "asc",
+            "include_content": "false",
+        }
+        if next_page_token:
+            query_params["page_token"] = next_page_token
+        query = urllib.parse.urlencode(query_params)
+        url = f"{base}/v1beta1/news?{query}"
+        payload = _fetch_news_page(url, headers)
+
+        batch = payload.get("news", [])
+        news_items.extend(batch)
+        next_page_token = payload.get("next_page_token")
+        if not next_page_token or not batch:
+            break
+        if remaining > 0:
+            remaining -= len(batch)
+            if remaining <= 0:
+                break
+            page_size = min(50, remaining)
+        time.sleep(0.25)
+
     normalized = []
     for item in news_items:
         normalized.append({

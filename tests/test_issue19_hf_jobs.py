@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 from cloud_training.hf_jobs import ROOT_DIR, build_job_request, read_job_status
-from cloud_training.hf_space_app import status_payload
+from cloud_training.hf_space_app import _job_command_issue21_pipeline, status_payload
 
 JOBS_DIR = ROOT_DIR / "reports" / "pipeline" / "jobs"
 
@@ -61,6 +61,21 @@ class TestIssue19HFJobs(unittest.TestCase):
         self.assertIsInstance(payload["latest_jobs"], list)
         index_path = JOBS_DIR / "index.json"
         self.assertTrue(index_path.exists())
+
+    def test_issue21_job_command_uses_real_finbert_high_coverage_defaults(self) -> None:
+        command = _job_command_issue21_pipeline(dataset_limit=6, train_limit=0, ensemble_size=1, epochs=250, news_lookback_days=7)
+        rendered = " ".join(command)
+        self.assertIn("cloud_training.training.run_issue21_cloud_pipeline", rendered)
+        self.assertIn("--build-dataset", command)
+        self.assertIn("--export-bundle", command)
+        self.assertIn("--dataset-sentiment-scorer", command)
+        self.assertIn("finbert", command)
+        self.assertIn("--dataset-ticker-selection", command)
+        self.assertIn("coverage", command)
+        self.assertIn("--exclude-market-proxy-target", command)
+        self.assertIn("--dataset-max-tickers", command)
+        self.assertIn("6", command)
+        self.assertNotIn("--limit", command)
 
 
 if __name__ == "__main__":

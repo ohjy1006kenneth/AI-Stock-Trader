@@ -1,0 +1,6 @@
+# Canonical local/cloud runtime for Issue #12 acceptance and smoke runs.
+# Installs the lightweight repo baseline plus cloud-training and inference bundle deps.
+
+-r ../requirements.txt
+-r ../cloud_training/requirements.txt
+-r ../cloud_inference/requirements.txt

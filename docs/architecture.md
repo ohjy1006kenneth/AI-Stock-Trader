@@ -3,6 +3,19 @@
 ## System shape
 Cloud Lab -> Cloud API Oracle -> Edge Pi
 
+Updated algorithmic stack inside that deployment split:
+0. data and universe selection
+1. feature generation
+2. predictive model (XGBoost-first, with regime-aware expansion later)
+3. portfolio decision (optimizer first, contextual bandit before RL)
+4. risk engine
+5. execution engine
+
+Canonical future expansions still in scope, but deferred until the simpler stack is validated:
+- LSTM / GRU sequence modeling
+- Sentence Transformers / topic modeling in the text branch
+- RL policy layers
+
 ## System-level rules
 - Cloud Lab trains models and policies.
 - Cloud Oracle serves inference via API.
@@ -16,9 +29,11 @@ Cloud Lab -> Cloud API Oracle -> Edge Pi
 - When uncertain, agents must ask questions explicitly and aggressively.
 - Specialists should write code only inside their own domain.
 - `trading` integrates cross-cutting work and owns final coordination.
-- Predictive target is next-day log return.
-- Signal is a normalized probability in [0,1] of a positive next-day return.
-- Confidence is derived from predictive variance.
+- The repo itself is the persistent source of truth for project state; issue completion is only valid after code is pushed, persistent project memory is updated, GitHub issue completion is recorded, and the next active issue is written down.
+- Current implementation baseline target is next-day log return, but the canonical target direction is sector-neutralized forward return.
+- Signal should be an expected-return score and/or a calibrated probability usable by the downstream optimizer.
+- Confidence is derived from predictive variance or equivalent uncertainty estimation.
+- Walk-forward validation is canonical; ordinary k-fold is not.
 - Cloud keeps embeddings internal.
 - Cloud Oracle operates on one portfolio-level batch request covering the full eligible universe.
 - Pi rebalances once per day based on returned target weights.

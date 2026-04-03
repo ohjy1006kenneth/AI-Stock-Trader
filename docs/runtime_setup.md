@@ -15,12 +15,35 @@ python -m pip install --upgrade pip wheel setuptools
 python -m pip install -r requirements.txt
 ```
 
+That baseline install is enough for the lightweight Pi/runtime pieces.
+
+### Issue #12 / cloud training acceptance runtime
+
+If you plan to run the Issue #12 dataset/train/export pipeline from the repo checkout, install the dedicated stack instead of relying on the root runtime requirements alone:
+
+```bash
+.venv/bin/python -m pip install -r requirements/issue12_cloud.txt
+```
+
+Why this matters:
+- `requirements.txt` only covers the lightweight baseline runtime dependency set.
+- the Issue #12 smoke/acceptance path also needs cloud-training + bundle/inference deps such as `numpy`, `pandas`, `scikit-learn`, and `xgboost`.
+- using `requirements/issue12_cloud.txt` avoids the common "missing numpy" style failure when running `.venv/bin/python -m cloud_training.training.run_issue12_cloud_pipeline ...` from a fresh environment.
+
 ## Verify runtime
+
+Baseline runtime check:
 
 ```bash
 .venv/bin/python --version
 .venv/bin/python -m pip show yfinance
-.venv/bin/python runtime/pi/preflight/preflight_check.py
+```
+
+Issue #12 acceptance check:
+
+```bash
+.venv/bin/python -c "import numpy, pandas, sklearn, xgboost; print('issue12 deps ok')"
+.venv/bin/python -m unittest tests.test_issue12_cloud_pipeline -v
 ```
 
 ## S&P 500 snapshot refresh
