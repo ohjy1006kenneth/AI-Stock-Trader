@@ -18,14 +18,16 @@ __pycache__/
 /TOOLS.md
 /HEARTBEAT.md
 /IDENTITY.md
+/agents/
 /memory/
 
 # Temp scratch files
 /.tmp_*.md
 *.tmp
 
-# Local credentials
+# Local credentials / local snapshots
 /config/alpaca.env
+/config/sp500_constituents.json
 
 # Runtime / generated state
 /logs/*

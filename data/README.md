@@ -1,9 +1,13 @@
-# Data Directory
+# data
 
-Deterministic raw and intermediate data files live here.
+Local data directories used during research, training, and runtime execution.
 
-Expected files after V1 runs:
-- `price_history.json`
-- `fundamental_data.json`
+This repo keeps the folder structure, but large/generated data payloads are intentionally not committed.
 
-These are local research artifacts only.
+Typical subareas:
+- `raw/` — local raw snapshots and fetched payloads
+- `processed/` — derived training datasets and model-ready intermediate outputs
+- `runtime/` — edge/cloud runtime state snapshots
+- `cache/` — local caches
+
+If you clone this repo, expect these directories to be mostly empty until you run the pipelines locally or in the cloud.
