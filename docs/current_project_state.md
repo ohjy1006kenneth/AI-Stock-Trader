@@ -5,7 +5,18 @@ This file is the canonical working summary of the trading project's current arch
 ## Canonical architecture references
 
 - `docs/current_project_state.md` = current repo/project status snapshot
-- `docs/architecture_design_bible.md` = canonical design-spec / architecture choice reference, including the revised layered AI architecture (data/universe selection -> feature generation -> XGBoost predictive model -> decision layer -> risk engine -> execution engine)
+- `docs/architecture_design_bible.md` = canonical design-spec / architecture choice reference; read this first when reconstructing project direction next session
+- `docs/architecture.md` = high-level system/deployment split overview
+
+## 0. Fast handoff summary
+
+If resuming this project with minimal tokens, the current working truth is:
+- deployment architecture stays **Cloud Lab -> Cloud Oracle -> Edge Pi**
+- canonical **mainline now** = Layer 0 integrity + FinBERT + engineered market/context features + HMM-first regime detection + XGBoost-first predictive model + cvxpy-style optimizer + hard-rule risk engine + non-AI execution
+- canonical **later, explicitly deferred** = LSTM/GRU, Sentence Transformers, BERTopic/LDA, contextual-bandit upgrades, RL
+- Milestone 3 now explicitly prioritizes Layer 0/1 integrity, HMM-first regime detection, XGBoost-first predictive modeling, optimizer-first decisions, and hard risk controls
+- the repo has been cleaned for public visibility: `agents/`, `memory/`, legacy `archive/`, legacy `trash/`, and tracked `config/sp500_constituents.json` were removed from GitHub; secrets remain local in ignored `config/alpaca.env`
+- current backlog shape to remember: #21 active data/model issue, with #22 (Layer 0 hardening) and #26 (HMM-first regime detection) as the most aligned next architectural follow-ons
 
 ## 1. System shape
 
