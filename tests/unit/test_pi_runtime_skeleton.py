@@ -8,7 +8,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from app.pi.main import openclaw_entrypoint, run_main
+from app.pi.main import run_main
 
 
 EXPECTED_STAGES = [
@@ -32,18 +32,16 @@ def test_pi_runtime_dry_run_stage_order() -> None:
     assert all(row["status"] == "completed" for row in manifests)
 
 
+def test_pi_runtime_includes_container_runtime_metadata() -> None:
+    """Every stage manifest should expose Docker/OpenClaw/cron runtime metadata."""
+    manifests = run_main("2026-04-06")
+    assert all(row["runtime_context"]["runtime_engine"] == "openclaw" for row in manifests)
+    assert all(row["runtime_context"]["execution_environment"] == "docker" for row in manifests)
+    assert all(row["runtime_context"]["scheduler"] == "cron" for row in manifests)
+
+
 def test_pi_runtime_dry_run_is_deterministic() -> None:
     """Running dry-run with the same date should produce identical manifests."""
     first = run_main("2026-04-06")
     second = run_main("2026-04-06")
     assert first == second
-
-
-def test_pi_runtime_has_openclaw_container_metadata() -> None:
-    """Each stage manifest should include Docker/OpenClaw/cron runtime metadata."""
-    manifests = openclaw_entrypoint("2026-04-06")
-    for row in manifests:
-        metadata = row["metadata"]
-        assert metadata["runtime_process"] == "openclaw"
-        assert metadata["container_runtime"] == "docker"
-        assert metadata["scheduler"] == "cron"

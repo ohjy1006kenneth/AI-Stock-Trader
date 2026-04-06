@@ -8,6 +8,13 @@ from app.pi.network.oracle_client import request_predictions
 from app.pi.reporting.run_summary import build_run_summary
 
 
+RUNTIME_CONTEXT = {
+    "runtime_engine": "openclaw",
+    "execution_environment": "docker",
+    "scheduler": "cron",
+}
+
+
 def _manifest(
     run_id: str,
     stage: str,
@@ -23,12 +30,8 @@ def _manifest(
         "status": "completed",
         "started_at": start.isoformat(),
         "finished_at": end.isoformat(),
-        "metadata": {
-            "runtime_process": "openclaw",
-            "container_runtime": "docker",
-            "scheduler": "cron",
-            **(metadata or {}),
-        },
+        "runtime_context": RUNTIME_CONTEXT,
+        "metadata": metadata or {},
     }
 
 

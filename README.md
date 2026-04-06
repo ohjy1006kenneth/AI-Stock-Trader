@@ -8,12 +8,7 @@ This repo builds a layered quantitative trading system with a strict deployment 
 
 - **Cloud Lab** — heavy AI workloads: feature generation, dataset building, training, validation, and model packaging
 - **Cloud Oracle** — hosted inference layer
-- **Edge Pi** — lightweight runtime that fetches market/account context, calls the oracle, executes paper trades, and reports results
-
-Edge runtime deployment model:
-- Docker container on Pi host
-- OpenClaw process inside the container
-- cron-triggered daily runs
+- **Edge Pi** — Docker-containerized OpenClaw runtime triggered by cron for fetch, execution, and reporting
 
 The project is intentionally **paper trading only**.
 
@@ -97,7 +92,8 @@ If you want to understand the architecture first, read:
 
 Real secrets are **not** committed.
 
-Use local `.env`/secret-manager configuration and keep secrets out of git.
+Store environment values in local-only `.env` files or your secret manager.
+Do not commit secret values to this repository.
 
 Generated datasets, reports, runtime state, deployment builds, and local portfolio state are intentionally ignored by git.
 
