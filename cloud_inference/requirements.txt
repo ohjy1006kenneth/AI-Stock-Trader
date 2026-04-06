@@ -1,4 +1,0 @@
-# Custom HF Oracle runtime for the calibrated XGBoost predictive bundle.
-# Keep this intentionally small: only inference-time numeric/model deps.
-numpy==2.4.4
-xgboost==3.2.0

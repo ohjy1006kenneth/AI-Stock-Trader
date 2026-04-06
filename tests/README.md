@@ -1,6 +1,6 @@
 # tests
 
-Unit and integration tests for the trading system.
+Unit, integration, and end-to-end tests for the trading system.
 
 This folder should stay in git.
-Tests document expected behavior and make model / pipeline changes safer.
+Tests document expected behavior and make model and pipeline changes safer.
