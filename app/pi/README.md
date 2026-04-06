@@ -2,6 +2,17 @@
 
 Lightweight Edge Pi runtime.
 
+Owner: Edge orchestration and execution boundary.
+
+Responsibilities:
+- Run daily orchestration flow
+- Call cloud inference and execute approved orders
+- Emit runtime summaries and alerts
+
+Out of scope:
+- Heavy ML training/inference workloads
+- Contract/schema ownership
+
 This folder is meant to run on the Raspberry Pi and should stay small, deterministic, and operationally boring.
 
 Responsibilities:

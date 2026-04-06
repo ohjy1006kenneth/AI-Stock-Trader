@@ -7,6 +7,9 @@ from typing import Any
 from pydantic import BaseModel, Field, ConfigDict
 
 
+SCHEMA_VERSION = "1.0.0"
+
+
 class ActionType(str, Enum):
     """Allowed high-level order actions."""
 
@@ -171,5 +174,5 @@ class ArtifactManifestRecord(BaseModel):
     metrics_path: str | None = None
     diagnostics_path: str | None = None
     bundle_path: str
-    schema_version: str
+    schema_version: str = Field(default=SCHEMA_VERSION)
     approved: bool = False

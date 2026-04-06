@@ -315,3 +315,9 @@ A true holdout period should remain untouched until the design stabilizes.
 - `core/risk/` — hard risk rules
 - `core/execution/` — deterministic execution helpers
 - `services/` — external system adapters
+
+Ownership boundary summary:
+- `app/` coordinates runtime surfaces.
+- `core/` owns business logic and contracts.
+- `services/` owns third-party integration adapters.
+- `docs/` owns architecture and contract intent.

@@ -33,6 +33,11 @@ General conventions:
 - numerical fields use Python numeric types and must not silently contain strings
 - any optional field must be explicitly marked optional in the schema
 
+Schema version metadata:
+
+- `core/contracts/schemas.py` publishes `SCHEMA_VERSION`
+- `ArtifactManifestRecord.schema_version` carries the concrete schema version for handoff/audit
+
 ---
 
 ## Layer 0 contracts

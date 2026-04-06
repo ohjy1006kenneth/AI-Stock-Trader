@@ -53,13 +53,25 @@ Future work that stays compatible with this baseline:
    - `app/cloud/` — Cloud Oracle inference service and contract handling
    - `app/pi/` — Edge Pi runtime for fetch, execution, reconciliation, and reporting
 - `core/` — shared business and domain logic
-- `services/` — external service integrations (Alpaca, R2, Modal, Telegram, observability)
+- `services/` — external service integrations (Alpaca, R2, Modal, observability)
 - `config/` — non-secret configuration, schemas, examples, and requirement split notes
 - `docs/` — architecture notes, setup guides, and process docs
 - `tests/` — unit, integration, and pipeline tests
 - `data/` — local-only data directories and runtime local state
 - `artifacts/` — generated bundles, logs, and report outputs
 - `.github/` — CI and repository automation metadata
+
+## Ownership boundaries
+
+- `app/` owns deployment entrypoints and stage orchestration by runtime surface.
+- `core/` owns domain logic, contracts, and deterministic transformations.
+- `services/` owns external API and infrastructure adapters only.
+- `docs/` owns architecture intent and inter-layer contract references.
+
+Boundary rule:
+- Keep `core/` independent from environment-specific SDK details.
+- Keep `services/` free of domain/business trading rules.
+- Keep `app/` thin; call into `core/` and `services/` rather than duplicating logic.
 
 ## Start here
 
@@ -70,18 +82,21 @@ If you want to understand the architecture first, read:
 3. `docs/data_contracts.md`
 4. `docs/deployment.md`
 
+## CI and local tests
+
+- CI runs on every push and pull request.
+- CI command: `pytest tests/unit/ -v --tb=short`
+- Local command: `pytest tests/unit/ -v --tb=short`
+
 ## Secrets and local state
 
 Real secrets are **not** committed.
 
-Use:
-- `config/alpaca.env.example`
-
-and create your own local:
-- `config/alpaca.env`
+Store environment values in local-only `.env` files or your secret manager.
+Do not commit secret values to this repository.
 
 Generated datasets, reports, runtime state, deployment builds, and local portfolio state are intentionally ignored by git.
 
 ## Status
 
-This repo has been restructured into a documentation-first scaffold before implementation starts.
+Milestone 0 foundation work is in progress.

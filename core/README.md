@@ -2,6 +2,16 @@
 
 Shared business and domain logic.
 
+Owner: Canonical domain and contract boundary.
+
+Responsibilities:
+- Define deterministic business logic and layer contracts
+- Keep model, portfolio, risk, and execution logic reusable
+
+Out of scope:
+- Environment-specific deployment entrypoints
+- Vendor-specific client/auth logic
+
 This folder contains reusable project logic that should be independent from deployment targets.
 
 Subfolders:
