@@ -2,6 +2,10 @@
 
 This document defines the operational day flow.
 
+Execution model note:
+- The Pi runtime flow is executed inside a Docker container.
+- OpenClaw is the runtime process and cron is the host-level trigger.
+
 ## After market close
 
 1. Pull market and news data

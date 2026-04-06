@@ -6,6 +6,11 @@ This is a production quant trading system. It runs daily on a Raspberry Pi 5
 and Alpaca for brokerage. The system trades US equities once per day at market open
 using signals generated after the previous day's close.
 
+Pi runtime deployment assumption:
+- The edge runtime runs inside a Docker container on the Pi.
+- OpenClaw is the runtime process inside that container.
+- Daily orchestration is triggered by cron jobs that invoke the container runtime.
+
 Most development is driven by Codex. A human reviewer approves all PRs before merge.
 Do not wait for human input mid-task unless you are genuinely blocked. If blocked,
 follow the BLOCKED protocol below.
@@ -107,6 +112,7 @@ Reasons to block:
 - There is ambiguity about what you need to do
 - Implementation needs a human decision on the architecture level
 - A human action is required before proceeding (for example auth, access approval, or external setup)
+- Runtime assumptions in docs/issues conflict with the Docker + OpenClaw + cron deployment model
 
 When blocking:
 1. Apply the `blocked` label to the issue
@@ -223,6 +229,15 @@ ai-stock-trader/
 └── .github/                      # Repository automation and templates
 
 ---
+
+## Edge runtime assumptions
+
+The Pi runtime must be treated as containerized infrastructure:
+- Runtime process: OpenClaw
+- Execution environment: Docker container on Pi
+- Scheduler trigger: cron on Pi host invoking container entrypoint
+
+Any examples or scripts for Pi execution should be container-aware.
 
 ## Data contracts
 

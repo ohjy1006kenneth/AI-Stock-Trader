@@ -24,6 +24,11 @@ The system is designed around four deployment surfaces:
    - order execution through Alpaca
    - monitoring and reporting
 
+   Runtime model:
+   - runs inside a Docker container on the Pi
+   - OpenClaw is the in-container runtime process
+   - cron on the Pi host triggers the containerized daily run
+
 4. **Object storage (R2/S3-compatible)**  
    Used as the persistent source of truth for:
    - raw market/news snapshots
@@ -230,6 +235,11 @@ The Pi is used for:
 - hard risk rule enforcement
 - Alpaca order execution
 - Telegram summaries and anomaly alerts
+
+Deployment specifics:
+- Docker container hosts the runtime process
+- OpenClaw runs the edge orchestration logic in-container
+- cron jobs on host trigger container entrypoint execution
 
 ## Object storage
 Object storage is the source of truth for:

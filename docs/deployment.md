@@ -8,6 +8,21 @@ This document describes deployment surfaces and responsibilities.
 - app/cloud: hosted inference service
 - app/pi: edge runtime and execution process
 
+## Pi runtime topology
+
+- Host: Raspberry Pi 5
+- Container runtime: Docker
+- In-container process: OpenClaw
+- Scheduler trigger: host cron invoking container entrypoint
+
+Recommended shape:
+- one container for edge orchestration runtime
+- explicit env var injection for non-secret config and mounted secret file paths
+- mounted persistent path for runtime manifests/log artifacts
+
+Example host trigger concept:
+- cron -> `docker run`/`docker exec` -> OpenClaw runtime entrypoint
+
 ## Baseline rollout order
 
 1. Deploy cloud oracle with fixed contracts
@@ -20,3 +35,4 @@ This document describes deployment surfaces and responsibilities.
 - Keep secrets outside git
 - Log every stage deterministically
 - Fail closed on missing risk checks
+- Keep container image/runtime version pinned for reproducibility
