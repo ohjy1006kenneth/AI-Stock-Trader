@@ -1,80 +1,130 @@
 # Python
 __pycache__/
 *.py[cod]
+*$py.class
 *.so
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+*.whl
+.Python
+pip-log.txt
+pip-delete-this-directory.txt
 
-# Virtualenv / local tooling
-.venv/
-.openclaw/
+# Virtual environments
 .env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.conda/
 
-# OpenClaw local workspace files
-/AGENTS.md
-/SOUL.md
-/USER.md
-/TOOLS.md
-/HEARTBEAT.md
-/IDENTITY.md
-/agents/
-/memory/
+# Environment and secrets — never commit these
+*.env
+*.env.*
+!config/examples/*.env.example
+.envrc
+secrets/
+credentials/
+*.pem
+*.key
+*.p12
+*.pfx
 
-# Temp scratch files
-/.tmp_*.md
-*.tmp
+# Runtime config with real values — examples are committed, actuals are not
+config/runtime.json
+!config/examples/runtime.example.json
+alpaca.env
+!config/examples/alpaca.env.example
 
-# Local credentials / local snapshots
-/config/alpaca.env
-/config/sp500_constituents.json
+# Data — large files stay local or in R2, not in git
+data/raw/
+data/processed/
+data/runtime/
+*.parquet
+*.csv
+*.feather
+*.arrow
 
-# Runtime / generated state
-/logs/*
-!/logs/README.md
+# Model artifacts — stored in R2/artifacts, not git
+artifacts/bundles/
+artifacts/manifests/
+artifacts/backtests/
+*.pkl
+*.joblib
+*.ubj
+*.model
+*.bin
+*.pt
+*.pth
+*.onnx
 
-/data/cache/**
-!/data/cache/.gitkeep
-/data/raw/**
-!/data/raw/.gitkeep
-/data/processed/**
-!/data/processed/.gitkeep
-/data/runtime/**
-!/data/runtime/.gitkeep
-!/data/runtime/market/.gitkeep
-!/data/runtime/strategy/.gitkeep
-!/data/runtime/execution/.gitkeep
-!/data/runtime/diagnostics/.gitkeep
-!/data/runtime/alerts/.gitkeep
+# Logs
+logs/
+*.log
+*.log.*
 
-# Local portfolio state
-/ledger/*.json
-!/ledger/.gitkeep
+# Testing
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.tox/
+nosetests.xml
+test-results/
+junit.xml
 
-# Generated artifacts
-/artifacts/bundles/**
-!/artifacts/bundles/.gitkeep
-/artifacts/deployments/**
-!/artifacts/deployments/.gitkeep
+# Type checking
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pytype/
+.pyre/
 
-# Generated reports
-/reports/backtests/**/*.json
-/reports/backtests/**/*.csv
-/reports/backtests/**/*.md
-!/reports/backtests/.gitkeep
-/reports/pipeline/**/*.json
-/reports/pipeline/**/*.log
-/reports/pipeline/**/*.md
-!/reports/pipeline/.gitkeep
-/reports/diagnostics/**/*.json
-/reports/diagnostics/**/*.log
-/reports/diagnostics/**/*.md
-!/reports/diagnostics/.gitkeep
-/reports/daily/**/*.md
-!/reports/daily/.gitkeep
-/reports/integration/**
-!/reports/integration/.gitkeep
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
 
-# Ignore old local cleanup areas if recreated
-/archive/
-/trash/
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Modal
+.modal/
+
+# Node (OpenClaw runs on Node)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.npm
+.yarn
+
+# Raspberry Pi / Linux
+*.pid
+*.sock
+/tmp/
+
+# Distribution
+*.tar.gz
+*.zip
+
+# OS
+.DS_Store
+.AppleDouble
+.LSOverride
+Desktop.ini
+$RECYCLE.BIN/
+
+# Backtest outputs — large, stored in R2
+artifacts/backtests/results/
+artifacts/backtests/equity_curves/
