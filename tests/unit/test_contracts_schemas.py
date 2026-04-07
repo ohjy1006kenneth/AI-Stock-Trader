@@ -150,12 +150,42 @@ def test_pipeline_manifest_record_uses_runstatus_enum() -> None:
 
 
 def test_artifact_manifest_defaults_schema_version() -> None:
-    """Artifact manifest should default schema_version from module constant."""
+    """Artifact manifest should require explicit matching schema version."""
     record = ArtifactManifestRecord(
         artifact_id="artifact-001",
         model_version="xgb-v1",
         created_at=datetime(2026, 4, 6, 21, 0, 0),
         stage="validation",
         bundle_path="artifacts/bundles/xgb-v1.tar.gz",
+        schema_version=SCHEMA_VERSION,
     )
     assert record.schema_version == SCHEMA_VERSION
+
+
+def test_artifact_manifest_rejects_missing_or_mismatched_schema_version() -> None:
+    """Artifact manifest should reject missing or mismatched schema_version."""
+    try:
+        ArtifactManifestRecord(
+            artifact_id="artifact-001",
+            model_version="xgb-v1",
+            created_at=datetime(2026, 4, 6, 21, 0, 0),
+            stage="validation",
+            bundle_path="artifacts/bundles/xgb-v1.tar.gz",
+        )
+    except ValidationError:
+        pass
+    else:
+        assert False, "Expected ValidationError for missing schema_version"
+
+    try:
+        ArtifactManifestRecord(
+            artifact_id="artifact-001",
+            model_version="xgb-v1",
+            created_at=datetime(2026, 4, 6, 21, 0, 0),
+            stage="validation",
+            bundle_path="artifacts/bundles/xgb-v1.tar.gz",
+            schema_version="0.9.0",
+        )
+    except ValidationError:
+        return
+    assert False, "Expected ValidationError for mismatched schema_version"

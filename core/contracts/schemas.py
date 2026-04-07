@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 SCHEMA_VERSION = "1.0.0"
@@ -174,5 +174,15 @@ class ArtifactManifestRecord(BaseModel):
     metrics_path: str | None = None
     diagnostics_path: str | None = None
     bundle_path: str
-    schema_version: str = Field(default=SCHEMA_VERSION)
+    schema_version: str
     approved: bool = False
+
+    @field_validator("schema_version")
+    @classmethod
+    def validate_schema_version(cls, value: str) -> str:
+        """Require explicit schema_version and enforce current schema for baseline."""
+        if value != SCHEMA_VERSION:
+            raise ValueError(
+                f"schema_version must equal {SCHEMA_VERSION} for this baseline release"
+            )
+        return value

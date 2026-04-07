@@ -30,7 +30,7 @@ def _manifest(
         "status": "completed",
         "started_at": start.isoformat(),
         "finished_at": end.isoformat(),
-        "runtime_context": RUNTIME_CONTEXT,
+        "runtime_context": dict(RUNTIME_CONTEXT),
         "metadata": metadata or {},
     }
 
@@ -70,7 +70,8 @@ def run_daily_dry_run(as_of_date: str) -> list[dict[str, object]]:
 
     manifests.append(_manifest(run_id, "persist_execution_logs", 8, {"written": True}))
 
-    summary = build_run_summary(manifests)
+    summary_snapshot = manifests + [_manifest(run_id, "send_run_summary", 9)]
+    summary = build_run_summary(summary_snapshot)
     manifests.append(_manifest(run_id, "send_run_summary", 9, summary))
 
     return manifests
