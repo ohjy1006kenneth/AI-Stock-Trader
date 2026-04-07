@@ -17,7 +17,9 @@ The system is designed around four deployment surfaces:
 
 3. **Raspberry Pi 5 (edge runtime / orchestration)**  
    Used for:
-   - scheduling and orchestration
+   - cron-triggered scheduling and orchestration
+   - containerized runtime execution (Docker)
+   - OpenClaw runtime execution inside container
    - market/account synchronization
    - lightweight portfolio construction
    - hard risk checks
@@ -223,7 +225,9 @@ The cloud is used for:
 
 ## Raspberry Pi
 The Pi is used for:
-- cron scheduling
+- cron scheduling on the host
+- Docker container runtime for the edge process
+- OpenClaw runtime inside the Pi container
 - step orchestration
 - local state checks
 - lightweight portfolio logic
@@ -315,3 +319,9 @@ A true holdout period should remain untouched until the design stabilizes.
 - `core/risk/` — hard risk rules
 - `core/execution/` — deterministic execution helpers
 - `services/` — external system adapters
+
+Ownership boundary summary:
+- `app/` coordinates runtime surfaces.
+- `core/` owns business logic and contracts.
+- `services/` owns third-party integration adapters.
+- `docs/` owns architecture and contract intent.

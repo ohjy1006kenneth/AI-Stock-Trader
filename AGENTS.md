@@ -6,6 +6,11 @@ This is a production quant trading system. It runs daily on a Raspberry Pi 5
 and Alpaca for brokerage. The system trades US equities once per day at market open
 using signals generated after the previous day's close.
 
+Pi runtime assumption:
+- The Pi runtime executes inside a Docker container.
+- OpenClaw is the runtime engine inside that container.
+- Cron on the Pi host triggers the containerized daily run.
+
 Most development is driven by Codex. A human reviewer approves all PRs before merge.
 Do not wait for human input mid-task unless you are genuinely blocked. If blocked,
 follow the BLOCKED protocol below.
@@ -107,6 +112,7 @@ Reasons to block:
 - There is ambiguity about what you need to do
 - Implementation needs a human decision on the architecture level
 - A human action is required before proceeding (for example auth, access approval, or external setup)
+- Runtime assumptions in code/docs/issues conflict (for example Docker/OpenClaw/cron mismatch)
 
 When blocking:
 1. Apply the `blocked` label to the issue

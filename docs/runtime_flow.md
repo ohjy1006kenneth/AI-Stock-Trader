@@ -2,6 +2,11 @@
 
 This document defines the operational day flow.
 
+Execution context:
+- Pi host cron schedules the run.
+- The daily run executes inside a Docker container on Pi.
+- OpenClaw is the runtime engine inside that container.
+
 ## After market close
 
 1. Pull market and news data

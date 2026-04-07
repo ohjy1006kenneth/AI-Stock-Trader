@@ -6,7 +6,20 @@ This document describes deployment surfaces and responsibilities.
 
 - app/lab: cloud training and packaging jobs
 - app/cloud: hosted inference service
-- app/pi: edge runtime and execution process
+- app/pi: edge runtime and execution process (containerized on Pi)
+
+## Pi runtime container model
+
+- Runtime host: Raspberry Pi 5
+- Scheduler: host cron
+- Runtime process: Docker container
+- Runtime engine in container: OpenClaw
+
+Expected execution chain:
+1. Cron triggers scheduled command on Pi host
+2. Host starts or invokes the edge runtime container
+3. OpenClaw executes the daily runtime entrypoint inside container
+4. Runtime emits deterministic manifests and reports
 
 ## Baseline rollout order
 
@@ -20,3 +33,4 @@ This document describes deployment surfaces and responsibilities.
 - Keep secrets outside git
 - Log every stage deterministically
 - Fail closed on missing risk checks
+- Keep runtime assumptions synchronized across AGENTS, docs, and issue acceptance criteria
