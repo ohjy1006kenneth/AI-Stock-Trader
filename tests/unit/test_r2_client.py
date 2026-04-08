@@ -1,14 +1,9 @@
 from __future__ import annotations
 
-import sys
 from io import BytesIO
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
-
-from services.r2.client import (  # noqa: E402
+from services.r2.client import (
     R2_ACCESS_KEY_ENV,
     R2_BUCKET_ENV,
     R2_ENDPOINT_ENV,
@@ -16,7 +11,7 @@ from services.r2.client import (  # noqa: E402
     CloudflareR2Client,
     has_required_r2_env_vars,
 )
-from services.r2.writer import LocalR2Client, R2Writer  # noqa: E402
+from services.r2.writer import LocalR2Client, R2Writer
 
 
 class FakePaginator:
@@ -66,21 +61,28 @@ def test_cloudflare_r2_client_from_env_configures_boto3(monkeypatch) -> None:
     """CloudflareR2Client.from_env should build a boto3 client from env vars."""
     captured: dict[str, object] = {}
 
-    def fake_boto_client(service_name: str, **kwargs: object) -> object:
-        captured["service_name"] = service_name
-        captured["kwargs"] = kwargs
+    def fake_build_s3_client(
+        endpoint_url: str,
+        access_key_id: str,
+        secret_access_key: str,
+    ) -> object:
+        captured["kwargs"] = {
+            "endpoint_url": endpoint_url,
+            "aws_access_key_id": access_key_id,
+            "aws_secret_access_key": secret_access_key,
+            "region_name": "auto",
+        }
         return object()
 
     monkeypatch.setenv(R2_ENDPOINT_ENV, "https://example.r2.cloudflarestorage.com")
     monkeypatch.setenv(R2_ACCESS_KEY_ENV, "access-key")
     monkeypatch.setenv(R2_SECRET_KEY_ENV, "secret-key")
     monkeypatch.setenv(R2_BUCKET_ENV, "bucket-name")
-    monkeypatch.setattr("services.r2.client.boto3.client", fake_boto_client)
+    monkeypatch.setattr("services.r2.client._build_s3_client", fake_build_s3_client)
 
     client = CloudflareR2Client.from_env()
 
     assert client.bucket_name == "bucket-name"
-    assert captured["service_name"] == "s3"
     assert captured["kwargs"] == {
         "endpoint_url": "https://example.r2.cloudflarestorage.com",
         "aws_access_key_id": "access-key",
@@ -108,9 +110,17 @@ def test_cloudflare_r2_client_from_env_loads_local_config_file(
     )
     captured: dict[str, object] = {}
 
-    def fake_boto_client(service_name: str, **kwargs: object) -> object:
-        captured["service_name"] = service_name
-        captured["kwargs"] = kwargs
+    def fake_build_s3_client(
+        endpoint_url: str,
+        access_key_id: str,
+        secret_access_key: str,
+    ) -> object:
+        captured["kwargs"] = {
+            "endpoint_url": endpoint_url,
+            "aws_access_key_id": access_key_id,
+            "aws_secret_access_key": secret_access_key,
+            "region_name": "auto",
+        }
         return object()
 
     monkeypatch.delenv(R2_ENDPOINT_ENV, raising=False)
@@ -118,12 +128,11 @@ def test_cloudflare_r2_client_from_env_loads_local_config_file(
     monkeypatch.delenv(R2_SECRET_KEY_ENV, raising=False)
     monkeypatch.delenv(R2_BUCKET_ENV, raising=False)
     monkeypatch.setattr("services.r2.client.R2_ENV_FILE", env_file)
-    monkeypatch.setattr("services.r2.client.boto3.client", fake_boto_client)
+    monkeypatch.setattr("services.r2.client._build_s3_client", fake_build_s3_client)
 
     client = CloudflareR2Client.from_env()
 
     assert client.bucket_name == "file-bucket"
-    assert captured["service_name"] == "s3"
     assert captured["kwargs"] == {
         "endpoint_url": "https://from-file.r2.cloudflarestorage.com",
         "aws_access_key_id": "file-access-key",

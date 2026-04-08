@@ -5,7 +5,6 @@ from io import BytesIO
 from pathlib import Path
 from typing import Protocol
 
-import boto3
 from dotenv import load_dotenv
 
 R2_ENDPOINT_ENV = "R2_ENDPOINT_URL"
@@ -46,12 +45,10 @@ class CloudflareR2Client:
             raise ValueError(f"Missing required R2 environment variables: {missing}")
 
         bucket_name = os.environ[R2_BUCKET_ENV]
-        client = boto3.client(
-            "s3",
+        client = _build_s3_client(
             endpoint_url=os.environ[R2_ENDPOINT_ENV],
-            aws_access_key_id=os.environ[R2_ACCESS_KEY_ENV],
-            aws_secret_access_key=os.environ[R2_SECRET_KEY_ENV],
-            region_name="auto",
+            access_key_id=os.environ[R2_ACCESS_KEY_ENV],
+            secret_access_key=os.environ[R2_SECRET_KEY_ENV],
         )
         return cls(bucket_name=bucket_name, s3_client=client)
 
@@ -100,3 +97,26 @@ def _read_body(body: ReadableBody) -> bytes:
 def _load_local_r2_env_file() -> None:
     """Load local R2 settings from config/r2.env when the file exists."""
     load_dotenv(dotenv_path=R2_ENV_FILE, override=False)
+
+
+def _build_s3_client(
+    endpoint_url: str,
+    access_key_id: str,
+    secret_access_key: str,
+) -> object:
+    """Build the boto3 S3 client used for Cloudflare R2 access."""
+    try:
+        import boto3
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            "boto3 is required for real Cloudflare R2 access. "
+            "Install the Pi or Modal requirements to enable it."
+        ) from exc
+
+    return boto3.client(
+        "s3",
+        endpoint_url=endpoint_url,
+        aws_access_key_id=access_key_id,
+        aws_secret_access_key=secret_access_key,
+        region_name="auto",
+    )
