@@ -1,15 +1,14 @@
 from __future__ import annotations
 
+import sys
 from io import BytesIO
 from pathlib import Path
-import sys
-
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from services.r2.client import (
+from services.r2.client import (  # noqa: E402
     R2_ACCESS_KEY_ENV,
     R2_BUCKET_ENV,
     R2_ENDPOINT_ENV,
@@ -17,7 +16,7 @@ from services.r2.client import (
     CloudflareR2Client,
     has_required_r2_env_vars,
 )
-from services.r2.writer import LocalR2Client, R2Writer
+from services.r2.writer import LocalR2Client, R2Writer  # noqa: E402
 
 
 class FakePaginator:

@@ -1,18 +1,17 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 import sys
+from pathlib import Path
 
 import pytest
-
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from services.r2.client import CloudflareR2Client
-from services.r2.writer import R2Writer
+from services.r2.client import CloudflareR2Client  # noqa: E402
+from services.r2.writer import R2Writer  # noqa: E402
 
 
 @pytest.mark.skipif(

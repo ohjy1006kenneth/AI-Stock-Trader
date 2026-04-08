@@ -1,13 +1,12 @@
 from __future__ import annotations
 
+import os
 from io import BytesIO
 from pathlib import Path
-import os
 from typing import Protocol
 
 import boto3
 from dotenv import load_dotenv
-
 
 R2_ENDPOINT_ENV = "R2_ENDPOINT_URL"
 R2_ACCESS_KEY_ENV = "R2_ACCESS_KEY_ID"

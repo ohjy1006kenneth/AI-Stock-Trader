@@ -4,7 +4,6 @@ from pathlib import Path
 
 from services.r2.client import CloudflareR2Client, has_required_r2_env_vars
 
-
 DEFAULT_LOCAL_R2_ROOT = Path("data/runtime/r2_mock")
 
 

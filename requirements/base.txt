@@ -1,6 +1,7 @@
 # Base dependencies — shared across all surfaces
 # Every other requirements file includes this one.
 
+boto3>=1.35,<2
 pydantic>=2,<3
 python-dotenv>=1.0,<2
 loguru>=0.7,<1
