@@ -16,7 +16,7 @@ boto3>=1.35,<2
 
 # Data handling
 pandas>=2.2,<3
-pyarrow>=17,<18         # Parquet read/write
+pyarrow>=18,<20         # Parquet read/write (>=18 required for Python 3.13)
 
 # Portfolio construction (lightweight ML only — no training)
 scipy>=1.14,<2          # mean-variance optimizer (scipy.optimize)

@@ -10,7 +10,7 @@ modal>=0.64,<1
 # Data handling
 pandas>=2.2,<3
 numpy>=1.26,<3
-pyarrow>=17,<18         # Parquet read/write
+pyarrow>=18,<20         # Parquet read/write (>=18 required for Python 3.13)
 
 # Market data — Polygon (for cloud-side backtest data pulls)
 polygon-api-client>=1.14,<2
@@ -40,3 +40,7 @@ hmmlearn>=0.3,<1        # Hidden Markov Model
 
 # --- Portfolio construction ---
 scipy>=1.14,<2          # mean-variance optimizer
+
+# HTML parsing (Wikipedia universe builder — backfill entrypoint)
+beautifulsoup4>=4.12,<5
+lxml>=5,<6

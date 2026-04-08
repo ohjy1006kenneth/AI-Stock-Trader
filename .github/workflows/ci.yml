@@ -43,6 +43,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements/base.txt
+          pip install "beautifulsoup4>=4.12,<5" "lxml>=5,<6"
           pip install "pytest>=8,<9" "pytest-cov>=5,<6"
 
       - name: Run unit tests

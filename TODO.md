@@ -17,3 +17,6 @@
 
 ## Discovered during development
 <!-- Codex adds here when it notices something out of scope for the current task -->
+- [ ] Universe validation still reports a few historical symbol-identity mismatches
+  (e.g., UAA, AGN, IQV transition events); evaluate date-bounded symbol mapping
+  policy to reduce residual event-boundary violations.

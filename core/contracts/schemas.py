@@ -1,16 +1,15 @@
 from __future__ import annotations
 
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-
 SCHEMA_VERSION = "1.0.0"
 
 
-class ActionType(str, Enum):
+class ActionType(StrEnum):
     """Allowed high-level order actions."""
 
     BUY = "BUY"
@@ -19,7 +18,7 @@ class ActionType(str, Enum):
     REJECT = "REJECT"
 
 
-class RunStatus(str, Enum):
+class RunStatus(StrEnum):
     """Allowed pipeline/job states."""
 
     PENDING = "pending"

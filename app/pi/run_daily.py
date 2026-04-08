@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from app.pi.execution.order_executor import execute_orders
 from app.pi.fetchers.market_context import collect_market_context
 from app.pi.network.oracle_client import request_predictions
 from app.pi.reporting.run_summary import build_run_summary
-
 
 RUNTIME_CONTEXT = {
     "runtime_engine": "openclaw",
@@ -22,7 +21,7 @@ def _manifest(
     metadata: dict[str, object] | None = None,
 ) -> dict[str, object]:
     """Create a deterministic stage manifest record for dry-run orchestration."""
-    start = datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(seconds=index * 10)
+    start = datetime(2026, 1, 1, tzinfo=UTC) + timedelta(seconds=index * 10)
     end = start + timedelta(seconds=1)
     return {
         "run_id": run_id,
