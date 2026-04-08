@@ -44,6 +44,15 @@ class _ChangeEvent:
     removed: frozenset[str]
 
 
+def _validate_supported_start_date(query_date: str, earliest_event_date: str, label: str) -> None:
+    """Fail fast when a query date precedes available change-log history."""
+    if query_date < earliest_event_date:
+        raise ValueError(
+            f"{label} {query_date} precedes earliest Wikipedia change record "
+            f"{earliest_event_date}; point-in-time reconstruction is unsupported"
+        )
+
+
 def _canonicalize_ticker(ticker: str) -> str:
     """Normalize ticker formatting and map historical aliases to canonical symbols."""
     normalized = ticker.strip().upper().replace(".", "-")
@@ -168,7 +177,7 @@ def _reconstruct_at_date(
     """
     constituents = set(current_tickers)
 
-    for event in sorted(events, key=lambda e: e.date, reverse=True):
+    for event in reversed(events):
         if event.date > date:
             # This change happened after our query date — undo it
             constituents -= event.added
@@ -201,12 +210,7 @@ def get_constituents(date: str, _html: str | None = None) -> list[str]:
     events = _parse_change_log(html)
 
     if events and date < events[0].date:
-        logger.warning(
-            "Query date {} precedes earliest Wikipedia change record {}; "
-            "result may be incomplete",
-            date,
-            events[0].date,
-        )
+        _validate_supported_start_date(date, events[0].date, label="date")
 
     result = _reconstruct_at_date(current_tickers, events, date)
     logger.info("get_constituents({}): {} tickers", date, len(result))
@@ -247,6 +251,9 @@ def get_all_historical_tickers(
     html = _html if _html is not None else _fetch_html()
     current_tickers = _parse_current_tickers(html)
     events = _parse_change_log(html)
+
+    if events and from_date < events[0].date:
+        _validate_supported_start_date(from_date, events[0].date, label="from_date")
 
     # Tickers present at from_date = the starting universe
     universe_at_start = set(_reconstruct_at_date(current_tickers, events, from_date))

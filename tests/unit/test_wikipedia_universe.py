@@ -259,6 +259,10 @@ class TestGetConstituents:
         with pytest.raises(ValueError, match="YYYY-MM-DD"):
             get_constituents("21/12/2020", _html=html)
 
+    def test_date_before_history_raises(self, html: str) -> None:
+        with pytest.raises(ValueError, match="precedes earliest Wikipedia change record"):
+            get_constituents("2018-01-01", _html=html)
+
     def test_multi_ticker_event_all_added(self, html: str) -> None:
         result = get_constituents("2020-09-21", _html=html)
         assert "ETSY" in result
@@ -320,6 +324,10 @@ class TestGetAllHistoricalTickers:
 
     def test_ticker_added_and_removed_within_range(self, html: str) -> None:
         # Ticker added and removed in the same range window must appear
-        result = get_all_historical_tickers("2019-01-01", "2021-01-01", _html=html)
-        # CELG removed 2019-06-24 (within range start-to-removal), was present at start
+        result = get_all_historical_tickers("2019-06-24", "2021-01-01", _html=html)
+        # CELG removed on 2019-06-24 and must be included in removed_during
         assert "CELG" in result
+
+    def test_from_date_before_history_raises(self, html: str) -> None:
+        with pytest.raises(ValueError, match="precedes earliest Wikipedia change record"):
+            get_all_historical_tickers("2018-01-01", "2021-01-01", _html=html)
