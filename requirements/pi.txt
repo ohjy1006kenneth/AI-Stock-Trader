@@ -1,0 +1,26 @@
+# Pi runtime dependencies — lightweight edge runtime only
+# Install on the Raspberry Pi 5 Docker container.
+# Do NOT add heavy ML packages here (torch, transformers, xgboost).
+# Those belong in modal.txt and run in the cloud.
+
+-r base.txt
+
+# Broker — execution and account state
+alpaca-py>=0.29,<1
+
+# Market data — EOD bars, news archive
+polygon-api-client>=1.14,<2
+
+# Object storage — Cloudflare R2 (S3-compatible)
+boto3>=1.35,<2
+
+# Data handling
+pandas>=2.2,<3
+pyarrow>=17,<18         # Parquet read/write
+
+# Portfolio construction (lightweight ML only — no training)
+scipy>=1.14,<2          # mean-variance optimizer (scipy.optimize)
+scikit-learn>=1.5,<2    # contextual bandit (LinUCB is sklearn-compatible)
+
+# Alerting
+python-telegram-bot>=21,<22

@@ -50,6 +50,10 @@ data/runtime/
 *.feather
 *.arrow
 
+# Exception: sample fixture files for unit tests must be committed
+!data/sample/
+!data/sample/**
+
 # Model artifacts — stored in R2/artifacts, not git
 artifacts/bundles/
 artifacts/manifests/

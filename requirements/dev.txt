@@ -1,0 +1,17 @@
+# Development dependencies — local laptop only
+# Includes pi.txt so you can run and test Pi code locally.
+# Does NOT include modal.txt — install that separately if testing Modal jobs locally.
+
+-r pi.txt
+
+# Testing
+pytest>=8,<9
+pytest-cov>=5,<6
+
+# Linting and formatting
+ruff>=0.6,<1
+
+# Type checking
+mypy>=1.11,<2
+pandas-stubs>=2.2,<3
+types-boto3>=1.35,<2

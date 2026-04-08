@@ -1,0 +1,8 @@
+date,ticker,in_universe,tradable,liquid,halted,data_quality_ok,reason
+2026-04-06,AAPL,true,true,true,false,true,
+2026-04-06,MSFT,true,true,true,false,true,
+2026-04-06,GOOGL,true,true,true,false,true,
+2026-04-06,AMZN,true,true,true,false,true,
+2026-04-06,TSLA,true,true,true,false,true,
+2026-04-06,BADTICKER,false,false,false,true,false,halted
+2026-04-06,SPARSE,false,true,true,false,false,sparse_volume

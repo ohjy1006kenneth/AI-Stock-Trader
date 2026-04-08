@@ -1,5 +1,10 @@
-# requirements
+# requirements (deprecated location)
 
-Dependency and environment requirement notes live here.
+Dependency files have moved to `requirements/` at the repository root.
 
-Use this folder for environment-specific requirement files or dependency split notes when the project grows.
+- `requirements/base.txt` — shared across all surfaces
+- `requirements/pi.txt` — Pi edge runtime (lightweight; no ML stack)
+- `requirements/modal.txt` — Modal cloud compute (heavy ML: torch, transformers, xgboost)
+- `requirements/dev.txt` — local development and testing
+
+Do not add files here.

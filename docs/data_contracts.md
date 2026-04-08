@@ -42,6 +42,10 @@ Schema version metadata:
 
 ## Layer 0 contracts
 
+Layer 0 also owns historical raw news ingestion for point-in-time safety.
+This raw archive is an input artifact, not an inter-layer typed contract.
+Typed inter-layer Layer 0 outputs remain `UniverseRecord` and `OHLCVRecord`.
+
 ### UniverseRecord
 
 Represents whether a ticker is eligible to be processed on a given date.
@@ -60,6 +64,11 @@ Use cases:
 - point-in-time universe construction
 - eligibility masks
 - liquidity/tradeability filtering
+
+Implementation notes:
+- `core/data/universe.py` builds validated universe records from raw mappings
+- daily eligibility masks treated as conjunction of `in_universe`, `tradable`, `liquid`, `!halted`, and `data_quality_ok`
+- missing identity fields fail fast; optional fields have sensible defaults
 
 ### OHLCVRecord
 
@@ -80,6 +89,24 @@ Use cases:
 - feature generation
 - backtests
 - price history storage
+
+Implementation notes:
+- `core/data/ohlcv.py` builds validated OHLCV records from raw mappings
+- missing price fields fail fast; non-finite values are rejected
+- OHLC price relationships are validated before record construction: `high >= low`, `open in [low, high]`, `close in [low, high]`
+- volume must be non-negative integer; dollar_volume must be non-negative float
+
+### Layer 0 raw news archive (non-contract artifact)
+
+Purpose:
+- preserve point-in-time news availability for training/backtests
+- provide deterministic upstream input for Layer 1 sentiment processing
+
+Notes:
+- raw news is stored as an archival dataset in Layer 0 storage
+- this archive is not a replacement for `NewsSentimentRecord`
+- `NewsSentimentRecord` remains a Layer 1 contract produced from raw news
+- no schema changes in `core/contracts/schemas.py` are required for this archive
 
 ---
 
@@ -105,6 +132,9 @@ Use cases:
 - text feature generation
 - article-level diagnostics
 - sentiment aggregation
+
+Input note:
+- generated from Layer 0 raw point-in-time news archives
 
 ### FeatureRecord
 

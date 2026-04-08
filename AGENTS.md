@@ -46,7 +46,7 @@ the BLOCKED protocol. Do not attempt the change. Do not work around it.
 - Hardcode API keys, credentials, secrets, or file paths
 - Change output schemas in `core/contracts/` without a schema migration issue
 - Merge your own PRs
-- Install packages not already in `requirements.txt` without noting it in the PR
+- Install packages not already in the appropriate `requirements/*.txt` without noting it in the PR
 - Silence exceptions with bare `except:` or `except Exception: pass`
 - Use `print()` — use the logger from `services/observability/logging.py`
 
@@ -260,6 +260,33 @@ approved, rules_triggered}
 
 If you discover that `core/contracts/schemas.py` and `docs/data_contracts.md`
 disagree, block immediately — do not pick one and proceed.
+
+---
+
+## Architecture changes
+
+Any change to how layers communicate, where data lives, what runs where,
+or how the system is structured is an architecture change.
+
+Examples: adding a new layer, changing storage layout, moving logic between
+Pi and Modal, introducing a new entrypoint, changing R2 path conventions.
+
+When you make or discover an architecture change, you must update **all**
+affected canonical docs in the **same PR or task** — not as a follow-up:
+
+| Doc | Update when |
+|---|---|
+| `docs/architecture.md` | Layer design, storage layout, data sources, runtime surface changes |
+| `docs/runtime_flow.md` | Execution sequence, phase structure, step ordering changes |
+| `docs/data_contracts.md` | Inter-layer contract changes (also triggers schema migration protocol) |
+| `AGENTS.md` — Project structure section | Directory layout changes |
+
+Rules:
+1. Never merge an architecture change without updating the affected docs above
+2. If the architecture change also changes a schema, follow the Schema changes
+   protocol in parallel
+3. If two valid designs exist with meaningfully different tradeoffs, block and
+   ask for a human decision — do not pick one and proceed
 
 ---
 
