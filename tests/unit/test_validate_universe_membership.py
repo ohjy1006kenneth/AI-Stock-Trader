@@ -10,8 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app.lab.data_pipelines import validate_universe_membership as validator
-from services.wikipedia.sp500_universe import _ChangeEvent
-from services.wikipedia.sp500_universe import get_constituents
+from services.wikipedia.sp500_universe import _ChangeEvent, get_constituents
 
 FIXTURE_PATH = Path("data/sample/sp500_changes_fixture.json")
 

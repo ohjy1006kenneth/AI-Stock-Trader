@@ -11,8 +11,8 @@ from pathlib import Path
 import pytest
 
 from services.wikipedia.sp500_universe import (
-    _ChangeEvent,
     _canonicalize_ticker,
+    _ChangeEvent,
     _normalize_date,
     _parse_change_log,
     _parse_current_tickers,

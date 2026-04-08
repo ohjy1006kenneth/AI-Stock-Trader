@@ -8,12 +8,8 @@ from itertools import zip_longest
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
 from app.lab.data_pipelines.backfill_universe import (
-    DEFAULT_WORKERS,
     _business_days,
-    _output_path,
     _process_date,
     _write_membership,
     backfill,
