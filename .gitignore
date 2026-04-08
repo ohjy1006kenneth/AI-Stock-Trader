@@ -45,6 +45,7 @@ alpaca.env
 data/raw/
 data/processed/
 data/runtime/
+data/cache/
 *.parquet
 *.csv
 *.feather

@@ -1,0 +1,21 @@
+{
+  "_comment": "Synthetic fixture for unit tests. Tickers and dates are real historical events.",
+  "current_tickers": ["AAPL", "MSFT", "AMZN", "NVDA", "META", "TSLA", "ETSY", "PAYC", "POOL", "BIO", "KEYS", "ROL"],
+  "changes": [
+    {
+      "date": "2020-12-21",
+      "added": ["TSLA"],
+      "removed": ["XRX"]
+    },
+    {
+      "date": "2020-09-21",
+      "added": ["ETSY", "PAYC", "POOL"],
+      "removed": ["FOX", "FOXA", "HPE"]
+    },
+    {
+      "date": "2019-06-24",
+      "added": ["BIO", "KEYS", "ROL"],
+      "removed": ["CELG", "JEF", "NBL"]
+    }
+  ]
+}

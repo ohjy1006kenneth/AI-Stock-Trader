@@ -13,3 +13,6 @@ known-first-party = ["core", "services", "app", "config"]
 python_version = "3.11"
 strict = false
 ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+pythonpath = ["."]

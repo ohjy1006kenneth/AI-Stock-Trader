@@ -78,23 +78,52 @@ This is how the human knows what is happening without being pulled into every ta
 | You cannot proceed without a human decision | Move item to Blocked |
 | Issue is merged and closed | Move item to Done |
 
-### How to update labels via GitHub CLI in your workflow
+### How to update labels AND board via GitHub CLI — run BOTH every time
+
+Label and board are independent. Changing a label does NOT move the board.
+You must run both commands on every state transition. No exceptions.
+
 ```bash
-# Mark in-progress
+# === When starting a task ===
+# 1. Update label
 gh issue edit <number> --remove-label "backlog" --add-label "in-progress"
+# 2. Move board (requires issue's project item ID and Status field ID — fetch via GraphQL if unknown)
+gh api graphql -f query='mutation { updateProjectV2ItemFieldValue(input: {
+  projectId: "PVT_kwHOBDy_OM4BTCRF"
+  itemId: "<PVTI_...>"
+  fieldId: "PVTSSF_lAHOBDy_OM4BTCRFzhAZUEg"
+  value: { singleSelectOptionId: "47fc9ee4" }  # In Progress
+}) { projectV2Item { id } } }'
 
-# Mark blocked
-gh issue edit <number> --remove-label "in-progress" --add-label "blocked"
-
-# Mark in review (do this when opening PR)
+# === When opening PR (review) ===
 gh issue edit <number> --remove-label "in-progress" --add-label "review"
+# Board: singleSelectOptionId "94f39d90" = Review
+
+# === When blocked ===
+gh issue edit <number> --remove-label "in-progress" --add-label "blocked"
+# Board: singleSelectOptionId "e1e88749" = Blocked
 ```
 
-Always update the label as the very first action when starting a task and
-as the very last action before finishing.
+Project board option IDs (do not change these):
+- Backlog:     f75ad846
+- In Progress: 47fc9ee4
+- Blocked:     e1e88749
+- Review:      94f39d90
+- Done:        98236657
 
-If project automation exists in the future, verify it once before relying on it.
-Until then, treat board movement as a required manual action.
+To get a project item ID for an issue:
+```bash
+gh api graphql -f query='{
+  repository(owner: "ohjy1006kenneth", name: "AI-Stock-Trader") {
+    issue(number: <N>) {
+      projectItems(first: 5) { nodes { id project { id } } }
+    }
+  }
+}'
+```
+
+Always update label AND board as the very first action when starting a task
+and as the very last action before finishing.
 
 ---
 
