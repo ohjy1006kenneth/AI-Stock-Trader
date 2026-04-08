@@ -21,6 +21,20 @@ WIKIPEDIA_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 DEFAULT_CACHE_PATH = Path("data/cache/sp500_wikipedia.html")
 CACHE_MAX_AGE_HOURS = 24
 
+# Historical/alternate symbols mapped to canonical symbols used by downstream
+# fetch pipelines. Keep this focused on observed S&P 500 history edge cases.
+_TICKER_CANONICAL_MAP: dict[str, str] = {
+    "BRK.B": "BRK-B",
+    "BF.B": "BF-B",
+    "FB": "META",
+    "UA": "UAA",
+    "WLTW": "WTW",
+    "RE": "EG",
+    "Q": "IQV",
+    "FLT": "CPAY",
+    "CDAY": "DAY",
+}
+
 
 @dataclass(frozen=True)
 class _ChangeEvent:
@@ -29,6 +43,12 @@ class _ChangeEvent:
     date: str          # YYYY-MM-DD
     added: frozenset[str]
     removed: frozenset[str]
+
+
+def _canonicalize_ticker(ticker: str) -> str:
+    """Normalize ticker formatting and map historical aliases to canonical symbols."""
+    normalized = ticker.strip().upper().replace(".", "-")
+    return _TICKER_CANONICAL_MAP.get(normalized, normalized)
 
 
 def _fetch_html(cache_path: Path = DEFAULT_CACHE_PATH) -> str:
@@ -64,7 +84,7 @@ def _parse_current_tickers(html: str) -> set[str]:
     for row in table.find_all("tr")[1:]:  # skip header
         cells = row.find_all("td")
         if cells:
-            ticker = cells[0].get_text(strip=True).replace(".", "-")
+            ticker = _canonicalize_ticker(cells[0].get_text(strip=True))
             if ticker:
                 tickers.add(ticker)
 
@@ -91,8 +111,8 @@ def _parse_change_log(html: str) -> list[_ChangeEvent]:
             continue
 
         raw_date = cells[0].get_text(strip=True)
-        added_ticker = cells[1].get_text(strip=True).replace(".", "-")
-        removed_ticker = cells[3].get_text(strip=True).replace(".", "-")
+        added_ticker = _canonicalize_ticker(cells[1].get_text(strip=True))
+        removed_ticker = _canonicalize_ticker(cells[3].get_text(strip=True))
 
         # Normalize date to YYYY-MM-DD
         date = _normalize_date(raw_date)

@@ -12,6 +12,7 @@ import pytest
 
 from services.wikipedia.sp500_universe import (
     _ChangeEvent,
+    _canonicalize_ticker,
     _normalize_date,
     _parse_change_log,
     _parse_current_tickers,
@@ -108,6 +109,21 @@ class TestNormalizeDate:
 
     def test_empty_string_returns_none(self) -> None:
         assert _normalize_date("") is None
+
+
+# ---------------------------------------------------------------------------
+# _canonicalize_ticker
+# ---------------------------------------------------------------------------
+
+class TestCanonicalizeTicker:
+    def test_dot_ticker_is_normalized(self) -> None:
+        assert _canonicalize_ticker("BRK.B") == "BRK-B"
+
+    def test_legacy_alias_maps_to_canonical(self) -> None:
+        assert _canonicalize_ticker("wltw") == "WTW"
+
+    def test_identity_when_no_mapping(self) -> None:
+        assert _canonicalize_ticker("AAPL") == "AAPL"
 
 
 # ---------------------------------------------------------------------------

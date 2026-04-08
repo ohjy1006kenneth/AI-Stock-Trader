@@ -2,17 +2,24 @@
 
 # ── Local development ──────────────────────────────────────────────────────────
 
+PYTHON := $(if $(wildcard .venv/bin/python),.venv/bin/python,python3)
+PIP := $(PYTHON) -m pip
+PYTEST := $(PYTHON) -m pytest
+
 install:
-	pip install -r requirements/dev.txt
+	$(PIP) install -r requirements/dev.txt
 
 install-modal:
-	pip install -r requirements/modal.txt
+	$(PIP) install -r requirements/modal.txt
 
 test:
-	pytest tests/unit/ -v --tb=short
+	$(PYTEST) tests/unit/ -v --tb=short
 
 test-cov:
-	pytest tests/unit/ -v --tb=short --cov=core --cov=services --cov-report=term-missing
+	$(PYTEST) tests/unit/ -v --tb=short --cov=core --cov=services --cov-report=term-missing
+
+validate-universe:
+	$(PYTHON) app/lab/data_pipelines/validate_universe_membership.py --max-violation-rate 0.01
 
 lint:
 	ruff check .
