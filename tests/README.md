@@ -10,6 +10,7 @@ Responsibilities:
 
 Run tests:
 - Local: `pytest tests/unit/ -v --tb=short`
+- Live R2 smoke: `make test-r2-live`
 - CI: `.github/workflows/ci.yml` runs `pytest tests/unit/ -v --tb=short`
 
 This folder should stay in git.

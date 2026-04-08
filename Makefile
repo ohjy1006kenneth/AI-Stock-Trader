@@ -1,4 +1,4 @@
-.PHONY: install test lint typecheck clean docker-pi
+.PHONY: install test test-r2-live lint typecheck clean docker-pi
 
 # ── Local development ──────────────────────────────────────────────────────────
 
@@ -14,6 +14,9 @@ install-modal:
 
 test:
 	$(PYTEST) tests/unit/ -v --tb=short
+
+test-r2-live:
+	RUN_R2_INTEGRATION=1 $(PYTEST) tests/integration/test_r2_live.py -v --tb=short
 
 test-cov:
 	$(PYTEST) tests/unit/ -v --tb=short --cov=core --cov=services --cov-report=term-missing
