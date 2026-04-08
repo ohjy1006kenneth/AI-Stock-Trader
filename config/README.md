@@ -14,3 +14,5 @@ Typical contents:
 
 Do **not** commit real secrets here.
 Use `config/alpaca.env.example` as the template and keep the real `config/alpaca.env` local only.
+Use `config/r2.env` for local-only Cloudflare R2 credentials; the R2 client loads it
+automatically when present.

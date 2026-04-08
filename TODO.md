@@ -17,3 +17,5 @@
 
 ## Discovered during development
 <!-- Codex adds here when it notices something out of scope for the current task -->
+- [ ] `services/r2/paths.py` source is missing even though Milestone 1 issues reference it as the
+  canonical R2 path builder
