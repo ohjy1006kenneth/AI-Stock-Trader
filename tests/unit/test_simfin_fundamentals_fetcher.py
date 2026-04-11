@@ -9,10 +9,8 @@ import pytest
 import requests
 
 from app.lab.data_pipelines import backfill_simfin
-from app.lab.data_pipelines.backfill_simfin import (
-    backfill_simfin_archive,
-    raw_fundamentals_path,
-)
+from app.lab.data_pipelines.backfill_simfin import backfill_simfin_archive
+from services.r2.paths import raw_fundamentals_path
 from services.simfin.fundamentals_fetcher import (
     DEFAULT_SIMFIN_PERIODS,
     DEFAULT_SIMFIN_STATEMENTS,
@@ -129,6 +127,8 @@ def test_fetch_statement_rows_calls_compact_endpoint_and_normalizes_rows() -> No
     assert [row["ticker"] for row in page.rows] == ["AAPL", "MSFT"]
     assert page.rows[0]["availability_date"] == "2024-05-03"
     assert page.rows[0]["earnings_date"] == "2024-05-02"
+    assert page.rows[0]["fiscal_year"] == 2024
+    assert isinstance(page.rows[0]["fiscal_year"], int)
     assert session.calls == [
         {
             "url": "https://example.simfin.test/api/v3/companies/statements/compact",

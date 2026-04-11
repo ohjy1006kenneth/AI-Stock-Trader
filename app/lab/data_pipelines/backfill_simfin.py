@@ -17,7 +17,7 @@ from loguru import logger
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(_REPO_ROOT))
 
-from services.r2.paths import build_r2_key  # noqa: E402
+from services.r2.paths import raw_fundamentals_path  # noqa: E402
 from services.r2.writer import R2Writer  # noqa: E402
 from services.simfin.fundamentals_fetcher import (  # noqa: E402
     DEFAULT_SIMFIN_PAGE_LIMIT,
@@ -127,15 +127,6 @@ def backfill_simfin_archive(
         empty=0 if rows else 1,
         total_rows=len(rows),
         output_key=output_key,
-    )
-
-
-def raw_fundamentals_path(from_date: date, to_date: date) -> str:
-    """Return the canonical raw SimFin fundamentals archive path for one range."""
-    return build_r2_key(
-        "raw",
-        "fundamentals",
-        f"{from_date.isoformat()}_to_{to_date.isoformat()}.parquet",
     )
 
 

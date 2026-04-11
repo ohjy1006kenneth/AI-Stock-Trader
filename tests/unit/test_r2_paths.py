@@ -7,6 +7,7 @@ import pytest
 from services.r2.paths import (
     build_r2_key,
     pipeline_manifest_path,
+    raw_fundamentals_path,
     raw_news_path,
     raw_price_path,
     raw_reference_path,
@@ -26,6 +27,10 @@ def test_layer0_raw_path_builders_return_canonical_keys() -> None:
     assert raw_news_path("2025-01-02") == "raw/news/2025-01-02.jsonl"
     assert raw_news_path(datetime(2025, 1, 2, 15, 30)) == "raw/news/2025-01-02.jsonl"
     assert raw_universe_path(date(2025, 1, 2)) == "raw/universe/2025-01-02.csv"
+    assert (
+        raw_fundamentals_path(date(2025, 1, 1), "2025-12-31")
+        == "raw/fundamentals/2025-01-01_to_2025-12-31.parquet"
+    )
     assert raw_reference_path("tiingo_security_master") == "raw/reference/tiingo_security_master.json"
     assert (
         raw_security_master_path("2025-01-02")

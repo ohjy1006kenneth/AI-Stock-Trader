@@ -220,7 +220,7 @@ def normalize_simfin_fundamental_rows(
             "raw": raw,
         }
         _add_optional_text(normalized, raw, "statement", ("statement", "Statement"))
-        _add_optional_text(normalized, raw, "fiscal_year", ("fiscalYear", "Fiscal Year"))
+        _add_optional_int(normalized, raw, "fiscal_year", ("fiscalYear", "Fiscal Year"))
         _add_optional_text(normalized, raw, "fiscal_period", ("fiscalPeriod", "Fiscal Period"))
         _add_optional_text(normalized, raw, "currency", ("currency", "Currency"))
         _add_optional_date(normalized, raw, "earnings_date", ("earningsDate", "earnings_date"))
@@ -364,6 +364,33 @@ def _add_optional_text(
     value = _first_present(row, names)
     if value is not None:
         output[field_name] = str(value).strip()
+
+
+def _add_optional_int(
+    output: dict[str, Any],
+    row: Mapping[str, Any],
+    field_name: str,
+    names: Sequence[str],
+) -> None:
+    """Add an optional integer field when SimFin provides it."""
+    value = _first_present(row, names)
+    if value is None:
+        return
+    if isinstance(value, bool):
+        raise TypeError(f"SimFin field {field_name} must be an integer")
+    if isinstance(value, int):
+        output[field_name] = value
+        return
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return
+        try:
+            output[field_name] = int(stripped)
+        except ValueError as exc:
+            raise ValueError(f"SimFin field {field_name} must be an integer: {value}") from exc
+        return
+    raise TypeError(f"SimFin field {field_name} must be an integer")
 
 
 def _add_optional_date(

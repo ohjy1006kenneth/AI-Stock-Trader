@@ -34,6 +34,18 @@ def raw_universe_path(as_of_date: str | Date | datetime) -> str:
     return build_r2_key("raw", "universe", f"{_format_date(as_of_date)}.csv")
 
 
+def raw_fundamentals_path(
+    from_date: str | Date | datetime,
+    to_date: str | Date | datetime,
+) -> str:
+    """Return the canonical raw fundamentals Parquet path for one date range."""
+    return build_r2_key(
+        "raw",
+        "fundamentals",
+        f"{_format_date(from_date)}_to_{_format_date(to_date)}.parquet",
+    )
+
+
 def raw_reference_path(name: str, extension: str = "json") -> str:
     """Return the canonical raw reference snapshot path."""
     safe_name = _validate_key_part(name)
