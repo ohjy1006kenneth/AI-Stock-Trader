@@ -1,0 +1,80 @@
+{
+  "page1": {
+    "columns": [
+      "ticker",
+      "statement",
+      "reportDate",
+      "publishDate",
+      "fiscalYear",
+      "fiscalPeriod",
+      "currency",
+      "revenue",
+      "netIncome",
+      "totalAssets",
+      "totalLiabilities",
+      "earningsDate"
+    ],
+    "data": [
+      [
+        "AAPL",
+        "pl",
+        "2024-03-30",
+        "2024-05-03",
+        2024,
+        "Q2",
+        "USD",
+        90753000000,
+        23636000000,
+        337411000000,
+        263217000000,
+        "2024-05-02"
+      ],
+      [
+        "MSFT",
+        "bs",
+        "2024-03-31",
+        "2024-04-25",
+        2024,
+        "Q3",
+        "USD",
+        61858000000,
+        21939000000,
+        484275000000,
+        231123000000,
+        "2024-04-25"
+      ]
+    ]
+  },
+  "page2": [
+    {
+      "ticker": "AAPL",
+      "statement": "cf",
+      "reportDate": "2024-06-29",
+      "publishDate": "2024-08-02",
+      "fiscalYear": 2024,
+      "fiscalPeriod": "Q3",
+      "currency": "USD",
+      "operatingCashFlow": 28858000000,
+      "earningsDate": "2024-08-01"
+    },
+    {
+      "ticker": "AAPL",
+      "statement": "cf",
+      "reportDate": "2024-06-29",
+      "publishDate": "2024-08-02",
+      "fiscalYear": 2024,
+      "fiscalPeriod": "Q3",
+      "currency": "USD",
+      "operatingCashFlow": 28858000000,
+      "earningsDate": "2024-08-01"
+    }
+  ],
+  "empty": {
+    "columns": [
+      "ticker",
+      "reportDate",
+      "publishDate"
+    ],
+    "data": []
+  }
+}
