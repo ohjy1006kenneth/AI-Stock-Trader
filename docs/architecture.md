@@ -4,6 +4,13 @@
 
 This repository implements a production-oriented quantitative trading system for U.S. equities.
 
+The approved data stack is:
+- historical universe membership from Wikipedia revision history
+- canonical historical OHLCV and raw news archives from Tiingo
+- point-in-time fundamentals and earnings dates from SimFin
+- macro and rate context from FRED
+- live market data, broker state, and execution from Alpaca
+
 The system is designed around four deployment surfaces:
 
 1. **Laptop (development)**
@@ -51,18 +58,27 @@ The design principle is:
 
 | Data type | Source | Notes |
 |---|---|---|
-| OHLCV (adjusted) | Polygon.io (student plan) | Adjusted close, splits, dividends |
-| News archive | Polygon.io (student plan) | Point-in-time news for backtests |
-| S&P 500 universe membership | Wikipedia edit history | Free; scrape revision history for point-in-time membership |
-| Broker / account state | Alpaca | Paper and live trading |
-| Macro / rates | FRED or public sources | Fed funds, yield curve, credit spreads |
+| Historical OHLCV (adjusted) | Tiingo EOD API | Canonical long-history store; stable security identity supports delisted/acquired names |
+| Historical and live raw news | Tiingo News API | Raw article text with ticker tags for NLP backtests and daily inference |
+| S&P 500 universe membership | Wikipedia revision history | Point-in-time constituent list; never use today's snapshot for history |
+| Fundamentals / earnings dates | SimFin | As-reported filing data for point-in-time context features |
+| Macro / rates | FRED | Fed funds, Treasury yields, CPI, and other regime/context inputs |
+| Live daily prices / broker state / execution | Alpaca Market Data + Trading API | Current-day bar snapshot, reconciliation source of truth, and order routing |
 
 ### Universe construction note
 Wikipedia's S&P 500 page revision history provides historical constituent changes at no cost.
 The revision history — not the current page — must be scraped to obtain point-in-time membership.
 This approach is accurate enough for personal-system backtesting but may have gaps around
-spinoffs and rapid constituent changes. The Polygon.io student plan does not include
-point-in-time index membership, so Wikipedia is the designated source for this data.
+spinoffs and rapid constituent changes. Tiingo's stable security identity is then used to
+link historical constituents to surviving, delisted, acquired, and symbol-changed names
+without relying on today's ticker symbols as permanent identifiers.
+
+### Historical vs. live market data note
+Historical price and news storage should be treated as a Tiingo-backed canonical archive.
+Alpaca market data is used only for the live daily bar snapshot that the Pi needs near the
+close or before the next open. Any Alpaca-sourced live bar written into the raw store must be
+normalized into the same `OHLCVRecord` shape and stable-security path convention used by
+Tiingo-backed history.
 
 ---
 
@@ -76,9 +92,10 @@ Both the Pi and Modal jobs read and write to R2.
 ```
 r2/
   raw/
-    prices/           # OHLCV Parquet, one file per ticker: AAPL.parquet
-    news/             # Raw news as JSON Lines (one article per line)
+    prices/           # OHLCV Parquet, one file per stable security identifier
+    news/             # Tiingo raw news as JSON Lines (one article per line)
     universe/         # Daily eligibility masks as CSV
+    reference/        # Symbol/permaTicker/security master snapshots
   processed/
     features/         # Feature tables as Parquet (dates × tickers × features)
     scores/           # Layer 2 score outputs as Parquet
@@ -107,7 +124,7 @@ Any artifact that must survive a Pi restart or be accessed by Modal must be writ
 
 | Data type | Format | Reason |
 |---|---|---|
-| OHLCV history | Parquet (per ticker) | 10–50x faster than CSV; columnar reads; `pd.read_parquet()` |
+| OHLCV history | Parquet (per stable security identifier) | 10–50x faster than CSV; columnar reads; `pd.read_parquet()` |
 | Feature tables | Parquet (partitioned by date) | Frequently read by model pipeline |
 | Model scores | Parquet | Small, fast to read |
 | News raw archive | JSON Lines | One article per line; easy to stream |
@@ -131,11 +148,11 @@ The system follows a strict layered architecture.
 Layer 0 guarantees that all downstream layers operate on clean, honest, point-in-time data.
 
 Responsibilities:
-- construct a point-in-time eligible universe (Wikipedia revision history + Polygon OHLCV)
+- construct a point-in-time eligible universe (Wikipedia revision history + Tiingo security history)
 - avoid survivorship bias — use historical constituent lists, never today's index
 - apply daily liquidity and tradeability filters
-- use adjusted OHLCV from Polygon (adjusted for splits and dividends)
-- ingest raw news from Polygon with point-in-time timestamps
+- use Tiingo adjusted OHLCV as the canonical historical market data store
+- ingest raw Tiingo news with point-in-time timestamps and raw text
 - detect stale, missing, or corrupted market data
 - generate daily eligibility masks and quality flags
 
@@ -145,16 +162,16 @@ Responsibilities:
 Builds the complete R2 database that Layer 1 reads for model training and backtesting.
 Runs on laptop or Modal — not the Pi. The Pi has no role in the backfill.
 - Entrypoint: `app/lab/data_pipelines/backfill_layer0.py`
-- Fetches full OHLCV history (e.g. 2014–present) for all S&P 500 tickers → `r2://raw/prices/{ticker}.parquet`
-- Fetches historical news archive → `r2://raw/news/YYYY-MM-DD.jsonl` per date
+- Fetches full OHLCV history (e.g. 2014–present) for all historical constituents keyed by stable Tiingo security identity → `r2://raw/prices/{security_id}.parquet`
+- Fetches historical Tiingo raw news archive → `r2://raw/news/YYYY-MM-DD.jsonl` per date
 - Computes eligibility masks for all historical dates → `r2://raw/universe/YYYY-MM-DD.csv`
 - Idempotent: safe to re-run; skips dates already stored in R2
 
 **Daily incremental (runs on Pi after every market close):**
 Appends today's data to the existing R2 database. Assumes the backfill has already been run.
 - Entrypoint: `app/pi/fetchers/layer0.py`
-- Fetches today's OHLCV bars → appends to existing `r2://raw/prices/{ticker}.parquet`
-- Fetches today's news → writes `r2://raw/news/YYYY-MM-DD.jsonl`
+- Fetches today's live market bar snapshot from Alpaca Market Data → appends normalized rows to the canonical raw price store
+- Fetches today's raw Tiingo news → writes `r2://raw/news/YYYY-MM-DD.jsonl`
 - Recomputes today's eligibility mask → writes `r2://raw/universe/YYYY-MM-DD.csv`
 - Writes `PipelineManifestRecord` to R2 on completion or failure
 
@@ -171,7 +188,7 @@ Appends today's data to the existing R2 database. Assumes the backfill has alrea
 
 **Outputs:**
 - point-in-time universe membership per date (CSV eligibility mask)
-- adjusted OHLCV Parquet files per ticker
+- adjusted OHLCV Parquet files per stable security identifier
 - quality flags per ticker per day: tradeable / halted / data-error / illiquid
 - raw news archive (JSON Lines) for Layer 1 processing
 
@@ -192,7 +209,7 @@ Final feature table shape: `(N_dates × N_tickers)` rows × `M_features` columns
 **Pipeline order (must be executed in this sequence):**
 
 ```
-RAW ARTICLES (Polygon news)
+RAW ARTICLES (Tiingo news)
   → Step 1: Preprocessing
       Clean text, remove boilerplate, split into sentences, tag ticker mentions
   → Step 2a: Sentence Transformers (per article)
@@ -602,8 +619,8 @@ R2 is the source of truth for:
 The following must be completed before the daily loop can run:
 
 1. Run historical backfill: `python app/lab/data_pipelines/backfill_layer0.py --from-date 2014-01-01 --to-date <today>`
-   - Builds complete OHLCV Parquet database in R2 — one file per ticker, all historical bars
-   - Builds historical news archive in R2 — one JSON Lines file per date
+   - Builds complete Tiingo OHLCV Parquet database in R2 — one file per stable security identifier, all historical bars
+   - Builds Tiingo raw news archive in R2 — one JSON Lines file per date
    - Builds historical eligibility masks in R2 — one CSV per date
 2. Train and validate the XGBoost models (Milestones 2, 2.5, 3, 4)
 3. Deploy validated model bundle to R2 / cloud Oracle
@@ -611,7 +628,7 @@ The following must be completed before the daily loop can run:
 Without the historical backfill, Layer 1 feature generation and model training cannot run.
 
 ### After market close (daily, Pi)
-1. Pi runs Layer 0 incremental: fetches today's EOD bars and news from Polygon, appends to R2
+1. Pi runs Layer 0 incremental: fetches today's Alpaca live bar snapshot and Tiingo raw news, appends normalized artifacts to R2
 2. Pi triggers Modal: build/refresh aligned feature table for today → R2
 3. Modal runs FinBERT + XGBoost inference → scores to R2
 4. Pi reads scores from R2
@@ -672,13 +689,13 @@ A candidate becomes promotable only if it survives:
 - `app/cloud/` — cloud inference surface (Modal)
 - `app/pi/` — edge runtime surface (Pi, daily incremental only)
 - `core/contracts/` — shared inter-layer schemas
-- `core/data/` — point-in-time universe/data logic (Polygon + Wikipedia)
+- `core/data/` — point-in-time universe/data logic (Wikipedia + Tiingo-backed records)
 - `core/features/` — market, NLP, context feature logic
 - `core/models/` — XGBoost, HMM, calibration
 - `core/portfolio/` — contextual bandit, optimizer
 - `core/risk/` — hard risk rules
 - `core/execution/` — deterministic execution helpers
-- `services/` — external system adapters (Alpaca, R2, Modal, observability)
+- `services/` — external system adapters (Alpaca, Tiingo, Wikipedia, SimFin, FRED, R2, Modal, observability)
 
 Ownership boundary summary:
 - `app/` coordinates runtime surfaces.
