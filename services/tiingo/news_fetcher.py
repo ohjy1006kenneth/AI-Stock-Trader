@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date as Date
@@ -70,7 +71,15 @@ class TiingoNewsFetcher:
         payload = response.json()
         if not isinstance(payload, list):
             raise ValueError("Tiingo news response must be a JSON list")
-        return NewsPage(articles=[dict(item) for item in payload], offset=offset, limit=limit)
+        articles: list[dict[str, Any]] = []
+        for index, item in enumerate(payload):
+            if not isinstance(item, Mapping):
+                raise ValueError(
+                    "Tiingo news response item "
+                    f"{index} must be an object, got {type(item).__name__}"
+                )
+            articles.append(dict(item))
+        return NewsPage(articles=articles, offset=offset, limit=limit)
 
     def fetch_all_news(
         self,
@@ -162,8 +171,4 @@ def _article_key(article: Mapping[str, Any]) -> str:
             return str(value)
     title = str(article.get("title") or "")
     published = str(article.get("publishedDate") or article.get("published_at") or "")
-    try:
-        import json
-    except ModuleNotFoundError:
-        return f"{title}|{published}|{sorted(article.keys())}"
-    return f"{title}|{published}|{json.dumps(article, sort_keys=True, default=str)}"
+    return f"{title}|{published}|{json.dumps(article, sort_keys=True)}"

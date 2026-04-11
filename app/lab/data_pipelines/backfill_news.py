@@ -126,7 +126,7 @@ def _articles_to_jsonl_bytes(articles: list[dict[str, object]]) -> bytes:
     """Serialize raw news articles as JSON Lines bytes."""
     if not articles:
         return b""
-    lines = [json.dumps(article, sort_keys=True, separators=(",", ":"), default=str) for article in articles]
+    lines = [json.dumps(article, sort_keys=True, separators=(",", ":")) for article in articles]
     return ("\n".join(lines) + "\n").encode("utf-8")
 
 
@@ -172,7 +172,10 @@ def _parse_args() -> argparse.Namespace:
         default=DEFAULT_NEWS_PAGE_LIMIT,
         help=f"Page size for Tiingo pagination (default: {DEFAULT_NEWS_PAGE_LIMIT}).",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.tickers == []:
+        parser.error("--tickers requires at least one ticker when provided")
+    return args
 
 
 def main() -> int:

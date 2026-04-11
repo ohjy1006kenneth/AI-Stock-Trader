@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 
+from app.lab.data_pipelines import backfill_news
 from app.lab.data_pipelines.backfill_news import backfill_news_archive
 from services.r2.paths import raw_news_path
 from services.tiingo.news_fetcher import TiingoNewsFetcher
@@ -127,6 +128,24 @@ def test_fetch_news_rows_rejects_non_list_payload() -> None:
         )
 
 
+def test_fetch_news_rows_rejects_non_object_items() -> None:
+    """Malformed Tiingo list items fail with indexed diagnostics."""
+    session = _FakeSession([[{"id": 1}, "not-an-object"]])
+    fetcher = TiingoNewsFetcher(
+        TiingoClientConfig(api_token="test-token"),
+        session=session,  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(ValueError, match="item 1 must be an object, got str"):
+        fetcher.fetch_news_rows(
+            tickers=["AAPL"],
+            start_date="2024-01-02",
+            end_date="2024-01-02",
+            limit=100,
+            offset=0,
+        )
+
+
 def test_fetch_all_news_paginates_and_deduplicates() -> None:
     """Pagination continues until exhaustion and deduplicates repeated articles."""
     payload = _fixture_payload()
@@ -212,3 +231,39 @@ def test_backfill_is_idempotent_for_existing_archive() -> None:
     assert result.written == 0
     assert result.skipped == 1
     assert fetcher.calls == []
+
+
+def test_backfill_rejects_non_json_serializable_articles() -> None:
+    """Raw archives fail fast instead of coercing unsupported values to strings."""
+    writer = _FakeWriter()
+    fetcher = _FakeFetcher({
+        "2024-01-02": [{"id": 1, "publishedDate": "2024-01-02", "bad": object()}],
+    })
+
+    with pytest.raises(TypeError, match="not JSON serializable"):
+        backfill_news_archive(
+            from_date=date(2024, 1, 2),
+            to_date=date(2024, 1, 2),
+            fetcher=fetcher,
+            writer=writer,
+            tickers=["AAPL"],
+            limit=10,
+        )
+
+
+def test_parse_args_rejects_empty_tickers_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CLI rejects '--tickers' without symbols instead of running an unscoped pull."""
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "backfill_news.py",
+            "--from-date",
+            "2024-01-02",
+            "--to-date",
+            "2024-01-02",
+            "--tickers",
+        ],
+    )
+
+    with pytest.raises(SystemExit):
+        backfill_news._parse_args()
