@@ -16,28 +16,30 @@ Execution context:
 This phase builds the historical database in R2 that all downstream layers depend on.
 It runs on a laptop or Modal — not the Pi.
 
-```bash
+```
 python app/lab/data_pipelines/backfill_layer0.py \
     --from-date 2014-01-01 \
     --to-date <today>
 ```
 
 What it produces in R2:
-- `raw/prices/{security_id}.parquet` — full Tiingo-backed OHLCV history per stable security identity
-- `raw/news/YYYY-MM-DD.jsonl` — Tiingo raw news archive per date
+- `raw/prices/{permaticker}.parquet` — full Tiingo-backed OHLCV history per stable security identity
+- `raw/news/YYYY-MM-DD.jsonl` — Tiingo news archive per date
 - `raw/universe/YYYY-MM-DD.csv` — eligibility masks for all historical dates
-- `raw/reference/security_master/YYYY-MM-DD.json` — reference snapshots for resolving symbol changes
+- `raw/fundamentals/` — SimFin as-reported fundamentals and earnings-date archive
+- `raw/macro/` — FRED macro/rate observations archive
 
 Historical backfill uses:
 - Wikipedia revision history for point-in-time index membership
 - Tiingo for canonical historical OHLCV and raw news archives
-- SimFin for as-reported fundamentals and earnings dates
-- FRED for macro context series
+- SimFin for as-reported fundamentals and earnings dates, persisted before feature generation
+- FRED for macro context series, persisted before feature generation
 
 Without this, Layer 1 feature generation and model training cannot run.
-The backfill is idempotent — safe to re-run; skips artifacts already stored.
+The backfill is idempotent — safe to re-run; skips dates already stored.
 
-After backfill: run model training and walk-forward validation before enabling the live daily loop.
+After backfill: run model training and walk-forward validation (Milestones 2–4)
+before enabling the live daily loop.
 
 ---
 
@@ -46,18 +48,20 @@ After backfill: run model training and walk-forward validation before enabling t
 ### After market close
 
 1. **Layer 0 incremental** (`app/pi/fetchers/layer0.py`)
-   - Fetch today's live bar snapshot from Alpaca Market Data for eligible tickers
-   - Normalize Alpaca bars into the same `OHLCVRecord` shape as the Tiingo historical archive
-   - Append normalized bars to the canonical raw price store in R2
+   - Fetch today's live bar snapshot from Alpaca Market Data for all eligible tickers
+   - Normalize and append it to the canonical Tiingo-backed raw price store in R2
    - Fetch today's raw Tiingo news → write `raw/news/YYYY-MM-DD.jsonl` to R2
+   - Refresh newly available SimFin filings and earnings-calendar data → write `raw/fundamentals/`
+   - Refresh FRED macro/rate observations available for the run date → write `raw/macro/`
    - Recompute today's eligibility mask (quality + liquidity filters)
    - Write `raw/universe/YYYY-MM-DD.csv` to R2
    - Write `PipelineManifestRecord` (stage=layer0)
 
 2. **Layer 1 feature generation** (Modal)
    - Read today's OHLCV Parquet and news JSON Lines from R2
-   - Join point-in-time SimFin fundamentals and earnings dates
-   - Join FRED macro context series persisted for the run date
+   - Read point-in-time SimFin fundamentals and earnings dates from R2
+   - Read FRED macro context series persisted for the run date from R2
+   - Fail closed if the required Layer 0 raw archives or manifests are missing
    - Compute market, NLP, and context features for today
    - Write aligned feature row to `processed/features/YYYY-MM-DD.parquet` in R2
    - Write `PipelineManifestRecord` (stage=layer1)
@@ -77,7 +81,7 @@ After backfill: run model training and walk-forward validation before enabling t
 
 5. **Layer 3 portfolio construction** (Pi)
    - Pi reads scores from R2
-   - Contextual bandit filters the eligible universe down to 30–50 candidates
+   - Contextual bandit filters ~800 universe stocks → 30–50 candidates
    - Mean-variance optimizer produces target weights with turnover penalty
    - Write `PortfolioRecord` list to R2
 
@@ -121,9 +125,11 @@ The next stage reads the manifest to verify the upstream stage completed before 
 If a manifest is missing or `status=failed`, the stage halts and alerts.
 
 Source-of-truth rules for the daily loop:
-- Tiingo is the canonical historical archive for raw prices and news.
-- SimFin is the canonical source for point-in-time fundamentals and earnings dates.
-- FRED is the canonical source for macro context inputs.
-- Alpaca is the live source for current-day market data, broker reconciliation, and execution.
+- Tiingo is the canonical historical archive for raw prices and news
+- SimFin is the canonical provider for point-in-time fundamentals and earnings dates, but
+  Layer 1 reads the Layer 0 R2 archive rather than calling SimFin directly
+- FRED is the canonical provider for macro context inputs, but Layer 1 reads the Layer 0
+  R2 archive rather than calling FRED directly
+- Alpaca is the live source for current-day market data, broker reconciliation, and execution
 
 This ensures no stage silently runs on stale or missing inputs.

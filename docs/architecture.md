@@ -4,7 +4,7 @@
 
 This repository implements a production-oriented quantitative trading system for U.S. equities.
 
-The approved data stack is:
+The target data stack is:
 - historical universe membership from Wikipedia revision history
 - canonical historical OHLCV and raw news archives from Tiingo
 - point-in-time fundamentals and earnings dates from SimFin
@@ -35,6 +35,7 @@ The system is designed around four deployment surfaces:
 
 4. **Object storage (Cloudflare R2)**
    Used as the persistent shared handoff layer between Pi and cloud:
+   - raw Layer 0 data archives
    - feature tables
    - model scores
    - approved order proposals
@@ -42,7 +43,8 @@ The system is designed around four deployment surfaces:
    - manifests
    - model bundles and diagnostics
 
-   Raw data snapshots may also be persisted to R2 for reproducibility and Modal access.
+   Raw data snapshots are persisted to R2 so Layer 1 and later milestones never need to
+   call external data providers directly.
 
 The design principle is:
 - heavy compute in the cloud (Modal)
@@ -58,10 +60,10 @@ The design principle is:
 
 | Data type | Source | Notes |
 |---|---|---|
-| Historical OHLCV (adjusted) | Tiingo EOD API | Canonical long-history store; stable security identity supports delisted/acquired names |
+| Historical OHLCV (adjusted) | Tiingo EOD API | Canonical long-history store; stable `permaTicker` identity covers delisted/acquired names |
 | Historical and live raw news | Tiingo News API | Raw article text with ticker tags for NLP backtests and daily inference |
-| S&P 500 universe membership | Wikipedia revision history | Point-in-time constituent list; never use today's snapshot for history |
-| Fundamentals / earnings dates | SimFin | As-reported filing data for point-in-time context features |
+| S&P 500 universe membership | Wikipedia edit history | Point-in-time constituent list; never use today's snapshot for history |
+| Fundamentals / earnings dates | SimFin | As-reported filing data to avoid future restatements leaking backward |
 | Macro / rates | FRED | Fed funds, Treasury yields, CPI, and other regime/context inputs |
 | Live daily prices / broker state / execution | Alpaca Market Data + Trading API | Current-day bar snapshot, reconciliation source of truth, and order routing |
 
@@ -69,16 +71,16 @@ The design principle is:
 Wikipedia's S&P 500 page revision history provides historical constituent changes at no cost.
 The revision history — not the current page — must be scraped to obtain point-in-time membership.
 This approach is accurate enough for personal-system backtesting but may have gaps around
-spinoffs and rapid constituent changes. Tiingo's stable security identity is then used to
-link historical constituents to surviving, delisted, acquired, and symbol-changed names
-without relying on today's ticker symbols as permanent identifiers.
+spinoffs and rapid constituent changes. Tiingo's `permaTicker` then provides the stable
+security identity needed to stitch those historical constituents to surviving, delisted,
+acquired, and symbol-changed names without survivorship bias.
 
 ### Historical vs. live market data note
 Historical price and news storage should be treated as a Tiingo-backed canonical archive.
 Alpaca market data is used only for the live daily bar snapshot that the Pi needs near the
 close or before the next open. Any Alpaca-sourced live bar written into the raw store must be
-normalized into the same `OHLCVRecord` shape and stable-security path convention used by
-Tiingo-backed history.
+normalized into the same contract shape as Tiingo and later reconciled into the canonical
+historical archive.
 
 ---
 
@@ -92,9 +94,11 @@ Both the Pi and Modal jobs read and write to R2.
 ```
 r2/
   raw/
-    prices/           # OHLCV Parquet, one file per stable security identifier
-    news/             # Tiingo raw news as JSON Lines (one article per line)
+    prices/           # OHLCV Parquet, one file per Tiingo permaTicker
+    news/             # Raw news as JSON Lines (one article per line)
     universe/         # Daily eligibility masks as CSV
+    fundamentals/     # SimFin as-reported point-in-time fundamentals and earnings data
+    macro/            # FRED macro/rate observations as available on the run date
     reference/        # Symbol/permaTicker/security master snapshots
   processed/
     features/         # Feature tables as Parquet (dates × tickers × features)
@@ -124,10 +128,12 @@ Any artifact that must survive a Pi restart or be accessed by Modal must be writ
 
 | Data type | Format | Reason |
 |---|---|---|
-| OHLCV history | Parquet (per stable security identifier) | 10–50x faster than CSV; columnar reads; `pd.read_parquet()` |
+| OHLCV history | Parquet (per ticker) | 10–50x faster than CSV; columnar reads; `pd.read_parquet()` |
 | Feature tables | Parquet (partitioned by date) | Frequently read by model pipeline |
 | Model scores | Parquet | Small, fast to read |
 | News raw archive | JSON Lines | One article per line; easy to stream |
+| Fundamentals archive | Parquet | Point-in-time company fundamentals; efficient ticker/date joins |
+| Macro/rates archive | Parquet or CSV | Small daily series; preserve observations used by a run |
 | Sentiment scores | Parquet | Processed output from FinBERT pipeline |
 | Universe eligibility masks | CSV | Small; human-inspectable |
 | Daily order files | CSV | Human-readable for debugging |
@@ -153,8 +159,11 @@ Responsibilities:
 - apply daily liquidity and tradeability filters
 - use Tiingo adjusted OHLCV as the canonical historical market data store
 - ingest raw Tiingo news with point-in-time timestamps and raw text
+- ingest SimFin as-reported fundamentals and earnings dates as point-in-time raw context
+- ingest FRED macro and rate series as point-in-time raw context
 - detect stale, missing, or corrupted market data
 - generate daily eligibility masks and quality flags
+- persist every external data source needed by Layer 1 into R2 before feature generation runs
 
 **Layer 0 operates in two distinct modes:**
 
@@ -162,16 +171,20 @@ Responsibilities:
 Builds the complete R2 database that Layer 1 reads for model training and backtesting.
 Runs on laptop or Modal — not the Pi. The Pi has no role in the backfill.
 - Entrypoint: `app/lab/data_pipelines/backfill_layer0.py`
-- Fetches full OHLCV history (e.g. 2014–present) for all historical constituents keyed by stable Tiingo security identity → `r2://raw/prices/{security_id}.parquet`
-- Fetches historical Tiingo raw news archive → `r2://raw/news/YYYY-MM-DD.jsonl` per date
+- Fetches full OHLCV history (e.g. 2014–present) for all historical constituents keyed by Tiingo `permaTicker`
+- Fetches historical raw news archive from Tiingo → `r2://raw/news/YYYY-MM-DD.jsonl` per date
+- Fetches SimFin as-reported fundamentals and earnings dates → `r2://raw/fundamentals/`
+- Fetches FRED macro/rate series → `r2://raw/macro/`
 - Computes eligibility masks for all historical dates → `r2://raw/universe/YYYY-MM-DD.csv`
 - Idempotent: safe to re-run; skips dates already stored in R2
 
 **Daily incremental (runs on Pi after every market close):**
 Appends today's data to the existing R2 database. Assumes the backfill has already been run.
 - Entrypoint: `app/pi/fetchers/layer0.py`
-- Fetches today's live market bar snapshot from Alpaca Market Data → appends normalized rows to the canonical raw price store
-- Fetches today's raw Tiingo news → writes `r2://raw/news/YYYY-MM-DD.jsonl`
+- Fetches today's live market bar snapshot from Alpaca Market Data → appends to the canonical raw price store
+- Fetches today's raw news from Tiingo → writes `r2://raw/news/YYYY-MM-DD.jsonl`
+- Refreshes newly available SimFin filings / earnings-calendar data → writes `r2://raw/fundamentals/`
+- Refreshes FRED macro/rate observations available for the run date → writes `r2://raw/macro/`
 - Recomputes today's eligibility mask → writes `r2://raw/universe/YYYY-MM-DD.csv`
 - Writes `PipelineManifestRecord` to R2 on completion or failure
 
@@ -188,13 +201,17 @@ Appends today's data to the existing R2 database. Assumes the backfill has alrea
 
 **Outputs:**
 - point-in-time universe membership per date (CSV eligibility mask)
-- adjusted OHLCV Parquet files per stable security identifier
+- adjusted OHLCV Parquet files per ticker
 - quality flags per ticker per day: tradeable / halted / data-error / illiquid
 - raw news archive (JSON Lines) for Layer 1 processing
+- raw SimFin fundamentals and earnings-date archive for Layer 1 context features
+- raw FRED macro/rate archive for Layer 1 context and regime features
 
 ### Layer 1 — Feature Generation
 
-Layer 1 converts raw data into aligned numerical features indexed by `(date, ticker)`.
+Layer 1 converts existing Layer 0 R2 data into aligned numerical features indexed by
+`(date, ticker)`. Layer 1 does not fetch from Wikipedia, Tiingo, SimFin, FRED, or Alpaca;
+it reads only the raw archives and manifests produced by Layer 0.
 
 The quality of features matters more than model sophistication. A well-engineered feature set
 with XGBoost will outperform a poorly engineered one with a deep neural network.
@@ -292,6 +309,7 @@ stock_vs_sector  = stock return - sector ETF return      # idiosyncratic return
 
 ```python
 # Fundamentals (quarterly, forward-filled between reports)
+# Source: Layer 0 SimFin as-reported point-in-time archive
 pe_ratio        = price / earnings_per_share
 pb_ratio        = price / book_value_per_share
 debt_to_equity  = total_debt / shareholders_equity
@@ -300,6 +318,7 @@ revenue_growth  = (revenue_t - revenue_t4) / revenue_t4
 earnings_surprise = (actual_eps - estimated_eps) / abs(estimated_eps)
 
 # Macro (daily)
+# Source: Layer 0 FRED archive; persist observed values so later revisions do not rewrite history
 fed_funds_rate  = current Fed funds rate
 yield_10y       = 10-year Treasury yield
 yield_2y        = 2-year Treasury yield
@@ -345,6 +364,8 @@ observations = [
 - Start with K=3 (bull, bear, sideways); optionally K=4 adding crisis/crash
 - Use BIC score to compare K=2,3,4 and select best
 - Algorithm: Baum-Welch (Expectation-Maximization) — no manual labeling required
+- Read macro regime inputs such as Fed funds, CPI, and yield-curve measures from the
+  Layer 0 FRED archive and market-state inputs such as SPY/VIX from the market data branch
 - **Lookahead bias:** never train HMM on full history and use its labels for backtesting.
   Correct approach: walk-forward (train on data up to T, label T, slide forward).
   Practical approximation: fit once on first few years, re-fit quarterly.
@@ -544,7 +565,7 @@ final. If holdout performance diverges significantly from walk-forward, the syst
 A backtest is only trustworthy if all of the following pass:
 
 - [ ] Point-in-time universe (Wikipedia revision history, not today's S&P 500)
-- [ ] No survivorship bias — delisted and acquired companies included historically
+- [ ] No survivorship bias — delisted and acquired companies included historically via Tiingo `permaTicker`
 - [ ] Adjusted prices used for all model training
 - [ ] No lookahead bias in any feature (feature on date T uses only data before T's open)
 - [ ] HMM fitted walk-forward, not on full history
@@ -602,7 +623,7 @@ must be written to R2.
 
 ### Object storage (Cloudflare R2)
 R2 is the source of truth for:
-- raw data snapshots (if persisted beyond Pi cache)
+- raw Layer 0 data snapshots from Wikipedia, Tiingo, SimFin, FRED, and Alpaca
 - processed feature tables
 - manifests
 - model scores
@@ -619,22 +640,25 @@ R2 is the source of truth for:
 The following must be completed before the daily loop can run:
 
 1. Run historical backfill: `python app/lab/data_pipelines/backfill_layer0.py --from-date 2014-01-01 --to-date <today>`
-   - Builds complete Tiingo OHLCV Parquet database in R2 — one file per stable security identifier, all historical bars
-   - Builds Tiingo raw news archive in R2 — one JSON Lines file per date
+   - Builds complete Tiingo-backed OHLCV Parquet database in R2 — one file per stable security identity
+   - Builds Tiingo historical news archive in R2 — one JSON Lines file per date
    - Builds historical eligibility masks in R2 — one CSV per date
+   - Builds SimFin as-reported fundamentals and earnings-date archives in R2
+   - Builds FRED macro/rate archives in R2
 2. Train and validate the XGBoost models (Milestones 2, 2.5, 3, 4)
 3. Deploy validated model bundle to R2 / cloud Oracle
 
 Without the historical backfill, Layer 1 feature generation and model training cannot run.
 
 ### After market close (daily, Pi)
-1. Pi runs Layer 0 incremental: fetches today's Alpaca live bar snapshot and Tiingo raw news, appends normalized artifacts to R2
-2. Pi triggers Modal: build/refresh aligned feature table for today → R2
-3. Modal runs FinBERT + XGBoost inference → scores to R2
-4. Pi reads scores from R2
-5. Pi runs contextual bandit + optimizer → portfolio proposal
-6. Pi applies hard risk rules → approved orders
-7. Pi stores approved order proposal to R2 and local SSD
+1. Pi runs Layer 0 incremental: fetches today's live bar snapshot from Alpaca, today's news from Tiingo, newly available SimFin data, and current FRED observations, then appends normalized raw data to R2
+2. Pi triggers Modal: build/refresh aligned feature table for today from existing Layer 0 R2 data → R2
+3. Modal reads Layer 0 manifests and fails closed if required raw inputs are missing
+4. Modal runs FinBERT + XGBoost inference → scores to R2
+5. Pi reads scores from R2
+6. Pi runs contextual bandit + optimizer → portfolio proposal
+7. Pi applies hard risk rules → approved orders
+8. Pi stores approved order proposal to R2 and local SSD
 
 ### Before / at next market open
 1. Pi fetches current Alpaca account state
@@ -689,13 +713,13 @@ A candidate becomes promotable only if it survives:
 - `app/cloud/` — cloud inference surface (Modal)
 - `app/pi/` — edge runtime surface (Pi, daily incremental only)
 - `core/contracts/` — shared inter-layer schemas
-- `core/data/` — point-in-time universe/data logic (Wikipedia + Tiingo-backed records)
-- `core/features/` — market, NLP, context feature logic
+- `core/data/` — point-in-time universe/data logic (Wikipedia, Tiingo-backed historical data, SimFin/FRED raw context ingestion, Alpaca live-bar normalization)
+- `core/features/` — market, NLP, context feature logic over existing Layer 0 archives
 - `core/models/` — XGBoost, HMM, calibration
 - `core/portfolio/` — contextual bandit, optimizer
 - `core/risk/` — hard risk rules
 - `core/execution/` — deterministic execution helpers
-- `services/` — external system adapters (Alpaca, Tiingo, Wikipedia, SimFin, FRED, R2, Modal, observability)
+- `services/` — external system adapters (Tiingo, SimFin, FRED, Alpaca, R2, Modal, observability)
 
 Ownership boundary summary:
 - `app/` coordinates runtime surfaces.

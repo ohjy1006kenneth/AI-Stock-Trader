@@ -42,9 +42,12 @@ Schema version metadata:
 
 ## Layer 0 contracts
 
-Layer 0 also owns historical raw news ingestion for point-in-time safety.
-This raw archive is an input artifact, not an inter-layer typed contract.
-Typed inter-layer Layer 0 outputs remain `UniverseRecord` and `OHLCVRecord`.
+Layer 0 owns all external data ingestion. Wikipedia, Tiingo, SimFin, FRED, and Alpaca
+provider calls happen in Layer 0; Layer 1 and later layers read existing R2 archives only.
+
+Layer 0 persists several raw archival datasets for point-in-time safety. These archives are
+input artifacts for Layer 1, not additional inter-layer Pydantic contracts. Typed inter-layer
+Layer 0 outputs remain `UniverseRecord` and `OHLCVRecord`.
 
 ### UniverseRecord
 
@@ -108,6 +111,38 @@ Notes:
 - `NewsSentimentRecord` remains a Layer 1 contract produced from raw news
 - no schema changes in `core/contracts/schemas.py` are required for this archive
 
+### Layer 0 raw fundamentals archive (non-contract artifact)
+
+Purpose:
+- preserve SimFin as-reported fundamentals and earnings-date availability
+- keep filing timestamps / effective dates available for point-in-time feature generation
+- prevent Layer 1 from calling SimFin directly or accidentally using future restatements
+
+Notes:
+- raw fundamentals are stored as archival Layer 0 data in R2, for example under
+  `raw/fundamentals/`
+- Layer 1 converts these raw records into context features such as valuation ratios,
+  leverage, profitability, earnings proximity, and earnings surprises
+- this archive is not a replacement for `FeatureRecord`
+- no schema changes in `core/contracts/schemas.py` are required unless the project decides
+  to promote fundamentals into a typed inter-layer contract later
+
+### Layer 0 raw macro archive (non-contract artifact)
+
+Purpose:
+- preserve FRED macro/rate observations available to the system on each run date
+- provide deterministic upstream inputs for context features and regime detection
+- avoid rewriting historical feature values when upstream macro series are revised
+
+Notes:
+- raw macro/rate observations are stored as archival Layer 0 data in R2, for example under
+  `raw/macro/`
+- Layer 1 converts these raw records into macro and regime-context features such as
+  yield-curve slope, policy-rate level, CPI context, and credit/risk proxies
+- this archive is not a replacement for `FeatureRecord`
+- no schema changes in `core/contracts/schemas.py` are required unless the project decides
+  to promote macro observations into a typed inter-layer contract later
+
 ---
 
 ## Layer 1 contracts
@@ -149,6 +184,10 @@ Feature groups may include:
 - text/sentiment features
 - context/fundamental features
 - regime features
+
+Input note:
+- generated only from Layer 0 R2 archives and manifests; Layer 1 must not call external
+  data providers for feature inputs
 
 Examples:
 - `returns_1d`
@@ -342,6 +381,8 @@ Never:
 ## Current layer mapping summary
 
 - Layer 0 output → `UniverseRecord`, `OHLCVRecord`
+- Layer 0 raw archives → Tiingo news, SimFin fundamentals/earnings, FRED macro/rates
+  (R2 artifacts, not separate Pydantic inter-layer contracts)
 - Layer 1 output → `NewsSentimentRecord`, `FeatureRecord`
 - Layer 2 output → `ScoreRecord`
 - Layer 3 output → `PortfolioRecord`
