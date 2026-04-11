@@ -22,7 +22,7 @@ def test_build_r2_key_joins_posix_parts() -> None:
 
 def test_layer0_raw_path_builders_return_canonical_keys() -> None:
     """Layer 0 path builders return the documented raw artifact locations."""
-    assert raw_price_path("12345") == "raw/prices/12345.parquet"
+    assert raw_price_path("AAPL") == "raw/prices/AAPL.parquet"
     assert raw_news_path("2025-01-02") == "raw/news/2025-01-02.jsonl"
     assert raw_news_path(datetime(2025, 1, 2, 15, 30)) == "raw/news/2025-01-02.jsonl"
     assert raw_universe_path(date(2025, 1, 2)) == "raw/universe/2025-01-02.csv"

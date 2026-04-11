@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping
 from datetime import date as Date
+from decimal import Decimal
 from typing import Any
 
 from core.contracts.schemas import OHLCVRecord
@@ -102,12 +103,9 @@ def _coerce_non_negative_finite_float(value: Any, field_name: str) -> float:
 
 def _coerce_finite_float(value: Any, field_name: str) -> float:
     """Coerce a finite float."""
-    if isinstance(value, bool):
+    if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
         raise TypeError(f"{field_name} must be numeric")
-    try:
-        number = float(value)
-    except (TypeError, ValueError) as exc:
-        raise TypeError(f"{field_name} must be numeric") from exc
+    number = float(value)
     if not math.isfinite(number):
         raise ValueError(f"{field_name} must be finite")
     return number
@@ -115,12 +113,9 @@ def _coerce_finite_float(value: Any, field_name: str) -> float:
 
 def _coerce_non_negative_int(value: Any, field_name: str) -> int:
     """Coerce a non-negative integer."""
-    if isinstance(value, bool):
+    if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
         raise TypeError(f"{field_name} must be an integer")
-    try:
-        number = float(value)
-    except (TypeError, ValueError) as exc:
-        raise TypeError(f"{field_name} must be an integer") from exc
+    number = float(value)
     if not math.isfinite(number) or not number.is_integer():
         raise ValueError(f"{field_name} must be an integer")
     integer = int(number)

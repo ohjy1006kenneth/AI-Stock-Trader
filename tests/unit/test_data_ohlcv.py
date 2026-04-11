@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -36,6 +37,16 @@ def test_build_ohlcv_record_happy_path() -> None:
     assert record.volume == 1234
     assert record.adj_close == 103.5
     assert record.dollar_volume == 128336.0
+
+
+def test_build_ohlcv_record_accepts_decimal_numeric_values() -> None:
+    """Decimal numeric inputs are explicit numeric types and remain valid."""
+    row = _valid_row()
+    row["close"] = Decimal("104.0")
+
+    record = build_ohlcv_record(row)
+
+    assert record.close == 104.0
 
 
 @pytest.mark.parametrize("field", ["date", "ticker"])
@@ -74,6 +85,15 @@ def test_build_ohlcv_record_rejects_non_finite_prices(bad_value: float) -> None:
     row["close"] = bad_value
 
     with pytest.raises(ValueError, match="finite"):
+        build_ohlcv_record(row)
+
+
+def test_build_ohlcv_record_rejects_string_price_values() -> None:
+    """Numeric strings must be parsed explicitly by the upstream adapter."""
+    row = _valid_row()
+    row["close"] = "104.0"
+
+    with pytest.raises(TypeError, match="numeric"):
         build_ohlcv_record(row)
 
 
@@ -126,4 +146,13 @@ def test_build_ohlcv_record_rejects_bad_volume_values(
     row[field] = value
 
     with pytest.raises(ValueError, match=message):
+        build_ohlcv_record(row)
+
+
+def test_build_ohlcv_record_rejects_string_volume_values() -> None:
+    """Volume strings must be parsed explicitly by the upstream adapter."""
+    row = _valid_row()
+    row["volume"] = "1234"
+
+    with pytest.raises(TypeError, match="integer"):
         build_ohlcv_record(row)

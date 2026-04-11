@@ -7,7 +7,7 @@ from typing import Any
 from core.contracts.schemas import UniverseRecord
 
 REQUIRED_UNIVERSE_FIELDS = ("date", "ticker", "in_universe")
-BOOLEAN_FIELDS = ("in_universe", "tradable", "liquid", "halted", "data_quality_ok")
+OPTIONAL_BOOLEAN_FIELDS = ("tradable", "liquid", "halted", "data_quality_ok")
 DEFAULT_UNIVERSE_VALUES = {
     "tradable": True,
     "liquid": True,
@@ -30,7 +30,7 @@ def build_universe_record(row: Mapping[str, Any]) -> UniverseRecord:
         **DEFAULT_UNIVERSE_VALUES,
     }
 
-    for field in BOOLEAN_FIELDS:
+    for field in OPTIONAL_BOOLEAN_FIELDS:
         if field in row and row[field] is not None:
             values[field] = _coerce_bool(row[field], field)
 

@@ -18,10 +18,10 @@ def build_r2_key(*parts: str) -> str:
     return key
 
 
-def raw_price_path(permaticker: str) -> str:
-    """Return the canonical raw OHLCV Parquet path for one Tiingo permaTicker."""
-    safe_permaticker = _validate_key_part(permaticker)
-    return build_r2_key("raw", "prices", f"{safe_permaticker}.parquet")
+def raw_price_path(security_id: str) -> str:
+    """Return the canonical raw OHLCV Parquet path for one stable security identifier."""
+    safe_security_id = _validate_key_part(security_id)
+    return build_r2_key("raw", "prices", f"{safe_security_id}.parquet")
 
 
 def raw_news_path(as_of_date: str | Date | datetime) -> str:
