@@ -20,5 +20,3 @@
 - [ ] Universe validation still reports a few historical symbol-identity mismatches
   (e.g., UAA, AGN, IQV transition events); evaluate date-bounded symbol mapping
   policy to reduce residual event-boundary violations.
-- [ ] `services/r2/paths.py` source is missing even though Milestone 1 issues reference it as the
-  canonical R2 path builder
