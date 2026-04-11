@@ -1,0 +1,52 @@
+{
+  "security_master": [
+    {
+      "ticker": "AAPL",
+      "permaTicker": "PT_AAPL_001",
+      "startDate": "1980-12-12",
+      "endDate": null,
+      "exchange": "NASDAQ",
+      "assetType": "Stock",
+      "name": "Apple Inc."
+    },
+    {
+      "ticker": "ABC",
+      "permaTicker": "PT_ABC_OLD",
+      "startDate": "2010-01-01",
+      "endDate": "2015-12-31",
+      "exchange": "NYSE",
+      "assetType": "Stock",
+      "name": "Example Acquired Co."
+    }
+  ],
+  "prices": [
+    {
+      "date": "2024-01-02T00:00:00.000Z",
+      "open": 185.64,
+      "high": 188.44,
+      "low": 183.89,
+      "close": 185.64,
+      "volume": 82488700,
+      "adjOpen": 184.734,
+      "adjHigh": 187.52,
+      "adjLow": 182.992,
+      "adjClose": 184.734,
+      "splitFactor": 1.0,
+      "divCash": 0.0
+    },
+    {
+      "date": "2024-01-03T00:00:00.000Z",
+      "open": 184.22,
+      "high": 185.88,
+      "low": 183.43,
+      "close": 184.25,
+      "volume": 58414500,
+      "adjOpen": 183.321,
+      "adjHigh": 184.973,
+      "adjLow": 182.535,
+      "adjClose": 183.351,
+      "splitFactor": 1.0,
+      "divCash": 0.0
+    }
+  ]
+}
