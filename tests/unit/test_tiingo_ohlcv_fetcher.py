@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+from app.lab.data_pipelines import backfill_ohlcv as backfill_module
 from app.lab.data_pipelines.backfill_ohlcv import backfill_ohlcv_archive
 from core.contracts.schemas import OHLCVRecord
 from services.r2.paths import raw_price_path, raw_security_master_path
@@ -277,6 +278,35 @@ def test_security_master_resolve_many_preserves_reused_ticker_rows() -> None:
     ]
 
 
+def test_security_master_resolve_many_keeps_rows_with_shared_perma_ticker() -> None:
+    """Ticker aliases sharing one permaTicker remain separate reference rows."""
+    master = TiingoSecurityMaster.from_rows(
+        [
+            {
+                "ticker": "OLD",
+                "permaTicker": "PT_SHARED",
+                "startDate": "2010-01-01",
+                "endDate": "2012-12-31",
+            },
+            {
+                "ticker": "NEW",
+                "permaTicker": "PT_SHARED",
+                "startDate": "2013-01-01",
+                "endDate": None,
+            },
+        ]
+    )
+
+    assert [security.ticker for security in master.resolve_many(["OLD", "NEW"])] == [
+        "OLD",
+        "NEW",
+    ]
+    assert [security.security_id for security in master.resolve_many(["OLD", "NEW"])] == [
+        "PT_SHARED",
+        "PT_SHARED",
+    ]
+
+
 def test_security_master_parses_supported_tickers_zip() -> None:
     """Supported-ticker ZIP parsing preserves delisted/end-date metadata."""
     payload = _supported_tickers_zip(
@@ -358,7 +388,85 @@ def test_backfill_writes_price_archive_and_reference_mapping() -> None:
 
     reference = json.loads(writer.objects[reference_key])
     assert reference["source"] == "tiingo"
+    assert reference["missing_tickers"] == []
     assert reference["securities"][0]["security_id"] == "PT_AAPL_001"
+
+
+def test_backfill_combines_alias_rows_that_share_one_perma_ticker() -> None:
+    """Backfill fetches every alias row before writing one stable-identity archive."""
+    price_rows = _fixture_payload()["prices"]
+    master = TiingoSecurityMaster.from_rows(
+        [
+            {
+                "ticker": "OLD",
+                "permaTicker": "PT_SHARED",
+                "startDate": "2024-01-02",
+                "endDate": "2024-01-02",
+            },
+            {
+                "ticker": "NEW",
+                "permaTicker": "PT_SHARED",
+                "startDate": "2024-01-03",
+                "endDate": None,
+            },
+        ]
+    )
+    writer = _FakeWriter()
+    fetcher = _FakeFetcher(
+        {
+            "OLD": normalize_tiingo_price_rows("OLD", [price_rows[0]]),
+            "NEW": normalize_tiingo_price_rows("NEW", [price_rows[1]]),
+        }
+    )
+
+    result = backfill_ohlcv_archive(
+        from_date=date(2024, 1, 2),
+        to_date=date(2024, 1, 3),
+        fetcher=fetcher,
+        security_master=master,
+        writer=writer,
+        tickers=["OLD", "NEW"],
+        record_serializer=_serialize_records_for_test,
+    )
+
+    price_key = raw_price_path("PT_SHARED")
+    reference_key = raw_security_master_path("2024-01-03")
+    archive_rows = json.loads(writer.objects[price_key])  # type: ignore[arg-type]
+    reference_rows = json.loads(writer.objects[reference_key])["securities"]
+
+    assert result.requested == 1
+    assert result.written == 1
+    assert fetcher.calls == [
+        ("OLD", "2024-01-02", "2024-01-02"),
+        ("NEW", "2024-01-03", "2024-01-03"),
+    ]
+    assert [row["ticker"] for row in archive_rows] == ["OLD", "NEW"]
+    assert [row["ticker"] for row in reference_rows] == ["OLD", "NEW"]
+    assert [row["security_id"] for row in reference_rows] == ["PT_SHARED", "PT_SHARED"]
+
+
+def test_backfill_skips_missing_security_master_tickers() -> None:
+    """Universe/security-master mismatches are reported without aborting the backfill."""
+    records = normalize_tiingo_price_rows("AAPL", _fixture_payload()["prices"])
+    master = TiingoSecurityMaster.from_rows(_fixture_payload()["security_master"])
+    writer = _FakeWriter()
+    fetcher = _FakeFetcher({"AAPL": records})
+
+    result = backfill_ohlcv_archive(
+        from_date=date(2024, 1, 2),
+        to_date=date(2024, 1, 3),
+        fetcher=fetcher,
+        security_master=master,
+        writer=writer,
+        tickers=["AAPL", "MISSING"],
+        record_serializer=_serialize_records_for_test,
+    )
+
+    reference = json.loads(writer.objects[result.reference_key])
+    assert result.requested == 1
+    assert result.written == 1
+    assert result.missing_tickers == ("MISSING",)
+    assert reference["missing_tickers"] == ["MISSING"]
 
 
 def test_backfill_allows_empty_ticker_list_without_fetching_universe() -> None:
@@ -458,6 +566,22 @@ def test_backfill_is_idempotent_for_existing_price_archive() -> None:
     assert result.skipped == 1
     assert fetcher.calls == []
     assert price_key not in writer.objects
+
+
+def test_parquet_serializer_reports_missing_pyarrow(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Parquet serialization fails with a clear dependency message when pyarrow is absent."""
+    records = normalize_tiingo_price_rows("AAPL", _fixture_payload()["prices"])
+    real_import_module = backfill_module.importlib.import_module
+
+    def fake_import_module(name: str, package: str | None = None) -> object:
+        if name == "pyarrow":
+            raise ModuleNotFoundError("No module named 'pyarrow'")
+        return real_import_module(name, package)
+
+    monkeypatch.setattr(backfill_module.importlib, "import_module", fake_import_module)
+
+    with pytest.raises(ModuleNotFoundError, match="pandas and pyarrow are required"):
+        backfill_module._records_to_parquet_bytes(records)
 
 
 def _serialize_records_for_test(records: list[OHLCVRecord]) -> bytes:

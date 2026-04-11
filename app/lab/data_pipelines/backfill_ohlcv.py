@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from io import BytesIO
@@ -58,6 +59,7 @@ class BackfillResult:
     skipped: int
     empty: int
     reference_key: str
+    missing_tickers: tuple[str, ...] = ()
 
 
 def backfill_ohlcv_archive(
@@ -81,11 +83,16 @@ def backfill_ohlcv_archive(
         else tickers
     )
     requested_tickers = sorted(set(ticker_source))
+    resolved_securities, missing_tickers = _resolve_requested_securities(
+        security_master=security_master,
+        tickers=requested_tickers,
+    )
     securities = [
         security
-        for security in security_master.resolve_many(requested_tickers)
+        for security in resolved_securities
         if _security_overlaps_range(security, from_date, to_date)
     ]
+    security_groups = _group_securities_by_id(securities)
     reference_key = raw_security_master_path(to_date)
     _write_reference_mapping(
         writer=writer,
@@ -93,6 +100,7 @@ def backfill_ohlcv_archive(
         from_date=from_date,
         to_date=to_date,
         securities=securities,
+        missing_tickers=missing_tickers,
         overwrite=overwrite,
     )
 
@@ -101,34 +109,40 @@ def backfill_ohlcv_archive(
     empty = 0
     serializer = record_serializer or _records_to_parquet_bytes
 
-    for security in securities:
-        price_key = raw_price_path(security.security_id)
+    for security_id, security_rows in security_groups.items():
+        price_key = raw_price_path(security_id)
         if writer.exists(price_key) and not overwrite:
             skipped += 1
             logger.info("Skipping existing Tiingo OHLCV archive {}", price_key)
             continue
 
-        fetch_from_date, fetch_to_date = _security_fetch_range(security, from_date, to_date)
-        records = fetcher.fetch_security_records(
-            security=security,
-            from_date=fetch_from_date.isoformat(),
-            to_date=fetch_to_date.isoformat(),
-        )
+        records: list[OHLCVRecord] = []
+        for security in security_rows:
+            fetch_from_date, fetch_to_date = _security_fetch_range(security, from_date, to_date)
+            records.extend(
+                fetcher.fetch_security_records(
+                    security=security,
+                    from_date=fetch_from_date.isoformat(),
+                    to_date=fetch_to_date.isoformat(),
+                )
+            )
+
         if not records:
             empty += 1
-            logger.warning("No Tiingo OHLCV rows returned for {}", security.ticker)
+            logger.warning("No Tiingo OHLCV rows returned for security_id={}", security_id)
             continue
 
-        writer.put_object(price_key, serializer(records))
+        writer.put_object(price_key, serializer(_sort_records(records)))
         written += 1
         logger.info("Wrote {} Tiingo OHLCV rows to {}", len(records), price_key)
 
     return BackfillResult(
-        requested=len(securities),
+        requested=len(security_groups),
         written=written,
         skipped=skipped,
         empty=empty,
         reference_key=reference_key,
+        missing_tickers=missing_tickers,
     )
 
 
@@ -136,6 +150,7 @@ def _records_to_parquet_bytes(records: list[OHLCVRecord]) -> bytes:
     """Serialize OHLCV records to Parquet bytes."""
     try:
         import pandas as pd
+        importlib.import_module("pyarrow")
     except ModuleNotFoundError as exc:
         raise ModuleNotFoundError(
             "pandas and pyarrow are required to serialize Tiingo OHLCV records to Parquet. "
@@ -146,6 +161,51 @@ def _records_to_parquet_bytes(records: list[OHLCVRecord]) -> bytes:
     buffer = BytesIO()
     frame.to_parquet(buffer, index=False)
     return buffer.getvalue()
+
+
+def _resolve_requested_securities(
+    *,
+    security_master: TiingoSecurityMaster,
+    tickers: Iterable[str],
+) -> tuple[list[TiingoSecurity], tuple[str, ...]]:
+    """Resolve requested tickers while logging and returning master misses."""
+    resolved: set[TiingoSecurity] = set()
+    missing_tickers: list[str] = []
+    for ticker in tickers:
+        try:
+            resolved.update(security_master.resolve_all(ticker))
+        except KeyError:
+            missing_tickers.append(ticker)
+            logger.warning("Skipping ticker missing from Tiingo security master: {}", ticker)
+    return sorted(resolved, key=_security_reference_sort_key), tuple(sorted(missing_tickers))
+
+
+def _group_securities_by_id(
+    securities: Iterable[TiingoSecurity],
+) -> dict[str, list[TiingoSecurity]]:
+    """Group security rows by stable archive key while preserving ticker aliases."""
+    groups: dict[str, list[TiingoSecurity]] = {}
+    for security in securities:
+        groups.setdefault(security.security_id, []).append(security)
+    return {
+        security_id: sorted(rows, key=_security_reference_sort_key)
+        for security_id, rows in sorted(groups.items())
+    }
+
+
+def _security_reference_sort_key(security: TiingoSecurity) -> tuple[str, str, str, str]:
+    """Sort security-reference rows without collapsing shared stable identities."""
+    return (
+        security.security_id,
+        security.start_date or "0000-00-00",
+        security.end_date or "9999-99-99",
+        security.ticker,
+    )
+
+
+def _sort_records(records: list[OHLCVRecord]) -> list[OHLCVRecord]:
+    """Sort OHLCV records deterministically before archive serialization."""
+    return sorted(records, key=lambda record: (record.date, record.ticker))
 
 
 def _security_overlaps_range(security: TiingoSecurity, from_date: date, to_date: date) -> bool:
@@ -175,6 +235,7 @@ def _write_reference_mapping(
     from_date: date,
     to_date: date,
     securities: list[TiingoSecurity],
+    missing_tickers: tuple[str, ...],
     overwrite: bool,
 ) -> None:
     """Write the ticker-to-security reference mapping needed for archive resolution."""
@@ -187,6 +248,7 @@ def _write_reference_mapping(
         "from_date": from_date.isoformat(),
         "to_date": to_date.isoformat(),
         "generated_at": datetime.now(UTC).isoformat(),
+        "missing_tickers": list(missing_tickers),
         "securities": [security.to_reference_row() for security in securities],
     }
     writer.put_object(key, json.dumps(payload, sort_keys=True, separators=(",", ":")))

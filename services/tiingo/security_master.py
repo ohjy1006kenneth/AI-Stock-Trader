@@ -114,16 +114,16 @@ class TiingoSecurityMaster:
 
     def resolve_many(self, tickers: Iterable[str]) -> list[TiingoSecurity]:
         """Resolve many tickers while preserving sorted deterministic output."""
-        resolved: dict[str, TiingoSecurity] = {}
+        resolved: set[TiingoSecurity] = set()
         for ticker in tickers:
             for security in self.resolve_all(ticker):
-                resolved[security.security_id] = security
-        return [resolved[key] for key in sorted(resolved)]
+                resolved.add(security)
+        return sorted(resolved, key=_security_reference_sort_key)
 
     def to_reference_rows(self, securities: Iterable[TiingoSecurity] | None = None) -> list[dict[str, str | None]]:
         """Serialize selected security rows for R2 reference storage."""
         source = self._securities if securities is None else tuple(securities)
-        return [security.to_reference_row() for security in sorted(source, key=lambda row: row.security_id)]
+        return [security.to_reference_row() for security in sorted(source, key=_security_reference_sort_key)]
 
 
 def security_from_mapping(row: Mapping[str, Any]) -> TiingoSecurity:
@@ -223,4 +223,14 @@ def _security_sort_key(security: TiingoSecurity) -> tuple[str, str, str]:
         security.start_date or "0000-00-00",
         security.end_date or "9999-99-99",
         security.security_id,
+    )
+
+
+def _security_reference_sort_key(security: TiingoSecurity) -> tuple[str, str, str, str]:
+    """Sort security-reference rows without collapsing shared stable identities."""
+    return (
+        security.security_id,
+        security.start_date or "0000-00-00",
+        security.end_date or "9999-99-99",
+        security.ticker,
     )
