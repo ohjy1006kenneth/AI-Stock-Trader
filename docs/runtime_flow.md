@@ -75,19 +75,24 @@ before enabling the live daily loop.
 4. **Layer 2 inference** (Modal)
    - Read today's feature row from R2
    - Select active XGBoost model for current regime
-   - Produce `ScoreRecord` per ticker (return_score, pos_prob, rank_score)
+   - Produce `ScoreRecord` per ticker using sector-neutral or cross-sectional alpha scores
+     (`return_score`, `pos_prob`, `rank_score`)
    - Write scores to `processed/scores/YYYY-MM-DD.parquet` in R2
    - Write `PipelineManifestRecord` (stage=layer2)
 
 5. **Layer 3 portfolio construction** (Pi)
    - Pi reads scores from R2
    - Contextual bandit filters ~800 universe stocks → 30–50 candidates
-   - Mean-variance optimizer produces target weights with turnover penalty
+   - Mean-variance optimizer produces signed target weights with turnover penalty
+   - Baseline long-only policy keeps ordinary single-stock targets non-negative
+   - Future hedge modes may add approved index or sector hedge overlay targets
    - Write `PortfolioRecord` list to R2
 
 6. **Layer 4 risk engine** (Pi)
    - Apply hard rules: position cap, ADV cap, sector cap, beta cap,
      correlation cap, drawdown scaling, fat-finger checks
+   - Load all thresholds from policy/config; do not rely on hardcoded risk constants
+   - Reject negative single-stock targets unless an explicit hedge/short policy is enabled
    - Write `ApprovedOrderRecord` list to R2 and local SSD
    - Write `PipelineManifestRecord` (stage=layer4)
 
@@ -100,7 +105,7 @@ before enabling the live daily loop.
 
 8. **Layer 5 execution** (Pi)
    - Convert target dollars to whole share counts (round down)
-   - Place limit orders via Alpaca
+   - Place long-only equity limit orders via Alpaca in the baseline deployment
    - Monitor fills every N minutes; cancel and reprice stale orders after 30 min
    - Log fills to local SQLite ledger and `ExecutionFillRecord` in R2
 

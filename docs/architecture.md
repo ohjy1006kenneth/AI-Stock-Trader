@@ -53,8 +53,78 @@ The design principle is:
 - shared state in R2 (accessible by both Pi and Modal)
 - Pi SSD used as a local cache for raw fetched data and intermediate state
 - explicit contracts between every layer
+- long-only execution first, with contracts and risk policy kept compatible with later
+  hedge overlays and long-short expansion
 
 ---
+
+## Portfolio posture and expansion roadmap
+
+The initial production system is a long-only daily equity strategy. That is the safest
+baseline for paper trading and early live operation: no margin dependency, no locate/borrow
+dependency, no short-squeeze mechanics, and simpler execution reconciliation.
+
+The architecture must still avoid hardcoding long-only assumptions into contracts or model
+targets. Future hedge and long-short support should be introduced by policy/config changes
+where possible, and by explicit schema migrations only where the current contracts cannot
+represent the needed execution semantics.
+
+Design constraints that apply from the start:
+- `PortfolioRecord.weight`, `target_dollars`, `current_dollars`, and `change_dollars` are
+  signed quantities by contract. Current long-only policy may reject or clamp negative
+  single-stock targets, but the schema must not imply weights are always positive.
+- Layer 2 should train on sector-neutralized forward returns or cross-sectional ranks, not
+  raw market-beta returns. That keeps the score aligned with stock-specific alpha even
+  before hedging is enabled.
+- Layer 4 risk limits must be parameterized through policy/config. Position caps, ADV caps,
+  beta caps, gross/net exposure caps, and future short-side limits must not be hardcoded
+  constants inside rule implementations.
+- Layer 5 remains simple long-only equity execution until a dedicated execution-contract
+  migration introduces short opening/covering, options, margin, and borrow semantics.
+
+### Expansion phases
+
+**Phase 1 — defensive index hedging**
+
+When regime detection flags bear or high-volatility conditions, the system may add a hedge
+overlay instead of only scaling down long exposure. The first hedge instruments should be
+index-level and simple to reason about:
+- inverse ETFs such as SH for small systematic-risk hedges
+- protective SPY puts only after options approval, options-specific risk rules, and execution
+  contract support exist
+
+This phase does not require single-name shorting. The hedge decision belongs in Layer 3 as
+an overlay decision informed by regime state, VIX, drawdown, and beta exposure. Layer 4 must
+cap hedge notional, gross exposure, and instrument eligibility. Layer 5 must not route
+options unless an explicit options execution contract exists.
+
+**Phase 2 — sector-level hedging**
+
+The next extension is sector pair exposure. If the stock selector is intentionally overweight
+one sector because individual names score well, Layer 3 can short or inverse-hedge the
+sector ETF to isolate stock-specific alpha:
+- long selected names inside a sector
+- short or inverse-hedge the sector ETF, for example XLK for technology exposure
+- constrain net sector exposure, gross exposure, and hedge ratio through Layer 4 policy
+
+This aligns portfolio construction with the Layer 2 sector-neutral target. It requires margin
+or approved inverse instruments, and it requires explicit risk rules for sector hedge sizing.
+
+**Phase 3 — true long-short equity**
+
+The final expansion is a full long-short book. Layer 2 already ranks stocks from strongest
+to weakest; Layer 3 can eventually allocate positive weights to the top of the ranking and
+negative weights to the bottom.
+
+This is not just a switch in the optimizer. It requires:
+- optimizer support for signed weights, gross exposure, net exposure, beta neutrality, and
+  borrow-aware constraints
+- Layer 4 short-specific rules for short squeezes, borrow costs, hard-to-borrow names,
+  concentration, recall risk, and unlimited-downside scenarios
+- Layer 5 support for locate/borrow mechanics, margin checks, short-sale order semantics,
+  buy-to-cover behavior, and broker rejection handling
+- backtests that model borrow fees, short rebates, margin interest, and asymmetric execution
+  risk
 
 ## Data sources
 
@@ -394,6 +464,11 @@ Best — cross-sectional rank, removes good-day vs. bad-day effects entirely:
 target = cross_sectional_rank(stock_return_next_5d, date)
 ```
 
+The primary training target should be sector-neutralized even while execution is long-only.
+Long-only deployment can still buy only the highest-scoring names, but the model should learn
+stock-specific alpha rather than broad sector or market direction. Raw forward returns may be
+kept as diagnostics, not as the canonical model target.
+
 Use 5-day forward return as the prediction horizon. Test 1, 5, and 10 days and compare IC.
 
 **Regime-specific model architecture:**
@@ -462,11 +537,22 @@ Key design choices:
 
 Output: target weight per ticker (fraction of total portfolio).
 
+**Signed weight semantics:**
+Layer 3 should emit signed target weights even if the active policy is long-only. In
+long-only mode, candidate single-stock weights must be non-negative after policy constraints.
+In later hedge modes, approved hedge instruments or short books may carry negative weights.
+This keeps the optimizer interface stable as the system moves from long-only to hedged and
+eventually long-short behavior.
+
 ### Layer 4 — Risk Engine
 
 Layer 4 is a completely separate, model-free hard-rule layer. It does not care what XGBoost
 predicted, what the optimizer decided, or what the bandit selected. It applies after
 optimization and cannot be gamed by the optimizer.
+
+All Layer 4 thresholds must come from explicit policy/config, not hardcoded constants. The
+baseline policy is long-only, but the rule interface should accept signed proposed exposure
+so future hedge and short-side rules can be added without rewriting the layer boundary.
 
 **Position-level rules:**
 
@@ -485,6 +571,17 @@ optimization and cannot be gamed by the optimizer.
 | Correlation cap | 0.70–0.80 (30-day rolling pair) | Keep higher-scored ticker, reduce the other |
 | Daily loss limit | -2% intraday | Reduce gross exposure to 50% (circuit breaker) |
 | Max leverage | 1.0x (long-only cash account) | Scale all weights proportionally |
+
+**Hedge-ready policy gates (disabled in the baseline long-only mode):**
+
+| Rule family | Purpose |
+|---|---|
+| Short enable flag | Reject negative single-name targets unless short mode is explicitly enabled |
+| Approved hedge instruments | Allow only configured ETFs/options as defensive hedges |
+| Gross exposure cap | Limit total absolute exposure when long and hedge legs coexist |
+| Net exposure band | Keep portfolio net exposure within configured long-only, hedged, or long-short bands |
+| Short concentration cap | Cap negative exposure per ticker, sector, and hard-to-borrow group |
+| Borrow/margin checks | Block short orders when locate, borrow, or margin requirements are not satisfied |
 
 **Drawdown-based exposure scaling (most impactful rule):**
 
@@ -512,6 +609,12 @@ It does not make decisions — it follows instructions from Layer 4.
 Before placing any new orders, fetch Alpaca's actual account state and reconcile against
 internal state. Alpaca's state is always the authority. Only after reconciliation does Layer 5
 calculate delta orders needed to reach Layer 4 targets.
+
+Baseline Layer 5 execution is long-only equities. Opening shorts, covering shorts, inverse
+ETF hedge overlays, and options hedges must be introduced by dedicated execution issues and,
+where needed, schema migrations. The current `BUY` and `SELL` actions are sufficient for
+long-only target rebalancing, but they are not enough to distinguish open-short, cover,
+option buy-to-open, or option sell-to-close behavior.
 
 **Weight → shares conversion:**
 Layer 4 outputs dollar amounts. Layer 5 converts to whole share counts (round down).

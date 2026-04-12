@@ -45,9 +45,20 @@ Expected execution chain:
 6. Dry-run risk and execution path
 7. Enable paper execution
 
+Baseline paper execution is long-only equities. Hedge and long-short capabilities must stay
+disabled by policy until the relevant risk and execution gates are implemented:
+- defensive index hedges: explicit approved instrument list, hedge notional caps, and
+  broker/account permission checks
+- sector hedges: margin or inverse-instrument approval, sector ETF mapping, and net/gross
+  exposure controls
+- true long-short: borrow/locate checks, margin checks, short-specific order semantics, and
+  updated execution contracts
+
 ## Operational notes
 
 - Keep secrets outside git
 - Log every stage deterministically
 - Fail closed on missing risk checks
+- Keep risk thresholds in policy/config so long-only, hedged, and long-short modes can use
+  the same Layer 4 rule framework
 - Keep runtime assumptions synchronized across AGENTS, docs, and issue acceptance criteria
