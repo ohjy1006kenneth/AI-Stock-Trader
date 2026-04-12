@@ -47,6 +47,8 @@ class MacroFetcher(Protocol):
         series_ids: Sequence[str],
         start_date: str,
         end_date: str,
+        realtime_start: str | None,
+        realtime_end: str | None,
         limit: int,
     ) -> list[dict[str, object]]:
         """Fetch all raw FRED rows for configured series/date range."""
@@ -102,6 +104,8 @@ def backfill_fred_archive(
         series_ids=normalized_series_ids,
         start_date=from_date.isoformat(),
         end_date=to_date.isoformat(),
+        realtime_start=from_date.isoformat(),
+        realtime_end=to_date.isoformat(),
         limit=limit,
     )
     payload_serializer = serializer or _macro_to_parquet_bytes

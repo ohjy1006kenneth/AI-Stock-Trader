@@ -93,15 +93,21 @@ class FredMacroFetcher:
         series_id: str,
         start_date: str,
         end_date: str,
+        realtime_start: str | None = None,
+        realtime_end: str | None = None,
         limit: int = DEFAULT_FRED_PAGE_LIMIT,
         offset: int = 0,
     ) -> FredPage:
-        """Fetch one page of FRED observations for one series/date range."""
+        """Fetch one page of FRED observations for one series/date/realtime range."""
         normalized_series_id = _normalize_series_id(series_id)
         start = _validate_date(start_date, "start_date")
         end = _validate_date(end_date, "end_date")
+        realtime_start_value = _validate_date(realtime_start or start, "realtime_start")
+        realtime_end_value = _validate_date(realtime_end or end, "realtime_end")
         if start > end:
             raise ValueError("start_date must be <= end_date")
+        if realtime_start_value > realtime_end_value:
+            raise ValueError("realtime_start must be <= realtime_end")
         if limit <= 0:
             raise ValueError("limit must be positive")
         if offset < 0:
@@ -112,8 +118,11 @@ class FredMacroFetcher:
                 "series_id": normalized_series_id,
                 "observation_start": start,
                 "observation_end": end,
+                "realtime_start": realtime_start_value,
+                "realtime_end": realtime_end_value,
                 "sort_order": "asc",
                 "file_type": "json",
+                "output_type": 1,
                 "limit": limit,
                 "offset": offset,
                 "api_key": self.config.api_key,
@@ -129,10 +138,12 @@ class FredMacroFetcher:
         series_id: str,
         start_date: str,
         end_date: str,
+        realtime_start: str | None = None,
+        realtime_end: str | None = None,
         limit: int = DEFAULT_FRED_PAGE_LIMIT,
         max_pages: int | None = None,
     ) -> list[dict[str, Any]]:
-        """Fetch all observations for one FRED series/date range."""
+        """Fetch all observations for one FRED series/date/realtime range."""
         offset = 0
         pages = 0
         rows: list[dict[str, Any]] = []
@@ -143,6 +154,8 @@ class FredMacroFetcher:
                 series_id=series_id,
                 start_date=start_date,
                 end_date=end_date,
+                realtime_start=realtime_start,
+                realtime_end=realtime_end,
                 limit=limit,
                 offset=offset,
             )
@@ -172,9 +185,11 @@ class FredMacroFetcher:
         series_ids: Sequence[str],
         start_date: str,
         end_date: str,
+        realtime_start: str | None = None,
+        realtime_end: str | None = None,
         limit: int = DEFAULT_FRED_PAGE_LIMIT,
     ) -> list[dict[str, Any]]:
-        """Fetch all configured FRED series observations for a date range."""
+        """Fetch all configured FRED series observations for a date/realtime range."""
         normalized_series_ids = _normalize_series_ids(series_ids)
         rows: list[dict[str, Any]] = []
         for series_id in normalized_series_ids:
@@ -183,6 +198,8 @@ class FredMacroFetcher:
                     series_id=series_id,
                     start_date=start_date,
                     end_date=end_date,
+                    realtime_start=realtime_start,
+                    realtime_end=realtime_end,
                     limit=limit,
                 )
             )

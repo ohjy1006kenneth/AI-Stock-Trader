@@ -177,8 +177,11 @@ def test_fetch_series_page_calls_fred_endpoint_and_normalizes_rows() -> None:
                 "series_id": "FEDFUNDS",
                 "observation_start": "2024-01-01",
                 "observation_end": "2024-12-31",
+                "realtime_start": "2024-01-01",
+                "realtime_end": "2024-12-31",
                 "sort_order": "asc",
                 "file_type": "json",
+                "output_type": 1,
                 "limit": 2,
                 "offset": 0,
                 "api_key": "test-key",
@@ -214,6 +217,41 @@ def test_fetch_series_observations_paginates_and_deduplicates() -> None:
         ("2024-01-03", 5.35),
     ]
     assert [call["params"]["offset"] for call in session.calls] == [0, 2, 4]
+
+
+def test_fetch_series_page_accepts_explicit_realtime_window() -> None:
+    """Historical pulls can request a bounded FRED realtime vintage window."""
+    fixture = _fixture_payload()
+    session = _FakeSession([_FakeResponse(fixture["page1"])])
+    fetcher = FredMacroFetcher(
+        FredClientConfig(api_key="test-key", retry_sleep_seconds=0),
+        session=session,  # type: ignore[arg-type]
+    )
+
+    fetcher.fetch_series_page(
+        series_id="CPIAUCSL",
+        start_date="2024-01-01",
+        end_date="2024-12-31",
+        realtime_start="2024-02-01",
+        realtime_end="2024-03-01",
+    )
+
+    assert session.calls[0]["params"]["realtime_start"] == "2024-02-01"
+    assert session.calls[0]["params"]["realtime_end"] == "2024-03-01"
+
+
+def test_fetch_series_page_rejects_invalid_realtime_window() -> None:
+    """Realtime vintage windows must be ordered."""
+    fetcher = FredMacroFetcher(FredClientConfig(api_key="test-key"))
+
+    with pytest.raises(ValueError, match="realtime_start"):
+        fetcher.fetch_series_page(
+            series_id="CPIAUCSL",
+            start_date="2024-01-01",
+            end_date="2024-12-31",
+            realtime_start="2024-03-01",
+            realtime_end="2024-02-01",
+        )
 
 
 def test_fetch_series_page_accepts_empty_response() -> None:
@@ -355,6 +393,8 @@ def test_backfill_writes_raw_macro_archive() -> None:
     assert [row["observation_date"] for row in stored_rows] == ["2024-01-01", "2024-01-02"]
     assert "raw" in stored_rows[0]
     assert fetcher.calls[0]["series_ids"] == ("DGS10", "FEDFUNDS")
+    assert fetcher.calls[0]["realtime_start"] == "2024-01-01"
+    assert fetcher.calls[0]["realtime_end"] == "2024-12-31"
 
 
 def test_backfill_is_idempotent_for_existing_archive() -> None:
