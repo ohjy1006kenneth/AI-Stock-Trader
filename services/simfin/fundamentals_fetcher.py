@@ -75,6 +75,7 @@ class SimFinFundamentalsFetcher:
         end_date: str,
         statements: Sequence[str] = DEFAULT_SIMFIN_STATEMENTS,
         periods: Sequence[str] = DEFAULT_SIMFIN_PERIODS,
+        retrieved_at: datetime | None = None,
         limit: int = DEFAULT_SIMFIN_PAGE_LIMIT,
         offset: int = 0,
     ) -> SimFinPage:
@@ -105,7 +106,7 @@ class SimFinFundamentalsFetcher:
             }
         )
         raw_rows = _extract_payload_rows(payload)
-        rows = normalize_simfin_fundamental_rows(raw_rows)
+        rows = normalize_simfin_fundamental_rows(raw_rows, retrieved_at=retrieved_at)
         return SimFinPage(rows=rows, offset=offset, limit=limit)
 
     def fetch_all_fundamentals(
@@ -116,6 +117,7 @@ class SimFinFundamentalsFetcher:
         end_date: str,
         statements: Sequence[str] = DEFAULT_SIMFIN_STATEMENTS,
         periods: Sequence[str] = DEFAULT_SIMFIN_PERIODS,
+        retrieved_at: datetime | None = None,
         limit: int = DEFAULT_SIMFIN_PAGE_LIMIT,
         max_pages: int | None = None,
     ) -> list[dict[str, Any]]:
@@ -124,6 +126,7 @@ class SimFinFundamentalsFetcher:
         pages = 0
         seen: set[str] = set()
         rows: list[dict[str, Any]] = []
+        archive_retrieved_at = retrieved_at or datetime.now(UTC)
 
         while True:
             page = self.fetch_statement_rows(
@@ -132,6 +135,7 @@ class SimFinFundamentalsFetcher:
                 end_date=end_date,
                 statements=statements,
                 periods=periods,
+                retrieved_at=archive_retrieved_at,
                 limit=limit,
                 offset=offset,
             )

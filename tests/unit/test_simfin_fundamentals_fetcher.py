@@ -151,6 +151,7 @@ def test_fetch_statement_rows_calls_compact_endpoint_and_normalizes_rows() -> No
 def test_fetch_all_fundamentals_paginates_and_deduplicates() -> None:
     """Pagination continues until exhaustion and deduplicates repeated raw rows."""
     fixture = _fixture_payload()
+    retrieved_at = datetime(2024, 8, 5, tzinfo=UTC)
     session = _FakeSession([
         _FakeResponse(fixture["page1"]),
         _FakeResponse(fixture["page2"]),
@@ -165,6 +166,7 @@ def test_fetch_all_fundamentals_paginates_and_deduplicates() -> None:
         tickers=["AAPL", "MSFT"],
         start_date="2024-01-01",
         end_date="2024-12-31",
+        retrieved_at=retrieved_at,
         limit=2,
     )
 
@@ -174,6 +176,7 @@ def test_fetch_all_fundamentals_paginates_and_deduplicates() -> None:
         ("AAPL", "cf"),
     ]
     assert [call["params"]["offset"] for call in session.calls] == [0, 2, 4]
+    assert {row["retrieved_at"] for row in rows} == {"2024-08-05T00:00:00+00:00"}
 
 
 def test_fetch_statement_rows_rejects_malformed_payload_item() -> None:
@@ -257,9 +260,10 @@ def test_normalize_rejects_missing_required_availability_date() -> None:
 
 def test_backfill_writes_raw_fundamentals_archive() -> None:
     """Backfill writes one deterministic raw fundamentals archive for the range."""
+    retrieved_at = datetime(2024, 8, 3, tzinfo=UTC)
     rows = normalize_simfin_fundamental_rows(
         _fixture_payload()["page2"],
-        retrieved_at=datetime(2024, 8, 3, tzinfo=UTC),
+        retrieved_at=retrieved_at,
     )
     writer = _FakeWriter()
     fetcher = _FakeFetcher(rows)
@@ -272,6 +276,7 @@ def test_backfill_writes_raw_fundamentals_archive() -> None:
         tickers=["AAPL"],
         statements=DEFAULT_SIMFIN_STATEMENTS,
         periods=DEFAULT_SIMFIN_PERIODS,
+        retrieved_at=retrieved_at,
         serializer=_json_serializer,
     )
 
@@ -285,6 +290,7 @@ def test_backfill_writes_raw_fundamentals_archive() -> None:
     assert [row["ticker"] for row in stored_rows] == ["AAPL", "AAPL"]
     assert "raw" in stored_rows[0]
     assert fetcher.calls[0]["tickers"] == ["AAPL"]
+    assert fetcher.calls[0]["retrieved_at"] == retrieved_at
 
 
 def test_backfill_is_idempotent_for_existing_archive() -> None:
