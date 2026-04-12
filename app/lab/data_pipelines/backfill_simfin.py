@@ -7,7 +7,7 @@ import json
 import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import UTC, date, datetime
 from io import BytesIO
 from pathlib import Path
 from typing import Protocol
@@ -50,6 +50,7 @@ class FundamentalsFetcher(Protocol):
         end_date: str,
         statements: Sequence[str],
         periods: Sequence[str],
+        retrieved_at: datetime | None,
         limit: int,
     ) -> list[dict[str, object]]:
         """Fetch all raw SimFin rows for a ticker/date range."""
@@ -81,6 +82,7 @@ def backfill_simfin_archive(
     periods: Sequence[str] = DEFAULT_SIMFIN_PERIODS,
     overwrite: bool = False,
     limit: int = DEFAULT_SIMFIN_PAGE_LIMIT,
+    retrieved_at: datetime | None = None,
     serializer: FundamentalsSerializer | None = None,
 ) -> BackfillResult:
     """Backfill SimFin as-reported fundamentals into R2."""
@@ -97,6 +99,7 @@ def backfill_simfin_archive(
     if not ticker_source:
         raise ValueError("tickers must contain at least one ticker")
 
+    archive_retrieved_at = retrieved_at or datetime.now(UTC)
     output_key = raw_fundamentals_path(from_date, to_date)
     if writer.exists(output_key) and not overwrite:
         logger.info("Skipping existing SimFin fundamentals archive {}", output_key)
@@ -115,6 +118,7 @@ def backfill_simfin_archive(
         end_date=to_date.isoformat(),
         statements=statements,
         periods=periods,
+        retrieved_at=archive_retrieved_at,
         limit=limit,
     )
     payload_serializer = serializer or _fundamentals_to_parquet_bytes
