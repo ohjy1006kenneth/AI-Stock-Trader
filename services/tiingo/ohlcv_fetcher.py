@@ -4,10 +4,12 @@ import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date as Date
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
 import requests
+from dotenv import load_dotenv
 
 from core.contracts.schemas import OHLCVRecord
 from core.data.ohlcv import build_ohlcv_record
@@ -15,6 +17,7 @@ from services.tiingo.security_master import TiingoSecurity
 
 TIINGO_API_TOKEN_ENV = "TIINGO_API_TOKEN"
 DEFAULT_TIINGO_BASE_URL = "https://api.tiingo.com"
+TIINGO_ENV_FILE = Path(__file__).resolve().parents[2] / "config" / "tiingo.env"
 
 
 @dataclass(frozen=True)
@@ -27,10 +30,13 @@ class TiingoClientConfig:
 
     @classmethod
     def from_env(cls) -> TiingoClientConfig:
-        """Build Tiingo config from environment variables."""
+        """Build Tiingo config from environment variables or config/tiingo.env."""
+        _load_local_tiingo_env_file()
         token = os.getenv(TIINGO_API_TOKEN_ENV)
         if not token:
-            raise ValueError(f"Missing required Tiingo environment variable: {TIINGO_API_TOKEN_ENV}")
+            raise ValueError(
+                f"Missing required Tiingo environment variable: {TIINGO_API_TOKEN_ENV}"
+            )
         return cls(api_token=token)
 
 
@@ -91,7 +97,9 @@ class TiingoOHLCVFetcher:
         return self.fetch_records(ticker=security.ticker, from_date=from_date, to_date=to_date)
 
 
-def normalize_tiingo_price_rows(ticker: str, rows: Sequence[Mapping[str, Any]]) -> list[OHLCVRecord]:
+def normalize_tiingo_price_rows(
+    ticker: str, rows: Sequence[Mapping[str, Any]]
+) -> list[OHLCVRecord]:
     """Normalize raw Tiingo price rows into schema-valid OHLCV records."""
     normalized_ticker = _normalize_ticker(ticker)
     records: list[OHLCVRecord] = []
@@ -154,3 +162,8 @@ def _normalize_ticker(ticker: str) -> str:
     if not normalized:
         raise ValueError("ticker cannot be empty")
     return normalized
+
+
+def _load_local_tiingo_env_file() -> None:
+    """Load local Tiingo settings from config/tiingo.env when the file exists."""
+    load_dotenv(dotenv_path=TIINGO_ENV_FILE, override=False)
