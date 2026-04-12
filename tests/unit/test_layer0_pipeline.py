@@ -120,7 +120,10 @@ class _NewsFetcher:
     ) -> list[dict[str, object]]:
         self.calls.append({"tickers": tickers, "as_of_date": as_of_date, "limit": limit})
         if self.should_raise:
-            raise RuntimeError("news unavailable")
+            raise RuntimeError(
+                "403 Client Error for url: "
+                "https://api.tiingo.com/tiingo/news?token=secret-token&api-key=secret-key"
+            )
         return [{"id": f"news-{as_of_date}", "publishedDate": as_of_date, "tickers": tickers or []}]
 
 
@@ -429,7 +432,7 @@ def test_layer0_pipeline_writes_failure_manifest_before_reraising() -> None:
     writer = _Writer()
     run_id = "test-failure"
 
-    with pytest.raises(RuntimeError, match="news unavailable"):
+    with pytest.raises(RuntimeError, match="403 Client Error"):
         run_daily_layer0_incremental(
             config=DailyLayer0Config(
                 as_of_date=date(2024, 1, 2),
@@ -453,7 +456,10 @@ def test_layer0_pipeline_writes_failure_manifest_before_reraising() -> None:
     assert manifest["status"] == "failed"
     assert manifest["metadata"]["error"] == {
         "type": "RuntimeError",
-        "message": "news unavailable",
+        "message": (
+            "403 Client Error for url: "
+            "https://api.tiingo.com/tiingo/news?token=<redacted>&api-key=<redacted>"
+        ),
     }
     assert raw_price_path("AAPL") in manifest["metadata"]["output_keys"]
 
