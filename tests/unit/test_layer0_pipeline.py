@@ -275,6 +275,46 @@ def test_historical_layer0_backfill_writes_all_raw_archives_and_manifest() -> No
     assert [row["ticker"] for row in universe_rows] == ["AAPL", "MSFT"]
 
 
+def test_historical_backfill_fetches_existing_price_archives_for_quality_masks() -> None:
+    writer = _Writer()
+    price_keys = [raw_price_path("perm-aapl"), raw_price_path("perm-msft")]
+    for key in price_keys:
+        writer.put_object(key, b"existing-price-archive")
+        writer.put_counts[key] = 0
+    price_fetcher = _HistoricalPriceFetcher()
+
+    run_historical_layer0_backfill(
+        config=HistoricalLayer0Config(
+            from_date=date(2024, 1, 2),
+            to_date=date(2024, 1, 2),
+            fred_series_ids=("DGS10",),
+            run_id="test-existing-price-quality",
+            quality_config=QualityFilterConfig(rolling_window_days=1),
+        ),
+        universe_provider=_UniverseProvider(),
+        price_fetcher=price_fetcher,
+        security_master=_SecurityMaster(),
+        news_fetcher=_NewsFetcher(),
+        fundamentals_fetcher=_FundamentalsFetcher(),
+        macro_fetcher=_MacroFetcher(),
+        writer=writer,
+        price_serializer=_bytes_serializer,
+        news_serializer=_bytes_serializer,
+        fundamentals_serializer=_bytes_serializer,
+        macro_serializer=_bytes_serializer,
+    )
+
+    assert {key: writer.put_counts[key] for key in price_keys} == {key: 0 for key in price_keys}
+    assert [call["ticker"] for call in price_fetcher.calls] == ["AAPL", "MSFT"]
+    universe_rows = list(
+        csv.DictReader(io.StringIO(writer.objects[raw_universe_path("2024-01-02")].decode()))
+    )
+    assert {row["ticker"]: row["data_quality_ok"] for row in universe_rows} == {
+        "AAPL": "True",
+        "MSFT": "True",
+    }
+
+
 def test_daily_layer0_incremental_uses_alpaca_shape_and_canonical_paths() -> None:
     writer = _Writer()
     run_id = "test-daily"
@@ -312,6 +352,41 @@ def test_daily_layer0_incremental_uses_alpaca_shape_and_canonical_paths() -> Non
     price_payload = json.loads(writer.objects[raw_price_path("AAPL")])
     assert price_payload[0]["ticker"] == "AAPL"
     assert price_payload[0]["date"] == "2024-01-02"
+
+
+def test_daily_layer0_incremental_canonicalizes_dot_tickers_across_outputs() -> None:
+    writer = _Writer()
+    live_fetcher = _LivePriceFetcher(records=[_bar(date_value="2024-01-02", ticker="BRK.B")])
+
+    run_daily_layer0_incremental(
+        config=DailyLayer0Config(
+            as_of_date=date(2024, 1, 2),
+            tickers=("brk.b",),
+            fred_series_ids=("DGS10",),
+            run_id="test-dot-ticker",
+            quality_config=QualityFilterConfig(rolling_window_days=1),
+        ),
+        live_price_fetcher=live_fetcher,
+        news_fetcher=_NewsFetcher(),
+        fundamentals_fetcher=_FundamentalsFetcher(),
+        macro_fetcher=_MacroFetcher(),
+        writer=writer,
+        price_serializer=_bytes_serializer,
+        news_serializer=_bytes_serializer,
+        fundamentals_serializer=_bytes_serializer,
+        macro_serializer=_bytes_serializer,
+    )
+
+    assert live_fetcher.calls == [{"tickers": ("BRK-B",), "as_of_date": "2024-01-02"}]
+    assert raw_price_path("BRK-B") in writer.objects
+    price_payload = json.loads(writer.objects[raw_price_path("BRK-B")])
+    assert price_payload[0]["ticker"] == "BRK-B"
+
+    universe_rows = list(
+        csv.DictReader(io.StringIO(writer.objects[raw_universe_path("2024-01-02")].decode()))
+    )
+    assert universe_rows[0]["ticker"] == "BRK-B"
+    assert universe_rows[0]["data_quality_ok"] == "True"
 
 
 def test_daily_layer0_incremental_is_idempotent_for_existing_raw_outputs() -> None:

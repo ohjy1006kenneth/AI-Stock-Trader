@@ -366,9 +366,11 @@ def run_daily_layer0_incremental(
     )
 
     try:
-        daily_records = live_price_fetcher.fetch_live_daily_bars(
-            tickers=tickers,
-            as_of_date=as_of_date.isoformat(),
+        daily_records = _canonicalize_ohlcv_records(
+            live_price_fetcher.fetch_live_daily_bars(
+                tickers=tickers,
+                as_of_date=as_of_date.isoformat(),
+            )
         )
         price_result = _write_daily_prices(
             records=daily_records,
@@ -381,7 +383,7 @@ def run_daily_layer0_incremental(
 
         quality_window = _copy_ohlcv_window(config.quality_ohlcv_window)
         for record in daily_records:
-            quality_window.setdefault(record.ticker.upper(), []).append(record)
+            quality_window.setdefault(_canonicalize_ticker(record.ticker), []).append(record)
         universe_records = build_universe_mask_records(
             as_of_date=as_of_date,
             tickers=tickers,
@@ -551,29 +553,32 @@ def _backfill_historical_prices(
 
     for security_id, security_rows in grouped.items():
         key = raw_price_path(security_id)
-        if writer.exists(key) and not config.overwrite:
+        should_write = config.overwrite or not writer.exists(key)
+        if not should_write:
             skipped += 1
-            continue
 
         records: list[OHLCVRecord] = []
         for security in security_rows:
             fetch_from, fetch_to = _security_fetch_range(security, config.from_date, config.to_date)
-            fetched = price_fetcher.fetch_security_records(
-                security=security,
-                from_date=fetch_from.isoformat(),
-                to_date=fetch_to.isoformat(),
+            fetched = _canonicalize_ohlcv_records(
+                price_fetcher.fetch_security_records(
+                    security=security,
+                    from_date=fetch_from.isoformat(),
+                    to_date=fetch_to.isoformat(),
+                )
             )
             records.extend(fetched)
             for record in fetched:
-                quality_window.setdefault(record.ticker.upper(), []).append(record)
+                quality_window.setdefault(_canonicalize_ticker(record.ticker), []).append(record)
 
         if not records:
             empty += 1
             continue
 
-        writer.put_object(key, serializer(_sort_ohlcv_records(records)))
-        output_keys.append(key)
-        written += 1
+        if should_write:
+            writer.put_object(key, serializer(_sort_ohlcv_records(records)))
+            output_keys.append(key)
+            written += 1
 
     return _WriteResult(
         output_keys=output_keys,
@@ -602,8 +607,9 @@ def _write_historical_universe_masks(
     written = 0
     skipped = 0
     total_records = 0
+    days = _business_days(config.from_date, config.to_date)
 
-    for current_date in _business_days(config.from_date, config.to_date):
+    for current_date in days:
         if writer.exists(raw_universe_path(current_date)) and not config.overwrite:
             skipped += 1
             continue
@@ -629,7 +635,7 @@ def _write_historical_universe_masks(
     return _WriteResult(
         output_keys=output_keys,
         metadata={
-            "requested_days": len(_business_days(config.from_date, config.to_date)),
+            "requested_days": len(days),
             "written": written,
             "skipped": skipped,
             "total_records": total_records,
@@ -707,8 +713,9 @@ def _backfill_news(
     skipped = 0
     empty = 0
     total_articles = 0
+    days = _date_range(from_date, to_date)
 
-    for current_date in _date_range(from_date, to_date):
+    for current_date in days:
         key = raw_news_path(current_date)
         if writer.exists(key) and not overwrite:
             skipped += 1
@@ -728,7 +735,7 @@ def _backfill_news(
     return _WriteResult(
         output_keys=output_keys,
         metadata={
-            "requested_days": len(_date_range(from_date, to_date)),
+            "requested_days": len(days),
             "written": written,
             "skipped": skipped,
             "empty": empty,
@@ -958,7 +965,7 @@ def _copy_ohlcv_window(
 ) -> dict[str, list[OHLCVRecord]]:
     if window is None:
         return {}
-    return {ticker.upper(): list(records) for ticker, records in window.items()}
+    return {_canonicalize_ticker(ticker): list(records) for ticker, records in window.items()}
 
 
 def _resolve_securities(
@@ -1046,11 +1053,22 @@ def _normalize_tickers(tickers: Iterable[str]) -> tuple[str, ...]:
     for ticker in tickers:
         if not isinstance(ticker, str):
             raise TypeError("tickers must be strings")
-        cleaned = ticker.strip().upper()
+        cleaned = _canonicalize_ticker(ticker)
         if not cleaned:
             raise ValueError("tickers cannot contain empty values")
         normalized.add(cleaned)
     return tuple(sorted(normalized))
+
+
+def _canonicalize_ticker(ticker: str) -> str:
+    return ticker.strip().upper().replace(".", "-")
+
+
+def _canonicalize_ohlcv_records(records: Sequence[OHLCVRecord]) -> list[OHLCVRecord]:
+    return [
+        record.model_copy(update={"ticker": _canonicalize_ticker(record.ticker)})
+        for record in records
+    ]
 
 
 def _normalize_tokens(values: Sequence[str]) -> tuple[str, ...]:
