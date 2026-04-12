@@ -1,4 +1,5 @@
-"""Historical Tiingo news backfill into the canonical R2 raw archive."""
+"""Historical Alpaca news backfill into the canonical R2 raw archive."""
+
 from __future__ import annotations
 
 import argparse
@@ -15,13 +16,10 @@ from loguru import logger
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(_REPO_ROOT))
 
+from services.alpaca.market_data import AlpacaMarketDataConfig  # noqa: E402
+from services.alpaca.news import DEFAULT_ALPACA_NEWS_PAGE_LIMIT, AlpacaNewsClient  # noqa: E402
 from services.r2.paths import raw_news_path  # noqa: E402
 from services.r2.writer import R2Writer  # noqa: E402
-from services.tiingo.news_fetcher import (  # noqa: E402
-    DEFAULT_NEWS_PAGE_LIMIT,
-    TiingoNewsFetcher,
-)
-from services.tiingo.ohlcv_fetcher import TiingoClientConfig  # noqa: E402
 from services.wikipedia.sp500_universe import get_all_historical_tickers  # noqa: E402
 
 
@@ -36,7 +34,7 @@ class ObjectWriter(Protocol):
 
 
 class NewsFetcher(Protocol):
-    """Subset of TiingoNewsFetcher used by the news backfill."""
+    """Subset of AlpacaNewsClient used by the news backfill."""
 
     def fetch_news_day(
         self,
@@ -45,7 +43,7 @@ class NewsFetcher(Protocol):
         as_of_date: str,
         limit: int,
     ) -> list[dict[str, object]]:
-        """Fetch all raw Tiingo news rows for a single date."""
+        """Fetch all raw Alpaca news rows for a single date."""
 
 
 NewsSerializer = Callable[[list[dict[str, object]]], bytes]
@@ -53,7 +51,7 @@ NewsSerializer = Callable[[list[dict[str, object]]], bytes]
 
 @dataclass(frozen=True)
 class BackfillResult:
-    """Summary of a Tiingo news backfill run."""
+    """Summary of an Alpaca news backfill run."""
 
     requested: int
     written: int
@@ -70,10 +68,10 @@ def backfill_news_archive(
     writer: ObjectWriter,
     tickers: list[str] | None = None,
     overwrite: bool = False,
-    limit: int = DEFAULT_NEWS_PAGE_LIMIT,
+    limit: int = DEFAULT_ALPACA_NEWS_PAGE_LIMIT,
     serializer: NewsSerializer | None = None,
 ) -> BackfillResult:
-    """Backfill Tiingo raw news into R2 as JSON Lines per date."""
+    """Backfill Alpaca raw news into R2 as JSON Lines per date."""
     if from_date > to_date:
         raise ValueError("from_date must be <= to_date")
     if limit <= 0:
@@ -95,7 +93,7 @@ def backfill_news_archive(
         key = raw_news_path(current_date)
         if writer.exists(key) and not overwrite:
             skipped += 1
-            logger.info("Skipping existing Tiingo news archive {}", key)
+            logger.info("Skipping existing Alpaca news archive {}", key)
             continue
 
         articles = fetcher.fetch_news_day(
@@ -105,13 +103,13 @@ def backfill_news_archive(
         )
         if not articles:
             empty += 1
-            logger.info("No Tiingo news rows for {}", current_date.isoformat())
+            logger.info("No Alpaca news rows for {}", current_date.isoformat())
         else:
             total_articles += len(articles)
 
         writer.put_object(key, payload_serializer(_sort_articles(articles)))
         written += 1
-        logger.info("Wrote {} Tiingo news rows to {}", len(articles), key)
+        logger.info("Wrote {} Alpaca news rows to {}", len(articles), key)
 
     return BackfillResult(
         requested=_count_days(from_date, to_date),
@@ -135,8 +133,14 @@ def _sort_articles(articles: list[dict[str, object]]) -> list[dict[str, object]]
     return sorted(
         articles,
         key=lambda article: (
-            str(article.get("publishedDate") or article.get("published_at") or ""),
-            str(article.get("id") or article.get("url") or ""),
+            str(
+                article.get("created_at")
+                or article.get("updated_at")
+                or article.get("publishedDate")
+                or article.get("published_at")
+                or ""
+            ),
+            str(article.get("id") or article.get("url") or article.get("headline") or ""),
         ),
     )
 
@@ -156,7 +160,7 @@ def _count_days(start: date, end: date) -> int:
 
 def _parse_args() -> argparse.Namespace:
     """Parse CLI arguments for the historical news backfill."""
-    parser = argparse.ArgumentParser(description="Backfill Tiingo raw news into R2.")
+    parser = argparse.ArgumentParser(description="Backfill Alpaca raw news into R2.")
     parser.add_argument("--from-date", required=True, metavar="YYYY-MM-DD")
     parser.add_argument("--to-date", required=True, metavar="YYYY-MM-DD")
     parser.add_argument(
@@ -169,8 +173,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--limit",
         type=int,
-        default=DEFAULT_NEWS_PAGE_LIMIT,
-        help=f"Page size for Tiingo pagination (default: {DEFAULT_NEWS_PAGE_LIMIT}).",
+        default=DEFAULT_ALPACA_NEWS_PAGE_LIMIT,
+        help=f"Page size for Alpaca pagination (default: {DEFAULT_ALPACA_NEWS_PAGE_LIMIT}).",
     )
     args = parser.parse_args()
     if args.tickers == []:
@@ -179,7 +183,7 @@ def _parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
-    """Run the Tiingo news backfill from the command line."""
+    """Run the Alpaca news backfill from the command line."""
     args = _parse_args()
     try:
         from_date = date.fromisoformat(args.from_date)
@@ -193,7 +197,7 @@ def main() -> int:
         return 1
 
     writer = R2Writer()
-    fetcher = TiingoNewsFetcher(TiingoClientConfig.from_env())
+    fetcher = AlpacaNewsClient(AlpacaMarketDataConfig.from_env())
     result = backfill_news_archive(
         from_date=from_date,
         to_date=to_date,
@@ -203,7 +207,7 @@ def main() -> int:
         overwrite=args.overwrite,
         limit=args.limit,
     )
-    logger.info("Tiingo news backfill complete: {}", result)
+    logger.info("Alpaca news backfill complete: {}", result)
     return 0
 
 

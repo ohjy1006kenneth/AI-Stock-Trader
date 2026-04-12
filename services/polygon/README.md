@@ -21,7 +21,7 @@ Owner: Market data integration boundary.
 
 API key loaded from environment variable `POLYGON_API_KEY`.
 Never hardcode it. Never commit it.
-See `config/examples/` for the expected `.env.example` shape.
+This legacy placeholder is not part of the active Layer 0 data stack.
 
 ## Rate limits (student plan)
 

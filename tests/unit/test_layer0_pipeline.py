@@ -122,9 +122,9 @@ class _NewsFetcher:
         if self.should_raise:
             raise RuntimeError(
                 "403 Client Error for url: "
-                "https://api.tiingo.com/tiingo/news?token=secret-token&api-key=secret-key"
+                "https://data.alpaca.markets/v1beta1/news?api-key=secret-key"
             )
-        return [{"id": f"news-{as_of_date}", "publishedDate": as_of_date, "tickers": tickers or []}]
+        return [{"id": f"news-{as_of_date}", "created_at": as_of_date, "symbols": tickers or []}]
 
 
 class _FundamentalsFetcher:
@@ -457,8 +457,7 @@ def test_layer0_pipeline_writes_failure_manifest_before_reraising() -> None:
     assert manifest["metadata"]["error"] == {
         "type": "RuntimeError",
         "message": (
-            "403 Client Error for url: "
-            "https://api.tiingo.com/tiingo/news?token=<redacted>&api-key=<redacted>"
+            "403 Client Error for url: https://data.alpaca.markets/v1beta1/news?api-key=<redacted>"
         ),
     }
     assert raw_price_path("AAPL") in manifest["metadata"]["output_keys"]

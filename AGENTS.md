@@ -279,7 +279,7 @@ and `core/contracts/schemas.py`):
 
 
 Layer 0 output  → UniverseRecord, OHLCVRecord
-Layer 0 raw archives → Tiingo news, SimFin fundamentals/earnings, FRED macro/rates
+Layer 0 raw archives → Alpaca news, SimFin fundamentals/earnings, FRED macro/rates
   (R2 artifacts used by Layer 1; not separate Pydantic inter-layer contracts)
 Layer 1 output  → FeatureRecord
 Layer 2 output  → ScoreRecord  {date, ticker, return_score, pos_prob,

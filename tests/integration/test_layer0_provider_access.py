@@ -10,9 +10,9 @@ import pytest
 from dotenv import load_dotenv
 
 from services.alpaca.market_data import AlpacaMarketDataClient, AlpacaMarketDataConfig
+from services.alpaca.news import AlpacaNewsClient
 from services.fred.macro_fetcher import FredClientConfig, FredMacroFetcher
 from services.simfin.fundamentals_fetcher import SimFinClientConfig, SimFinFundamentalsFetcher
-from services.tiingo.news_fetcher import TiingoNewsFetcher
 from services.tiingo.ohlcv_fetcher import TiingoClientConfig, TiingoOHLCVFetcher
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -55,15 +55,15 @@ def test_tiingo_live_price_access() -> None:
 
 
 @pytest.mark.skipif(
-    os.getenv("RUN_TIINGO_INTEGRATION") != "1",
-    reason="Set RUN_TIINGO_INTEGRATION=1 to run live Tiingo checks.",
+    os.getenv("RUN_ALPACA_INTEGRATION") != "1",
+    reason="Set RUN_ALPACA_INTEGRATION=1 to run live Alpaca news checks.",
 )
-def test_tiingo_live_news_access() -> None:
-    """Verify the configured Tiingo token can access raw news."""
-    _load_local_env("tiingo.env")
+def test_alpaca_live_news_access() -> None:
+    """Verify the configured Alpaca key can access raw historical news."""
+    _load_local_env("alpaca.env")
     rows = _run_live_check(
-        "Tiingo News",
-        lambda: TiingoNewsFetcher(TiingoClientConfig.from_env()).fetch_news_day(
+        "Alpaca News",
+        lambda: AlpacaNewsClient(AlpacaMarketDataConfig.from_env()).fetch_news_day(
             tickers=["AAPL"], as_of_date="2024-01-02", limit=1
         ),
     )

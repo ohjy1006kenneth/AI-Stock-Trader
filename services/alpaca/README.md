@@ -1,5 +1,5 @@
 # alpaca
 
-Adapters for Alpaca market data, account state, and order execution APIs.
+Adapters for Alpaca news, market data, account state, and order execution APIs.
 
-Owner: Broker and market data integration boundary.
+Owner: Broker, news, and market data integration boundary.

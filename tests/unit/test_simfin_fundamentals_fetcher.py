@@ -84,17 +84,21 @@ def _read_json(payload: bytes | str) -> list[dict[str, Any]]:
 def test_client_config_from_env_reads_key(monkeypatch: pytest.MonkeyPatch) -> None:
     """SimFin config reads API settings from environment variables."""
     monkeypatch.setenv("SIMFIN_API_KEY", "test-key")
-    monkeypatch.setenv("SIMFIN_BASE_URL", "https://example.simfin.test/api/v3")
+    monkeypatch.setenv("SIMFIN_BASE_URL", "https://backend.simfin.com/api/v3")
 
     config = SimFinClientConfig.from_env()
 
     assert config.api_key == "test-key"
-    assert config.base_url == "https://example.simfin.test/api/v3"
+    assert config.base_url == "https://backend.simfin.com/api/v3"
     assert config.timeout_seconds == 30
 
 
 def test_client_config_from_env_rejects_missing_key(monkeypatch: pytest.MonkeyPatch) -> None:
     """SimFin config fails closed when credentials are absent."""
+    monkeypatch.setattr(
+        "services.simfin.fundamentals_fetcher.SIMFIN_ENV_FILE",
+        Path("/tmp/does-not-exist.env"),
+    )
     monkeypatch.delenv("SIMFIN_API_KEY", raising=False)
 
     with pytest.raises(ValueError, match="SIMFIN_API_KEY"):
@@ -141,7 +145,10 @@ def test_fetch_statement_rows_calls_compact_endpoint_and_normalizes_rows() -> No
                 "asreported": "true",
                 "limit": 2,
                 "offset": 0,
-                "api-key": "test-key",
+            },
+            "headers": {
+                "accept": "application/json",
+                "Authorization": "api-key test-key",
             },
             "timeout": 30,
         }
@@ -152,11 +159,13 @@ def test_fetch_all_fundamentals_paginates_and_deduplicates() -> None:
     """Pagination continues until exhaustion and deduplicates repeated raw rows."""
     fixture = _fixture_payload()
     retrieved_at = datetime(2024, 8, 5, tzinfo=UTC)
-    session = _FakeSession([
-        _FakeResponse(fixture["page1"]),
-        _FakeResponse(fixture["page2"]),
-        _FakeResponse(fixture["empty"]),
-    ])
+    session = _FakeSession(
+        [
+            _FakeResponse(fixture["page1"]),
+            _FakeResponse(fixture["page2"]),
+            _FakeResponse(fixture["empty"]),
+        ]
+    )
     fetcher = SimFinFundamentalsFetcher(
         SimFinClientConfig(api_key="test-key", retry_sleep_seconds=0),
         session=session,  # type: ignore[arg-type]
@@ -217,6 +226,45 @@ def test_fetch_statement_rows_retries_transient_errors() -> None:
     assert len(session.calls) == 2
 
 
+def test_fetch_statement_rows_accepts_nested_company_payload_shape() -> None:
+    """Fetcher supports backend compact payloads nested by company and statement."""
+    payload = [
+        {
+            "ticker": "AAPL",
+            "currency": "USD",
+            "statements": [
+                {
+                    "statement": "PL",
+                    "columns": [
+                        "Fiscal Period",
+                        "Fiscal Year",
+                        "Report Date",
+                        "Publish Date",
+                    ],
+                    "data": [["Q2", 2024, "2024-03-31", "2024-05-03"]],
+                }
+            ],
+        }
+    ]
+    session = _FakeSession([_FakeResponse(payload)])
+    fetcher = SimFinFundamentalsFetcher(
+        SimFinClientConfig(api_key="test-key", retry_sleep_seconds=0),
+        session=session,  # type: ignore[arg-type]
+    )
+
+    page = fetcher.fetch_statement_rows(
+        tickers=["AAPL"],
+        start_date="2024-01-01",
+        end_date="2024-12-31",
+    )
+
+    assert len(page.rows) == 1
+    assert page.rows[0]["ticker"] == "AAPL"
+    assert page.rows[0]["report_date"] == "2024-03-31"
+    assert page.rows[0]["availability_date"] == "2024-05-03"
+    assert page.rows[0]["statement"] == "pl"
+
+
 def test_normalize_accepts_missing_optional_fields() -> None:
     """Optional earnings/currency metadata can be absent without losing raw data."""
     retrieved_at = datetime(2024, 5, 4, tzinfo=UTC)
@@ -249,11 +297,21 @@ def test_normalize_accepts_missing_optional_fields() -> None:
     ]
 
 
-def test_normalize_rejects_missing_required_availability_date() -> None:
-    """Point-in-time archives require a filing or publish date for joins."""
-    with pytest.raises(ValueError, match="availability_date"):
+def test_normalize_uses_report_date_when_availability_date_is_missing() -> None:
+    """Compact SimFin rows can fall back to report date when publish metadata is absent."""
+    rows = normalize_simfin_fundamental_rows(
+        [{"ticker": "AAPL", "reportDate": "2024-03-31"}],
+        retrieved_at=datetime(2024, 5, 4, tzinfo=UTC),
+    )
+
+    assert rows[0]["availability_date"] == "2024-03-31"
+
+
+def test_normalize_rejects_rows_without_any_point_in_time_date() -> None:
+    """Rows still need at least a report date to support point-in-time joins."""
+    with pytest.raises(ValueError, match="report_date"):
         normalize_simfin_fundamental_rows(
-            [{"ticker": "AAPL", "reportDate": "2024-03-31"}],
+            [{"ticker": "AAPL"}],
             retrieved_at=datetime(2024, 5, 4, tzinfo=UTC),
         )
 

@@ -16,6 +16,8 @@ from core.data.layer0_pipeline import (  # noqa: E402
     HistoricalLayer0Config,
     run_historical_layer0_backfill,
 )
+from services.alpaca.market_data import AlpacaMarketDataConfig  # noqa: E402
+from services.alpaca.news import DEFAULT_ALPACA_NEWS_PAGE_LIMIT, AlpacaNewsClient  # noqa: E402
 from services.fred.macro_fetcher import (  # noqa: E402
     DEFAULT_FRED_CONFIG_PATH,
     FredClientConfig,
@@ -27,7 +29,6 @@ from services.simfin.fundamentals_fetcher import (  # noqa: E402
     SimFinClientConfig,
     SimFinFundamentalsFetcher,
 )
-from services.tiingo.news_fetcher import DEFAULT_NEWS_PAGE_LIMIT, TiingoNewsFetcher  # noqa: E402
 from services.tiingo.ohlcv_fetcher import TiingoClientConfig, TiingoOHLCVFetcher  # noqa: E402
 from services.tiingo.security_master import TiingoSecurityMaster  # noqa: E402
 from services.wikipedia.sp500_universe import (  # noqa: E402
@@ -80,7 +81,7 @@ def main() -> int:
         universe_provider=WikipediaUniverseProvider(),
         price_fetcher=TiingoOHLCVFetcher(tiingo_config),
         security_master=TiingoSecurityMaster.fetch_supported_tickers(),
-        news_fetcher=TiingoNewsFetcher(tiingo_config),
+        news_fetcher=AlpacaNewsClient(AlpacaMarketDataConfig.from_env()),
         fundamentals_fetcher=SimFinFundamentalsFetcher(SimFinClientConfig.from_env()),
         macro_fetcher=FredMacroFetcher(FredClientConfig.from_env()),
         writer=R2Writer(),
@@ -99,7 +100,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--series-ids", nargs="*", default=None)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--run-id", default=None)
-    parser.add_argument("--news-limit", type=int, default=DEFAULT_NEWS_PAGE_LIMIT)
+    parser.add_argument("--news-limit", type=int, default=DEFAULT_ALPACA_NEWS_PAGE_LIMIT)
     parser.add_argument("--simfin-limit", type=int, default=1000)
     parser.add_argument("--fred-limit", type=int, default=1000)
     args = parser.parse_args()

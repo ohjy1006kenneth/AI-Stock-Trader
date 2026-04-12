@@ -95,6 +95,10 @@ def test_client_config_from_env_reads_key(monkeypatch: pytest.MonkeyPatch) -> No
 
 def test_client_config_from_env_rejects_missing_key(monkeypatch: pytest.MonkeyPatch) -> None:
     """FRED config fails closed when credentials are absent."""
+    monkeypatch.setattr(
+        "services.fred.macro_fetcher.FRED_ENV_FILE",
+        Path("/tmp/does-not-exist.env"),
+    )
     monkeypatch.delenv("FRED_API_KEY", raising=False)
 
     with pytest.raises(ValueError, match="FRED_API_KEY"):
@@ -194,11 +198,13 @@ def test_fetch_series_page_calls_fred_endpoint_and_normalizes_rows() -> None:
 def test_fetch_series_observations_paginates_and_deduplicates() -> None:
     """Pagination continues until exhaustion and deduplicates repeated rows."""
     fixture = _fixture_payload()
-    session = _FakeSession([
-        _FakeResponse(fixture["page1"]),
-        _FakeResponse(fixture["page2"]),
-        _FakeResponse(fixture["empty"]),
-    ])
+    session = _FakeSession(
+        [
+            _FakeResponse(fixture["page1"]),
+            _FakeResponse(fixture["page2"]),
+            _FakeResponse(fixture["empty"]),
+        ]
+    )
     fetcher = FredMacroFetcher(
         FredClientConfig(api_key="test-key", retry_sleep_seconds=0),
         session=session,  # type: ignore[arg-type]

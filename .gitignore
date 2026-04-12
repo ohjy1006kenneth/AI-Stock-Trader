@@ -26,7 +26,6 @@ venv.bak/
 # Environment and secrets — never commit these
 *.env
 *.env.*
-!config/examples/*.env.example
 .envrc
 secrets/
 credentials/
@@ -35,11 +34,9 @@ credentials/
 *.p12
 *.pfx
 
-# Runtime config with real values — examples are committed, actuals are not
+# Runtime config with real values — never commit actual secrets/config state
 config/runtime.json
-!config/examples/runtime.example.json
 alpaca.env
-!config/examples/alpaca.env.example
 
 # Data — large files stay local or in R2, not in git
 data/raw/

@@ -88,7 +88,7 @@ class LivePriceFetcher(Protocol):
 
 
 class NewsFetcher(Protocol):
-    """Tiingo raw-news fetcher used by Layer 0 orchestration."""
+    """Raw-news fetcher used by Layer 0 orchestration."""
 
     def fetch_news_day(
         self,
@@ -154,7 +154,7 @@ class HistoricalLayer0Config:
     simfin_statements: Sequence[str] = ("pl", "bs", "cf", "derived")
     simfin_periods: Sequence[str] = ("q1", "q2", "q3", "q4", "fy")
     overwrite: bool = False
-    news_limit: int = 100
+    news_limit: int = 50
     simfin_limit: int = 1000
     fred_limit: int = 1000
     quality_config: QualityFilterConfig = field(default_factory=QualityFilterConfig)
@@ -185,7 +185,7 @@ class DailyLayer0Config:
     simfin_statements: Sequence[str] = ("pl", "bs", "cf", "derived")
     simfin_periods: Sequence[str] = ("q1", "q2", "q3", "q4", "fy")
     overwrite: bool = False
-    news_limit: int = 100
+    news_limit: int = 50
     simfin_limit: int = 1000
     fred_limit: int = 1000
     quality_config: QualityFilterConfig = field(default_factory=QualityFilterConfig)
@@ -897,7 +897,7 @@ def _base_metadata(
         "input_families": {
             "universe": "wikipedia_sp500_membership",
             "prices": "tiingo_historical_or_alpaca_daily_bars",
-            "news": "tiingo_news",
+            "news": "alpaca_news",
             "fundamentals": "simfin_as_reported",
             "macro": "fred_macro_rates",
             "manifest": "pipeline_manifest",

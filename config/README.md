@@ -2,30 +2,31 @@
 
 Non-secret project configuration.
 
-This folder contains examples and static policy/configuration files that are safe to commit.
 Real credentials belong in local-only `config/*.env` files or a secret manager, never in git.
+The repository intentionally does not commit `.env.example` files; use the key list below to
+create local env files manually.
 
 ## Local env files
 
-Copy the examples you need from `config/examples/` into `config/`:
-
-```bash
-cp config/examples/r2.env.example config/r2.env
-cp config/examples/tiingo.env.example config/tiingo.env
-cp config/examples/simfin.env.example config/simfin.env
-cp config/examples/fred.env.example config/fred.env
-cp config/examples/alpaca.env.example config/alpaca.env
-```
-
-Then replace the placeholder values in the local files.
+Create only the files you need under `config/`:
 
 | Local file | Used for | Required keys |
 |---|---|---|
 | `config/r2.env` | Cloudflare R2 object storage | `R2_ENDPOINT_URL`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME` |
-| `config/tiingo.env` | Tiingo historical OHLCV and raw news | `TIINGO_API_TOKEN` |
+| `config/tiingo.env` | Tiingo historical OHLCV only | `TIINGO_API_TOKEN` |
 | `config/simfin.env` | SimFin as-reported fundamentals | `SIMFIN_API_KEY` |
 | `config/fred.env` | FRED macro/rate observations | `FRED_API_KEY` |
-| `config/alpaca.env` | Alpaca live daily bars | `ALPACA_API_KEY_ID`, `ALPACA_API_SECRET_KEY` |
+| `config/alpaca.env` | Alpaca daily bars, historical/live news, and later broker access | `ALPACA_API_KEY_ID`, `ALPACA_API_SECRET_KEY` |
+
+Optional overrides:
+
+| Key | Default |
+|---|---|
+| `TIINGO_BASE_URL` | `https://api.tiingo.com` |
+| `SIMFIN_BASE_URL` | `https://backend.simfin.com/api/v3` |
+| `FRED_BASE_URL` | `https://api.stlouisfed.org/fred` |
+| `ALPACA_DATA_BASE_URL` | `https://data.alpaca.markets` |
+| `ALPACA_DATA_FEED` | `iex` |
 
 Alpaca also accepts the official `APCA_API_KEY_ID` and `APCA_API_SECRET_KEY` names.
 
