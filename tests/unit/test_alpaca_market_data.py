@@ -17,12 +17,12 @@ FIXTURE_PATH = Path("data/sample/alpaca_market_bar_response.json")
 
 
 @pytest.fixture(autouse=True)
-def no_local_alpaca_env_file(monkeypatch: pytest.MonkeyPatch) -> None:
+def no_local_alpaca_env_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep unit tests isolated from a developer's local config/alpaca.env."""
     monkeypatch.setattr(
         market_data_module,
         "ALPACA_ENV_FILE",
-        Path("/tmp/does-not-exist-alpaca.env"),
+        tmp_path / "does-not-exist-alpaca.env",
     )
 
 
