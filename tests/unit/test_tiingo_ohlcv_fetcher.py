@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+import services.tiingo.ohlcv_fetcher as ohlcv_fetcher_module
 from app.lab.data_pipelines import backfill_ohlcv as backfill_module
 from app.lab.data_pipelines.backfill_ohlcv import backfill_ohlcv_archive
 from core.contracts.schemas import OHLCVRecord
@@ -25,6 +26,16 @@ from services.tiingo.security_master import (
 )
 
 FIXTURE_PATH = Path("data/sample/tiingo_ohlcv_response.json")
+
+
+@pytest.fixture(autouse=True)
+def no_local_tiingo_env_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep unit tests isolated from a developer's local config/tiingo.env."""
+    monkeypatch.setattr(
+        ohlcv_fetcher_module,
+        "TIINGO_ENV_FILE",
+        tmp_path / "does-not-exist-tiingo.env",
+    )
 
 
 class _FakeResponse:
@@ -106,6 +117,21 @@ def test_client_config_from_env_rejects_missing_token(monkeypatch: pytest.Monkey
 
     with pytest.raises(ValueError, match="TIINGO_API_TOKEN"):
         TiingoClientConfig.from_env()
+
+
+def test_client_config_from_env_loads_local_config_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Tiingo config loads config/tiingo.env when shell variables are absent."""
+    env_file = tmp_path / "tiingo.env"
+    env_file.write_text("TIINGO_API_TOKEN=file-token\n", encoding="utf-8")
+    monkeypatch.delenv("TIINGO_API_TOKEN", raising=False)
+    monkeypatch.setattr(ohlcv_fetcher_module, "TIINGO_ENV_FILE", env_file)
+
+    config = TiingoClientConfig.from_env()
+
+    assert config.api_token == "file-token"
 
 
 def test_fetch_price_rows_calls_tiingo_historical_endpoint() -> None:
@@ -267,8 +293,18 @@ def test_security_master_resolve_many_preserves_reused_ticker_rows() -> None:
     """A reused ticker resolves to every historical security row, not just the latest one."""
     master = TiingoSecurityMaster.from_rows(
         [
-            {"ticker": "XYZ", "permaTicker": "PT_XYZ_OLD", "startDate": "2010-01-01", "endDate": "2012-12-31"},
-            {"ticker": "XYZ", "permaTicker": "PT_XYZ_NEW", "startDate": "2020-01-01", "endDate": None},
+            {
+                "ticker": "XYZ",
+                "permaTicker": "PT_XYZ_OLD",
+                "startDate": "2010-01-01",
+                "endDate": "2012-12-31",
+            },
+            {
+                "ticker": "XYZ",
+                "permaTicker": "PT_XYZ_NEW",
+                "startDate": "2020-01-01",
+                "endDate": None,
+            },
         ]
     )
 
@@ -529,7 +565,9 @@ def test_backfill_clamps_fetch_window_to_security_active_dates() -> None:
         ]
     )
     writer = _FakeWriter()
-    fetcher = _FakeFetcher({"ABC": normalize_tiingo_price_rows("ABC", _fixture_payload()["prices"])})
+    fetcher = _FakeFetcher(
+        {"ABC": normalize_tiingo_price_rows("ABC", _fixture_payload()["prices"])}
+    )
 
     backfill_ohlcv_archive(
         from_date=date(2014, 1, 1),
@@ -549,7 +587,9 @@ def test_backfill_is_idempotent_for_existing_price_archive() -> None:
     master = TiingoSecurityMaster.from_rows(_fixture_payload()["security_master"])
     price_key = raw_price_path("PT_AAPL_001")
     writer = _FakeWriter(existing={price_key})
-    fetcher = _FakeFetcher({"AAPL": normalize_tiingo_price_rows("AAPL", _fixture_payload()["prices"])})
+    fetcher = _FakeFetcher(
+        {"AAPL": normalize_tiingo_price_rows("AAPL", _fixture_payload()["prices"])}
+    )
 
     result = backfill_ohlcv_archive(
         from_date=date(2024, 1, 2),
