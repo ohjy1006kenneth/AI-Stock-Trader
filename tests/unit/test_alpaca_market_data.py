@@ -204,6 +204,17 @@ def test_normalize_alpaca_bar_response_returns_empty_for_empty_response() -> Non
     assert normalize_alpaca_bar_response({}, as_of_date="2024-01-02") == []
 
 
+def test_normalize_alpaca_bar_response_uses_payload_keys_when_tickers_omitted() -> None:
+    """Lowercase payload keys still normalize when requested_tickers is omitted."""
+    payload = _fixture_payload()
+    payload["bars"] = {ticker.lower(): rows for ticker, rows in payload["bars"].items()}
+
+    records = normalize_alpaca_bar_response(payload, as_of_date="2024-01-02")
+
+    assert [record.ticker for record in records] == ["AAPL", "MSFT"]
+    assert [record.date for record in records] == ["2024-01-02", "2024-01-02"]
+
+
 def test_normalize_alpaca_bar_response_uses_close_when_vwap_missing() -> None:
     """Dollar volume falls back to close times volume when Alpaca omits VWAP."""
     payload = _fixture_payload()
@@ -228,6 +239,21 @@ def test_normalize_alpaca_bar_response_rejects_missing_required_field() -> None:
     payload["bars"]["AAPL"] = [row]
 
     with pytest.raises(ValueError, match="c"):
+        normalize_alpaca_bar_response(
+            payload,
+            requested_tickers=["AAPL"],
+            as_of_date="2024-01-02",
+        )
+
+
+def test_normalize_alpaca_bar_response_rejects_missing_timestamp_field() -> None:
+    """Missing bar timestamps fail closed before live snapshot date normalization."""
+    payload = _fixture_payload()
+    row = dict(payload["bars"]["AAPL"][0])
+    row["t"] = None
+    payload["bars"]["AAPL"] = [row]
+
+    with pytest.raises(ValueError, match="t"):
         normalize_alpaca_bar_response(
             payload,
             requested_tickers=["AAPL"],

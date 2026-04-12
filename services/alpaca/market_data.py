@@ -214,16 +214,17 @@ def normalize_alpaca_bar_response(
         raise ValueError("Alpaca bars response field bars must be an object")
 
     normalized_date = _validate_date(as_of_date, "as_of_date") if as_of_date else None
+    normalized_bars = _normalize_bars_payload_keys(bars_payload)
     symbols = (
         _normalize_tickers(requested_tickers)
         if requested_tickers is not None
-        else tuple(_normalize_ticker(str(ticker)) for ticker in bars_payload.keys())
+        else tuple(normalized_bars.keys())
     )
     records: list[OHLCVRecord] = []
     seen_keys: set[tuple[str, str]] = set()
 
     for ticker in symbols:
-        rows = bars_payload.get(ticker)
+        rows = normalized_bars.get(ticker)
         if rows is None:
             continue
         if not isinstance(rows, list):
@@ -238,7 +239,9 @@ def normalize_alpaca_bar_response(
             )
             key = (record.date, record.ticker)
             if key in seen_keys:
-                raise ValueError(f"Duplicate Alpaca daily bar for {record.ticker} {record.date}")
+                raise ValueError(
+                    f"Duplicate Alpaca daily bar for {record.ticker} {record.date}"
+                )
             seen_keys.add(key)
             records.append(record)
 
@@ -254,9 +257,13 @@ def _normalize_alpaca_daily_bar(
     """Normalize one Alpaca daily-bar row to the canonical OHLCV contract."""
     close = _required_numeric(row, "c")
     volume = _required_numeric(row, "v")
-    date = _normalize_alpaca_timestamp(row.get("t"))
+    if "t" not in row or row["t"] is None:
+        raise ValueError("Missing required Alpaca bar field: t")
+    date = _normalize_alpaca_timestamp(row["t"])
     if as_of_date is not None and date != as_of_date:
-        raise ValueError(f"Alpaca bar date {date} does not match requested date {as_of_date}")
+        raise ValueError(
+            f"Alpaca bar date {date} does not match requested date {as_of_date}"
+        )
 
     vwap = _optional_numeric(row, "vw")
     dollar_price = close if vwap is None else vwap
@@ -273,6 +280,17 @@ def _normalize_alpaca_daily_bar(
             "dollar_volume": dollar_price * volume,
         }
     )
+
+
+def _normalize_bars_payload_keys(bars_payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Return Alpaca bars keyed by normalized ticker without dropping raw key variants."""
+    normalized: dict[str, Any] = {}
+    for raw_ticker, rows in bars_payload.items():
+        ticker = _normalize_ticker(str(raw_ticker))
+        if ticker in normalized:
+            raise ValueError(f"Duplicate Alpaca bars payload key after normalization: {ticker}")
+        normalized[ticker] = rows
+    return normalized
 
 
 def _optional_page_token(payload: Mapping[str, Any]) -> str | None:
