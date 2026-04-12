@@ -32,6 +32,9 @@ General conventions:
 - all tickers are uppercase strings
 - numerical fields use Python numeric types and must not silently contain strings
 - any optional field must be explicitly marked optional in the schema
+- portfolio and order-intent dollar fields are signed unless a field explicitly says
+  otherwise; long-only behavior is enforced by policy/risk rules, not by pretending every
+  contract value must be positive
 
 Schema version metadata:
 
@@ -224,7 +227,8 @@ Fields:
 - `model_version`
 
 Interpretation:
-- `return_score`: expected relative return score or model score
+- `return_score`: expected sector-neutral or cross-sectional alpha score, not a raw market
+  beta return forecast
 - `pos_prob`: calibrated probability of positive or relative outperformance
 - `rank_score`: normalized rank or cross-sectional ordering metric
 - `regime`: regime label used by the model
@@ -232,6 +236,12 @@ Interpretation:
 - `model_version`: artifact/version that produced this score
 
 This record must not contain order instructions.
+
+Training note:
+- The canonical target should be sector-neutralized forward return or a date-level
+  cross-sectional rank. Raw forward returns may be tracked as diagnostics, but they should
+  not become the primary target because they cause the model to learn market/sector beta
+  instead of stock-specific alpha.
 
 ---
 
@@ -251,13 +261,18 @@ Fields:
 - `selection_reason`
 
 Interpretation:
-- `weight`: proposed portfolio weight
-- `target_dollars`: desired notional exposure
-- `current_dollars`: current notional exposure
-- `change_dollars`: target minus current
+- `weight`: signed proposed portfolio weight; positive means long exposure and negative is
+  reserved for future hedge/short exposure
+- `target_dollars`: signed desired notional exposure after portfolio construction
+- `current_dollars`: signed current notional exposure from broker/internal reconciliation
+- `change_dollars`: signed target minus current
 - `selection_reason`: optional human/debug description
 
-This record is still pre-risk and pre-execution.
+This record is still pre-risk and pre-execution. In the baseline long-only system, Layer 4
+must reject or clamp negative single-stock targets unless an explicitly approved hedge
+instrument policy is enabled. The schema itself intentionally does not enforce positive-only
+weights so defensive hedging, sector hedging, and later long-short books do not require a
+trivial numeric-sign migration.
 
 ---
 
@@ -278,11 +293,19 @@ Fields:
 
 Interpretation:
 - `action`: BUY / SELL / HOLD / REJECT
+- `target_dollars`: signed post-risk target notional; baseline long-only rules should keep
+  ordinary equity targets non-negative
 - `approved`: whether execution may proceed
 - `rules_triggered`: list of hard-rule names that altered or rejected the proposal
 - `reason`: optional explanation for human/debug use
 
 This is the only order-intent contract that execution should consume.
+
+Future expansion note:
+- `BUY` and `SELL` are sufficient for current long-only target rebalancing. Opening shorts,
+  covering shorts, options hedges, and margin-specific order behavior require explicit
+  execution-contract review and likely a schema migration to represent position effect,
+  instrument type, borrow/locate status, and margin requirements.
 
 ---
 
