@@ -18,3 +18,7 @@ Use `config/r2.env` for local-only Cloudflare R2 credentials; the R2 client load
 automatically when present.
 Use `config/examples/simfin.env.example` as the template and keep the real
 `config/simfin.env` local only.
+Use `config/examples/fred.env.example` as the template and keep the real
+`config/fred.env` local only.
+Use `config/fred_series.json` for the default FRED macro/rate series and backfill
+date range.

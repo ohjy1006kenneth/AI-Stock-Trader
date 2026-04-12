@@ -46,6 +46,18 @@ def raw_fundamentals_path(
     )
 
 
+def raw_macro_path(
+    from_date: str | Date | datetime,
+    to_date: str | Date | datetime,
+) -> str:
+    """Return the canonical raw macro/rates Parquet path for one date range."""
+    return build_r2_key(
+        "raw",
+        "macro",
+        f"{_format_date(from_date)}_to_{_format_date(to_date)}.parquet",
+    )
+
+
 def raw_reference_path(name: str, extension: str = "json") -> str:
     """Return the canonical raw reference snapshot path."""
     safe_name = _validate_key_part(name)
