@@ -186,15 +186,15 @@ def test_fetch_all_news_batches_large_symbol_lists() -> None:
         session=session,  # type: ignore[arg-type]
     )
 
-    symbols = [f"TICKER{i}" for i in range(51)]
+    symbols = [f"TICKER{i}" for i in range(1001)]
     assert (
         fetcher.fetch_all_news(tickers=symbols, start_date="2024-01-02", end_date="2024-01-02")
         == []
     )
 
     assert len(session.calls) == 2
-    assert session.calls[0]["params"]["symbols"] == ",".join(symbols[:50])
-    assert session.calls[1]["params"]["symbols"] == symbols[50]
+    assert session.calls[0]["params"]["symbols"] == ",".join(symbols[:1000])
+    assert session.calls[1]["params"]["symbols"] == symbols[1000]
 
 
 def test_fetch_news_day_returns_empty_for_empty_day() -> None:

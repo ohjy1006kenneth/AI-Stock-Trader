@@ -13,7 +13,7 @@ from services.alpaca.market_data import AlpacaMarketDataConfig
 
 ALPACA_NEWS_ENDPOINT = "/v1beta1/news"
 DEFAULT_ALPACA_NEWS_PAGE_LIMIT = 50
-DEFAULT_ALPACA_NEWS_SYMBOL_BATCH_SIZE = 50
+DEFAULT_ALPACA_NEWS_SYMBOL_BATCH_SIZE = 1000
 
 
 @dataclass(frozen=True)
