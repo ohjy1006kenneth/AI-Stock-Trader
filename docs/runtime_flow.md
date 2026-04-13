@@ -24,14 +24,14 @@ python app/lab/data_pipelines/backfill_layer0.py \
 
 What it produces in R2:
 - `raw/prices/{permaticker}.parquet` — full Tiingo-backed OHLCV history per stable security identity
-- `raw/news/YYYY-MM-DD.jsonl` — Tiingo news archive per date
+- `raw/news/YYYY-MM-DD.jsonl` — Alpaca news archive per date
 - `raw/universe/YYYY-MM-DD.csv` — eligibility masks for all historical dates
 - `raw/fundamentals/` — SimFin as-reported fundamentals and earnings-date archive
 - `raw/macro/` — FRED macro/rate observations archive
 
 Historical backfill uses:
 - Wikipedia revision history for point-in-time index membership
-- Tiingo for canonical historical OHLCV and raw news archives
+- Tiingo for canonical historical OHLCV; Alpaca for historical/live raw news archives
 - SimFin for as-reported fundamentals and earnings dates, persisted before feature generation
 - FRED for macro context series, persisted before feature generation
 
@@ -50,7 +50,7 @@ before enabling the live daily loop.
 1. **Layer 0 incremental** (`app/pi/fetchers/layer0.py`)
    - Fetch today's live bar snapshot from Alpaca Market Data for all eligible tickers
    - Normalize and append it to the canonical Tiingo-backed raw price store in R2
-   - Fetch today's raw Tiingo news → write `raw/news/YYYY-MM-DD.jsonl` to R2
+   - Fetch today's raw Alpaca news → write `raw/news/YYYY-MM-DD.jsonl` to R2
    - Refresh newly available SimFin filings and earnings-calendar data → write `raw/fundamentals/`
    - Refresh FRED macro/rate observations available for the run date → write `raw/macro/`
    - Recompute today's eligibility mask (quality + liquidity filters)
@@ -130,11 +130,11 @@ The next stage reads the manifest to verify the upstream stage completed before 
 If a manifest is missing or `status=failed`, the stage halts and alerts.
 
 Source-of-truth rules for the daily loop:
-- Tiingo is the canonical historical archive for raw prices and news
+- Tiingo is the canonical historical archive for raw prices
 - SimFin is the canonical provider for point-in-time fundamentals and earnings dates, but
   Layer 1 reads the Layer 0 R2 archive rather than calling SimFin directly
 - FRED is the canonical provider for macro context inputs, but Layer 1 reads the Layer 0
   R2 archive rather than calling FRED directly
-- Alpaca is the live source for current-day market data, broker reconciliation, and execution
+- Alpaca is the canonical archive source for raw news and the live source for current-day market data, broker reconciliation, and execution
 
 This ensures no stage silently runs on stale or missing inputs.

@@ -14,11 +14,11 @@ Out of scope:
 - Cross-layer schema ownership
 
 Subfolders:
-- `alpaca/` — live market data, broker state, and execution integrations
+- `alpaca/` — historical/live news, live market data, broker state, and execution integrations
 - `r2/` — Cloudflare R2 object storage interfaces, canonical paths, and manifests
 - `modal/` — cloud job and deployment integrations
 - `observability/` — logging, metrics, and alert glue
 - `wikipedia/` — point-in-time S&P 500 universe construction
-- `tiingo/` — canonical historical OHLCV and raw news adapters
+- `tiingo/` — canonical historical OHLCV adapters
 - `simfin/` — point-in-time fundamentals and earnings-date adapters
 - `fred/` — macro and rates context adapters

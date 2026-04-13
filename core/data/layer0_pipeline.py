@@ -4,6 +4,7 @@ import csv
 import importlib
 import io
 import json
+import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
@@ -87,7 +88,7 @@ class LivePriceFetcher(Protocol):
 
 
 class NewsFetcher(Protocol):
-    """Tiingo raw-news fetcher used by Layer 0 orchestration."""
+    """Raw-news fetcher used by Layer 0 orchestration."""
 
     def fetch_news_day(
         self,
@@ -136,6 +137,10 @@ RecordSerializer = Callable[[list[OHLCVRecord]], bytes]
 NewsSerializer = Callable[[list[dict[str, object]]], bytes]
 RawRowSerializer = Callable[[list[dict[str, object]]], bytes]
 UniverseSerializer = Callable[[list[UniverseRecord]], bytes]
+SENSITIVE_ERROR_PATTERN = re.compile(
+    r"(?P<prefix>[?&](?:token|api-key|api_key|apikey|apiKey)=)(?P<secret>[^&\s]+)",
+    flags=re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -149,7 +154,7 @@ class HistoricalLayer0Config:
     simfin_statements: Sequence[str] = ("pl", "bs", "cf", "derived")
     simfin_periods: Sequence[str] = ("q1", "q2", "q3", "q4", "fy")
     overwrite: bool = False
-    news_limit: int = 100
+    news_limit: int = 50
     simfin_limit: int = 1000
     fred_limit: int = 1000
     quality_config: QualityFilterConfig = field(default_factory=QualityFilterConfig)
@@ -180,7 +185,7 @@ class DailyLayer0Config:
     simfin_statements: Sequence[str] = ("pl", "bs", "cf", "derived")
     simfin_periods: Sequence[str] = ("q1", "q2", "q3", "q4", "fy")
     overwrite: bool = False
-    news_limit: int = 100
+    news_limit: int = 50
     simfin_limit: int = 1000
     fred_limit: int = 1000
     quality_config: QualityFilterConfig = field(default_factory=QualityFilterConfig)
@@ -861,7 +866,10 @@ def _write_failure_manifest(
 ) -> str:
     failure_metadata = dict(metadata)
     failure_metadata["output_keys"] = sorted(set(output_keys))
-    failure_metadata["error"] = {"type": type(exc).__name__, "message": str(exc)}
+    failure_metadata["error"] = {
+        "type": type(exc).__name__,
+        "message": _sanitize_error_message(str(exc)),
+    }
     return _write_pipeline_manifest(
         writer=writer,
         run_id=run_id,
@@ -869,6 +877,10 @@ def _write_failure_manifest(
         started_at=started_at,
         metadata=failure_metadata,
     )
+
+
+def _sanitize_error_message(message: str) -> str:
+    return SENSITIVE_ERROR_PATTERN.sub(r"\g<prefix><redacted>", message)
 
 
 def _base_metadata(
@@ -885,7 +897,7 @@ def _base_metadata(
         "input_families": {
             "universe": "wikipedia_sp500_membership",
             "prices": "tiingo_historical_or_alpaca_daily_bars",
-            "news": "tiingo_news",
+            "news": "alpaca_news",
             "fundamentals": "simfin_as_reported",
             "macro": "fred_macro_rates",
             "manifest": "pipeline_manifest",

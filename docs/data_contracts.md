@@ -45,7 +45,7 @@ Schema version metadata:
 
 ## Layer 0 contracts
 
-Layer 0 owns all external data ingestion. Wikipedia, Tiingo, SimFin, FRED, and Alpaca
+Layer 0 owns all external data ingestion. Wikipedia, Tiingo, Alpaca, SimFin, and FRED
 provider calls happen in Layer 0; Layer 1 and later layers read existing R2 archives only.
 
 Layer 0 persists several raw archival datasets for point-in-time safety. These archives are
@@ -404,7 +404,7 @@ Never:
 ## Current layer mapping summary
 
 - Layer 0 output → `UniverseRecord`, `OHLCVRecord`
-- Layer 0 raw archives → Tiingo news, SimFin fundamentals/earnings, FRED macro/rates
+- Layer 0 raw archives → Alpaca news, SimFin fundamentals/earnings, FRED macro/rates
   (R2 artifacts, not separate Pydantic inter-layer contracts)
 - Layer 1 output → `NewsSentimentRecord`, `FeatureRecord`
 - Layer 2 output → `ScoreRecord`

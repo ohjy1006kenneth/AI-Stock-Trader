@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 
 SIMFIN_API_KEY_ENV = "SIMFIN_API_KEY"
 SIMFIN_BASE_URL_ENV = "SIMFIN_BASE_URL"
-DEFAULT_SIMFIN_BASE_URL = "https://simfin.com/api/v3"
+DEFAULT_SIMFIN_BASE_URL = "https://backend.simfin.com/api/v3"
 SIMFIN_STATEMENTS_ENDPOINT = "/companies/statements/compact"
 DEFAULT_SIMFIN_PAGE_LIMIT = 1000
 DEFAULT_SIMFIN_STATEMENTS = ("pl", "bs", "cf", "derived")
@@ -102,7 +102,6 @@ class SimFinFundamentalsFetcher:
                 "asreported": "true",
                 "limit": limit,
                 "offset": offset,
-                "api-key": self.config.api_key,
             }
         )
         raw_rows = _extract_payload_rows(payload)
@@ -162,12 +161,17 @@ class SimFinFundamentalsFetcher:
     def _request_json(self, params: Mapping[str, Any]) -> Any:
         """Request one SimFin payload with bounded retries for transient failures."""
         url = f"{self.config.base_url.rstrip('/')}{SIMFIN_STATEMENTS_ENDPOINT}"
+        headers = {
+            "accept": "application/json",
+            "Authorization": f"api-key {self.config.api_key}",
+        }
         last_error: requests.RequestException | None = None
         for attempt in range(self.config.max_retries + 1):
             try:
                 response = self.session.get(
                     url,
                     params=dict(params),
+                    headers=headers,
                     timeout=self.config.timeout_seconds,
                 )
                 response.raise_for_status()
@@ -192,9 +196,7 @@ def normalize_simfin_fundamental_rows(
     normalized_rows: list[dict[str, Any]] = []
     for index, row in enumerate(rows):
         if not isinstance(row, Mapping):
-            raise ValueError(
-                f"SimFin row {index} must be an object, got {type(row).__name__}"
-            )
+            raise ValueError(f"SimFin row {index} must be an object, got {type(row).__name__}")
         raw = dict(row)
         ticker = _required_text(raw, ("ticker", "Ticker", "symbol", "Symbol"), "ticker")
         report_date = _required_date(
@@ -202,18 +204,24 @@ def normalize_simfin_fundamental_rows(
             ("reportDate", "Report Date", "periodEndDate", "period_end_date"),
             "report_date",
         )
-        availability_date = _required_date(
-            raw,
-            (
-                "publishDate",
-                "Publish Date",
-                "filingDate",
-                "filing_date",
-                "asOfDate",
-                "as_of_date",
-            ),
-            "availability_date",
-        )
+        try:
+            availability_date = _required_date(
+                raw,
+                (
+                    "publishDate",
+                    "Publish Date",
+                    "filingDate",
+                    "Filing Date",
+                    "filing_date",
+                    "asOfDate",
+                    "as_of_date",
+                ),
+                "availability_date",
+            )
+        except ValueError:
+            # Some compact derived rows omit a publish timestamp; use report_date as the
+            # latest defensible point-in-time availability fallback.
+            availability_date = report_date
 
         normalized: dict[str, Any] = {
             "source": "simfin",
@@ -241,6 +249,9 @@ def normalize_simfin_fundamental_rows(
 def _extract_payload_rows(payload: Any) -> list[Mapping[str, Any]]:
     """Extract row objects from supported SimFin list and compact payload shapes."""
     if isinstance(payload, list):
+        nested_rows = _rows_from_nested_companies_payload(payload)
+        if nested_rows is not None:
+            return nested_rows
         return _coerce_payload_rows(payload)
     if not isinstance(payload, Mapping):
         raise ValueError("SimFin response must be a JSON object or list")
@@ -258,6 +269,73 @@ def _extract_payload_rows(payload: Any) -> list[Mapping[str, Any]]:
     raise ValueError("SimFin response must contain data, results, or rows")
 
 
+def _rows_from_nested_companies_payload(payload: list[Any]) -> list[Mapping[str, Any]] | None:
+    """Flatten backend compact payloads shaped as companies -> statements -> columns/data."""
+    if not payload:
+        return None
+    if not all(isinstance(item, Mapping) for item in payload):
+        return None
+
+    has_nested_statements = any("statements" in item for item in payload)
+    if not has_nested_statements:
+        return None
+
+    flattened: list[Mapping[str, Any]] = []
+    for company_index, company in enumerate(payload):
+        statements = company.get("statements")
+        if statements is None:
+            continue
+        if not isinstance(statements, list):
+            raise ValueError(
+                f"SimFin company payload item {company_index} field statements must be a list"
+            )
+
+        ticker = company.get("ticker")
+        currency = company.get("currency")
+        for statement_index, statement_payload in enumerate(statements):
+            if not isinstance(statement_payload, Mapping):
+                raise ValueError(
+                    "SimFin statements payload item "
+                    f"{company_index}:{statement_index} must be an object"
+                )
+            columns = statement_payload.get("columns")
+            data_rows = statement_payload.get("data")
+            if not isinstance(columns, list) or not all(isinstance(col, str) for col in columns):
+                raise ValueError(
+                    "SimFin statements payload columns must be a list of strings for "
+                    f"item {company_index}:{statement_index}"
+                )
+            if not isinstance(data_rows, list):
+                raise ValueError(
+                    f"SimFin statements payload data must be a list for item "
+                    f"{company_index}:{statement_index}"
+                )
+
+            statement_name = statement_payload.get("statement")
+            for row_index, row in enumerate(data_rows):
+                if not isinstance(row, Sequence) or isinstance(row, (str, bytes, bytearray)):
+                    raise ValueError(
+                        "SimFin compact nested row "
+                        f"{company_index}:{statement_index}:{row_index} must be an array"
+                    )
+                if len(row) != len(columns):
+                    raise ValueError(
+                        "SimFin compact nested row "
+                        f"{company_index}:{statement_index}:{row_index} has {len(row)} values "
+                        f"for {len(columns)} columns"
+                    )
+                mapped = dict(zip(columns, row, strict=True))
+                if ticker is not None and "ticker" not in mapped:
+                    mapped["ticker"] = ticker
+                if currency is not None and "currency" not in mapped:
+                    mapped["currency"] = currency
+                if statement_name is not None and "statement" not in mapped:
+                    mapped["statement"] = str(statement_name).lower()
+                flattened.append(mapped)
+
+    return flattened
+
+
 def _rows_from_compact_payload(columns: Any, rows: list[Any]) -> list[Mapping[str, Any]]:
     """Convert SimFin compact columns/data arrays into row mappings."""
     if not isinstance(columns, list) or not all(isinstance(column, str) for column in columns):
@@ -269,8 +347,7 @@ def _rows_from_compact_payload(columns: Any, rows: list[Any]) -> list[Mapping[st
             continue
         if not isinstance(row, Sequence) or isinstance(row, (str, bytes, bytearray)):
             raise ValueError(
-                f"SimFin compact row {index} must be an array or object, "
-                f"got {type(row).__name__}"
+                f"SimFin compact row {index} must be an array or object, got {type(row).__name__}"
             )
         if len(row) != len(columns):
             raise ValueError(

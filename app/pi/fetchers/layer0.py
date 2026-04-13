@@ -14,6 +14,7 @@ sys.path.insert(0, str(_REPO_ROOT))
 
 from core.data.layer0_pipeline import DailyLayer0Config, run_daily_layer0_incremental  # noqa: E402
 from services.alpaca.market_data import AlpacaMarketDataClient, AlpacaMarketDataConfig  # noqa: E402
+from services.alpaca.news import DEFAULT_ALPACA_NEWS_PAGE_LIMIT, AlpacaNewsClient  # noqa: E402
 from services.fred.macro_fetcher import (  # noqa: E402
     DEFAULT_FRED_CONFIG_PATH,
     FredClientConfig,
@@ -25,8 +26,6 @@ from services.simfin.fundamentals_fetcher import (  # noqa: E402
     SimFinClientConfig,
     SimFinFundamentalsFetcher,
 )
-from services.tiingo.news_fetcher import DEFAULT_NEWS_PAGE_LIMIT, TiingoNewsFetcher  # noqa: E402
-from services.tiingo.ohlcv_fetcher import TiingoClientConfig  # noqa: E402
 
 
 def main() -> int:
@@ -39,7 +38,7 @@ def main() -> int:
         logger.error("Invalid --as-of-date: {}", exc)
         return 1
 
-    tiingo_config = TiingoClientConfig.from_env()
+    alpaca_config = AlpacaMarketDataConfig.from_env()
     config = DailyLayer0Config(
         as_of_date=as_of_date,
         tickers=args.tickers,
@@ -52,8 +51,8 @@ def main() -> int:
     )
     result = run_daily_layer0_incremental(
         config=config,
-        live_price_fetcher=AlpacaMarketDataClient(AlpacaMarketDataConfig.from_env()),
-        news_fetcher=TiingoNewsFetcher(tiingo_config),
+        live_price_fetcher=AlpacaMarketDataClient(alpaca_config),
+        news_fetcher=AlpacaNewsClient(alpaca_config),
         fundamentals_fetcher=SimFinFundamentalsFetcher(SimFinClientConfig.from_env()),
         macro_fetcher=FredMacroFetcher(FredClientConfig.from_env()),
         writer=R2Writer(),
@@ -71,7 +70,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--series-ids", nargs="*", default=None)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--run-id", default=None)
-    parser.add_argument("--news-limit", type=int, default=DEFAULT_NEWS_PAGE_LIMIT)
+    parser.add_argument("--news-limit", type=int, default=DEFAULT_ALPACA_NEWS_PAGE_LIMIT)
     parser.add_argument("--simfin-limit", type=int, default=1000)
     parser.add_argument("--fred-limit", type=int, default=1000)
     args = parser.parse_args()

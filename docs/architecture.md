@@ -6,7 +6,8 @@ This repository implements a production-oriented quantitative trading system for
 
 The target data stack is:
 - historical universe membership from Wikipedia revision history
-- canonical historical OHLCV and raw news archives from Tiingo
+- canonical historical OHLCV archives from Tiingo
+- historical and live raw news from Alpaca
 - point-in-time fundamentals and earnings dates from SimFin
 - macro and rate context from FRED
 - live market data, broker state, and execution from Alpaca
@@ -131,7 +132,7 @@ This is not just a switch in the optimizer. It requires:
 | Data type | Source | Notes |
 |---|---|---|
 | Historical OHLCV (adjusted) | Tiingo EOD API | Canonical long-history store; stable `permaTicker` identity covers delisted/acquired names |
-| Historical and live raw news | Tiingo News API | Raw article text with ticker tags for NLP backtests and daily inference |
+| Historical and live raw news | Alpaca News API | Raw Benzinga-sourced article text with ticker tags for NLP backtests and daily inference |
 | S&P 500 universe membership | Wikipedia edit history | Point-in-time constituent list; never use today's snapshot for history |
 | Fundamentals / earnings dates | SimFin | As-reported filing data to avoid future restatements leaking backward |
 | Macro / rates | FRED | Fed funds, Treasury yields, CPI, and other regime/context inputs |
@@ -146,11 +147,11 @@ security identity needed to stitch those historical constituents to surviving, d
 acquired, and symbol-changed names without survivorship bias.
 
 ### Historical vs. live market data note
-Historical price and news storage should be treated as a Tiingo-backed canonical archive.
-Alpaca market data is used only for the live daily bar snapshot that the Pi needs near the
-close or before the next open. Any Alpaca-sourced live bar written into the raw store must be
-normalized into the same contract shape as Tiingo and later reconciled into the canonical
-historical archive.
+Historical price storage is treated as a Tiingo-backed canonical OHLCV archive. Raw news
+storage is treated as an Alpaca-backed canonical archive. Alpaca market data is also used for
+the live daily bar snapshot that the Pi needs near the close or before the next open. Any
+Alpaca-sourced live bar written into the raw store must be normalized into the same contract
+shape as Tiingo and later reconciled into the canonical historical archive.
 
 ---
 
@@ -228,7 +229,7 @@ Responsibilities:
 - avoid survivorship bias — use historical constituent lists, never today's index
 - apply daily liquidity and tradeability filters
 - use Tiingo adjusted OHLCV as the canonical historical market data store
-- ingest raw Tiingo news with point-in-time timestamps and raw text
+- ingest raw Alpaca news with point-in-time timestamps and raw text
 - ingest SimFin as-reported fundamentals and earnings dates as point-in-time raw context
 - ingest FRED macro and rate series as point-in-time raw context
 - detect stale, missing, or corrupted market data
@@ -242,7 +243,7 @@ Builds the complete R2 database that Layer 1 reads for model training and backte
 Runs on laptop or Modal — not the Pi. The Pi has no role in the backfill.
 - Entrypoint: `app/lab/data_pipelines/backfill_layer0.py`
 - Fetches full OHLCV history (e.g. 2014–present) for all historical constituents keyed by Tiingo `permaTicker`
-- Fetches historical raw news archive from Tiingo → `r2://raw/news/YYYY-MM-DD.jsonl` per date
+- Fetches historical raw news archive from Alpaca → `r2://raw/news/YYYY-MM-DD.jsonl` per date
 - Fetches SimFin as-reported fundamentals and earnings dates → `r2://raw/fundamentals/`
 - Fetches FRED macro/rate series → `r2://raw/macro/`
 - Computes eligibility masks for all historical dates → `r2://raw/universe/YYYY-MM-DD.csv`
@@ -252,7 +253,7 @@ Runs on laptop or Modal — not the Pi. The Pi has no role in the backfill.
 Appends today's data to the existing R2 database. Assumes the backfill has already been run.
 - Entrypoint: `app/pi/fetchers/layer0.py`
 - Fetches today's live market bar snapshot from Alpaca Market Data → appends to the canonical raw price store
-- Fetches today's raw news from Tiingo → writes `r2://raw/news/YYYY-MM-DD.jsonl`
+- Fetches today's raw news from Alpaca → writes `r2://raw/news/YYYY-MM-DD.jsonl`
 - Refreshes newly available SimFin filings / earnings-calendar data → writes `r2://raw/fundamentals/`
 - Refreshes FRED macro/rate observations available for the run date → writes `r2://raw/macro/`
 - Recomputes today's eligibility mask → writes `r2://raw/universe/YYYY-MM-DD.csv`
@@ -296,7 +297,7 @@ Final feature table shape: `(N_dates × N_tickers)` rows × `M_features` columns
 **Pipeline order (must be executed in this sequence):**
 
 ```
-RAW ARTICLES (Tiingo news)
+RAW ARTICLES (Alpaca news)
   → Step 1: Preprocessing
       Clean text, remove boilerplate, split into sentences, tag ticker mentions
   → Step 2a: Sentence Transformers (per article)
@@ -744,7 +745,7 @@ The following must be completed before the daily loop can run:
 
 1. Run historical backfill: `python app/lab/data_pipelines/backfill_layer0.py --from-date 2014-01-01 --to-date <today>`
    - Builds complete Tiingo-backed OHLCV Parquet database in R2 — one file per stable security identity
-   - Builds Tiingo historical news archive in R2 — one JSON Lines file per date
+   - Builds Alpaca historical news archive in R2 — one JSON Lines file per date
    - Builds historical eligibility masks in R2 — one CSV per date
    - Builds SimFin as-reported fundamentals and earnings-date archives in R2
    - Builds FRED macro/rate archives in R2
@@ -754,7 +755,7 @@ The following must be completed before the daily loop can run:
 Without the historical backfill, Layer 1 feature generation and model training cannot run.
 
 ### After market close (daily, Pi)
-1. Pi runs Layer 0 incremental: fetches today's live bar snapshot from Alpaca, today's news from Tiingo, newly available SimFin data, and current FRED observations, then appends normalized raw data to R2
+1. Pi runs Layer 0 incremental: fetches today's live bar snapshot from Alpaca, today's news from Alpaca, newly available SimFin data, and current FRED observations, then appends normalized raw data to R2
 2. Pi triggers Modal: build/refresh aligned feature table for today from existing Layer 0 R2 data → R2
 3. Modal reads Layer 0 manifests and fails closed if required raw inputs are missing
 4. Modal runs FinBERT + XGBoost inference → scores to R2
@@ -816,7 +817,7 @@ A candidate becomes promotable only if it survives:
 - `app/cloud/` — cloud inference surface (Modal)
 - `app/pi/` — edge runtime surface (Pi, daily incremental only)
 - `core/contracts/` — shared inter-layer schemas
-- `core/data/` — point-in-time universe/data logic (Wikipedia, Tiingo-backed historical data, SimFin/FRED raw context ingestion, Alpaca live-bar normalization)
+- `core/data/` — point-in-time universe/data logic (Wikipedia, Tiingo-backed historical prices, Alpaca news/live-bar normalization, SimFin/FRED raw context ingestion)
 - `core/features/` — market, NLP, context feature logic over existing Layer 0 archives
 - `core/models/` — XGBoost, HMM, calibration
 - `core/portfolio/` — contextual bandit, optimizer
