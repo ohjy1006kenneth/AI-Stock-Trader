@@ -109,7 +109,7 @@ def test_load_fred_archive_config_reads_baseline_series() -> None:
     """Default FRED config provides the baseline regime/context series."""
     config = load_fred_archive_config()
 
-    assert config.default_start_date == "2014-01-01"
+    assert config.default_start_date == "2017-01-01"
     assert config.default_end_date == "latest"
     assert {"FEDFUNDS", "DGS10", "DGS2", "CPIAUCSL"}.issubset(config.series_ids)
 

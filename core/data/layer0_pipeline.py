@@ -57,7 +57,7 @@ class SecurityIdentity(Protocol):
 
 
 class SecurityMaster(Protocol):
-    """Security-master methods required for historical Tiingo price archives."""
+    """Security-master methods required for historical price archives."""
 
     def resolve_all(self, ticker: str) -> list[SecurityIdentity]:
         """Resolve one ticker to every historical security identity row."""
@@ -896,7 +896,7 @@ def _base_metadata(
         "to_date": to_date,
         "input_families": {
             "universe": "wikipedia_sp500_membership",
-            "prices": "tiingo_historical_or_alpaca_daily_bars",
+            "prices": "alpaca_sip_historical_and_daily_bars",
             "news": "alpaca_news",
             "fundamentals": "simfin_as_reported",
             "macro": "fred_macro_rates",
@@ -1021,14 +1021,28 @@ def _security_reference_payload(
     securities: Sequence[SecurityIdentity],
     missing_tickers: Sequence[str],
 ) -> dict[str, object]:
+    reference_rows = [security.to_reference_row() for security in securities]
     return {
-        "source": "tiingo",
+        "source": _security_reference_source(reference_rows),
         "from_date": from_date.isoformat(),
         "to_date": to_date.isoformat(),
         "generated_at": datetime.now(UTC).isoformat(),
         "missing_tickers": list(missing_tickers),
-        "securities": [security.to_reference_row() for security in securities],
+        "securities": reference_rows,
     }
+
+
+def _security_reference_source(reference_rows: Sequence[Mapping[str, object]]) -> str:
+    sources = {
+        source
+        for row in reference_rows
+        if isinstance(source := row.get("source"), str) and source.strip()
+    }
+    if len(sources) == 1:
+        return next(iter(sources))
+    if sources:
+        return "mixed"
+    return "tiingo"
 
 
 def _security_overlaps_range(security: SecurityIdentity, from_date: date, to_date: date) -> bool:
