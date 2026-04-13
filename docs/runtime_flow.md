@@ -11,48 +11,50 @@ Execution context:
 
 ---
 
-## Phase 0 — One-time setup (run before first live trading)
+## Phase 0 - One-time setup (run before first live trading)
 
 This phase builds the historical database in R2 that all downstream layers depend on.
-It runs on a laptop or Modal — not the Pi.
+It runs on a laptop or Modal, not the Pi.
 
 ```
 python app/lab/data_pipelines/backfill_layer0.py \
-    --from-date 2014-01-01 \
+    --from-date 2017-01-01 \
     --to-date <today>
 ```
 
 What it produces in R2:
-- `raw/prices/{permaticker}.parquet` — full Tiingo-backed OHLCV history per stable security identity
-- `raw/news/YYYY-MM-DD.jsonl` — Alpaca news archive per date
-- `raw/universe/YYYY-MM-DD.csv` — eligibility masks for all historical dates
-- `raw/fundamentals/` — SimFin as-reported fundamentals and earnings-date archive
-- `raw/macro/` — FRED macro/rate observations archive
+- `raw/prices/{ticker}.parquet` - full Alpaca delayed SIP adjusted OHLCV history per ticker
+- `raw/news/YYYY-MM-DD.jsonl` - Alpaca news archive per date
+- `raw/universe/YYYY-MM-DD.csv` - eligibility masks for all historical dates
+- `raw/fundamentals/` - SimFin as-reported fundamentals and earnings-date archive
+- `raw/macro/` - FRED macro/rate observations archive
 
 Historical backfill uses:
 - Wikipedia revision history for point-in-time index membership
-- Tiingo for canonical historical OHLCV; Alpaca for historical/live raw news archives
+- Alpaca delayed SIP (`feed=sip`, `timeframe=1Day`, `adjustment=all`) for canonical historical OHLCV from 2017-01-01 onward
+- Alpaca News for historical/live raw news archives
 - SimFin for as-reported fundamentals and earnings dates, persisted before feature generation
 - FRED for macro context series, persisted before feature generation
 
 Without this, Layer 1 feature generation and model training cannot run.
-The backfill is idempotent — safe to re-run; skips dates already stored.
+The backfill is idempotent and safe to re-run; skips dates/archives already stored unless
+`--overwrite` is provided.
 
-After backfill: run model training and walk-forward validation (Milestones 2–4)
+After backfill: run model training and walk-forward validation (Milestones 2-4)
 before enabling the live daily loop.
 
 ---
 
-## Phase 1 — Daily loop (automated, Pi cron)
+## Phase 1 - Daily loop (automated, Pi cron)
 
 ### After market close
 
 1. **Layer 0 incremental** (`app/pi/fetchers/layer0.py`)
    - Fetch today's live bar snapshot from Alpaca Market Data for all eligible tickers
-   - Normalize and append it to the canonical Tiingo-backed raw price store in R2
-   - Fetch today's raw Alpaca news → write `raw/news/YYYY-MM-DD.jsonl` to R2
-   - Refresh newly available SimFin filings and earnings-calendar data → write `raw/fundamentals/`
-   - Refresh FRED macro/rate observations available for the run date → write `raw/macro/`
+   - Normalize and append it to the canonical raw price store in R2
+   - Fetch today's raw Alpaca news -> write `raw/news/YYYY-MM-DD.jsonl` to R2
+   - Refresh newly available SimFin filings and earnings-calendar data -> write `raw/fundamentals/`
+   - Refresh FRED macro/rate observations available for the run date -> write `raw/macro/`
    - Recompute today's eligibility mask (quality + liquidity filters)
    - Write `raw/universe/YYYY-MM-DD.csv` to R2
    - Write `PipelineManifestRecord` (stage=layer0)
@@ -76,21 +78,20 @@ before enabling the live daily loop.
    - Read today's feature row from R2
    - Select active XGBoost model for current regime
    - Produce `ScoreRecord` per ticker using sector-neutral or cross-sectional alpha scores
-     (`return_score`, `pos_prob`, `rank_score`)
    - Write scores to `processed/scores/YYYY-MM-DD.parquet` in R2
    - Write `PipelineManifestRecord` (stage=layer2)
 
 5. **Layer 3 portfolio construction** (Pi)
    - Pi reads scores from R2
-   - Contextual bandit filters ~800 universe stocks → 30–50 candidates
+   - Contextual bandit filters the universe to 30-50 candidates
    - Mean-variance optimizer produces signed target weights with turnover penalty
    - Baseline long-only policy keeps ordinary single-stock targets non-negative
    - Future hedge modes may add approved index or sector hedge overlay targets
    - Write `PortfolioRecord` list to R2
 
 6. **Layer 4 risk engine** (Pi)
-   - Apply hard rules: position cap, ADV cap, sector cap, beta cap,
-     correlation cap, drawdown scaling, fat-finger checks
+   - Apply hard rules: position cap, ADV cap, sector cap, beta cap, correlation cap,
+     drawdown scaling, fat-finger checks
    - Load all thresholds from policy/config; do not rely on hardcoded risk constants
    - Reject negative single-stock targets unless an explicit hedge/short policy is enabled
    - Write `ApprovedOrderRecord` list to R2 and local SSD
@@ -100,7 +101,7 @@ before enabling the live daily loop.
 
 7. **Layer 5 reconciliation** (Pi)
    - Fetch actual Alpaca account state
-   - Reconcile vs. internal state — Alpaca wins on any mismatch
+   - Reconcile vs. internal state; Alpaca wins on any mismatch
    - Compute delta orders needed to reach approved targets
 
 8. **Layer 5 execution** (Pi)
@@ -118,7 +119,7 @@ before enabling the live daily loop.
 
 10. **Health monitoring** (Pi)
     - Monitor for pipeline stage mismatches or stale manifests
-    - Check daily loss limit — if triggered, reduce gross exposure
+    - Check daily loss limit; if triggered, reduce gross exposure
     - Alert via Telegram on anomalies
 
 ---
@@ -130,7 +131,7 @@ The next stage reads the manifest to verify the upstream stage completed before 
 If a manifest is missing or `status=failed`, the stage halts and alerts.
 
 Source-of-truth rules for the daily loop:
-- Tiingo is the canonical historical archive for raw prices
+- Alpaca delayed SIP is the canonical historical archive source for raw adjusted prices
 - SimFin is the canonical provider for point-in-time fundamentals and earnings dates, but
   Layer 1 reads the Layer 0 R2 archive rather than calling SimFin directly
 - FRED is the canonical provider for macro context inputs, but Layer 1 reads the Layer 0

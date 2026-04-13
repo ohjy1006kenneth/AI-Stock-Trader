@@ -11,9 +11,9 @@ from dotenv import load_dotenv
 
 from services.alpaca.market_data import AlpacaMarketDataClient, AlpacaMarketDataConfig
 from services.alpaca.news import AlpacaNewsClient
+from services.alpaca.ohlcv_fetcher import AlpacaHistoricalOHLCVFetcher
 from services.fred.macro_fetcher import FredClientConfig, FredMacroFetcher
 from services.simfin.fundamentals_fetcher import SimFinClientConfig, SimFinFundamentalsFetcher
-from services.tiingo.ohlcv_fetcher import TiingoClientConfig, TiingoOHLCVFetcher
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SECRET_QUERY_PATTERN = re.compile(
@@ -38,20 +38,21 @@ def _run_live_check(name: str, callback: Callable[[], T]) -> T:
 
 
 @pytest.mark.skipif(
-    os.getenv("RUN_TIINGO_INTEGRATION") != "1",
-    reason="Set RUN_TIINGO_INTEGRATION=1 to run live Tiingo checks.",
+    os.getenv("RUN_ALPACA_INTEGRATION") != "1",
+    reason="Set RUN_ALPACA_INTEGRATION=1 to run live Alpaca historical OHLCV checks.",
 )
-def test_tiingo_live_price_access() -> None:
-    """Verify the configured Tiingo token can access EOD prices."""
-    _load_local_env("tiingo.env")
-    rows = _run_live_check(
-        "Tiingo OHLCV",
-        lambda: TiingoOHLCVFetcher(TiingoClientConfig.from_env()).fetch_price_rows(
-            "AAPL", "2024-01-02", "2024-01-02"
-        ),
+def test_alpaca_live_historical_sip_price_access() -> None:
+    """Verify Alpaca delayed SIP can fetch adjusted historical daily bars."""
+    _load_local_env("alpaca.env")
+    records = _run_live_check(
+        "Alpaca historical SIP OHLCV",
+        lambda: AlpacaHistoricalOHLCVFetcher(
+            AlpacaMarketDataConfig.from_env(), min_request_interval_seconds=0
+        ).fetch_records("AAPL", "2024-01-02", "2024-01-02"),
     )
 
-    assert rows
+    assert records
+    assert records[0].ticker == "AAPL"
 
 
 @pytest.mark.skipif(
