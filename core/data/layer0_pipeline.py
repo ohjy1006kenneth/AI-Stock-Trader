@@ -11,7 +11,12 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Protocol
 
 from core.contracts.schemas import OHLCVRecord, PipelineManifestRecord, RunStatus, UniverseRecord
-from core.data.quality import QualityFilterConfig, apply_quality_filters
+from core.data.quality import (
+    QualityFilterConfig,
+    _apply_prepared_quality_filters,
+    _prepare_quality_windows,
+    apply_quality_filters,
+)
 from core.data.universe import build_universe_record
 from services.r2.paths import (
     pipeline_manifest_path,
@@ -613,17 +618,26 @@ def _write_historical_universe_masks(
     skipped = 0
     total_records = 0
     days = _business_days(config.from_date, config.to_date)
+    quality_windows = _prepare_quality_windows(ohlcv_window)
 
     for current_date in days:
         if writer.exists(raw_universe_path(current_date)) and not config.overwrite:
             skipped += 1
             continue
         tickers = universe_provider.get_constituents(current_date.isoformat())
-        records = build_universe_mask_records(
-            as_of_date=current_date,
-            tickers=tickers,
-            ohlcv_window=ohlcv_window,
-            quality_config=config.quality_config,
+        records = _apply_prepared_quality_filters(
+            [
+                build_universe_record(
+                    {
+                        "date": current_date.isoformat(),
+                        "ticker": ticker,
+                        "in_universe": True,
+                    }
+                )
+                for ticker in _normalize_tickers(tickers)
+            ],
+            quality_windows,
+            config.quality_config,
         )
         result = _write_universe_mask(
             as_of_date=current_date,
