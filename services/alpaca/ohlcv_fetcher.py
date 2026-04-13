@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date as Date
 from typing import Any, Protocol
@@ -142,7 +142,9 @@ class AlpacaHistoricalOHLCVFetcher:
             for record in page_records:
                 key = (record.date, record.ticker)
                 if key in seen_keys:
-                    raise ValueError(f"Duplicate Alpaca historical bar for {record.ticker} {record.date}")
+                    raise ValueError(
+                        f"Duplicate Alpaca historical bar for {record.ticker} {record.date}"
+                    )
                 seen_keys.add(key)
                 records.append(record)
             if not page_token:

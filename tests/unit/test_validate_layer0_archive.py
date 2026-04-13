@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import date
+from pathlib import Path
 
 from app.lab.data_pipelines.validate_layer0_archive import (
     validate_layer0_archive,
@@ -29,7 +30,7 @@ class _Reader:
 
 
 def test_validate_layer0_archive_reports_ready_when_required_keys_exist() -> None:
-    """Validation is ready when prices, daily archives, range archives, and manifest exist."""
+    """Validation is ready when all required archive families and manifest exist."""
     from_date = date(2024, 1, 1)
     to_date = date(2024, 1, 3)
     run_id = "layer0-historical-2024-01-01_to_2024-01-03"
@@ -78,8 +79,8 @@ def test_validate_layer0_archive_reports_missing_dates() -> None:
     assert report.missing_universe_dates == ["2024-01-05", "2024-01-08"]
 
 
-def test_write_validation_report_writes_json(tmp_path) -> None:
-    """Validation reports are persisted as sorted JSON in the integration report directory."""
+def test_write_validation_report_writes_json(tmp_path: Path) -> None:
+    """Validation reports are persisted as sorted JSON under integration reports."""
     report = validate_layer0_archive(
         from_date=date(2024, 1, 1),
         to_date=date(2024, 1, 1),

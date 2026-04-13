@@ -61,7 +61,9 @@ def validate_layer0_archive(
     calendar_days = _date_range(from_date, to_date)
     business_days = [day for day in calendar_days if day.weekday() < 5]
     missing_news = [day.isoformat() for day in calendar_days if not reader.exists(raw_news_path(day))]
-    missing_universe = [day.isoformat() for day in business_days if not reader.exists(raw_universe_path(day))]
+    missing_universe = [
+        day.isoformat() for day in business_days if not reader.exists(raw_universe_path(day))
+    ]
     fundamentals_present = reader.exists(raw_fundamentals_path(from_date, to_date))
     macro_present = reader.exists(raw_macro_path(from_date, to_date))
     manifest_present = reader.exists(pipeline_manifest_path("layer0", run_id))
@@ -89,7 +91,8 @@ def write_validation_report(report: Layer0ArchiveValidationReport, output_dir: P
     """Write one validation report JSON file under the integration reports directory."""
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / f"layer0_archive_validation_{report.from_date}_to_{report.to_date}.json"
-    path.write_text(json.dumps(asdict(report), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    payload = json.dumps(asdict(report), indent=2, sort_keys=True) + "\n"
+    path.write_text(payload, encoding="utf-8")
     return path
 
 

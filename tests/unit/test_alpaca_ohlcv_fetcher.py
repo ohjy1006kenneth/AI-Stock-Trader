@@ -105,7 +105,9 @@ def test_fetch_price_page_calls_alpaca_sip_adjusted_endpoint() -> None:
 
 def test_fetch_records_paginates_and_rejects_duplicates() -> None:
     """Historical fetching follows page tokens and fails on duplicate ticker-date bars."""
-    session = _FakeSession([_FakeResponse(_payload(next_page_token="page-2")), _FakeResponse(_payload())])
+    first_page = _FakeResponse(_payload(next_page_token="page-2"))
+    second_page = _FakeResponse(_payload())
+    session = _FakeSession([first_page, second_page])
     fetcher = _client(session)
 
     with pytest.raises(ValueError, match="Duplicate Alpaca historical bar"):
@@ -148,7 +150,11 @@ def test_fetch_price_page_rejects_bad_date_window() -> None:
     fetcher = _client(_FakeSession([]))
 
     with pytest.raises(ValueError, match="from_date"):
-        fetcher.fetch_price_page(ticker="AAPL", from_date="2024-01-03", to_date="2024-01-02")
+        fetcher.fetch_price_page(
+            ticker="AAPL",
+            from_date="2024-01-03",
+            to_date="2024-01-02",
+        )
 
 
 def test_fetch_price_page_rejects_non_object_payload() -> None:
