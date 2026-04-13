@@ -66,7 +66,7 @@ class AlpacaNewsClient:
         }
         normalized_tickers = _normalize_optional_tickers(tickers)
         if normalized_tickers:
-            params["symbols"] = ",".join(normalized_tickers)
+            params["symbols"] = ",".join(_alpaca_api_symbol(ticker) for ticker in normalized_tickers)
         if page_token:
             params["page_token"] = page_token
 
@@ -206,13 +206,18 @@ def _normalize_optional_tickers(tickers: Sequence[str] | None) -> tuple[str, ...
 
 
 def _normalize_ticker(ticker: str) -> str:
-    """Normalize one Alpaca news symbol without changing vendor symbol syntax."""
+    """Normalize one Alpaca news symbol to canonical archive syntax."""
     if not isinstance(ticker, str):
         raise TypeError("ticker must be a string")
-    cleaned = ticker.strip().upper()
+    cleaned = ticker.strip().upper().replace(".", "-")
     if not cleaned:
         raise ValueError("ticker cannot be empty")
     return cleaned
+
+
+def _alpaca_api_symbol(ticker: str) -> str:
+    """Convert one canonical ticker to Alpaca's request symbol syntax."""
+    return _normalize_ticker(ticker).replace("-", ".")
 
 
 def _normalize_news_datetime(value: str, *, field_name: str, end: bool) -> str:

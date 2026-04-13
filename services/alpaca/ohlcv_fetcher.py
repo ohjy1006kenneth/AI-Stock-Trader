@@ -104,7 +104,7 @@ class AlpacaHistoricalOHLCVFetcher:
             raise ValueError("limit must be positive")
 
         params: dict[str, Any] = {
-            "symbols": normalized_ticker,
+            "symbols": _alpaca_api_symbol(normalized_ticker),
             "timeframe": "1Day",
             "start": normalized_from,
             "end": normalized_to,
@@ -118,10 +118,8 @@ class AlpacaHistoricalOHLCVFetcher:
             params["page_token"] = page_token
 
         payload = self._request_json(params=params)
-        return (
-            normalize_alpaca_bar_response(payload, requested_tickers=[normalized_ticker]),
-            _optional_page_token(payload),
-        )
+        records = normalize_alpaca_bar_response(payload, requested_tickers=[normalized_ticker])
+        return records, _optional_page_token(payload)
 
     def fetch_records(self, ticker: str, from_date: str, to_date: str) -> list[OHLCVRecord]:
         """Fetch all adjusted Alpaca daily bars for one ticker/date range."""
@@ -224,6 +222,11 @@ def _normalize_ticker(ticker: str) -> str:
     if not cleaned:
         raise ValueError("ticker cannot be empty")
     return cleaned
+
+
+def _alpaca_api_symbol(ticker: str) -> str:
+    """Convert one canonical ticker to Alpaca's request symbol syntax."""
+    return _normalize_ticker(ticker).replace("-", ".")
 
 
 def _normalize_feed(feed: str) -> str:

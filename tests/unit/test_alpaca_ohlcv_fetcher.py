@@ -128,6 +128,20 @@ def test_fetch_security_records_uses_resolved_ticker_identity() -> None:
     assert session.calls[0]["params"]["symbols"] == "AAPL"
 
 
+def test_fetch_security_records_maps_class_share_symbol_for_alpaca() -> None:
+    """Canonical dash tickers are requested with Alpaca's dotted class-share syntax."""
+    payload = _payload()
+    payload["bars"] = {"BF.B": payload["bars"]["AAPL"]}
+    session = _FakeSession([_FakeResponse(payload)])
+    fetcher = _client(session)
+    security = AlpacaTickerSecurity(ticker="BF-B")
+
+    records = fetcher.fetch_security_records(security, "2024-01-02", "2024-01-02")
+
+    assert [record.ticker for record in records] == ["BF-B"]
+    assert session.calls[0]["params"]["symbols"] == "BF.B"
+
+
 def test_ticker_security_master_returns_ticker_keyed_reference_rows() -> None:
     """Alpaca security master keys archives by normalized ticker symbol."""
     master = AlpacaTickerSecurityMaster()
