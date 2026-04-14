@@ -188,6 +188,27 @@ def test_fetch_all_fundamentals_paginates_and_deduplicates() -> None:
     assert {row["retrieved_at"] for row in rows} == {"2024-08-05T00:00:00+00:00"}
 
 
+def test_fetch_all_fundamentals_batches_large_ticker_sets() -> None:
+    """Large ticker universes are split into smaller SimFin requests."""
+    session = _FakeSession([_FakeResponse({"data": []}), _FakeResponse({"data": []})])
+    fetcher = SimFinFundamentalsFetcher(
+        SimFinClientConfig(api_key="test-key", retry_sleep_seconds=0),
+        session=session,  # type: ignore[arg-type]
+    )
+
+    tickers = [f"TICKER{i}" for i in range(201)]
+    rows = fetcher.fetch_all_fundamentals(
+        tickers=tickers,
+        start_date="2024-01-01",
+        end_date="2024-12-31",
+    )
+
+    assert rows == []
+    assert len(session.calls) == 2
+    assert session.calls[0]["params"]["ticker"] == ",".join(tickers[:200])
+    assert session.calls[1]["params"]["ticker"] == tickers[200]
+
+
 def test_fetch_statement_rows_rejects_malformed_payload_item() -> None:
     """Malformed SimFin rows fail with actionable diagnostics."""
     session = _FakeSession([_FakeResponse({"data": [{"ticker": "AAPL"}, "bad-row"]})])

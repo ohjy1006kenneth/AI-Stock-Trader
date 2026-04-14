@@ -18,6 +18,7 @@ SIMFIN_BASE_URL_ENV = "SIMFIN_BASE_URL"
 DEFAULT_SIMFIN_BASE_URL = "https://backend.simfin.com/api/v3"
 SIMFIN_STATEMENTS_ENDPOINT = "/companies/statements/compact"
 DEFAULT_SIMFIN_PAGE_LIMIT = 1000
+DEFAULT_SIMFIN_TICKER_BATCH_SIZE = 200
 DEFAULT_SIMFIN_STATEMENTS = ("pl", "bs", "cf", "derived")
 DEFAULT_SIMFIN_PERIODS = ("q1", "q2", "q3", "q4", "fy")
 SIMFIN_ENV_FILE = Path(__file__).resolve().parents[2] / "config" / "simfin.env"
@@ -121,40 +122,42 @@ class SimFinFundamentalsFetcher:
         max_pages: int | None = None,
     ) -> list[dict[str, Any]]:
         """Fetch all SimFin fundamental rows for a date range, deduplicated."""
-        offset = 0
-        pages = 0
+        normalized_tickers = _normalize_tickers(tickers)
         seen: set[str] = set()
         rows: list[dict[str, Any]] = []
         archive_retrieved_at = retrieved_at or datetime.now(UTC)
 
-        while True:
-            page = self.fetch_statement_rows(
-                tickers=tickers,
-                start_date=start_date,
-                end_date=end_date,
-                statements=statements,
-                periods=periods,
-                retrieved_at=archive_retrieved_at,
-                limit=limit,
-                offset=offset,
-            )
-            if not page.rows:
-                break
+        for ticker_batch in _ticker_batches(normalized_tickers):
+            offset = 0
+            pages = 0
+            while True:
+                page = self.fetch_statement_rows(
+                    tickers=ticker_batch,
+                    start_date=start_date,
+                    end_date=end_date,
+                    statements=statements,
+                    periods=periods,
+                    retrieved_at=archive_retrieved_at,
+                    limit=limit,
+                    offset=offset,
+                )
+                if not page.rows:
+                    break
 
-            for row in page.rows:
-                key = _fundamental_key(row)
-                if key in seen:
-                    continue
-                seen.add(key)
-                rows.append(row)
+                for row in page.rows:
+                    key = _fundamental_key(row)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    rows.append(row)
 
-            if len(page.rows) < page.limit:
-                break
+                if len(page.rows) < page.limit:
+                    break
 
-            offset += page.limit
-            pages += 1
-            if max_pages is not None and pages >= max_pages:
-                break
+                offset += page.limit
+                pages += 1
+                if max_pages is not None and pages >= max_pages:
+                    break
 
         return rows
 
@@ -385,6 +388,14 @@ def _normalize_tickers(tickers: Sequence[str]) -> list[str]:
     if not tickers:
         raise ValueError("tickers must contain at least one ticker")
     return [_normalize_ticker(ticker) for ticker in tickers]
+
+
+def _ticker_batches(tickers: Sequence[str]) -> list[tuple[str, ...]]:
+    """Return ticker batches sized for SimFin request stability."""
+    return [
+        tuple(tickers[index : index + DEFAULT_SIMFIN_TICKER_BATCH_SIZE])
+        for index in range(0, len(tickers), DEFAULT_SIMFIN_TICKER_BATCH_SIZE)
+    ]
 
 
 def _normalize_ticker(ticker: str) -> str:
