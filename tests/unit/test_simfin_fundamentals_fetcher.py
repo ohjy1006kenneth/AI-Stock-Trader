@@ -196,7 +196,7 @@ def test_fetch_all_fundamentals_batches_large_ticker_sets() -> None:
         session=session,  # type: ignore[arg-type]
     )
 
-    tickers = [f"TICKER{i}" for i in range(201)]
+    tickers = [f"TICKER{i}" for i in range(51)]
     rows = fetcher.fetch_all_fundamentals(
         tickers=tickers,
         start_date="2024-01-01",
@@ -205,8 +205,8 @@ def test_fetch_all_fundamentals_batches_large_ticker_sets() -> None:
 
     assert rows == []
     assert len(session.calls) == 2
-    assert session.calls[0]["params"]["ticker"] == ",".join(tickers[:200])
-    assert session.calls[1]["params"]["ticker"] == tickers[200]
+    assert session.calls[0]["params"]["ticker"] == ",".join(tickers[:50])
+    assert session.calls[1]["params"]["ticker"] == tickers[50]
 
 
 def test_fetch_statement_rows_rejects_malformed_payload_item() -> None:
