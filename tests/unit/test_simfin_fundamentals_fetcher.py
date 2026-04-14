@@ -209,6 +209,35 @@ def test_fetch_all_fundamentals_batches_large_ticker_sets() -> None:
     assert session.calls[1]["params"]["ticker"] == tickers[50]
 
 
+def test_fetch_all_fundamentals_splits_on_server_error() -> None:
+    """Transient 5xx errors split ticker batches to isolate failures."""
+    response = requests.Response()
+    response.status_code = 500
+    error = requests.HTTPError("server error", response=response)
+    session = _FakeSession(
+        [
+            _FakeResponse({}, error),
+            _FakeResponse({"data": []}),
+            _FakeResponse({"data": []}),
+        ]
+    )
+    fetcher = SimFinFundamentalsFetcher(
+        SimFinClientConfig(api_key="test-key", retry_sleep_seconds=0, max_retries=0),
+        session=session,  # type: ignore[arg-type]
+    )
+
+    rows = fetcher.fetch_all_fundamentals(
+        tickers=["AAPL", "MSFT"],
+        start_date="2024-01-01",
+        end_date="2024-12-31",
+    )
+
+    assert rows == []
+    assert session.calls[0]["params"]["ticker"] == "AAPL,MSFT"
+    assert session.calls[1]["params"]["ticker"] == "AAPL"
+    assert session.calls[2]["params"]["ticker"] == "MSFT"
+
+
 def test_fetch_statement_rows_rejects_malformed_payload_item() -> None:
     """Malformed SimFin rows fail with actionable diagnostics."""
     session = _FakeSession([_FakeResponse({"data": [{"ticker": "AAPL"}, "bad-row"]})])

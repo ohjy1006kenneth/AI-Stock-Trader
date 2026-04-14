@@ -128,10 +128,8 @@ class SimFinFundamentalsFetcher:
         archive_retrieved_at = retrieved_at or datetime.now(UTC)
 
         for ticker_batch in _ticker_batches(normalized_tickers):
-            offset = 0
-            pages = 0
-            while True:
-                page = self.fetch_statement_rows(
+            rows.extend(
+                self._fetch_fundamentals_batch(
                     tickers=ticker_batch,
                     start_date=start_date,
                     end_date=end_date,
@@ -139,25 +137,119 @@ class SimFinFundamentalsFetcher:
                     periods=periods,
                     retrieved_at=archive_retrieved_at,
                     limit=limit,
-                    offset=offset,
+                    max_pages=max_pages,
+                    seen=seen,
                 )
-                if not page.rows:
-                    break
+            )
 
-                for row in page.rows:
-                    key = _fundamental_key(row)
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    rows.append(row)
+        return rows
 
-                if len(page.rows) < page.limit:
-                    break
+    def _fetch_fundamentals_batch(
+        self,
+        *,
+        tickers: Sequence[str],
+        start_date: str,
+        end_date: str,
+        statements: Sequence[str],
+        periods: Sequence[str],
+        retrieved_at: datetime,
+        limit: int,
+        max_pages: int | None,
+        seen: set[str],
+    ) -> list[dict[str, Any]]:
+        """Fetch fundamentals for one ticker batch, splitting on transient 5xx failures."""
+        try:
+            return self._fetch_fundamentals_batch_pages(
+                tickers=tickers,
+                start_date=start_date,
+                end_date=end_date,
+                statements=statements,
+                periods=periods,
+                retrieved_at=retrieved_at,
+                limit=limit,
+                max_pages=max_pages,
+                seen=seen,
+            )
+        except requests.HTTPError as exc:
+            status_code = getattr(getattr(exc, "response", None), "status_code", None)
+            if status_code in {500, 502, 503, 504} and len(tickers) > 1:
+                midpoint = len(tickers) // 2
+                rows: list[dict[str, Any]] = []
+                rows.extend(
+                    self._fetch_fundamentals_batch(
+                        tickers=tickers[:midpoint],
+                        start_date=start_date,
+                        end_date=end_date,
+                        statements=statements,
+                        periods=periods,
+                        retrieved_at=retrieved_at,
+                        limit=limit,
+                        max_pages=max_pages,
+                        seen=seen,
+                    )
+                )
+                rows.extend(
+                    self._fetch_fundamentals_batch(
+                        tickers=tickers[midpoint:],
+                        start_date=start_date,
+                        end_date=end_date,
+                        statements=statements,
+                        periods=periods,
+                        retrieved_at=retrieved_at,
+                        limit=limit,
+                        max_pages=max_pages,
+                        seen=seen,
+                    )
+                )
+                return rows
+            raise
 
-                offset += page.limit
-                pages += 1
-                if max_pages is not None and pages >= max_pages:
-                    break
+    def _fetch_fundamentals_batch_pages(
+        self,
+        *,
+        tickers: Sequence[str],
+        start_date: str,
+        end_date: str,
+        statements: Sequence[str],
+        periods: Sequence[str],
+        retrieved_at: datetime,
+        limit: int,
+        max_pages: int | None,
+        seen: set[str],
+    ) -> list[dict[str, Any]]:
+        """Fetch and dedupe all pages for one ticker batch."""
+        offset = 0
+        pages = 0
+        rows: list[dict[str, Any]] = []
+
+        while True:
+            page = self.fetch_statement_rows(
+                tickers=tickers,
+                start_date=start_date,
+                end_date=end_date,
+                statements=statements,
+                periods=periods,
+                retrieved_at=retrieved_at,
+                limit=limit,
+                offset=offset,
+            )
+            if not page.rows:
+                break
+
+            for row in page.rows:
+                key = _fundamental_key(row)
+                if key in seen:
+                    continue
+                seen.add(key)
+                rows.append(row)
+
+            if len(page.rows) < page.limit:
+                break
+
+            offset += page.limit
+            pages += 1
+            if max_pages is not None and pages >= max_pages:
+                break
 
         return rows
 
