@@ -45,7 +45,7 @@ Schema version metadata:
 
 ## Layer 0 contracts
 
-Layer 0 owns all external data ingestion. Wikipedia, Tiingo, Alpaca, SimFin, and FRED
+Layer 0 owns all external data ingestion. Wikipedia, Alpaca, SimFin, and FRED
 provider calls happen in Layer 0; Layer 1 and later layers read existing R2 archives only.
 
 Layer 0 persists several raw archival datasets for point-in-time safety. These archives are

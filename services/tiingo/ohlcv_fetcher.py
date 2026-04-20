@@ -1,3 +1,9 @@
+"""Deprecated legacy Tiingo OHLCV adapter.
+
+Layer 0 production OHLCV uses Alpaca delayed SIP. This module remains only for
+older tests and migration/debug reference code.
+"""
+
 from __future__ import annotations
 
 import os

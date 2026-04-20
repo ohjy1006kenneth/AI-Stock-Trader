@@ -68,7 +68,7 @@ class BackfillResult:
     skipped: int
     empty: int
     total_rows: int
-    output_key: str
+    output_keys: tuple[str, ...]
 
 
 def backfill_simfin_archive(
@@ -85,7 +85,7 @@ def backfill_simfin_archive(
     retrieved_at: datetime | None = None,
     serializer: FundamentalsSerializer | None = None,
 ) -> BackfillResult:
-    """Backfill SimFin as-reported fundamentals into R2."""
+    """Backfill SimFin as-reported fundamentals into R2, sharding per-ticker."""
     if from_date > to_date:
         raise ValueError("from_date must be <= to_date")
     if limit <= 0:
@@ -99,21 +99,25 @@ def backfill_simfin_archive(
     if not ticker_source:
         raise ValueError("tickers must contain at least one ticker")
 
-    archive_retrieved_at = retrieved_at or datetime.now(UTC)
-    output_key = raw_fundamentals_path(from_date, to_date)
-    if writer.exists(output_key) and not overwrite:
-        logger.info("Skipping existing SimFin fundamentals archive {}", output_key)
+    remaining = [
+        ticker
+        for ticker in ticker_source
+        if overwrite or not writer.exists(raw_fundamentals_path(ticker))
+    ]
+    if not remaining:
+        logger.info("All {} ticker fundamentals already archived", len(ticker_source))
         return BackfillResult(
             requested_tickers=len(ticker_source),
             written=0,
-            skipped=1,
+            skipped=len(ticker_source),
             empty=0,
             total_rows=0,
-            output_key=output_key,
+            output_keys=(),
         )
 
+    archive_retrieved_at = retrieved_at or datetime.now(UTC)
     rows = fetcher.fetch_all_fundamentals(
-        tickers=ticker_source,
+        tickers=remaining,
         start_date=from_date.isoformat(),
         end_date=to_date.isoformat(),
         statements=statements,
@@ -121,16 +125,38 @@ def backfill_simfin_archive(
         retrieved_at=archive_retrieved_at,
         limit=limit,
     )
+    rows_by_ticker: dict[str, list[dict[str, object]]] = {ticker: [] for ticker in remaining}
+    for row in rows:
+        ticker = str(row.get("ticker") or "").strip().upper().replace(".", "-")
+        if ticker in rows_by_ticker:
+            rows_by_ticker[ticker].append(row)
+
     payload_serializer = serializer or _fundamentals_to_parquet_bytes
-    writer.put_object(output_key, payload_serializer(_sort_fundamentals(rows)))
-    logger.info("Wrote {} SimFin fundamentals rows to {}", len(rows), output_key)
+    output_keys: list[str] = []
+    empty = 0
+    total_rows = 0
+    for ticker in remaining:
+        ticker_rows = _sort_fundamentals(rows_by_ticker.get(ticker, []))
+        key = raw_fundamentals_path(ticker)
+        writer.put_object(key, payload_serializer(ticker_rows))
+        output_keys.append(key)
+        total_rows += len(ticker_rows)
+        if not ticker_rows:
+            empty += 1
+
+    logger.info(
+        "Wrote {} SimFin fundamentals files ({} rows) for {} tickers",
+        len(output_keys),
+        total_rows,
+        len(remaining),
+    )
     return BackfillResult(
         requested_tickers=len(ticker_source),
-        written=1,
-        skipped=0,
-        empty=0 if rows else 1,
-        total_rows=len(rows),
-        output_key=output_key,
+        written=len(output_keys),
+        skipped=len(ticker_source) - len(remaining),
+        empty=empty,
+        total_rows=total_rows,
+        output_keys=tuple(output_keys),
     )
 
 

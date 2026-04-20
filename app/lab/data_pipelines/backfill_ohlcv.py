@@ -1,4 +1,8 @@
-"""Historical Tiingo OHLCV backfill into the canonical R2 raw price archive."""
+"""Deprecated legacy Tiingo OHLCV backfill.
+
+Layer 0 production OHLCV backfills use Alpaca delayed SIP through
+`app/lab/data_pipelines/backfill_layer0.py`.
+"""
 from __future__ import annotations
 
 import argparse

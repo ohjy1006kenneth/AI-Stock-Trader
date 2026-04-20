@@ -6,7 +6,7 @@ This repository implements a production-oriented quantitative trading system for
 
 The target data stack is:
 - historical universe membership from Wikipedia revision history
-- canonical historical OHLCV archives from Tiingo
+- canonical historical OHLCV archives from Alpaca delayed SIP
 - historical and live raw news from Alpaca
 - point-in-time fundamentals and earnings dates from SimFin
 - macro and rate context from FRED
@@ -131,7 +131,7 @@ This is not just a switch in the optimizer. It requires:
 
 | Data type | Source | Notes |
 |---|---|---|
-| Historical OHLCV (adjusted) | Tiingo EOD API | Canonical long-history store; stable `permaTicker` identity covers delisted/acquired names |
+| Historical OHLCV (adjusted) | Alpaca delayed SIP | Canonical adjusted daily bar store from 2017-01-01 onward; use `feed=sip`, `timeframe=1Day`, `adjustment=all` |
 | Historical and live raw news | Alpaca News API | Raw Benzinga-sourced article text with ticker tags for NLP backtests and daily inference |
 | S&P 500 universe membership | Wikipedia edit history | Point-in-time constituent list; never use today's snapshot for history |
 | Fundamentals / earnings dates | SimFin | As-reported filing data to avoid future restatements leaking backward |
@@ -142,16 +142,17 @@ This is not just a switch in the optimizer. It requires:
 Wikipedia's S&P 500 page revision history provides historical constituent changes at no cost.
 The revision history — not the current page — must be scraped to obtain point-in-time membership.
 This approach is accurate enough for personal-system backtesting but may have gaps around
-spinoffs and rapid constituent changes. Tiingo's `permaTicker` then provides the stable
-security identity needed to stitch those historical constituents to surviving, delisted,
-acquired, and symbol-changed names without survivorship bias.
+spinoffs and rapid constituent changes. Alpaca's delayed SIP archive provides consolidated
+historical OHLCV for the active ticker symbols in the backfill universe from 2017 onward.
+Residual symbol-change and delisting edge cases are tracked as universe/security-identity
+quality work rather than solved by a separate Tiingo dependency.
 
 ### Historical vs. live market data note
-Historical price storage is treated as a Tiingo-backed canonical OHLCV archive. Raw news
-storage is treated as an Alpaca-backed canonical archive. Alpaca market data is also used for
-the live daily bar snapshot that the Pi needs near the close or before the next open. Any
-Alpaca-sourced live bar written into the raw store must be normalized into the same contract
-shape as Tiingo and later reconciled into the canonical historical archive.
+Historical price storage is treated as an Alpaca delayed SIP-backed canonical OHLCV archive.
+Raw news storage is treated as an Alpaca-backed canonical archive. Alpaca market data is also
+used for the live daily bar snapshot that the Pi needs near the close or before the next open.
+Historical and live Alpaca bars must both normalize into the same `OHLCVRecord` shape before
+being written to the raw store.
 
 ---
 
@@ -165,12 +166,12 @@ Both the Pi and Modal jobs read and write to R2.
 ```
 r2/
   raw/
-    prices/           # OHLCV Parquet, one file per Tiingo permaTicker
+    prices/           # OHLCV Parquet, one file per ticker
     news/             # Raw news as JSON Lines (one article per line)
     universe/         # Daily eligibility masks as CSV
     fundamentals/     # SimFin as-reported point-in-time fundamentals and earnings data
     macro/            # FRED macro/rate observations as available on the run date
-    reference/        # Symbol/permaTicker/security master snapshots
+    reference/        # Symbol/security-reference snapshots
   processed/
     features/         # Feature tables as Parquet (dates × tickers × features)
     scores/           # Layer 2 score outputs as Parquet
@@ -225,10 +226,10 @@ The system follows a strict layered architecture.
 Layer 0 guarantees that all downstream layers operate on clean, honest, point-in-time data.
 
 Responsibilities:
-- construct a point-in-time eligible universe (Wikipedia revision history + Tiingo security history)
+- construct a point-in-time eligible universe (Wikipedia revision history + ticker reference snapshots)
 - avoid survivorship bias — use historical constituent lists, never today's index
 - apply daily liquidity and tradeability filters
-- use Tiingo adjusted OHLCV as the canonical historical market data store
+- use Alpaca delayed SIP adjusted OHLCV as the canonical historical market data store
 - ingest raw Alpaca news with point-in-time timestamps and raw text
 - ingest SimFin as-reported fundamentals and earnings dates as point-in-time raw context
 - ingest FRED macro and rate series as point-in-time raw context
@@ -242,7 +243,7 @@ Responsibilities:
 Builds the complete R2 database that Layer 1 reads for model training and backtesting.
 Runs on laptop or Modal — not the Pi. The Pi has no role in the backfill.
 - Entrypoint: `app/lab/data_pipelines/backfill_layer0.py`
-- Fetches full OHLCV history (e.g. 2014–present) for all historical constituents keyed by Tiingo `permaTicker`
+- Fetches full OHLCV history from 2017-01-01 onward for all historical constituents keyed by ticker
 - Fetches historical raw news archive from Alpaca → `r2://raw/news/YYYY-MM-DD.jsonl` per date
 - Fetches SimFin as-reported fundamentals and earnings dates → `r2://raw/fundamentals/`
 - Fetches FRED macro/rate series → `r2://raw/macro/`
@@ -281,7 +282,7 @@ Appends today's data to the existing R2 database. Assumes the backfill has alrea
 ### Layer 1 — Feature Generation
 
 Layer 1 converts existing Layer 0 R2 data into aligned numerical features indexed by
-`(date, ticker)`. Layer 1 does not fetch from Wikipedia, Tiingo, SimFin, FRED, or Alpaca;
+`(date, ticker)`. Layer 1 does not fetch from Wikipedia, Alpaca, SimFin, or FRED;
 it reads only the raw archives and manifests produced by Layer 0.
 
 The quality of features matters more than model sophistication. A well-engineered feature set
@@ -669,7 +670,7 @@ final. If holdout performance diverges significantly from walk-forward, the syst
 A backtest is only trustworthy if all of the following pass:
 
 - [ ] Point-in-time universe (Wikipedia revision history, not today's S&P 500)
-- [ ] No survivorship bias — delisted and acquired companies included historically via Tiingo `permaTicker`
+- [ ] Point-in-time universe and symbol handling reviewed for delisted, acquired, and renamed companies
 - [ ] Adjusted prices used for all model training
 - [ ] No lookahead bias in any feature (feature on date T uses only data before T's open)
 - [ ] HMM fitted walk-forward, not on full history
@@ -727,7 +728,7 @@ must be written to R2.
 
 ### Object storage (Cloudflare R2)
 R2 is the source of truth for:
-- raw Layer 0 data snapshots from Wikipedia, Tiingo, SimFin, FRED, and Alpaca
+- raw Layer 0 data snapshots from Wikipedia, Alpaca, SimFin, and FRED
 - processed feature tables
 - manifests
 - model scores
@@ -743,8 +744,8 @@ R2 is the source of truth for:
 
 The following must be completed before the daily loop can run:
 
-1. Run historical backfill: `python app/lab/data_pipelines/backfill_layer0.py --from-date 2014-01-01 --to-date <today>`
-   - Builds complete Tiingo-backed OHLCV Parquet database in R2 — one file per stable security identity
+1. Run historical backfill: `python app/lab/data_pipelines/backfill_layer0.py --from-date 2017-01-01 --to-date <today>`
+   - Builds complete Alpaca delayed SIP-backed OHLCV Parquet database in R2 — one file per ticker
    - Builds Alpaca historical news archive in R2 — one JSON Lines file per date
    - Builds historical eligibility masks in R2 — one CSV per date
    - Builds SimFin as-reported fundamentals and earnings-date archives in R2
@@ -817,13 +818,13 @@ A candidate becomes promotable only if it survives:
 - `app/cloud/` — cloud inference surface (Modal)
 - `app/pi/` — edge runtime surface (Pi, daily incremental only)
 - `core/contracts/` — shared inter-layer schemas
-- `core/data/` — point-in-time universe/data logic (Wikipedia, Tiingo-backed historical prices, Alpaca news/live-bar normalization, SimFin/FRED raw context ingestion)
+- `core/data/` — point-in-time universe/data logic (Wikipedia, Alpaca historical prices/news/live-bar normalization, SimFin/FRED raw context ingestion)
 - `core/features/` — market, NLP, context feature logic over existing Layer 0 archives
 - `core/models/` — XGBoost, HMM, calibration
 - `core/portfolio/` — contextual bandit, optimizer
 - `core/risk/` — hard risk rules
 - `core/execution/` — deterministic execution helpers
-- `services/` — external system adapters (Tiingo, SimFin, FRED, Alpaca, R2, Modal, observability)
+- `services/` — external system adapters (Alpaca, SimFin, FRED, R2, Modal, observability; legacy Tiingo adapters are deprecated)
 
 Ownership boundary summary:
 - `app/` coordinates runtime surfaces.

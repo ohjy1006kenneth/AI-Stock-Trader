@@ -12,12 +12,14 @@ from typing import Any
 
 import requests
 from dotenv import load_dotenv
+from loguru import logger
 
 SIMFIN_API_KEY_ENV = "SIMFIN_API_KEY"
 SIMFIN_BASE_URL_ENV = "SIMFIN_BASE_URL"
 DEFAULT_SIMFIN_BASE_URL = "https://backend.simfin.com/api/v3"
 SIMFIN_STATEMENTS_ENDPOINT = "/companies/statements/compact"
 DEFAULT_SIMFIN_PAGE_LIMIT = 1000
+DEFAULT_SIMFIN_TICKER_BATCH_SIZE = 50
 DEFAULT_SIMFIN_STATEMENTS = ("pl", "bs", "cf", "derived")
 DEFAULT_SIMFIN_PERIODS = ("q1", "q2", "q3", "q4", "fy")
 SIMFIN_ENV_FILE = Path(__file__).resolve().parents[2] / "config" / "simfin.env"
@@ -30,8 +32,11 @@ class SimFinClientConfig:
     api_key: str
     base_url: str = DEFAULT_SIMFIN_BASE_URL
     timeout_seconds: int = 30
-    max_retries: int = 2
-    retry_sleep_seconds: float = 1.0
+    max_retries: int = 3
+    retry_sleep_seconds: float = 2.0
+    min_request_interval_seconds: float = 1.0
+    rate_limit_sleep_seconds: float = 30.0
+    split_cooldown_seconds: float = 10.0
 
     @classmethod
     def from_env(cls) -> SimFinClientConfig:
@@ -66,6 +71,7 @@ class SimFinFundamentalsFetcher:
         """Store client configuration and HTTP session."""
         self.config = config
         self.session = session or requests.Session()
+        self._last_request_at: float | None = None
 
     def fetch_statement_rows(
         self,
@@ -121,11 +127,141 @@ class SimFinFundamentalsFetcher:
         max_pages: int | None = None,
     ) -> list[dict[str, Any]]:
         """Fetch all SimFin fundamental rows for a date range, deduplicated."""
-        offset = 0
-        pages = 0
+        normalized_tickers = _normalize_tickers(tickers)
         seen: set[str] = set()
         rows: list[dict[str, Any]] = []
         archive_retrieved_at = retrieved_at or datetime.now(UTC)
+        batches = _ticker_batches(normalized_tickers)
+        logger.info(
+            "SimFin fundamentals: {} tickers, {} batches, range {}..{}",
+            len(normalized_tickers),
+            len(batches),
+            start_date,
+            end_date,
+        )
+
+        for batch_index, ticker_batch in enumerate(batches, start=1):
+            logger.info(
+                "SimFin batch {}/{} ({} tickers): {}",
+                batch_index,
+                len(batches),
+                len(ticker_batch),
+                ",".join(ticker_batch[:3]) + ("..." if len(ticker_batch) > 3 else ""),
+            )
+            batch_rows = self._fetch_fundamentals_batch(
+                tickers=ticker_batch,
+                start_date=start_date,
+                end_date=end_date,
+                statements=statements,
+                periods=periods,
+                retrieved_at=archive_retrieved_at,
+                limit=limit,
+                max_pages=max_pages,
+                seen=seen,
+            )
+            rows.extend(batch_rows)
+            logger.info(
+                "SimFin batch {}/{} done: {} rows ({} total)",
+                batch_index,
+                len(batches),
+                len(batch_rows),
+                len(rows),
+            )
+
+        return rows
+
+    def _fetch_fundamentals_batch(
+        self,
+        *,
+        tickers: Sequence[str],
+        start_date: str,
+        end_date: str,
+        statements: Sequence[str],
+        periods: Sequence[str],
+        retrieved_at: datetime,
+        limit: int,
+        max_pages: int | None,
+        seen: set[str],
+    ) -> list[dict[str, Any]]:
+        """Fetch fundamentals for one ticker batch, splitting on transient failures."""
+        try:
+            return self._fetch_fundamentals_batch_pages(
+                tickers=tickers,
+                start_date=start_date,
+                end_date=end_date,
+                statements=statements,
+                periods=periods,
+                retrieved_at=retrieved_at,
+                limit=limit,
+                max_pages=max_pages,
+                seen=seen,
+            )
+        except requests.RequestException as exc:
+            status_code = getattr(getattr(exc, "response", None), "status_code", None)
+            should_split = False
+            if status_code in {429, 500, 502, 503, 504}:
+                should_split = True
+            elif isinstance(exc, (requests.ConnectionError, requests.Timeout)):
+                should_split = True
+            if should_split and len(tickers) > 1:
+                midpoint = len(tickers) // 2
+                rows: list[dict[str, Any]] = []
+                rows.extend(
+                    self._fetch_fundamentals_batch(
+                        tickers=tickers[:midpoint],
+                        start_date=start_date,
+                        end_date=end_date,
+                        statements=statements,
+                        periods=periods,
+                        retrieved_at=retrieved_at,
+                        limit=limit,
+                        max_pages=max_pages,
+                        seen=seen,
+                    )
+                )
+                # Cool down before the second half so a 5xx burst doesn't
+                # trip SimFin's per-minute rate limiter on the recursive retry.
+                time.sleep(self.config.split_cooldown_seconds)
+                rows.extend(
+                    self._fetch_fundamentals_batch(
+                        tickers=tickers[midpoint:],
+                        start_date=start_date,
+                        end_date=end_date,
+                        statements=statements,
+                        periods=periods,
+                        retrieved_at=retrieved_at,
+                        limit=limit,
+                        max_pages=max_pages,
+                        seen=seen,
+                    )
+                )
+                return rows
+            if should_split and len(tickers) == 1:
+                logger.warning(
+                    "SimFin ticker {} failed after retries (status={}): skipping",
+                    tickers[0],
+                    status_code,
+                )
+                return []
+            raise
+
+    def _fetch_fundamentals_batch_pages(
+        self,
+        *,
+        tickers: Sequence[str],
+        start_date: str,
+        end_date: str,
+        statements: Sequence[str],
+        periods: Sequence[str],
+        retrieved_at: datetime,
+        limit: int,
+        max_pages: int | None,
+        seen: set[str],
+    ) -> list[dict[str, Any]]:
+        """Fetch and dedupe all pages for one ticker batch."""
+        offset = 0
+        pages = 0
+        rows: list[dict[str, Any]] = []
 
         while True:
             page = self.fetch_statement_rows(
@@ -134,7 +270,7 @@ class SimFinFundamentalsFetcher:
                 end_date=end_date,
                 statements=statements,
                 periods=periods,
-                retrieved_at=archive_retrieved_at,
+                retrieved_at=retrieved_at,
                 limit=limit,
                 offset=offset,
             )
@@ -168,6 +304,7 @@ class SimFinFundamentalsFetcher:
         last_error: requests.RequestException | None = None
         for attempt in range(self.config.max_retries + 1):
             try:
+                self._throttle_if_needed()
                 response = self.session.get(
                     url,
                     params=dict(params),
@@ -180,10 +317,30 @@ class SimFinFundamentalsFetcher:
                 last_error = exc
                 if attempt >= self.config.max_retries or not _is_retryable_error(exc):
                     raise
-                time.sleep(self.config.retry_sleep_seconds)
+                time.sleep(
+                    _retry_backoff_seconds(
+                        exc,
+                        attempt,
+                        self.config.retry_sleep_seconds,
+                        self.config.rate_limit_sleep_seconds,
+                    )
+                )
+            finally:
+                self._last_request_at = time.monotonic()
         if last_error is not None:
             raise last_error
         raise RuntimeError("SimFin request failed without an exception")
+
+    def _throttle_if_needed(self) -> None:
+        """Throttle requests to respect SimFin rate limits."""
+        min_interval = self.config.min_request_interval_seconds
+        if min_interval <= 0:
+            return
+        if self._last_request_at is None:
+            return
+        elapsed = time.monotonic() - self._last_request_at
+        if elapsed < min_interval:
+            time.sleep(min_interval - elapsed)
 
 
 def normalize_simfin_fundamental_rows(
@@ -387,6 +544,14 @@ def _normalize_tickers(tickers: Sequence[str]) -> list[str]:
     return [_normalize_ticker(ticker) for ticker in tickers]
 
 
+def _ticker_batches(tickers: Sequence[str]) -> list[tuple[str, ...]]:
+    """Return ticker batches sized for SimFin request stability."""
+    return [
+        tuple(tickers[index : index + DEFAULT_SIMFIN_TICKER_BATCH_SIZE])
+        for index in range(0, len(tickers), DEFAULT_SIMFIN_TICKER_BATCH_SIZE)
+    ]
+
+
 def _normalize_ticker(ticker: str) -> str:
     """Normalize one ticker symbol."""
     if not isinstance(ticker, str):
@@ -503,6 +668,30 @@ def _validate_date(value: str, field_name: str) -> str:
         return Date.fromisoformat(value.strip().split("T", maxsplit=1)[0]).isoformat()
     except ValueError as exc:
         raise ValueError(f"{field_name} must be YYYY-MM-DD: {value}") from exc
+
+
+def _retry_backoff_seconds(
+    error: requests.RequestException,
+    attempt: int,
+    base_sleep_seconds: float,
+    rate_limit_sleep_seconds: float,
+) -> float:
+    """Return the retry delay for a transient SimFin error."""
+    response = getattr(error, "response", None)
+    headers = getattr(response, "headers", None)
+    retry_after = None
+    status_code = getattr(response, "status_code", None)
+    if isinstance(headers, Mapping):
+        header_value = headers.get("Retry-After")
+        if header_value is not None:
+            try:
+                retry_after = float(header_value)
+            except (TypeError, ValueError):
+                retry_after = None
+    backoff = base_sleep_seconds * (2**attempt)
+    if status_code == 429:
+        return max(backoff, retry_after or 0.0, rate_limit_sleep_seconds)
+    return max(backoff, retry_after or 0.0)
 
 
 def _is_retryable_error(error: requests.RequestException) -> bool:

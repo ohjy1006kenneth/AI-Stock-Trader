@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from bisect import bisect_right
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date as Date
@@ -38,31 +39,61 @@ def apply_quality_filters(
     config: QualityFilterConfig,
 ) -> list[UniverseRecord]:
     """Apply Layer 0 liquidity and data quality filters to universe records."""
-    return [_filter_record(record, ohlcv_window, config) for record in universe]
+    quality_windows = prepare_quality_windows(ohlcv_window)
+    return apply_prepared_quality_filters(universe, quality_windows, config)
+
+
+def apply_prepared_quality_filters(
+    universe: list[UniverseRecord],
+    quality_windows: Mapping[str, _TickerQualityWindow],
+    config: QualityFilterConfig,
+) -> list[UniverseRecord]:
+    """Apply quality filters using pre-indexed OHLCV bars."""
+    return [_filter_record(record, quality_windows, config) for record in universe]
+
+
+@dataclass(frozen=True)
+class _TickerQualityWindow:
+    """Pre-indexed OHLCV bars for one ticker."""
+
+    bars: tuple[OHLCVRecord, ...]
+    dates: tuple[str, ...]
+    date_set: frozenset[str]
 
 
 def _filter_record(
     record: UniverseRecord,
-    ohlcv_window: Mapping[str, Sequence[OHLCVRecord]],
+    ohlcv_window: Mapping[str, _TickerQualityWindow],
     config: QualityFilterConfig,
 ) -> UniverseRecord:
     """Return one universe record with quality flags updated."""
     ticker = record.ticker.upper()
-    bars = _sorted_ticker_bars(ticker, ohlcv_window.get(ticker, ()))
-    bars = [bar for bar in bars if bar.date <= record.date]
-    latest_bar = bars[-1] if bars else None
-    previous_bar = bars[-2] if len(bars) >= 2 else None
+    quality_window = ohlcv_window.get(ticker)
+    cutoff = _bar_cutoff(quality_window, record.date)
+    latest_bar = (
+        quality_window.bars[cutoff - 1]
+        if quality_window is not None and cutoff >= 1
+        else None
+    )
+    previous_bar = (
+        quality_window.bars[cutoff - 2]
+        if quality_window is not None and cutoff >= 2
+        else None
+    )
 
     liquid = record.liquid
     data_quality_ok = record.data_quality_ok
     halted = record.halted
     reasons = _split_reasons(record.reason)
 
-    if not bars:
+    if cutoff == 0:
         data_quality_ok = False
         reasons.append("missing_ohlcv_window")
     else:
-        average_dollar_volume = _average_dollar_volume(bars[-config.rolling_window_days :])
+        assert quality_window is not None
+        average_dollar_volume = _average_dollar_volume(
+            quality_window.bars[max(0, cutoff - config.rolling_window_days) : cutoff]
+        )
         if average_dollar_volume < config.min_average_dollar_volume:
             liquid = False
             reasons.append("average_dollar_volume_below_minimum")
@@ -91,7 +122,7 @@ def _filter_record(
 
     missing_streak = _max_consecutive_missing_bars(
         as_of_date=record.date,
-        bar_dates={bar.date for bar in bars},
+        bar_dates=quality_window.date_set if quality_window is not None else frozenset(),
         rolling_window_days=config.rolling_window_days,
     )
     if missing_streak > config.max_consecutive_missing_bars:
@@ -106,6 +137,33 @@ def _filter_record(
             "reason": _join_reasons(reasons),
         }
     )
+
+
+def prepare_quality_windows(
+    ohlcv_window: Mapping[str, Sequence[OHLCVRecord]],
+) -> dict[str, _TickerQualityWindow]:
+    """Return sorted, deduplicated bars keyed by normalized ticker."""
+    quality_windows: dict[str, _TickerQualityWindow] = {}
+    for raw_ticker, bars in ohlcv_window.items():
+        ticker = raw_ticker.upper()
+        sorted_bars = tuple(_sorted_ticker_bars(ticker, bars))
+        dates = tuple(bar.date for bar in sorted_bars)
+        quality_windows[ticker] = _TickerQualityWindow(
+            bars=sorted_bars,
+            dates=dates,
+            date_set=frozenset(dates),
+        )
+    return quality_windows
+
+
+def _bar_cutoff(
+    quality_window: _TickerQualityWindow | None,
+    as_of_date: str,
+) -> int:
+    """Return the exclusive bar index at or before one date."""
+    if quality_window is None:
+        return 0
+    return bisect_right(quality_window.dates, as_of_date)
 
 
 def _sorted_ticker_bars(ticker: str, bars: Sequence[OHLCVRecord]) -> list[OHLCVRecord]:

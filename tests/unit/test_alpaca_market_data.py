@@ -215,6 +215,16 @@ def test_normalize_alpaca_bar_response_uses_payload_keys_when_tickers_omitted() 
     assert [record.date for record in records] == ["2024-01-02", "2024-01-02"]
 
 
+def test_normalize_alpaca_bar_response_canonicalizes_dotted_payload_keys() -> None:
+    """Alpaca class-share symbols are stored with canonical dash tickers."""
+    payload = _fixture_payload()
+    payload["bars"] = {"BRK.B": payload["bars"]["AAPL"]}
+
+    records = normalize_alpaca_bar_response(payload, requested_tickers=["BRK-B"])
+
+    assert [record.ticker for record in records] == ["BRK-B"]
+
+
 def test_normalize_alpaca_bar_response_uses_close_when_vwap_missing() -> None:
     """Dollar volume falls back to close times volume when Alpaca omits VWAP."""
     payload = _fixture_payload()

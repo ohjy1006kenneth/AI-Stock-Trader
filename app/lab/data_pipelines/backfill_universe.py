@@ -50,11 +50,11 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(_REPO_ROOT))
 
 from services.wikipedia.sp500_universe import (  # noqa: E402
-    _ChangeEvent,
-    _fetch_html,
-    _parse_change_log,
-    _parse_current_tickers,
-    _reconstruct_at_date,
+    ChangeEvent,
+    fetch_html,
+    parse_change_log,
+    parse_current_tickers,
+    reconstruct_at_date,
 )
 
 OUTPUT_DIR = _REPO_ROOT / "data" / "processed" / "universe" / "membership"
@@ -93,7 +93,7 @@ def _write_membership(d: date, tickers: list[str]) -> None:
 def _process_date(
     d: date,
     current_tickers: set[str],
-    events: list[_ChangeEvent],
+    events: list[ChangeEvent],
     overwrite: bool,
 ) -> bool:
     """Reconstruct membership for one date and write CSV.
@@ -102,7 +102,7 @@ def _process_date(
     """
     if _output_path(d).exists() and not overwrite:
         return False
-    tickers = _reconstruct_at_date(current_tickers, events, d.isoformat())
+    tickers = reconstruct_at_date(current_tickers, events, d.isoformat())
     _write_membership(d, tickers)
     return True
 
@@ -136,9 +136,9 @@ def backfill(
     )
 
     # Parse Wikipedia HTML exactly once — shared read-only across all threads
-    html = _fetch_html()
-    current_tickers = _parse_current_tickers(html)
-    events = _parse_change_log(html)
+    html = fetch_html()
+    current_tickers = parse_current_tickers(html)
+    events = parse_change_log(html)
 
     written = 0
     skipped = 0

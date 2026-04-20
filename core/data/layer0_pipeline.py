@@ -10,8 +10,15 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Protocol
 
+from loguru import logger
+
 from core.contracts.schemas import OHLCVRecord, PipelineManifestRecord, RunStatus, UniverseRecord
-from core.data.quality import QualityFilterConfig, apply_quality_filters
+from core.data.quality import (
+    QualityFilterConfig,
+    apply_prepared_quality_filters,
+    apply_quality_filters,
+    prepare_quality_windows,
+)
 from core.data.universe import build_universe_record
 from services.r2.paths import (
     pipeline_manifest_path,
@@ -32,6 +39,35 @@ class ObjectWriter(Protocol):
 
     def exists(self, key: str) -> bool:
         """Return True when an object key already exists."""
+
+    def get_object(self, key: str) -> bytes:
+        """Read one object from storage."""
+
+    def list_keys(self, prefix: str) -> list[str]:
+        """List object keys beneath the given prefix."""
+
+
+class _CachedExistenceWriter:
+    """Wrapper that pre-fetches key existence via list_keys to avoid per-key HeadObject calls."""
+
+    def __init__(self, writer: ObjectWriter, prefixes: Sequence[str]) -> None:
+        self._writer = writer
+        self._known_keys: set[str] = set()
+        for prefix in prefixes:
+            self._known_keys.update(writer.list_keys(prefix))
+
+    def put_object(self, key: str, data: bytes | str) -> None:
+        self._writer.put_object(key, data)
+        self._known_keys.add(key)
+
+    def exists(self, key: str) -> bool:
+        return key in self._known_keys
+
+    def get_object(self, key: str) -> bytes:
+        return self._writer.get_object(key)
+
+    def list_keys(self, prefix: str) -> list[str]:
+        return self._writer.list_keys(prefix)
 
 
 class HistoricalUniverseProvider(Protocol):
@@ -57,7 +93,7 @@ class SecurityIdentity(Protocol):
 
 
 class SecurityMaster(Protocol):
-    """Security-master methods required for historical Tiingo price archives."""
+    """Security-master methods required for historical price archives."""
 
     def resolve_all(self, ticker: str) -> list[SecurityIdentity]:
         """Resolve one ticker to every historical security identity row."""
@@ -134,6 +170,7 @@ class MacroFetcher(Protocol):
 
 
 RecordSerializer = Callable[[list[OHLCVRecord]], bytes]
+RecordDeserializer = Callable[[bytes], list[OHLCVRecord]]
 NewsSerializer = Callable[[list[dict[str, object]]], bytes]
 RawRowSerializer = Callable[[list[dict[str, object]]], bytes]
 UniverseSerializer = Callable[[list[UniverseRecord]], bytes]
@@ -229,6 +266,7 @@ def run_historical_layer0_backfill(
     macro_fetcher: MacroFetcher,
     writer: ObjectWriter,
     price_serializer: RecordSerializer | None = None,
+    price_deserializer: RecordDeserializer | None = None,
     news_serializer: NewsSerializer | None = None,
     fundamentals_serializer: RawRowSerializer | None = None,
     macro_serializer: RawRowSerializer | None = None,
@@ -244,33 +282,59 @@ def run_historical_layer0_backfill(
         to_date=config.to_date.isoformat(),
         fred_series_ids=_normalize_tokens(config.fred_series_ids),
     )
+    cached_writer: ObjectWriter = writer
 
     try:
+        logger.info(
+            "Layer 0 historical backfill starting: run_id={}, {}..{}",
+            run_id,
+            config.from_date.isoformat(),
+            config.to_date.isoformat(),
+        )
         tickers = _resolve_backfill_tickers(config=config, universe_provider=universe_provider)
+        logger.info("Resolved {} tickers for backfill", len(tickers))
         quality_window = _copy_ohlcv_window(config.quality_ohlcv_window)
 
+        logger.info("Caching existence keys across R2 raw/ prefixes")
+        cached_writer = _CachedExistenceWriter(
+            writer,
+            prefixes=["raw/prices/", "raw/universe/", "raw/news/", "raw/fundamentals/", "raw/macro/", "raw/reference/", "artifacts/manifests/"],
+        )
+        masks_complete = not config.overwrite and all(
+            cached_writer.exists(raw_universe_path(day))
+            for day in _business_days(config.from_date, config.to_date)
+        )
+        logger.info("Universe masks complete: {}", masks_complete)
+
+        logger.info("Phase: prices")
         price_result = _backfill_historical_prices(
             config=config,
             tickers=tickers,
             price_fetcher=price_fetcher,
             security_master=security_master,
-            writer=writer,
+            writer=cached_writer,
             serializer=price_serializer or _records_to_parquet_bytes,
+            deserializer=price_deserializer or _parquet_bytes_to_records,
             quality_window=quality_window,
+            skip_quality_reads=masks_complete,
         )
         output_keys.extend(price_result.output_keys)
         metadata["prices"] = price_result.metadata
+        logger.info("Phase prices done: {}", price_result.metadata)
 
+        logger.info("Phase: universe masks")
         universe_result = _write_historical_universe_masks(
             config=config,
             universe_provider=universe_provider,
-            writer=writer,
+            writer=cached_writer,
             ohlcv_window=quality_window,
             serializer=universe_serializer or _universe_to_csv_bytes,
         )
         output_keys.extend(universe_result.output_keys)
         metadata["universe"] = universe_result.metadata
+        logger.info("Phase universe done: {}", universe_result.metadata)
 
+        logger.info("Phase: news")
         news_result = _backfill_news(
             from_date=config.from_date,
             to_date=config.to_date,
@@ -278,15 +342,15 @@ def run_historical_layer0_backfill(
             limit=config.news_limit,
             overwrite=config.overwrite,
             fetcher=news_fetcher,
-            writer=writer,
+            writer=cached_writer,
             serializer=news_serializer or _articles_to_jsonl_bytes,
         )
         output_keys.extend(news_result.output_keys)
         metadata["news"] = news_result.metadata
+        logger.info("Phase news done: {}", news_result.metadata)
 
-        fundamentals_key = raw_fundamentals_path(config.from_date, config.to_date)
+        logger.info("Phase: fundamentals (SimFin)")
         fundamentals_result = _write_fundamentals_archive(
-            key=fundamentals_key,
             from_date=config.from_date,
             to_date=config.to_date,
             tickers=tickers,
@@ -295,34 +359,37 @@ def run_historical_layer0_backfill(
             limit=config.simfin_limit,
             overwrite=config.overwrite,
             fetcher=fundamentals_fetcher,
-            writer=writer,
+            writer=cached_writer,
             serializer=fundamentals_serializer or _raw_rows_to_parquet_bytes,
         )
         output_keys.extend(fundamentals_result.output_keys)
         metadata["fundamentals"] = fundamentals_result.metadata
+        logger.info("Phase fundamentals done: {}", fundamentals_result.metadata)
 
-        macro_key = raw_macro_path(config.from_date, config.to_date)
+        logger.info("Phase: macro (FRED)")
         macro_result = _write_macro_archive(
-            key=macro_key,
             from_date=config.from_date,
             to_date=config.to_date,
             series_ids=config.fred_series_ids,
             limit=config.fred_limit,
             overwrite=config.overwrite,
             fetcher=macro_fetcher,
-            writer=writer,
+            writer=cached_writer,
             serializer=macro_serializer or _raw_rows_to_parquet_bytes,
         )
         output_keys.extend(macro_result.output_keys)
         metadata["macro"] = macro_result.metadata
+        logger.info("Phase macro done: {}", macro_result.metadata)
 
+        logger.info("Phase: manifest")
         manifest_key = _write_pipeline_manifest(
-            writer=writer,
+            writer=cached_writer,
             run_id=run_id,
             status=RunStatus.COMPLETED,
             started_at=started_at,
             metadata=metadata | {"output_keys": sorted(set(output_keys))},
         )
+        logger.info("Layer 0 historical backfill complete: manifest={}", manifest_key)
         return Layer0PipelineResult(
             run_id=run_id,
             manifest_key=manifest_key,
@@ -331,8 +398,9 @@ def run_historical_layer0_backfill(
             metadata=metadata,
         )
     except Exception as exc:
+        logger.exception("Layer 0 historical backfill failed: {}", exc)
         manifest_key = _write_failure_manifest(
-            writer=writer,
+            writer=cached_writer,
             run_id=run_id,
             started_at=started_at,
             metadata=metadata,
@@ -418,9 +486,7 @@ def run_daily_layer0_incremental(
         output_keys.extend(news_result.output_keys)
         metadata["news"] = news_result.metadata
 
-        fundamentals_key = raw_fundamentals_path(as_of_date, as_of_date)
         fundamentals_result = _write_fundamentals_archive(
-            key=fundamentals_key,
             from_date=as_of_date,
             to_date=as_of_date,
             tickers=list(tickers),
@@ -435,9 +501,7 @@ def run_daily_layer0_incremental(
         output_keys.extend(fundamentals_result.output_keys)
         metadata["fundamentals"] = fundamentals_result.metadata
 
-        macro_key = raw_macro_path(as_of_date, as_of_date)
         macro_result = _write_macro_archive(
-            key=macro_key,
             from_date=as_of_date,
             to_date=as_of_date,
             series_ids=config.fred_series_ids,
@@ -527,7 +591,9 @@ def _backfill_historical_prices(
     security_master: SecurityMaster,
     writer: ObjectWriter,
     serializer: RecordSerializer,
+    deserializer: RecordDeserializer,
     quality_window: dict[str, list[OHLCVRecord]],
+    skip_quality_reads: bool = False,
 ) -> _WriteResult:
     securities, missing_tickers = _resolve_securities(
         security_master=security_master, tickers=tickers
@@ -561,6 +627,13 @@ def _backfill_historical_prices(
         should_write = config.overwrite or not writer.exists(key)
         if not should_write:
             skipped += 1
+            if not skip_quality_reads:
+                existing = _read_existing_records(writer, key, deserializer)
+                for record in _canonicalize_ohlcv_records(existing):
+                    quality_window.setdefault(
+                        _canonicalize_ticker(record.ticker), []
+                    ).append(record)
+            continue
 
         records: list[OHLCVRecord] = []
         for security in security_rows:
@@ -580,10 +653,9 @@ def _backfill_historical_prices(
             empty += 1
             continue
 
-        if should_write:
-            writer.put_object(key, serializer(_sort_ohlcv_records(records)))
-            output_keys.append(key)
-            written += 1
+        writer.put_object(key, serializer(_sort_ohlcv_records(records)))
+        output_keys.append(key)
+        written += 1
 
     return _WriteResult(
         output_keys=output_keys,
@@ -613,17 +685,26 @@ def _write_historical_universe_masks(
     skipped = 0
     total_records = 0
     days = _business_days(config.from_date, config.to_date)
+    quality_windows = prepare_quality_windows(ohlcv_window)
 
     for current_date in days:
         if writer.exists(raw_universe_path(current_date)) and not config.overwrite:
             skipped += 1
             continue
         tickers = universe_provider.get_constituents(current_date.isoformat())
-        records = build_universe_mask_records(
-            as_of_date=current_date,
-            tickers=tickers,
-            ohlcv_window=ohlcv_window,
-            quality_config=config.quality_config,
+        records = apply_prepared_quality_filters(
+            [
+                build_universe_record(
+                    {
+                        "date": current_date.isoformat(),
+                        "ticker": ticker,
+                        "in_universe": True,
+                    }
+                )
+                for ticker in _normalize_tickers(tickers)
+            ],
+            quality_windows,
+            config.quality_config,
         )
         result = _write_universe_mask(
             as_of_date=current_date,
@@ -752,7 +833,6 @@ def _backfill_news(
 
 def _write_fundamentals_archive(
     *,
-    key: str,
     from_date: date,
     to_date: date,
     tickers: Sequence[str],
@@ -764,37 +844,82 @@ def _write_fundamentals_archive(
     writer: ObjectWriter,
     serializer: RawRowSerializer,
 ) -> _WriteResult:
-    if writer.exists(key) and not overwrite:
-        return _WriteResult(
-            output_keys=[],
-            metadata={"requested_tickers": len(tickers), "written": 0, "skipped": 1, "key": key},
+    """Fetch and persist SimFin fundamentals per-ticker so partial progress survives failures."""
+    normalized_tickers = [_canonicalize_ticker(ticker) for ticker in tickers]
+    output_keys: list[str] = []
+    written = 0
+    skipped = 0
+    empty = 0
+    total_rows = 0
+    retrieved_at = datetime.now(UTC)
+    batch_size = 50
+    batches = [
+        tuple(normalized_tickers[index : index + batch_size])
+        for index in range(0, len(normalized_tickers), batch_size)
+    ]
+
+    for batch_index, batch in enumerate(batches, start=1):
+        remaining = [
+            ticker
+            for ticker in batch
+            if overwrite or not writer.exists(raw_fundamentals_path(ticker))
+        ]
+        if not remaining:
+            skipped += len(batch)
+            logger.info(
+                "SimFin batch {}/{} fully cached — skipping",
+                batch_index,
+                len(batches),
+            )
+            continue
+
+        logger.info(
+            "SimFin batch {}/{}: fetching {} of {} tickers",
+            batch_index,
+            len(batches),
+            len(remaining),
+            len(batch),
         )
-    rows = fetcher.fetch_all_fundamentals(
-        tickers=tickers,
-        start_date=from_date.isoformat(),
-        end_date=to_date.isoformat(),
-        statements=statements,
-        periods=periods,
-        retrieved_at=datetime.now(UTC),
-        limit=limit,
-    )
-    writer.put_object(key, serializer(_sort_raw_rows(rows, ("ticker", "report_date"))))
+        rows = fetcher.fetch_all_fundamentals(
+            tickers=remaining,
+            start_date=from_date.isoformat(),
+            end_date=to_date.isoformat(),
+            statements=statements,
+            periods=periods,
+            retrieved_at=retrieved_at,
+            limit=limit,
+        )
+        rows_by_ticker: dict[str, list[dict[str, object]]] = {ticker: [] for ticker in remaining}
+        for row in rows:
+            ticker = _canonicalize_ticker(str(row.get("ticker") or ""))
+            if ticker in rows_by_ticker:
+                rows_by_ticker[ticker].append(row)
+        skipped += len(batch) - len(remaining)
+        for ticker in remaining:
+            ticker_rows = _sort_raw_rows(rows_by_ticker.get(ticker, []), ("report_date",))
+            key = raw_fundamentals_path(ticker)
+            writer.put_object(key, serializer(ticker_rows))
+            output_keys.append(key)
+            written += 1
+            total_rows += len(ticker_rows)
+            if not ticker_rows:
+                empty += 1
+
     return _WriteResult(
-        output_keys=[key],
+        output_keys=output_keys,
         metadata={
-            "requested_tickers": len(tickers),
-            "written": 1,
-            "skipped": 0,
-            "empty": 0 if rows else 1,
-            "total_rows": len(rows),
-            "key": key,
+            "requested_tickers": len(normalized_tickers),
+            "written": written,
+            "skipped": skipped,
+            "empty": empty,
+            "total_rows": total_rows,
+            "output_keys": output_keys,
         },
     )
 
 
 def _write_macro_archive(
     *,
-    key: str,
     from_date: date,
     to_date: date,
     series_ids: Sequence[str],
@@ -804,12 +929,26 @@ def _write_macro_archive(
     writer: ObjectWriter,
     serializer: RawRowSerializer,
 ) -> _WriteResult:
-    if writer.exists(key) and not overwrite:
+    """Fetch and persist FRED macro observations per observation_date."""
+    normalized_series = _normalize_tokens(series_ids)
+    if not overwrite and _macro_archive_covers_range(writer, from_date, to_date):
+        logger.info(
+            "Macro archive already covers {}..{}; skipping FRED fetch",
+            from_date.isoformat(),
+            to_date.isoformat(),
+        )
         return _WriteResult(
             output_keys=[],
-            metadata={"requested_series": len(series_ids), "written": 0, "skipped": 1, "key": key},
+            metadata={
+                "requested_series": len(normalized_series),
+                "written": 0,
+                "skipped": 0,
+                "empty": 0,
+                "total_rows": 0,
+                "output_keys": [],
+                "short_circuited": True,
+            },
         )
-    normalized_series = _normalize_tokens(series_ids)
     rows = fetcher.fetch_all_macro_observations(
         series_ids=normalized_series,
         start_date=from_date.isoformat(),
@@ -818,16 +957,43 @@ def _write_macro_archive(
         realtime_end=to_date.isoformat(),
         limit=limit,
     )
-    writer.put_object(key, serializer(_sort_raw_rows(rows, ("series_id", "observation_date"))))
+    rows_by_date: dict[str, list[dict[str, object]]] = {}
+    for row in rows:
+        observation_date = str(row.get("observation_date") or "").strip()
+        if not observation_date:
+            continue
+        rows_by_date.setdefault(observation_date, []).append(row)
+
+    output_keys: list[str] = []
+    written = 0
+    skipped = 0
+    empty = 0
+    total_rows = 0
+    for observation_date in sorted(rows_by_date):
+        date_rows = _sort_raw_rows(
+            rows_by_date[observation_date],
+            ("series_id", "realtime_start", "realtime_end"),
+        )
+        key = raw_macro_path(observation_date)
+        if not overwrite and writer.exists(key):
+            skipped += 1
+            continue
+        writer.put_object(key, serializer(date_rows))
+        output_keys.append(key)
+        written += 1
+        total_rows += len(date_rows)
+        if not date_rows:
+            empty += 1
+
     return _WriteResult(
-        output_keys=[key],
+        output_keys=output_keys,
         metadata={
             "requested_series": len(normalized_series),
-            "written": 1,
-            "skipped": 0,
-            "empty": 0 if rows else 1,
-            "total_rows": len(rows),
-            "key": key,
+            "written": written,
+            "skipped": skipped,
+            "empty": empty,
+            "total_rows": total_rows,
+            "output_keys": output_keys,
         },
     )
 
@@ -896,7 +1062,7 @@ def _base_metadata(
         "to_date": to_date,
         "input_families": {
             "universe": "wikipedia_sp500_membership",
-            "prices": "tiingo_historical_or_alpaca_daily_bars",
+            "prices": "alpaca_sip_historical_and_daily_bars",
             "news": "alpaca_news",
             "fundamentals": "simfin_as_reported",
             "macro": "fred_macro_rates",
@@ -920,6 +1086,21 @@ def _records_to_parquet_bytes(records: list[OHLCVRecord]) -> bytes:
     buffer = io.BytesIO()
     frame.to_parquet(buffer, index=False)
     return buffer.getvalue()
+
+
+def _parquet_bytes_to_records(data: bytes) -> list[OHLCVRecord]:
+    """Deserialize a parquet archive back into OHLCVRecord objects."""
+    try:
+        import pandas as pd
+
+        importlib.import_module("pyarrow")
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            "pandas and pyarrow are required to deserialize OHLCV records from Parquet."
+        ) from exc
+
+    frame = pd.read_parquet(io.BytesIO(data))
+    return [OHLCVRecord(**row) for row in frame.to_dict("records")]
 
 
 def _raw_rows_to_parquet_bytes(rows: list[dict[str, object]]) -> bytes:
@@ -1021,14 +1202,28 @@ def _security_reference_payload(
     securities: Sequence[SecurityIdentity],
     missing_tickers: Sequence[str],
 ) -> dict[str, object]:
+    reference_rows = [security.to_reference_row() for security in securities]
     return {
-        "source": "tiingo",
+        "source": _security_reference_source(reference_rows),
         "from_date": from_date.isoformat(),
         "to_date": to_date.isoformat(),
         "generated_at": datetime.now(UTC).isoformat(),
         "missing_tickers": list(missing_tickers),
-        "securities": [security.to_reference_row() for security in securities],
+        "securities": reference_rows,
     }
+
+
+def _security_reference_source(reference_rows: Sequence[Mapping[str, object]]) -> str:
+    sources = {
+        source
+        for row in reference_rows
+        if isinstance(source := row.get("source"), str) and source.strip()
+    }
+    if len(sources) == 1:
+        return next(iter(sources))
+    if sources:
+        return "mixed"
+    return "unknown"
 
 
 def _security_overlaps_range(security: SecurityIdentity, from_date: date, to_date: date) -> bool:
@@ -1095,6 +1290,26 @@ def _normalize_tokens(values: Sequence[str]) -> tuple[str, ...]:
     return tuple(sorted(normalized))
 
 
+def _read_existing_records(
+    writer: ObjectWriter,
+    key: str,
+    deserializer: RecordDeserializer,
+    max_retries: int = 3,
+) -> list[OHLCVRecord]:
+    """Read and deserialize OHLCV records from storage with transient-error retries."""
+    import time as _time
+
+    last_error: Exception | None = None
+    for attempt in range(max_retries):
+        try:
+            return deserializer(writer.get_object(key))
+        except Exception as exc:
+            last_error = exc
+            if attempt < max_retries - 1:
+                _time.sleep(2 ** attempt)
+    raise last_error  # type: ignore[misc]
+
+
 def _validate_date_window(from_date: date, to_date: date) -> None:
     if from_date > to_date:
         raise ValueError("from_date must be <= to_date")
@@ -1116,6 +1331,15 @@ def _date_range(start: date, end: date) -> list[date]:
 
 def _business_days(start: date, end: date) -> list[date]:
     return [day for day in _date_range(start, end) if day.weekday() < 5]
+
+
+def _macro_archive_covers_range(writer: ObjectWriter, from_date: date, to_date: date) -> bool:
+    """Return True when every business day in the range has a raw/macro/{date}.parquet key."""
+    expected = {raw_macro_path(day.isoformat()) for day in _business_days(from_date, to_date)}
+    if not expected:
+        return False
+    present = set(writer.list_keys("raw/macro/"))
+    return expected.issubset(present)
 
 
 def _sort_ohlcv_records(records: Sequence[OHLCVRecord]) -> list[OHLCVRecord]:

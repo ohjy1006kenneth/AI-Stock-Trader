@@ -102,7 +102,7 @@ class AlpacaMarketDataClient:
             raise ValueError("limit must be positive")
 
         params: dict[str, Any] = {
-            "symbols": ",".join(normalized_tickers),
+            "symbols": ",".join(_alpaca_api_symbol(ticker) for ticker in normalized_tickers),
             "timeframe": "1Day",
             "start": normalized_date,
             "end": normalized_date,
@@ -346,10 +346,15 @@ def _normalize_ticker(ticker: str) -> str:
     """Normalize one Alpaca ticker symbol."""
     if not isinstance(ticker, str):
         raise TypeError("ticker must be a string")
-    cleaned = ticker.strip().upper()
+    cleaned = ticker.strip().upper().replace(".", "-")
     if not cleaned:
         raise ValueError("ticker cannot be empty")
     return cleaned
+
+
+def _alpaca_api_symbol(ticker: str) -> str:
+    """Convert one canonical ticker to Alpaca's request symbol syntax."""
+    return _normalize_ticker(ticker).replace("-", ".")
 
 
 def _normalize_feed(feed: str) -> str:

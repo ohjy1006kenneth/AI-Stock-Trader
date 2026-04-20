@@ -11,14 +11,14 @@ This document describes deployment surfaces and responsibilities.
 ## External dependency roles
 
 - Wikipedia revision history: point-in-time S&P 500 membership source
-- Tiingo: canonical historical OHLCV archives
+- Alpaca delayed SIP market data: canonical historical adjusted OHLCV archives from 2017-01-01 onward
+- Alpaca News: Layer 0 raw Benzinga-sourced news archive used by Layer 1 text features
 - SimFin: Layer 0 as-reported fundamentals and earnings-date archive used by Layer 1 context features
 - FRED: Layer 0 macro and rates archive used by Layer 1 context and regime features
-- Alpaca Market Data + Trading API: historical/live raw news, live daily prices, broker reconciliation, and execution
+- Alpaca Trading API: broker reconciliation and execution
 
 Layer 0 owns every external data pull. Layer 1 and later milestones read existing R2
-archives only; they do not call Wikipedia, Tiingo, SimFin, FRED, or Alpaca for feature
-inputs.
+archives only; they do not call Wikipedia, Alpaca, SimFin, or FRED for feature inputs.
 
 ## Pi runtime container model
 
@@ -36,7 +36,7 @@ Expected execution chain:
 ## Baseline rollout order
 
 1. Build and validate the complete Layer 0 historical backfill in R2:
-   Wikipedia universe, Tiingo OHLCV, Alpaca news, SimFin fundamentals/earnings, and FRED macro/rates
+   Wikipedia universe, Alpaca delayed SIP OHLCV, Alpaca news, SimFin fundamentals/earnings, and FRED macro/rates
 2. Validate the Layer 0 daily incremental path:
    Alpaca live bars/news, SimFin refreshes, FRED refreshes, universe masks, and manifests
 3. Build Layer 1 features strictly from existing R2 Layer 0 archives

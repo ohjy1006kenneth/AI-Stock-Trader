@@ -50,6 +50,17 @@ the BLOCKED protocol. Do not attempt the change. Do not work around it.
 - Silence exceptions with bare `except:` or `except Exception: pass`
 - Use `print()` — use the logger from `services/observability/logging.py`
 
+## MCP tool usage
+
+Use MCP tools when they are the fastest reliable source of live or canonical context.
+
+Rules:
+- Use the `github` MCP server for live issue, PR, label, milestone, and project-board state before inferring from local files.
+- Always use the `openai_docs` MCP server when working with Codex, MCP, AGENTS.md, or OpenAI tooling.
+- Internal architecture, runtime, and contract docs in this repository remain canonical and should be read directly from the repo files listed in this AGENTS.md.
+- If `github` is unavailable or lacks the needed operation, fall back to GitHub CLI.
+- Do not use MCP tools for broad destructive changes unless the issue explicitly requires them.
+
 ---
 
 ## GitHub project board sync — critical

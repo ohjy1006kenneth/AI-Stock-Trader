@@ -14,7 +14,7 @@ from app.lab.data_pipelines.backfill_universe import (
     _write_membership,
     backfill,
 )
-from services.wikipedia.sp500_universe import _ChangeEvent
+from services.wikipedia.sp500_universe import ChangeEvent
 
 FIXTURE_PATH = Path("data/sample/sp500_changes_fixture.json")
 
@@ -53,11 +53,11 @@ def _build_html(fixture: dict) -> str:
     return f"<html><body>{constituents_table}{changes_table}</body></html>"
 
 
-def _make_events() -> list[_ChangeEvent]:
+def _make_events() -> list[ChangeEvent]:
     return [
-        _ChangeEvent(date="2019-06-24", added=frozenset(["BIO"]), removed=frozenset(["CELG"])),
-        _ChangeEvent(date="2020-09-21", added=frozenset(["ETSY"]), removed=frozenset(["FOX"])),
-        _ChangeEvent(date="2020-12-21", added=frozenset(["TSLA"]), removed=frozenset(["XRX"])),
+        ChangeEvent(date="2019-06-24", added=frozenset(["BIO"]), removed=frozenset(["CELG"])),
+        ChangeEvent(date="2020-09-21", added=frozenset(["ETSY"]), removed=frozenset(["FOX"])),
+        ChangeEvent(date="2020-12-21", added=frozenset(["TSLA"]), removed=frozenset(["XRX"])),
     ]
 
 
@@ -180,7 +180,7 @@ class TestBackfill:
         with (
             patch("app.lab.data_pipelines.backfill_universe.OUTPUT_DIR", tmp_path),
             patch(
-                "app.lab.data_pipelines.backfill_universe._fetch_html",
+                "app.lab.data_pipelines.backfill_universe.fetch_html",
                 return_value=html,
             ),
         ):
@@ -227,7 +227,7 @@ class TestBackfill:
             with (
                 patch("app.lab.data_pipelines.backfill_universe.OUTPUT_DIR", out),
                 patch(
-                    "app.lab.data_pipelines.backfill_universe._fetch_html",
+                    "app.lab.data_pipelines.backfill_universe.fetch_html",
                     return_value=html,
                 ),
             ):

@@ -75,9 +75,7 @@ class R2Writer:
 
     def exists(self, key: str) -> bool:
         """Return True when the key exists in the active backend."""
-        if hasattr(self._client, "exists"):
-            return self._client.exists(key)
-        return key in self.list_keys(key)
+        return self._client.exists(key)
 
 
 def _coerce_bytes(data: bytes | str) -> bytes:

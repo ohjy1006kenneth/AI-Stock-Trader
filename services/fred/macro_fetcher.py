@@ -11,6 +11,7 @@ from typing import Any
 
 import requests
 from dotenv import load_dotenv
+from loguru import logger
 
 FRED_API_KEY_ENV = "FRED_API_KEY"
 FRED_BASE_URL_ENV = "FRED_BASE_URL"
@@ -143,40 +144,103 @@ class FredMacroFetcher:
         limit: int = DEFAULT_FRED_PAGE_LIMIT,
         max_pages: int | None = None,
     ) -> list[dict[str, Any]]:
-        """Fetch all observations for one FRED series/date/realtime range."""
+        """Fetch all observations for one FRED series, chunking the realtime range."""
+        realtime_start_value = _validate_date(
+            realtime_start or start_date, "realtime_start"
+        )
+        realtime_end_value = _validate_date(realtime_end or end_date, "realtime_end")
+        rows: list[dict[str, Any]] = []
+        seen: set[str] = set()
+
+        for chunk_index, (chunk_start, chunk_end) in enumerate(
+            _split_realtime_range(realtime_start_value, realtime_end_value)
+        ):
+            offset = 0
+            pages = 0
+            while True:
+                try:
+                    page = self.fetch_series_page(
+                        series_id=series_id,
+                        start_date=start_date,
+                        end_date=end_date,
+                        realtime_start=chunk_start,
+                        realtime_end=chunk_end,
+                        limit=limit,
+                        offset=offset,
+                    )
+                except requests.HTTPError as exc:
+                    if chunk_index == 0 and offset == 0 and _is_alfred_missing_error(exc):
+                        logger.warning(
+                            "FRED series {} missing from ALFRED; falling back to snapshot",
+                            series_id,
+                        )
+                        return self._fetch_series_snapshot(
+                            series_id=series_id,
+                            start_date=start_date,
+                            end_date=end_date,
+                            limit=limit,
+                            max_pages=max_pages,
+                        )
+                    raise
+                if not page.rows:
+                    break
+
+                for row in page.rows:
+                    key = _observation_key(row)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    rows.append(row)
+
+                if len(page.rows) < page.limit:
+                    break
+
+                offset += page.limit
+                pages += 1
+                if max_pages is not None and pages >= max_pages:
+                    break
+
+        return rows
+
+    def _fetch_series_snapshot(
+        self,
+        *,
+        series_id: str,
+        start_date: str,
+        end_date: str,
+        limit: int,
+        max_pages: int | None,
+    ) -> list[dict[str, Any]]:
+        """Fetch current-vintage observations for a series not tracked in ALFRED."""
+        today = date.today().isoformat()
         offset = 0
         pages = 0
         rows: list[dict[str, Any]] = []
         seen: set[str] = set()
-
         while True:
             page = self.fetch_series_page(
                 series_id=series_id,
                 start_date=start_date,
                 end_date=end_date,
-                realtime_start=realtime_start,
-                realtime_end=realtime_end,
+                realtime_start=today,
+                realtime_end=today,
                 limit=limit,
                 offset=offset,
             )
             if not page.rows:
                 break
-
             for row in page.rows:
                 key = _observation_key(row)
                 if key in seen:
                     continue
                 seen.add(key)
                 rows.append(row)
-
             if len(page.rows) < page.limit:
                 break
-
             offset += page.limit
             pages += 1
             if max_pages is not None and pages >= max_pages:
                 break
-
         return rows
 
     def fetch_all_macro_observations(
@@ -395,6 +459,30 @@ def _validate_date(value: str, field_name: str) -> str:
         raise ValueError(f"{field_name} must be YYYY-MM-DD: {value}") from exc
 
 
+# FRED's observations endpoint caps a single request at 2000 vintage dates within
+# the realtime window. For daily series (e.g. DGS10) one vintage is roughly one
+# business day, so we chunk by ~4 calendar years to stay comfortably under the cap.
+FRED_REALTIME_CHUNK_DAYS = 4 * 365
+
+
+def _split_realtime_range(start: str, end: str) -> list[tuple[str, str]]:
+    """Split [start, end] into sub-ranges small enough for FRED's vintage-date limit."""
+    start_date = date.fromisoformat(start)
+    end_date = date.fromisoformat(end)
+    if start_date > end_date:
+        raise ValueError("realtime_start must be <= realtime_end")
+    chunks: list[tuple[str, str]] = []
+    cursor = start_date
+    while cursor <= end_date:
+        chunk_end = min(
+            end_date,
+            date.fromordinal(cursor.toordinal() + FRED_REALTIME_CHUNK_DAYS - 1),
+        )
+        chunks.append((cursor.isoformat(), chunk_end.isoformat()))
+        cursor = date.fromordinal(chunk_end.toordinal() + 1)
+    return chunks
+
+
 def _observation_key(row: Mapping[str, Any]) -> str:
     """Return a deterministic key for deduplicating normalized FRED observations."""
     return "|".join(
@@ -406,6 +494,18 @@ def _observation_key(row: Mapping[str, Any]) -> str:
             json.dumps(row.get("raw") or {}, sort_keys=True, separators=(",", ":")),
         ]
     )
+
+
+def _is_alfred_missing_error(error: requests.HTTPError) -> bool:
+    """Return True when a 400 means the series lacks ALFRED vintage history."""
+    response = getattr(error, "response", None)
+    if response is None or response.status_code != 400:
+        return False
+    try:
+        body = response.text or ""
+    except Exception:
+        return False
+    return "does not exist in ALFRED" in body
 
 
 def _is_retryable_error(error: requests.RequestException) -> bool:

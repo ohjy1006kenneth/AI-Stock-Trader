@@ -1,0 +1,15 @@
+{
+  "from_date": "2017-01-01",
+  "fundamentals_ticker_count": 681,
+  "macro_day_count": 2466,
+  "manifest_present": true,
+  "missing_news_dates": [],
+  "missing_universe_dates": [],
+  "news_days_expected": 3387,
+  "news_days_present": 3387,
+  "price_archive_count": 758,
+  "ready_for_layer1": true,
+  "to_date": "2026-04-10",
+  "universe_days_expected": 2420,
+  "universe_days_present": 2420
+}

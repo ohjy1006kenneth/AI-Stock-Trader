@@ -18,6 +18,10 @@ from core.data.layer0_pipeline import (  # noqa: E402
 )
 from services.alpaca.market_data import AlpacaMarketDataConfig  # noqa: E402
 from services.alpaca.news import DEFAULT_ALPACA_NEWS_PAGE_LIMIT, AlpacaNewsClient  # noqa: E402
+from services.alpaca.ohlcv_fetcher import (  # noqa: E402
+    AlpacaHistoricalOHLCVFetcher,
+    AlpacaTickerSecurityMaster,
+)
 from services.fred.macro_fetcher import (  # noqa: E402
     DEFAULT_FRED_CONFIG_PATH,
     FredClientConfig,
@@ -29,24 +33,56 @@ from services.simfin.fundamentals_fetcher import (  # noqa: E402
     SimFinClientConfig,
     SimFinFundamentalsFetcher,
 )
-from services.tiingo.ohlcv_fetcher import TiingoClientConfig, TiingoOHLCVFetcher  # noqa: E402
-from services.tiingo.security_master import TiingoSecurityMaster  # noqa: E402
 from services.wikipedia.sp500_universe import (  # noqa: E402
+    ChangeEvent,
+    fetch_html,
     get_all_historical_tickers,
-    get_constituents,
+    parse_change_log,
+    parse_current_tickers,
+    reconstruct_at_date,
+    validate_supported_start_date,
 )
+
+DEFAULT_LAYER0_BACKFILL_START_DATE = "2017-01-01"
 
 
 class WikipediaUniverseProvider:
     """Adapter exposing Wikipedia S&P 500 membership to the Layer 0 pipeline."""
 
+    def __init__(self) -> None:
+        """Initialize lazy parsed Wikipedia universe state."""
+        self._current_tickers: set[str] | None = None
+        self._events: list[ChangeEvent] | None = None
+
     def get_constituents(self, as_of_date: str) -> list[str]:
         """Return point-in-time S&P 500 constituents for one date."""
-        return get_constituents(as_of_date)
+        self._validate_date(as_of_date, "as_of_date")
+        current_tickers, events = self._parsed_universe()
+        if events and as_of_date < events[0].date:
+            validate_supported_start_date(as_of_date, events[0].date, label="as_of_date")
+        return reconstruct_at_date(current_tickers, events, as_of_date)
 
     def get_historical_tickers(self, from_date: str, to_date: str) -> set[str]:
         """Return all S&P 500 tickers present at any point in the date range."""
         return get_all_historical_tickers(from_date, to_date)
+
+    def _parsed_universe(self) -> tuple[set[str], list[ChangeEvent]]:
+        """Return cached current constituents and change events."""
+        if self._current_tickers is None or self._events is None:
+            html = fetch_html()
+            self._current_tickers = parse_current_tickers(html)
+            self._events = parse_change_log(html)
+        return self._current_tickers, self._events
+
+    @staticmethod
+    def _validate_date(value: str, field_name: str) -> None:
+        """Validate one canonical YYYY-MM-DD date argument."""
+        try:
+            parsed = date.fromisoformat(value)
+        except ValueError as exc:
+            raise ValueError(f"{field_name} must be YYYY-MM-DD: {value!r}") from exc
+        if parsed.isoformat() != value:
+            raise ValueError(f"{field_name} must be YYYY-MM-DD: {value!r}")
 
 
 def main() -> int:
@@ -64,7 +100,7 @@ def main() -> int:
         logger.error("--from-date must be <= --to-date")
         return 1
 
-    tiingo_config = TiingoClientConfig.from_env()
+    alpaca_config = AlpacaMarketDataConfig.from_env()
     config = HistoricalLayer0Config(
         from_date=from_date,
         to_date=to_date,
@@ -79,9 +115,9 @@ def main() -> int:
     result = run_historical_layer0_backfill(
         config=config,
         universe_provider=WikipediaUniverseProvider(),
-        price_fetcher=TiingoOHLCVFetcher(tiingo_config),
-        security_master=TiingoSecurityMaster.fetch_supported_tickers(),
-        news_fetcher=AlpacaNewsClient(AlpacaMarketDataConfig.from_env()),
+        price_fetcher=AlpacaHistoricalOHLCVFetcher(alpaca_config),
+        security_master=AlpacaTickerSecurityMaster(),
+        news_fetcher=AlpacaNewsClient(alpaca_config),
         fundamentals_fetcher=SimFinFundamentalsFetcher(SimFinClientConfig.from_env()),
         macro_fetcher=FredMacroFetcher(FredClientConfig.from_env()),
         writer=R2Writer(),
@@ -94,7 +130,12 @@ def _parse_args() -> argparse.Namespace:
     """Parse historical Layer 0 CLI arguments."""
     parser = argparse.ArgumentParser(description="Backfill all Layer 0 raw archives into R2.")
     parser.add_argument("--config", default=str(DEFAULT_FRED_CONFIG_PATH))
-    parser.add_argument("--from-date", required=True, metavar="YYYY-MM-DD")
+    parser.add_argument(
+        "--from-date",
+        default=DEFAULT_LAYER0_BACKFILL_START_DATE,
+        metavar="YYYY-MM-DD",
+        help="Historical backfill start date (default: 2017-01-01 for Alpaca SIP).",
+    )
     parser.add_argument("--to-date", metavar="YYYY-MM-DD")
     parser.add_argument("--tickers", nargs="*", default=None)
     parser.add_argument("--series-ids", nargs="*", default=None)

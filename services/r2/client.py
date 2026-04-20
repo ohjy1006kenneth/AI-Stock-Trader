@@ -64,6 +64,25 @@ class CloudflareR2Client:
             return body.getvalue()
         return _read_body(body)
 
+    def exists(self, key: str) -> bool:
+        """Return True when an object key already exists in the bucket."""
+        try:
+            from botocore.exceptions import ClientError
+        except ModuleNotFoundError:
+            client_error_type: type[BaseException] = Exception
+        else:
+            client_error_type = ClientError
+        try:
+            self._client.head_object(Bucket=self.bucket_name, Key=key)
+            return True
+        except client_error_type as exc:
+            error_response = getattr(exc, "response", None)
+            if isinstance(error_response, dict):
+                code = error_response.get("Error", {}).get("Code", "")
+                if code in ("404", "NoSuchKey"):
+                    return False
+            raise
+
     def list_keys(self, prefix: str) -> list[str]:
         """List object keys beneath the given prefix."""
         paginator = self._client.get_paginator("list_objects_v2")
@@ -107,6 +126,7 @@ def _build_s3_client(
     """Build the boto3 S3 client used for Cloudflare R2 access."""
     try:
         import boto3
+        from botocore.config import Config
     except ModuleNotFoundError as exc:
         raise ModuleNotFoundError(
             "boto3 is required for real Cloudflare R2 access. "
@@ -119,4 +139,9 @@ def _build_s3_client(
         aws_access_key_id=access_key_id,
         aws_secret_access_key=secret_access_key,
         region_name="auto",
+        config=Config(
+            connect_timeout=10,
+            read_timeout=30,
+            retries={"max_attempts": 3, "mode": "adaptive"},
+        ),
     )
