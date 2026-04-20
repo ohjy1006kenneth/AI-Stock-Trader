@@ -35,6 +35,7 @@ class FakeS3Client:
         """Initialize empty call tracking."""
         self.put_calls: list[dict[str, object]] = []
         self.get_calls: list[dict[str, str]] = []
+        self.head_calls: list[dict[str, str]] = []
         self.paginator = FakePaginator(
             pages=[
                 {"Contents": [{"Key": "raw/prices/AAPL.parquet"}]},
@@ -50,6 +51,22 @@ class FakeS3Client:
         """Return a stub get_object response."""
         self.get_calls.append(kwargs)
         return {"Body": BytesIO(b"payload")}
+
+    def head_object(self, **kwargs: str) -> dict[str, object]:
+        """Return a stub head_object response or raise for missing keys."""
+        self.head_calls.append(kwargs)
+        key = kwargs.get("Key", "")
+        known_keys: set[str] = set()
+        for page in self.paginator.pages:
+            for item in page.get("Contents", []):
+                k = item.get("Key")
+                if k is not None:
+                    known_keys.add(str(k))
+        if key in known_keys:
+            return {"ContentLength": 0}
+        error = Exception("Not Found")
+        error.response = {"Error": {"Code": "404", "Message": "Not Found"}}  # type: ignore[attr-defined]
+        raise error
 
     def get_paginator(self, operation_name: str) -> FakePaginator:
         """Return the list_objects_v2 paginator stub."""
@@ -179,6 +196,17 @@ def test_cloudflare_r2_client_delegates_object_operations() -> None:
     assert payload == b"payload"
     assert keys == ["raw/news/2026-04-08.jsonl", "raw/prices/AAPL.parquet"]
     assert fake_client.paginator.calls == [{"Bucket": "bucket-name", "Prefix": "raw/"}]
+
+
+def test_cloudflare_r2_client_exists_uses_head_object() -> None:
+    """CloudflareR2Client.exists should use head_object, not list_keys."""
+    fake_client = FakeS3Client()
+    client = CloudflareR2Client(bucket_name="bucket-name", s3_client=fake_client)
+
+    assert client.exists("raw/prices/AAPL.parquet") is True
+    assert client.exists("raw/prices/MISSING.parquet") is False
+    assert len(fake_client.head_calls) == 2
+    assert fake_client.paginator.calls == []
 
 
 def test_has_required_r2_env_vars_checks_full_set(monkeypatch) -> None:

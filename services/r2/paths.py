@@ -34,28 +34,15 @@ def raw_universe_path(as_of_date: str | Date | datetime) -> str:
     return build_r2_key("raw", "universe", f"{_format_date(as_of_date)}.csv")
 
 
-def raw_fundamentals_path(
-    from_date: str | Date | datetime,
-    to_date: str | Date | datetime,
-) -> str:
-    """Return the canonical raw fundamentals Parquet path for one date range."""
-    return build_r2_key(
-        "raw",
-        "fundamentals",
-        f"{_format_date(from_date)}_to_{_format_date(to_date)}.parquet",
-    )
+def raw_fundamentals_path(ticker: str) -> str:
+    """Return the canonical raw fundamentals Parquet path for one ticker's full history."""
+    safe_ticker = _validate_key_part(ticker)
+    return build_r2_key("raw", "fundamentals", f"{safe_ticker}.parquet")
 
 
-def raw_macro_path(
-    from_date: str | Date | datetime,
-    to_date: str | Date | datetime,
-) -> str:
-    """Return the canonical raw macro/rates Parquet path for one date range."""
-    return build_r2_key(
-        "raw",
-        "macro",
-        f"{_format_date(from_date)}_to_{_format_date(to_date)}.parquet",
-    )
+def raw_macro_path(observation_date: str | Date | datetime) -> str:
+    """Return the canonical raw macro/rates Parquet path for one observation date."""
+    return build_r2_key("raw", "macro", f"{_format_date(observation_date)}.parquet")
 
 
 def raw_reference_path(name: str, extension: str = "json") -> str:

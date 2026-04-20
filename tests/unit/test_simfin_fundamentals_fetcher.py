@@ -167,7 +167,7 @@ def test_fetch_all_fundamentals_paginates_and_deduplicates() -> None:
         ]
     )
     fetcher = SimFinFundamentalsFetcher(
-        SimFinClientConfig(api_key="test-key", retry_sleep_seconds=0),
+        SimFinClientConfig(api_key="test-key", retry_sleep_seconds=0, rate_limit_sleep_seconds=0),
         session=session,  # type: ignore[arg-type]
     )
 
@@ -222,7 +222,12 @@ def test_fetch_all_fundamentals_splits_on_server_error() -> None:
         ]
     )
     fetcher = SimFinFundamentalsFetcher(
-        SimFinClientConfig(api_key="test-key", retry_sleep_seconds=0, max_retries=0),
+        SimFinClientConfig(
+            api_key="test-key",
+            retry_sleep_seconds=0,
+            max_retries=0,
+            split_cooldown_seconds=0,
+        ),
         session=session,  # type: ignore[arg-type]
     )
 
@@ -235,6 +240,77 @@ def test_fetch_all_fundamentals_splits_on_server_error() -> None:
     assert rows == []
     assert session.calls[0]["params"]["ticker"] == "AAPL,MSFT"
     assert session.calls[1]["params"]["ticker"] == "AAPL"
+    assert session.calls[2]["params"]["ticker"] == "MSFT"
+
+
+def test_fetch_all_fundamentals_splits_on_rate_limit() -> None:
+    """Rate-limit errors split ticker batches to reduce request pressure."""
+    response = requests.Response()
+    response.status_code = 429
+    error = requests.HTTPError("rate limited", response=response)
+    session = _FakeSession(
+        [
+            _FakeResponse({}, error),
+            _FakeResponse({"data": []}),
+            _FakeResponse({"data": []}),
+        ]
+    )
+    fetcher = SimFinFundamentalsFetcher(
+        SimFinClientConfig(
+            api_key="test-key",
+            retry_sleep_seconds=0,
+            rate_limit_sleep_seconds=0,
+            max_retries=0,
+            split_cooldown_seconds=0,
+        ),
+        session=session,  # type: ignore[arg-type]
+    )
+
+    rows = fetcher.fetch_all_fundamentals(
+        tickers=["AAPL", "MSFT"],
+        start_date="2024-01-01",
+        end_date="2024-12-31",
+    )
+
+    assert rows == []
+    assert session.calls[0]["params"]["ticker"] == "AAPL,MSFT"
+    assert session.calls[1]["params"]["ticker"] == "AAPL"
+    assert session.calls[2]["params"]["ticker"] == "MSFT"
+
+
+def test_fetch_all_fundamentals_skips_single_ticker_when_retries_exhausted() -> None:
+    """Single-ticker failures after split are logged and skipped, not re-raised."""
+    server_response = requests.Response()
+    server_response.status_code = 500
+    server_error = requests.HTTPError("server error", response=server_response)
+    rate_response = requests.Response()
+    rate_response.status_code = 429
+    rate_error = requests.HTTPError("rate limited", response=rate_response)
+    session = _FakeSession(
+        [
+            _FakeResponse({}, server_error),  # AAPL,MSFT batch fails
+            _FakeResponse({"data": []}),       # AAPL split succeeds (empty)
+            _FakeResponse({}, rate_error),    # MSFT split exhausts retries -> skipped
+        ]
+    )
+    fetcher = SimFinFundamentalsFetcher(
+        SimFinClientConfig(
+            api_key="test-key",
+            retry_sleep_seconds=0,
+            rate_limit_sleep_seconds=0,
+            max_retries=0,
+            split_cooldown_seconds=0,
+        ),
+        session=session,  # type: ignore[arg-type]
+    )
+
+    rows = fetcher.fetch_all_fundamentals(
+        tickers=["AAPL", "MSFT"],
+        start_date="2024-01-01",
+        end_date="2024-12-31",
+    )
+
+    assert rows == []
     assert session.calls[2]["params"]["ticker"] == "MSFT"
 
 
@@ -274,6 +350,51 @@ def test_fetch_statement_rows_retries_transient_errors() -> None:
 
     assert len(rows.rows) == 2
     assert len(session.calls) == 2
+
+
+def test_fetch_statement_rows_throttles_between_requests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fetcher enforces a minimum delay between SimFin requests."""
+    fixture = _fixture_payload()
+    session = _FakeSession([_FakeResponse(fixture["page1"]), _FakeResponse(fixture["page1"])])
+    clock = {"now": 0.0}
+    sleeps: list[float] = []
+
+    def fake_monotonic() -> float:
+        return clock["now"]
+
+    def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        clock["now"] += seconds
+
+    monkeypatch.setattr("services.simfin.fundamentals_fetcher.time.monotonic", fake_monotonic)
+    monkeypatch.setattr("services.simfin.fundamentals_fetcher.time.sleep", fake_sleep)
+
+    fetcher = SimFinFundamentalsFetcher(
+        SimFinClientConfig(
+            api_key="test-key",
+            retry_sleep_seconds=0,
+            min_request_interval_seconds=1.0,
+        ),
+        session=session,  # type: ignore[arg-type]
+    )
+
+    fetcher.fetch_statement_rows(
+        tickers=["AAPL"],
+        start_date="2024-01-01",
+        end_date="2024-12-31",
+    )
+
+    clock["now"] += 0.25
+
+    fetcher.fetch_statement_rows(
+        tickers=["MSFT"],
+        start_date="2024-01-01",
+        end_date="2024-12-31",
+    )
+
+    assert sleeps == [pytest.approx(0.75)]
 
 
 def test_fetch_statement_rows_accepts_nested_company_payload_shape() -> None:
@@ -388,8 +509,8 @@ def test_backfill_writes_raw_fundamentals_archive() -> None:
         serializer=_json_serializer,
     )
 
-    key = raw_fundamentals_path(date(2024, 1, 1), date(2024, 12, 31))
-    assert result.output_key == key
+    key = raw_fundamentals_path("AAPL")
+    assert result.output_keys == (key,)
     assert result.requested_tickers == 1
     assert result.written == 1
     assert result.total_rows == 2
@@ -402,8 +523,8 @@ def test_backfill_writes_raw_fundamentals_archive() -> None:
 
 
 def test_backfill_is_idempotent_for_existing_archive() -> None:
-    """Existing SimFin archives are skipped unless overwrite is requested."""
-    key = raw_fundamentals_path(date(2024, 1, 1), date(2024, 12, 31))
+    """Existing SimFin per-ticker archives are skipped unless overwrite is requested."""
+    key = raw_fundamentals_path("AAPL")
     writer = _FakeWriter(existing={key})
     fetcher = _FakeFetcher([])
 

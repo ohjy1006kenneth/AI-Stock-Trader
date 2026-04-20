@@ -28,13 +28,9 @@ def test_layer0_raw_path_builders_return_canonical_keys() -> None:
     assert raw_news_path("2025-01-02") == "raw/news/2025-01-02.jsonl"
     assert raw_news_path(datetime(2025, 1, 2, 15, 30)) == "raw/news/2025-01-02.jsonl"
     assert raw_universe_path(date(2025, 1, 2)) == "raw/universe/2025-01-02.csv"
-    assert (
-        raw_fundamentals_path(date(2025, 1, 1), "2025-12-31")
-        == "raw/fundamentals/2025-01-01_to_2025-12-31.parquet"
-    )
-    assert raw_macro_path("2025-01-01", date(2025, 12, 31)) == (
-        "raw/macro/2025-01-01_to_2025-12-31.parquet"
-    )
+    assert raw_fundamentals_path("AAPL") == "raw/fundamentals/AAPL.parquet"
+    assert raw_macro_path(date(2025, 1, 2)) == "raw/macro/2025-01-02.parquet"
+    assert raw_macro_path("2025-01-02") == "raw/macro/2025-01-02.parquet"
     assert raw_reference_path("tiingo_security_master") == "raw/reference/tiingo_security_master.json"
     assert (
         raw_security_master_path("2025-01-02")

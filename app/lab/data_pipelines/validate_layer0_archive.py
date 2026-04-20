@@ -16,8 +16,6 @@ sys.path.insert(0, str(_REPO_ROOT))
 
 from services.r2.paths import (  # noqa: E402
     pipeline_manifest_path,
-    raw_fundamentals_path,
-    raw_macro_path,
     raw_news_path,
     raw_universe_path,
 )
@@ -38,8 +36,8 @@ class Layer0ArchiveValidationReport:
     news_days_present: int
     universe_days_expected: int
     universe_days_present: int
-    fundamentals_present: bool
-    macro_present: bool
+    fundamentals_ticker_count: int
+    macro_day_count: int
     manifest_present: bool
     missing_news_dates: list[str]
     missing_universe_dates: list[str]
@@ -58,17 +56,17 @@ def validate_layer0_archive(
         raise ValueError("from_date must be <= to_date")
 
     price_keys = reader.list_keys("raw/prices/")
+    fundamentals_keys = reader.list_keys("raw/fundamentals/")
+    macro_keys = reader.list_keys("raw/macro/")
     calendar_days = _date_range(from_date, to_date)
     business_days = [day for day in calendar_days if day.weekday() < 5]
     missing_news = [day.isoformat() for day in calendar_days if not reader.exists(raw_news_path(day))]
     missing_universe = [
         day.isoformat() for day in business_days if not reader.exists(raw_universe_path(day))
     ]
-    fundamentals_present = reader.exists(raw_fundamentals_path(from_date, to_date))
-    macro_present = reader.exists(raw_macro_path(from_date, to_date))
     manifest_present = reader.exists(pipeline_manifest_path("layer0", run_id))
     ready = bool(price_keys) and not missing_news and not missing_universe
-    ready = ready and fundamentals_present and macro_present and manifest_present
+    ready = ready and bool(fundamentals_keys) and bool(macro_keys) and manifest_present
 
     return Layer0ArchiveValidationReport(
         from_date=from_date.isoformat(),
@@ -78,8 +76,8 @@ def validate_layer0_archive(
         news_days_present=len(calendar_days) - len(missing_news),
         universe_days_expected=len(business_days),
         universe_days_present=len(business_days) - len(missing_universe),
-        fundamentals_present=fundamentals_present,
-        macro_present=macro_present,
+        fundamentals_ticker_count=len(fundamentals_keys),
+        macro_day_count=len(macro_keys),
         manifest_present=manifest_present,
         missing_news_dates=missing_news,
         missing_universe_dates=missing_universe,

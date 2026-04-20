@@ -42,8 +42,8 @@ def test_validate_layer0_archive_reports_ready_when_required_keys_exist() -> Non
         raw_universe_path("2024-01-01"),
         raw_universe_path("2024-01-02"),
         raw_universe_path("2024-01-03"),
-        raw_fundamentals_path(from_date, to_date),
-        raw_macro_path(from_date, to_date),
+        raw_fundamentals_path("AAPL"),
+        raw_macro_path("2024-01-02"),
         pipeline_manifest_path("layer0", run_id),
     }
 
@@ -58,6 +58,8 @@ def test_validate_layer0_archive_reports_ready_when_required_keys_exist() -> Non
     assert report.price_archive_count == 1
     assert report.news_days_present == 3
     assert report.universe_days_present == 3
+    assert report.fundamentals_ticker_count == 1
+    assert report.macro_day_count == 1
 
 
 def test_validate_layer0_archive_reports_missing_dates() -> None:

@@ -66,7 +66,7 @@ class BackfillResult:
     skipped: int
     empty: int
     total_rows: int
-    output_key: str
+    output_keys: tuple[str, ...]
 
 
 def backfill_fred_archive(
@@ -80,25 +80,13 @@ def backfill_fred_archive(
     limit: int = DEFAULT_FRED_PAGE_LIMIT,
     serializer: MacroSerializer | None = None,
 ) -> BackfillResult:
-    """Backfill FRED macro/rate observations into R2."""
+    """Backfill FRED macro/rate observations into R2, sharding per observation_date."""
     if from_date > to_date:
         raise ValueError("from_date must be <= to_date")
     if limit <= 0:
         raise ValueError("limit must be positive")
 
     normalized_series_ids = _normalize_series_ids(series_ids)
-
-    output_key = raw_macro_path(from_date, to_date)
-    if writer.exists(output_key) and not overwrite:
-        logger.info("Skipping existing FRED macro archive {}", output_key)
-        return BackfillResult(
-            requested_series=len(normalized_series_ids),
-            written=0,
-            skipped=1,
-            empty=0,
-            total_rows=0,
-            output_key=output_key,
-        )
 
     rows = fetcher.fetch_all_macro_observations(
         series_ids=normalized_series_ids,
@@ -108,16 +96,43 @@ def backfill_fred_archive(
         realtime_end=to_date.isoformat(),
         limit=limit,
     )
+    rows_by_date: dict[str, list[dict[str, object]]] = {}
+    for row in rows:
+        observation_date = str(row.get("observation_date") or "").strip()
+        if not observation_date:
+            continue
+        rows_by_date.setdefault(observation_date, []).append(row)
+
     payload_serializer = serializer or _macro_to_parquet_bytes
-    writer.put_object(output_key, payload_serializer(_sort_macro_observations(rows)))
-    logger.info("Wrote {} FRED macro/rate rows to {}", len(rows), output_key)
+    output_keys: list[str] = []
+    written = 0
+    skipped = 0
+    total_rows = 0
+    empty = 0
+    for observation_date in sorted(rows_by_date):
+        date_rows = _sort_macro_observations(rows_by_date[observation_date])
+        key = raw_macro_path(observation_date)
+        if not overwrite and writer.exists(key):
+            skipped += 1
+            continue
+        writer.put_object(key, payload_serializer(date_rows))
+        output_keys.append(key)
+        written += 1
+        total_rows += len(date_rows)
+        if not date_rows:
+            empty += 1
+    logger.info(
+        "Wrote {} FRED macro day-files ({} rows)",
+        len(output_keys),
+        total_rows,
+    )
     return BackfillResult(
         requested_series=len(normalized_series_ids),
-        written=1,
-        skipped=0,
-        empty=0 if rows else 1,
-        total_rows=len(rows),
-        output_key=output_key,
+        written=written,
+        skipped=skipped,
+        empty=empty,
+        total_rows=total_rows,
+        output_keys=tuple(output_keys),
     )
 
 

@@ -58,6 +58,12 @@ class _Writer:
     def exists(self, key: str) -> bool:
         return key in self.objects
 
+    def get_object(self, key: str) -> bytes:
+        return self.objects[key]
+
+    def list_keys(self, prefix: str) -> list[str]:
+        return sorted(k for k in self.objects if k.startswith(prefix))
+
 
 class _UniverseProvider:
     def __init__(self) -> None:
@@ -202,6 +208,10 @@ def _bytes_serializer(rows: list[Any]) -> bytes:
     return json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
 
 
+def _bytes_deserializer(data: bytes) -> list[OHLCVRecord]:
+    return [OHLCVRecord(**row) for row in json.loads(data)]
+
+
 def _manifest(writer: _Writer, run_id: str) -> dict[str, Any]:
     key = pipeline_manifest_path("layer0", run_id)
     return json.loads(writer.objects[key])
@@ -242,6 +252,7 @@ def test_historical_layer0_backfill_writes_all_raw_archives_and_manifest() -> No
         macro_fetcher=_MacroFetcher(),
         writer=writer,
         price_serializer=_bytes_serializer,
+        price_deserializer=_bytes_deserializer,
         news_serializer=_bytes_serializer,
         fundamentals_serializer=_bytes_serializer,
         macro_serializer=_bytes_serializer,
@@ -255,8 +266,9 @@ def test_historical_layer0_backfill_writes_all_raw_archives_and_manifest() -> No
         raw_universe_path("2024-01-03"),
         raw_news_path("2024-01-02"),
         raw_news_path("2024-01-03"),
-        raw_fundamentals_path("2024-01-02", "2024-01-03"),
-        raw_macro_path("2024-01-02", "2024-01-03"),
+        raw_fundamentals_path("AAPL"),
+        raw_fundamentals_path("MSFT"),
+        raw_macro_path("2024-01-02"),
         pipeline_manifest_path("layer0", run_id),
     }
     assert expected_keys.issubset(writer.objects)
@@ -278,12 +290,14 @@ def test_historical_layer0_backfill_writes_all_raw_archives_and_manifest() -> No
     assert [row["ticker"] for row in universe_rows] == ["AAPL", "MSFT"]
 
 
-def test_historical_backfill_fetches_existing_price_archives_for_quality_masks() -> None:
+def test_historical_backfill_reads_existing_prices_from_store_for_quality_masks() -> None:
     writer = _Writer()
-    price_keys = [raw_price_path("perm-aapl"), raw_price_path("perm-msft")]
-    for key in price_keys:
-        writer.put_object(key, b"existing-price-archive")
-        writer.put_counts[key] = 0
+    aapl_key = raw_price_path("perm-aapl")
+    msft_key = raw_price_path("perm-msft")
+    writer.put_object(aapl_key, _bytes_serializer([_bar(date_value="2024-01-02", ticker="AAPL")]))
+    writer.put_object(msft_key, _bytes_serializer([_bar(date_value="2024-01-02", ticker="MSFT")]))
+    writer.put_counts[aapl_key] = 0
+    writer.put_counts[msft_key] = 0
     price_fetcher = _HistoricalPriceFetcher()
 
     run_historical_layer0_backfill(
@@ -302,13 +316,17 @@ def test_historical_backfill_fetches_existing_price_archives_for_quality_masks()
         macro_fetcher=_MacroFetcher(),
         writer=writer,
         price_serializer=_bytes_serializer,
+        price_deserializer=_bytes_deserializer,
         news_serializer=_bytes_serializer,
         fundamentals_serializer=_bytes_serializer,
         macro_serializer=_bytes_serializer,
     )
 
-    assert {key: writer.put_counts[key] for key in price_keys} == {key: 0 for key in price_keys}
-    assert [call["ticker"] for call in price_fetcher.calls] == ["AAPL", "MSFT"]
+    assert {aapl_key: writer.put_counts[aapl_key], msft_key: writer.put_counts[msft_key]} == {
+        aapl_key: 0,
+        msft_key: 0,
+    }
+    assert price_fetcher.calls == []
     universe_rows = list(
         csv.DictReader(io.StringIO(writer.objects[raw_universe_path("2024-01-02")].decode()))
     )
@@ -346,8 +364,8 @@ def test_daily_layer0_incremental_uses_alpaca_shape_and_canonical_paths() -> Non
     assert live_fetcher.calls == [{"tickers": ("AAPL",), "as_of_date": "2024-01-02"}]
     assert raw_price_path("AAPL") in writer.objects
     assert raw_news_path("2024-01-02") in writer.objects
-    assert raw_fundamentals_path("2024-01-02", "2024-01-02") in writer.objects
-    assert raw_macro_path("2024-01-02", "2024-01-02") in writer.objects
+    assert raw_fundamentals_path("AAPL") in writer.objects
+    assert raw_macro_path("2024-01-02") in writer.objects
     assert raw_universe_path("2024-01-02") in writer.objects
     assert pipeline_manifest_path("layer0", run_id) in writer.objects
     assert result.status == RunStatus.COMPLETED
@@ -397,8 +415,8 @@ def test_daily_layer0_incremental_is_idempotent_for_existing_raw_outputs() -> No
     keys = [
         raw_price_path("AAPL"),
         raw_news_path("2024-01-02"),
-        raw_fundamentals_path("2024-01-02", "2024-01-02"),
-        raw_macro_path("2024-01-02", "2024-01-02"),
+        raw_fundamentals_path("AAPL"),
+        raw_macro_path("2024-01-02"),
         raw_universe_path("2024-01-02"),
     ]
     for key in keys:
@@ -461,6 +479,58 @@ def test_layer0_pipeline_writes_failure_manifest_before_reraising() -> None:
         ),
     }
     assert raw_price_path("AAPL") in manifest["metadata"]["output_keys"]
+
+
+def test_historical_backfill_skips_quality_reads_when_universe_masks_exist() -> None:
+    """When all universe masks already exist, skip R2 reads for quality_window."""
+    writer = _Writer()
+    aapl_key = raw_price_path("perm-aapl")
+    msft_key = raw_price_path("perm-msft")
+    writer.put_object(aapl_key, _bytes_serializer([_bar(date_value="2024-01-02", ticker="AAPL")]))
+    writer.put_object(msft_key, _bytes_serializer([_bar(date_value="2024-01-02", ticker="MSFT")]))
+    # Pre-populate universe mask so _all_universe_masks_exist returns True
+    writer.put_object(raw_universe_path("2024-01-02"), b"placeholder")
+    # Pre-populate security master
+    writer.put_object(raw_security_master_path("2024-01-02"), b"placeholder")
+    writer.put_counts.clear()
+
+    get_calls: list[str] = []
+    original_get = writer.get_object
+
+    def tracking_get(key: str) -> bytes:
+        get_calls.append(key)
+        return original_get(key)
+
+    writer.get_object = tracking_get  # type: ignore[assignment]
+
+    price_fetcher = _HistoricalPriceFetcher()
+
+    run_historical_layer0_backfill(
+        config=HistoricalLayer0Config(
+            from_date=date(2024, 1, 2),
+            to_date=date(2024, 1, 2),
+            fred_series_ids=("DGS10",),
+            run_id="test-skip-quality-reads",
+            quality_config=QualityFilterConfig(rolling_window_days=1),
+        ),
+        universe_provider=_UniverseProvider(),
+        price_fetcher=price_fetcher,
+        security_master=_SecurityMaster(),
+        news_fetcher=_NewsFetcher(),
+        fundamentals_fetcher=_FundamentalsFetcher(),
+        macro_fetcher=_MacroFetcher(),
+        writer=writer,
+        price_serializer=_bytes_serializer,
+        price_deserializer=_bytes_deserializer,
+        news_serializer=_bytes_serializer,
+        fundamentals_serializer=_bytes_serializer,
+        macro_serializer=_bytes_serializer,
+    )
+
+    # No Alpaca fetches and no R2 reads for price parquets
+    assert price_fetcher.calls == []
+    price_get_calls = [c for c in get_calls if c.startswith("raw/prices/")]
+    assert price_get_calls == []
 
 
 def test_layer0_config_rejects_empty_inputs() -> None:

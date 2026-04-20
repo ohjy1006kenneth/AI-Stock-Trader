@@ -389,25 +389,33 @@ def test_backfill_writes_raw_macro_archive() -> None:
         limit=DEFAULT_FRED_PAGE_LIMIT,
     )
 
-    key = raw_macro_path(date(2024, 1, 1), date(2024, 12, 31))
-    assert result.output_key == key
+    key_day1 = raw_macro_path("2024-01-01")
+    key_day2 = raw_macro_path("2024-01-02")
+    assert result.output_keys == (key_day1, key_day2)
     assert result.requested_series == 2
-    assert result.written == 1
+    assert result.written == 2
     assert result.total_rows == 2
-    assert key in writer.objects
-    stored_rows = _read_json(writer.objects[key])
-    assert [row["observation_date"] for row in stored_rows] == ["2024-01-01", "2024-01-02"]
-    assert "raw" in stored_rows[0]
+    assert key_day1 in writer.objects and key_day2 in writer.objects
+    day1_rows = _read_json(writer.objects[key_day1])
+    day2_rows = _read_json(writer.objects[key_day2])
+    assert [row["observation_date"] for row in day1_rows] == ["2024-01-01"]
+    assert [row["observation_date"] for row in day2_rows] == ["2024-01-02"]
+    assert "raw" in day1_rows[0]
     assert fetcher.calls[0]["series_ids"] == ("DGS10", "FEDFUNDS")
     assert fetcher.calls[0]["realtime_start"] == "2024-01-01"
     assert fetcher.calls[0]["realtime_end"] == "2024-12-31"
 
 
 def test_backfill_is_idempotent_for_existing_archive() -> None:
-    """Existing FRED archives are skipped unless overwrite is requested."""
-    key = raw_macro_path(date(2024, 1, 1), date(2024, 12, 31))
-    writer = _FakeWriter(existing={key})
-    fetcher = _FakeFetcher([])
+    """Existing FRED per-day archives are skipped unless overwrite is requested."""
+    rows = normalize_fred_observations(
+        _fixture_payload()["page1"]["observations"],
+        series_id="FEDFUNDS",
+        retrieved_at=datetime(2024, 1, 4, tzinfo=UTC),
+    )
+    existing_keys = {raw_macro_path(row["observation_date"]) for row in rows}
+    writer = _FakeWriter(existing=existing_keys)
+    fetcher = _FakeFetcher(rows)
 
     result = backfill_fred_archive(
         from_date=date(2024, 1, 1),
@@ -419,8 +427,8 @@ def test_backfill_is_idempotent_for_existing_archive() -> None:
     )
 
     assert result.written == 0
-    assert result.skipped == 1
-    assert fetcher.calls == []
+    assert result.skipped == len(existing_keys)
+    assert fetcher.calls
 
 
 def test_parse_args_rejects_empty_series_ids_flag(monkeypatch: pytest.MonkeyPatch) -> None:
