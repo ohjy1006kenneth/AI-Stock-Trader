@@ -64,9 +64,11 @@ class FakeS3Client:
                     known_keys.add(str(k))
         if key in known_keys:
             return {"ContentLength": 0}
-        error = Exception("Not Found")
-        error.response = {"Error": {"Code": "404", "Message": "Not Found"}}  # type: ignore[attr-defined]
-        raise error
+        from botocore.exceptions import ClientError
+        raise ClientError(
+            {"Error": {"Code": "404", "Message": "Not Found"}},
+            "HeadObject",
+        )
 
     def get_paginator(self, operation_name: str) -> FakePaginator:
         """Return the list_objects_v2 paginator stub."""

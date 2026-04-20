@@ -36,7 +36,7 @@ _TICKER_CANONICAL_MAP: dict[str, str] = {
 
 
 @dataclass(frozen=True)
-class _ChangeEvent:
+class ChangeEvent:
     """One addition/removal event from the Wikipedia change log."""
 
     date: str          # YYYY-MM-DD
@@ -44,7 +44,7 @@ class _ChangeEvent:
     removed: frozenset[str]
 
 
-def _validate_supported_start_date(query_date: str, earliest_event_date: str, label: str) -> None:
+def validate_supported_start_date(query_date: str, earliest_event_date: str, label: str) -> None:
     """Fail fast when a query date precedes available change-log history."""
     if query_date < earliest_event_date:
         raise ValueError(
@@ -59,7 +59,7 @@ def _canonicalize_ticker(ticker: str) -> str:
     return _TICKER_CANONICAL_MAP.get(normalized, normalized)
 
 
-def _fetch_html(cache_path: Path = DEFAULT_CACHE_PATH) -> str:
+def fetch_html(cache_path: Path = DEFAULT_CACHE_PATH) -> str:
     """Return Wikipedia HTML from cache if fresh, otherwise fetch and cache it."""
     if cache_path.exists():
         age_hours = (time.time() - cache_path.stat().st_mtime) / 3600
@@ -78,7 +78,7 @@ def _fetch_html(cache_path: Path = DEFAULT_CACHE_PATH) -> str:
     return html
 
 
-def _parse_current_tickers(html: str) -> set[str]:
+def parse_current_tickers(html: str) -> set[str]:
     """Parse the current S&P 500 constituent table.
 
     Returns the set of ticker symbols currently in the index.
@@ -100,7 +100,7 @@ def _parse_current_tickers(html: str) -> set[str]:
     return tickers
 
 
-def _parse_change_log(html: str) -> list[_ChangeEvent]:
+def parse_change_log(html: str) -> list[ChangeEvent]:
     """Parse the historical additions/removals table.
 
     Returns events sorted by date ascending. Each event captures all tickers
@@ -137,7 +137,7 @@ def _parse_change_log(html: str) -> list[_ChangeEvent]:
             raw_events[date]["removed"].add(removed_ticker)
 
     events = [
-        _ChangeEvent(
+        ChangeEvent(
             date=date,
             added=frozenset(v["added"]),
             removed=frozenset(v["removed"]),
@@ -161,9 +161,9 @@ def _normalize_date(raw: str) -> str | None:
     return None
 
 
-def _reconstruct_at_date(
+def reconstruct_at_date(
     current_tickers: set[str],
-    events: list[_ChangeEvent],
+    events: list[ChangeEvent],
     date: str,
 ) -> list[str]:
     """Reconstruct S&P 500 constituents as of `date` by reversing later changes.
@@ -205,14 +205,14 @@ def get_constituents(date: str, _html: str | None = None) -> list[str]:
     except ValueError as exc:
         raise ValueError(f"date must be YYYY-MM-DD, got {date!r}") from exc
 
-    html = _html if _html is not None else _fetch_html()
-    current_tickers = _parse_current_tickers(html)
-    events = _parse_change_log(html)
+    html = _html if _html is not None else fetch_html()
+    current_tickers = parse_current_tickers(html)
+    events = parse_change_log(html)
 
     if events and date < events[0].date:
-        _validate_supported_start_date(date, events[0].date, label="date")
+        validate_supported_start_date(date, events[0].date, label="date")
 
-    result = _reconstruct_at_date(current_tickers, events, date)
+    result = reconstruct_at_date(current_tickers, events, date)
     logger.info("get_constituents({}): {} tickers", date, len(result))
     return result
 
@@ -248,15 +248,15 @@ def get_all_historical_tickers(
     if from_date > to_date:
         raise ValueError(f"from_date {from_date} must be <= to_date {to_date}")
 
-    html = _html if _html is not None else _fetch_html()
-    current_tickers = _parse_current_tickers(html)
-    events = _parse_change_log(html)
+    html = _html if _html is not None else fetch_html()
+    current_tickers = parse_current_tickers(html)
+    events = parse_change_log(html)
 
     if events and from_date < events[0].date:
-        _validate_supported_start_date(from_date, events[0].date, label="from_date")
+        validate_supported_start_date(from_date, events[0].date, label="from_date")
 
     # Tickers present at from_date = the starting universe
-    universe_at_start = set(_reconstruct_at_date(current_tickers, events, from_date))
+    universe_at_start = set(reconstruct_at_date(current_tickers, events, from_date))
 
     # Any ticker added during the range was also in the index for some of the period
     added_during = set()

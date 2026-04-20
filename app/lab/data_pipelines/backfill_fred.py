@@ -7,7 +7,7 @@ import json
 import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from io import BytesIO
 from pathlib import Path
 from typing import Protocol
@@ -36,6 +36,9 @@ class ObjectWriter(Protocol):
 
     def exists(self, key: str) -> bool:
         """Return True when an object already exists."""
+
+    def list_keys(self, prefix: str) -> list[str]:
+        """List object keys beneath the given prefix."""
 
 
 class MacroFetcher(Protocol):
@@ -87,6 +90,21 @@ def backfill_fred_archive(
         raise ValueError("limit must be positive")
 
     normalized_series_ids = _normalize_series_ids(series_ids)
+
+    if not overwrite and _macro_archive_covers_range(writer, from_date, to_date):
+        logger.info(
+            "FRED macro archive already covers {}..{}; skipping provider fetch",
+            from_date.isoformat(),
+            to_date.isoformat(),
+        )
+        return BackfillResult(
+            requested_series=len(normalized_series_ids),
+            written=0,
+            skipped=0,
+            empty=0,
+            total_rows=0,
+            output_keys=(),
+        )
 
     rows = fetcher.fetch_all_macro_observations(
         series_ids=normalized_series_ids,
@@ -241,6 +259,20 @@ def _resolve_to_date(value: str) -> date:
     if value.strip().lower() == "latest":
         return date.today()
     return date.fromisoformat(value)
+
+
+def _macro_archive_covers_range(writer: ObjectWriter, from_date: date, to_date: date) -> bool:
+    """Return True when every business day in the range has a raw/macro/{date}.parquet key."""
+    expected: set[str] = set()
+    day = from_date
+    while day <= to_date:
+        if day.weekday() < 5:
+            expected.add(raw_macro_path(day.isoformat()))
+        day += timedelta(days=1)
+    if not expected:
+        return False
+    present = set(writer.list_keys("raw/macro/"))
+    return expected.issubset(present)
 
 
 def _normalize_series_ids(series_ids: Sequence[str]) -> tuple[str, ...]:

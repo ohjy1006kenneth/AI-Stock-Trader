@@ -51,7 +51,7 @@ def test_validate_layer0_archive_reports_ready_when_required_keys_exist() -> Non
         from_date=from_date,
         to_date=to_date,
         run_id=run_id,
-        reader=_Reader(keys),  # type: ignore[arg-type]
+        reader=_Reader(keys),
     )
 
     assert report.ready_for_layer1 is True
@@ -68,7 +68,7 @@ def test_validate_layer0_archive_reports_missing_dates() -> None:
         from_date=date(2024, 1, 5),
         to_date=date(2024, 1, 8),
         run_id="missing",
-        reader=_Reader({raw_price_path("AAPL")}),  # type: ignore[arg-type]
+        reader=_Reader({raw_price_path("AAPL")}),
     )
 
     assert report.ready_for_layer1 is False
@@ -87,7 +87,7 @@ def test_write_validation_report_writes_json(tmp_path: Path) -> None:
         from_date=date(2024, 1, 1),
         to_date=date(2024, 1, 1),
         run_id="missing",
-        reader=_Reader(set()),  # type: ignore[arg-type]
+        reader=_Reader(set()),
     )
 
     path = write_validation_report(report, tmp_path)

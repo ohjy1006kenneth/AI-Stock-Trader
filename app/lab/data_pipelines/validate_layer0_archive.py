@@ -8,6 +8,7 @@ import sys
 from dataclasses import asdict, dataclass
 from datetime import date, timedelta
 from pathlib import Path
+from typing import Protocol
 
 from loguru import logger
 
@@ -20,6 +21,16 @@ from services.r2.paths import (  # noqa: E402
     raw_universe_path,
 )
 from services.r2.writer import R2Writer  # noqa: E402
+
+
+class ArchiveReader(Protocol):
+    """Subset of R2Writer required to inspect an existing Layer 0 archive."""
+
+    def exists(self, key: str) -> bool:
+        """Return True when an object key already exists."""
+
+    def list_keys(self, prefix: str) -> list[str]:
+        """List object keys beneath the given prefix."""
 
 DEFAULT_VALIDATION_FROM_DATE = "2017-01-01"
 DEFAULT_REPORT_DIR = Path("artifacts/reports/integration")
@@ -49,7 +60,7 @@ def validate_layer0_archive(
     from_date: date,
     to_date: date,
     run_id: str,
-    reader: R2Writer,
+    reader: ArchiveReader,
 ) -> Layer0ArchiveValidationReport:
     """Validate expected Layer 0 archive keys for the Alpaca SIP historical window."""
     if from_date > to_date:

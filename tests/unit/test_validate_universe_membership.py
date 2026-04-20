@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app.lab.data_pipelines import validate_universe_membership as validator
-from services.wikipedia.sp500_universe import _ChangeEvent, get_constituents
+from services.wikipedia.sp500_universe import ChangeEvent, get_constituents
 
 FIXTURE_PATH = Path("data/sample/sp500_changes_fixture.json")
 
@@ -79,7 +79,7 @@ def test_audit_membership_has_zero_violations_for_consistent_dataset(tmp_path: P
     end = date(2021, 1, 29)
     _build_consistent_membership(tmp_path, html, start, end)
 
-    with patch("app.lab.data_pipelines.validate_universe_membership._fetch_html", return_value=html):
+    with patch("app.lab.data_pipelines.validate_universe_membership.fetch_html", return_value=html):
         result = validator.audit_membership(
             membership_dir=tmp_path,
             from_date=start,
@@ -144,15 +144,15 @@ def test_audit_ignores_self_canceling_event_symbols(tmp_path: Path) -> None:
     _write_membership_csv(tmp_path, date(2020, 9, 18), ["AAPL", "FOX", "FOXA"])
     _write_membership_csv(tmp_path, date(2020, 9, 21), ["AAPL", "FOX", "FOXA"])
 
-    event = _ChangeEvent(
+    event = ChangeEvent(
         date="2020-09-21",
         added=frozenset(["FOX", "FOXA"]),
         removed=frozenset(["FOX", "FOXA"]),
     )
 
     with (
-        patch("app.lab.data_pipelines.validate_universe_membership._fetch_html", return_value=""),
-        patch("app.lab.data_pipelines.validate_universe_membership._parse_change_log", return_value=[event]),
+        patch("app.lab.data_pipelines.validate_universe_membership.fetch_html", return_value=""),
+        patch("app.lab.data_pipelines.validate_universe_membership.parse_change_log", return_value=[event]),
     ):
         result = validator.audit_membership(
             membership_dir=tmp_path,

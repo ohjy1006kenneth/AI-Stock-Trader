@@ -34,8 +34,8 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(_REPO_ROOT))
 
 from services.wikipedia.sp500_universe import (  # noqa: E402
-    _fetch_html,
-    _parse_change_log,
+    fetch_html,
+    parse_change_log,
 )
 
 MEMBERSHIP_DIR = _REPO_ROOT / "data" / "processed" / "universe" / "membership"
@@ -133,8 +133,8 @@ def audit_membership(
 
     structural_issues = _audit_structure(files)
 
-    html = _fetch_html()
-    events = _parse_change_log(html)
+    html = fetch_html()
+    events = parse_change_log(html)
 
     events_checked = 0
     additions_checked = 0

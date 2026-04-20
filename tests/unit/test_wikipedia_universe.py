@@ -12,11 +12,11 @@ import pytest
 
 from services.wikipedia.sp500_universe import (
     _canonicalize_ticker,
-    _ChangeEvent,
+    ChangeEvent,
     _normalize_date,
-    _parse_change_log,
-    _parse_current_tickers,
-    _reconstruct_at_date,
+    parse_change_log,
+    parse_current_tickers,
+    reconstruct_at_date,
     get_all_historical_tickers,
     get_constituents,
 )
@@ -127,47 +127,47 @@ class TestCanonicalizeTicker:
 
 
 # ---------------------------------------------------------------------------
-# _parse_current_tickers
+# parse_current_tickers
 # ---------------------------------------------------------------------------
 
 class TestParseCurrentTickers:
     def test_returns_all_current_tickers(self, html: str, fixture: dict) -> None:
-        result = _parse_current_tickers(html)
+        result = parse_current_tickers(html)
         assert result == set(fixture["current_tickers"])
 
     def test_missing_table_raises(self) -> None:
         with pytest.raises(ValueError, match="constituents"):
-            _parse_current_tickers("<html><body></body></html>")
+            parse_current_tickers("<html><body></body></html>")
 
 
 # ---------------------------------------------------------------------------
-# _parse_change_log
+# parse_change_log
 # ---------------------------------------------------------------------------
 
 class TestParseChangeLog:
     def test_returns_correct_event_count(self, html: str, fixture: dict) -> None:
-        events = _parse_change_log(html)
-        # One _ChangeEvent per unique date in the fixture
+        events = parse_change_log(html)
+        # One ChangeEvent per unique date in the fixture
         unique_dates = {e["date"] for e in fixture["changes"]}
         assert len(events) == len(unique_dates)
 
     def test_events_sorted_ascending(self, html: str) -> None:
-        events = _parse_change_log(html)
+        events = parse_change_log(html)
         dates = [e.date for e in events]
         assert dates == sorted(dates)
 
     def test_tsla_added_on_correct_date(self, html: str) -> None:
-        events = _parse_change_log(html)
+        events = parse_change_log(html)
         event_map = {e.date: e for e in events}
         assert "TSLA" in event_map["2020-12-21"].added
 
     def test_xrx_removed_on_correct_date(self, html: str) -> None:
-        events = _parse_change_log(html)
+        events = parse_change_log(html)
         event_map = {e.date: e for e in events}
         assert "XRX" in event_map["2020-12-21"].removed
 
     def test_multi_ticker_event(self, html: str) -> None:
-        events = _parse_change_log(html)
+        events = parse_change_log(html)
         event_map = {e.date: e for e in events}
         sep_21 = event_map["2020-09-21"]
         assert {"ETSY", "PAYC", "POOL"} == set(sep_21.added)
@@ -175,21 +175,21 @@ class TestParseChangeLog:
 
     def test_missing_table_raises(self) -> None:
         with pytest.raises(ValueError, match="changes"):
-            _parse_change_log("<html><body></body></html>")
+            parse_change_log("<html><body></body></html>")
 
 
 # ---------------------------------------------------------------------------
-# _reconstruct_at_date (pure logic, no HTML)
+# reconstruct_at_date (pure logic, no HTML)
 # ---------------------------------------------------------------------------
 
 class TestReconstructAtDate:
     """Test the core reconstruction algorithm directly with controlled data."""
 
-    def _events(self) -> list[_ChangeEvent]:
+    def _events(self) -> list[ChangeEvent]:
         return [
-            _ChangeEvent(date="2019-06-24", added=frozenset(["BIO", "KEYS"]), removed=frozenset(["CELG", "JEF"])),
-            _ChangeEvent(date="2020-09-21", added=frozenset(["ETSY", "POOL"]), removed=frozenset(["FOX", "HPE"])),
-            _ChangeEvent(date="2020-12-21", added=frozenset(["TSLA"]), removed=frozenset(["XRX"])),
+            ChangeEvent(date="2019-06-24", added=frozenset(["BIO", "KEYS"]), removed=frozenset(["CELG", "JEF"])),
+            ChangeEvent(date="2020-09-21", added=frozenset(["ETSY", "POOL"]), removed=frozenset(["FOX", "HPE"])),
+            ChangeEvent(date="2020-12-21", added=frozenset(["TSLA"]), removed=frozenset(["XRX"])),
         ]
 
     def _current(self) -> set[str]:
@@ -197,7 +197,7 @@ class TestReconstructAtDate:
         return {"AAPL", "MSFT", "TSLA", "ETSY", "POOL", "BIO", "KEYS"}
 
     def test_date_before_any_event(self) -> None:
-        result = set(_reconstruct_at_date(self._current(), self._events(), "2018-01-01"))
+        result = set(reconstruct_at_date(self._current(), self._events(), "2018-01-01"))
         # All additions must be reversed; all removals must be restored
         assert "TSLA" not in result
         assert "XRX" in result
@@ -208,17 +208,17 @@ class TestReconstructAtDate:
 
     def test_date_exactly_on_event(self) -> None:
         # On the date of the event, the change has taken effect
-        result = set(_reconstruct_at_date(self._current(), self._events(), "2020-12-21"))
+        result = set(reconstruct_at_date(self._current(), self._events(), "2020-12-21"))
         assert "TSLA" in result
         assert "XRX" not in result
 
     def test_date_one_day_before_event(self) -> None:
-        result = set(_reconstruct_at_date(self._current(), self._events(), "2020-12-20"))
+        result = set(reconstruct_at_date(self._current(), self._events(), "2020-12-20"))
         assert "TSLA" not in result
         assert "XRX" in result
 
     def test_date_between_events(self) -> None:
-        result = set(_reconstruct_at_date(self._current(), self._events(), "2020-10-01"))
+        result = set(reconstruct_at_date(self._current(), self._events(), "2020-10-01"))
         # After 2020-09-21 but before 2020-12-21
         assert "ETSY" in result
         assert "FOX" not in result
@@ -226,7 +226,7 @@ class TestReconstructAtDate:
         assert "XRX" in result
 
     def test_future_date_returns_current(self) -> None:
-        result = set(_reconstruct_at_date(self._current(), self._events(), "2099-01-01"))
+        result = set(reconstruct_at_date(self._current(), self._events(), "2099-01-01"))
         assert result == self._current()
 
 

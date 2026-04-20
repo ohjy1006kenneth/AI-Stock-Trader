@@ -57,6 +57,9 @@ class _FakeWriter:
     def exists(self, key: str) -> bool:
         return key in self.existing
 
+    def list_keys(self, prefix: str) -> list[str]:
+        return sorted(key for key in self.existing if key.startswith(prefix))
+
 
 class _FakeFetcher:
     def __init__(self, rows: list[dict[str, Any]]) -> None:

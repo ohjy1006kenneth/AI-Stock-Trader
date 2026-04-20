@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 
 from loguru import logger
@@ -34,12 +34,12 @@ from services.simfin.fundamentals_fetcher import (  # noqa: E402
     SimFinFundamentalsFetcher,
 )
 from services.wikipedia.sp500_universe import (  # noqa: E402
-    _ChangeEvent,
-    _fetch_html,
-    _parse_change_log,
-    _parse_current_tickers,
-    _reconstruct_at_date,
-    _validate_supported_start_date,
+    ChangeEvent,
+    fetch_html,
+    parse_change_log,
+    parse_current_tickers,
+    reconstruct_at_date,
+    validate_supported_start_date,
     get_all_historical_tickers,
 )
 
@@ -52,35 +52,37 @@ class WikipediaUniverseProvider:
     def __init__(self) -> None:
         """Initialize lazy parsed Wikipedia universe state."""
         self._current_tickers: set[str] | None = None
-        self._events: list[_ChangeEvent] | None = None
+        self._events: list[ChangeEvent] | None = None
 
     def get_constituents(self, as_of_date: str) -> list[str]:
         """Return point-in-time S&P 500 constituents for one date."""
         self._validate_date(as_of_date, "as_of_date")
         current_tickers, events = self._parsed_universe()
         if events and as_of_date < events[0].date:
-            _validate_supported_start_date(as_of_date, events[0].date, label="as_of_date")
-        return _reconstruct_at_date(current_tickers, events, as_of_date)
+            validate_supported_start_date(as_of_date, events[0].date, label="as_of_date")
+        return reconstruct_at_date(current_tickers, events, as_of_date)
 
     def get_historical_tickers(self, from_date: str, to_date: str) -> set[str]:
         """Return all S&P 500 tickers present at any point in the date range."""
         return get_all_historical_tickers(from_date, to_date)
 
-    def _parsed_universe(self) -> tuple[set[str], list[_ChangeEvent]]:
+    def _parsed_universe(self) -> tuple[set[str], list[ChangeEvent]]:
         """Return cached current constituents and change events."""
         if self._current_tickers is None or self._events is None:
-            html = _fetch_html()
-            self._current_tickers = _parse_current_tickers(html)
-            self._events = _parse_change_log(html)
+            html = fetch_html()
+            self._current_tickers = parse_current_tickers(html)
+            self._events = parse_change_log(html)
         return self._current_tickers, self._events
 
     @staticmethod
     def _validate_date(value: str, field_name: str) -> None:
-        """Validate one YYYY-MM-DD date argument."""
+        """Validate one canonical YYYY-MM-DD date argument."""
         try:
-            datetime.strptime(value, "%Y-%m-%d")
+            parsed = date.fromisoformat(value)
         except ValueError as exc:
             raise ValueError(f"{field_name} must be YYYY-MM-DD: {value!r}") from exc
+        if parsed.isoformat() != value:
+            raise ValueError(f"{field_name} must be YYYY-MM-DD: {value!r}")
 
 
 def main() -> int:

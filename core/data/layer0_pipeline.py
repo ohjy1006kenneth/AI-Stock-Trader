@@ -15,8 +15,8 @@ from loguru import logger
 from core.contracts.schemas import OHLCVRecord, PipelineManifestRecord, RunStatus, UniverseRecord
 from core.data.quality import (
     QualityFilterConfig,
-    _apply_prepared_quality_filters,
-    _prepare_quality_windows,
+    apply_prepared_quality_filters,
+    prepare_quality_windows,
     apply_quality_filters,
 )
 from core.data.universe import build_universe_record
@@ -282,6 +282,7 @@ def run_historical_layer0_backfill(
         to_date=config.to_date.isoformat(),
         fred_series_ids=_normalize_tokens(config.fred_series_ids),
     )
+    cached_writer: ObjectWriter = writer
 
     try:
         logger.info(
@@ -295,7 +296,7 @@ def run_historical_layer0_backfill(
         quality_window = _copy_ohlcv_window(config.quality_ohlcv_window)
 
         logger.info("Caching existence keys across R2 raw/ prefixes")
-        cached_writer: ObjectWriter = _CachedExistenceWriter(
+        cached_writer = _CachedExistenceWriter(
             writer,
             prefixes=["raw/prices/", "raw/universe/", "raw/news/", "raw/fundamentals/", "raw/macro/", "raw/reference/", "artifacts/manifests/"],
         )
@@ -684,14 +685,14 @@ def _write_historical_universe_masks(
     skipped = 0
     total_records = 0
     days = _business_days(config.from_date, config.to_date)
-    quality_windows = _prepare_quality_windows(ohlcv_window)
+    quality_windows = prepare_quality_windows(ohlcv_window)
 
     for current_date in days:
         if writer.exists(raw_universe_path(current_date)) and not config.overwrite:
             skipped += 1
             continue
         tickers = universe_provider.get_constituents(current_date.isoformat())
-        records = _apply_prepared_quality_filters(
+        records = apply_prepared_quality_filters(
             [
                 build_universe_record(
                     {
@@ -930,6 +931,24 @@ def _write_macro_archive(
 ) -> _WriteResult:
     """Fetch and persist FRED macro observations per observation_date."""
     normalized_series = _normalize_tokens(series_ids)
+    if not overwrite and _macro_archive_covers_range(writer, from_date, to_date):
+        logger.info(
+            "Macro archive already covers {}..{}; skipping FRED fetch",
+            from_date.isoformat(),
+            to_date.isoformat(),
+        )
+        return _WriteResult(
+            output_keys=[],
+            metadata={
+                "requested_series": len(normalized_series),
+                "written": 0,
+                "skipped": 0,
+                "empty": 0,
+                "total_rows": 0,
+                "output_keys": [],
+                "short_circuited": True,
+            },
+        )
     rows = fetcher.fetch_all_macro_observations(
         series_ids=normalized_series,
         start_date=from_date.isoformat(),
@@ -1204,7 +1223,7 @@ def _security_reference_source(reference_rows: Sequence[Mapping[str, object]]) -
         return next(iter(sources))
     if sources:
         return "mixed"
-    return "tiingo"
+    return "unknown"
 
 
 def _security_overlaps_range(security: SecurityIdentity, from_date: date, to_date: date) -> bool:
@@ -1312,6 +1331,15 @@ def _date_range(start: date, end: date) -> list[date]:
 
 def _business_days(start: date, end: date) -> list[date]:
     return [day for day in _date_range(start, end) if day.weekday() < 5]
+
+
+def _macro_archive_covers_range(writer: ObjectWriter, from_date: date, to_date: date) -> bool:
+    """Return True when every business day in the range has a raw/macro/{date}.parquet key."""
+    expected = {raw_macro_path(day.isoformat()) for day in _business_days(from_date, to_date)}
+    if not expected:
+        return False
+    present = set(writer.list_keys("raw/macro/"))
+    return expected.issubset(present)
 
 
 def _sort_ohlcv_records(records: Sequence[OHLCVRecord]) -> list[OHLCVRecord]:

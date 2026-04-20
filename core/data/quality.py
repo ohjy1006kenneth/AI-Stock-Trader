@@ -39,11 +39,11 @@ def apply_quality_filters(
     config: QualityFilterConfig,
 ) -> list[UniverseRecord]:
     """Apply Layer 0 liquidity and data quality filters to universe records."""
-    quality_windows = _prepare_quality_windows(ohlcv_window)
-    return _apply_prepared_quality_filters(universe, quality_windows, config)
+    quality_windows = prepare_quality_windows(ohlcv_window)
+    return apply_prepared_quality_filters(universe, quality_windows, config)
 
 
-def _apply_prepared_quality_filters(
+def apply_prepared_quality_filters(
     universe: list[UniverseRecord],
     quality_windows: Mapping[str, _TickerQualityWindow],
     config: QualityFilterConfig,
@@ -139,7 +139,7 @@ def _filter_record(
     )
 
 
-def _prepare_quality_windows(
+def prepare_quality_windows(
     ohlcv_window: Mapping[str, Sequence[OHLCVRecord]],
 ) -> dict[str, _TickerQualityWindow]:
     """Return sorted, deduplicated bars keyed by normalized ticker."""

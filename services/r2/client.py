@@ -67,9 +67,15 @@ class CloudflareR2Client:
     def exists(self, key: str) -> bool:
         """Return True when an object key already exists in the bucket."""
         try:
+            from botocore.exceptions import ClientError
+        except ModuleNotFoundError:
+            client_error_type: type[BaseException] = Exception
+        else:
+            client_error_type = ClientError
+        try:
             self._client.head_object(Bucket=self.bucket_name, Key=key)
             return True
-        except Exception as exc:
+        except client_error_type as exc:
             error_response = getattr(exc, "response", None)
             if isinstance(error_response, dict):
                 code = error_response.get("Error", {}).get("Code", "")
