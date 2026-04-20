@@ -16,8 +16,8 @@ from core.contracts.schemas import OHLCVRecord, PipelineManifestRecord, RunStatu
 from core.data.quality import (
     QualityFilterConfig,
     apply_prepared_quality_filters,
-    prepare_quality_windows,
     apply_quality_filters,
+    prepare_quality_windows,
 )
 from core.data.universe import build_universe_record
 from services.r2.paths import (

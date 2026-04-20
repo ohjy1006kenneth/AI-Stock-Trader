@@ -11,14 +11,14 @@ from pathlib import Path
 import pytest
 
 from services.wikipedia.sp500_universe import (
-    _canonicalize_ticker,
     ChangeEvent,
+    _canonicalize_ticker,
     _normalize_date,
+    get_all_historical_tickers,
+    get_constituents,
     parse_change_log,
     parse_current_tickers,
     reconstruct_at_date,
-    get_all_historical_tickers,
-    get_constituents,
 )
 
 FIXTURE_PATH = Path("data/sample/sp500_changes_fixture.json")

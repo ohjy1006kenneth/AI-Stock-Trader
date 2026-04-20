@@ -36,11 +36,11 @@ from services.simfin.fundamentals_fetcher import (  # noqa: E402
 from services.wikipedia.sp500_universe import (  # noqa: E402
     ChangeEvent,
     fetch_html,
+    get_all_historical_tickers,
     parse_change_log,
     parse_current_tickers,
     reconstruct_at_date,
     validate_supported_start_date,
-    get_all_historical_tickers,
 )
 
 DEFAULT_LAYER0_BACKFILL_START_DATE = "2017-01-01"
