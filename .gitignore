@@ -87,8 +87,14 @@ dmypy.json
 .pytype/
 .pyre/
 
-# IDEs
+# IDEs / local agent workspace files
 .codex
+.openclaw/
+HEARTBEAT.md
+IDENTITY.md
+SOUL.md
+TOOLS.md
+USER.md
 .vscode/
 .idea/
 *.swp
