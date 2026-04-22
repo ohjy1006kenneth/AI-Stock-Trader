@@ -63,66 +63,43 @@ Rules:
 
 ---
 
-## GitHub project board sync — critical
+## GitHub issue/board ownership — project manager controlled
 
-Project board movement is manual unless explicit automation is set up.
-Do not assume labels will move board items automatically.
+Issue-label transitions and project board movement are owned by the project manager
+(orchestrator), not by implementation workers.
 
-You must keep both issue labels and project board status accurate at all times.
-This is how the human knows what is happening without being pulled into every task.
+Implementation workers (Codex/Claude Code) must **not** change labels or board status
+unless a task explicitly says otherwise.
 
-### Label rules
+### Worker responsibilities
 
-| Situation | Labels to apply |
+- Read required files and implement the code/tests
+- Follow BLOCKED protocol comment format when blocked
+- Open PRs when ready
+- Do not merge
+- Do **not** mutate labels/board state directly by default
+
+### Project manager responsibilities
+
+The project manager handles these transitions after verifying state:
+
+| Situation | Label/Board action |
 |---|---|
-| You pick up an issue and start working | Remove `backlog` → add `in-progress` |
-| PR is open and ready for human review | Remove `in-progress` → add `review` |
-| You cannot proceed without a human decision | Remove `in-progress` → add `blocked` |
-| Issue is fully merged and closed | Add `done` (CI handles this automatically) |
+| Worker is dispatched and starts | `backlog` → `in-progress`, board → In Progress |
+| PR is open and ready | `in-progress` → `review`, board → Review |
+| Worker reports true block | `in-progress` → `blocked`, board → Blocked |
+| Issue merged/closed | mark done/closed and board → Done |
 
-### Board rules
+### Board/status references (for project manager automation)
 
-| Situation | Board action |
-|---|---|
-| You pick up an issue and start working | Move item to In Progress |
-| PR is open and ready for human review | Move item to Review |
-| You cannot proceed without a human decision | Move item to Blocked |
-| Issue is merged and closed | Move item to Done |
-
-### How to update labels AND board via GitHub CLI — run BOTH every time
-
-Label and board are independent. Changing a label does NOT move the board.
-You must run both commands on every state transition. No exceptions.
-
-```bash
-# === When starting a task ===
-# 1. Update label
-gh issue edit <number> --remove-label "backlog" --add-label "in-progress"
-# 2. Move board (requires issue's project item ID and Status field ID — fetch via GraphQL if unknown)
-gh api graphql -f query='mutation { updateProjectV2ItemFieldValue(input: {
-  projectId: "PVT_kwHOBDy_OM4BTCRF"
-  itemId: "<PVTI_...>"
-  fieldId: "PVTSSF_lAHOBDy_OM4BTCRFzhAZUEg"
-  value: { singleSelectOptionId: "47fc9ee4" }  # In Progress
-}) { projectV2Item { id } } }'
-
-# === When opening PR (review) ===
-gh issue edit <number> --remove-label "in-progress" --add-label "review"
-# Board: singleSelectOptionId "94f39d90" = Review
-
-# === When blocked ===
-gh issue edit <number> --remove-label "in-progress" --add-label "blocked"
-# Board: singleSelectOptionId "e1e88749" = Blocked
-```
-
-Project board option IDs (do not change these):
+Project board option IDs:
 - Backlog:     f75ad846
 - In Progress: 47fc9ee4
 - Blocked:     e1e88749
 - Review:      94f39d90
 - Done:        98236657
 
-To get a project item ID for an issue:
+Get issue project item ID:
 ```bash
 gh api graphql -f query='{
   repository(owner: "ohjy1006kenneth", name: "AI-Stock-Trader") {
@@ -132,9 +109,6 @@ gh api graphql -f query='{
   }
 }'
 ```
-
-Always update label AND board as the very first action when starting a task
-and as the very last action before finishing.
 
 ---
 

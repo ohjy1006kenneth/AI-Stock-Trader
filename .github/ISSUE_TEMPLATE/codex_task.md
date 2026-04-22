@@ -42,6 +42,6 @@ assignees: ''
 - `data/sample/`
 
 ---
-<!-- Codex: when you start this task, change label backlog → in-progress -->
-<!-- Codex: when PR is open, change label in-progress → review -->
-<!-- Codex: if you need a human decision, change label in-progress → blocked and post a comment -->
+<!-- Codex: project manager/orchestrator owns label and project-board transitions by default -->
+<!-- Codex: do not mutate labels or project board unless this issue explicitly asks for it -->
+<!-- Codex: if you need a human decision, post BLOCKED comment format and stop -->
