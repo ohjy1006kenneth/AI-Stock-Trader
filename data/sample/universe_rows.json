@@ -1,0 +1,17 @@
+{
+  "valid": {
+    "date": "2025-01-02",
+    "ticker": " aapl ",
+    "in_universe": true
+  },
+  "with_optional_fields": {
+    "date": "2025-01-02",
+    "ticker": " aapl ",
+    "in_universe": true,
+    "tradable": "false",
+    "liquid": 0,
+    "halted": "yes",
+    "data_quality_ok": "n",
+    "reason": " data issue "
+  }
+}

@@ -1,19 +1,17 @@
 from __future__ import annotations
 
+import copy
 from typing import Any
 
 import pytest
 
 from core.data.universe import build_universe_record
+from tests.unit.sample_data import load_sample_json
 
 
 def _valid_row() -> dict[str, Any]:
     """Return a valid vendor-neutral universe row."""
-    return {
-        "date": "2025-01-02",
-        "ticker": " aapl ",
-        "in_universe": True,
-    }
+    return copy.deepcopy(load_sample_json("universe_rows.json")["valid"])
 
 
 def test_build_universe_record_happy_path_uses_explicit_defaults() -> None:
@@ -32,14 +30,7 @@ def test_build_universe_record_happy_path_uses_explicit_defaults() -> None:
 
 def test_build_universe_record_accepts_explicit_optional_fields() -> None:
     """Optional flags and reason text are preserved when supplied."""
-    row = {
-        **_valid_row(),
-        "tradable": "false",
-        "liquid": 0,
-        "halted": "yes",
-        "data_quality_ok": "n",
-        "reason": " data issue ",
-    }
+    row = copy.deepcopy(load_sample_json("universe_rows.json")["with_optional_fields"])
 
     record = build_universe_record(row)
 

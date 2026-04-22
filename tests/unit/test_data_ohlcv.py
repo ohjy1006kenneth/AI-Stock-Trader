@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import math
 from decimal import Decimal
 from typing import Any
@@ -7,21 +8,12 @@ from typing import Any
 import pytest
 
 from core.data.ohlcv import build_ohlcv_record
+from tests.unit.sample_data import load_sample_json
 
 
 def _valid_row() -> dict[str, Any]:
     """Return a valid vendor-neutral OHLCV row."""
-    return {
-        "date": "2025-01-02",
-        "ticker": " aapl ",
-        "open": 100.0,
-        "high": 105.0,
-        "low": 99.0,
-        "close": 104.0,
-        "volume": 1234,
-        "adj_close": 103.5,
-        "dollar_volume": 128336.0,
-    }
+    return copy.deepcopy(load_sample_json("ohlcv_rows.json")["valid"])
 
 
 def test_build_ohlcv_record_happy_path() -> None:
