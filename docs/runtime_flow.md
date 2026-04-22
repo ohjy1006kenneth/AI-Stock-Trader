@@ -65,7 +65,7 @@ before enabling the live daily loop.
    - Read FRED macro context series persisted for the run date from R2
    - Fail closed if the required Layer 0 raw archives or manifests are missing
    - Compute market, NLP, and context features for today
-   - Write aligned feature row to `processed/features/YYYY-MM-DD.parquet` in R2
+   - Write aligned feature shards to `features/layer1/YYYY-MM-DD/TICKER.parquet` in R2
    - Write `PipelineManifestRecord` (stage=layer1)
 
 3. **Layer 1.5 regime detection** (Modal)

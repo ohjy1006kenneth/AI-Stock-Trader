@@ -172,8 +172,9 @@ r2/
     fundamentals/     # SimFin as-reported point-in-time fundamentals and earnings data
     macro/            # FRED macro/rate observations as available on the run date
     reference/        # Symbol/security-reference snapshots
+  features/
+    layer1/           # Layer 1 feature shards as Parquet (one file per date/ticker)
   processed/
-    features/         # Feature tables as Parquet (dates × tickers × features)
     scores/           # Layer 2 score outputs as Parquet
     orders/           # Approved order proposals as CSV
   artifacts/
@@ -201,7 +202,7 @@ Any artifact that must survive a Pi restart or be accessed by Modal must be writ
 | Data type | Format | Reason |
 |---|---|---|
 | OHLCV history | Parquet (per ticker) | 10–50x faster than CSV; columnar reads; `pd.read_parquet()` |
-| Feature tables | Parquet (partitioned by date) | Frequently read by model pipeline |
+| Feature tables | Parquet (per date/ticker shard) | Keeps Layer 1 artifacts aligned to the FeatureRecord contract |
 | Model scores | Parquet | Small, fast to read |
 | News raw archive | JSON Lines | One article per line; easy to stream |
 | Fundamentals archive | Parquet | Point-in-time company fundamentals; efficient ticker/date joins |
