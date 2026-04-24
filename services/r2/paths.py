@@ -57,6 +57,12 @@ def raw_security_master_path(as_of_date: str | Date | datetime) -> str:
     return build_r2_key("raw", "reference", "security_master", f"{_format_date(as_of_date)}.json")
 
 
+def layer1_feature_path(as_of_date: str | Date | datetime, ticker: str) -> str:
+    """Return the canonical Layer 1 feature-shard Parquet path for one date/ticker pair."""
+    safe_ticker = _validate_key_part(ticker)
+    return build_r2_key("features", "layer1", _format_date(as_of_date), f"{safe_ticker}.parquet")
+
+
 def pipeline_manifest_path(stage: str, run_id: str) -> str:
     """Return the canonical pipeline manifest path for one stage/run pair."""
     safe_stage = _validate_key_part(stage)

@@ -6,6 +6,7 @@ import pytest
 
 from services.r2.paths import (
     build_r2_key,
+    layer1_feature_path,
     pipeline_manifest_path,
     raw_fundamentals_path,
     raw_macro_path,
@@ -35,6 +36,15 @@ def test_layer0_raw_path_builders_return_canonical_keys() -> None:
     assert (
         raw_security_master_path("2025-01-02")
         == "raw/reference/security_master/2025-01-02.json"
+    )
+
+
+def test_layer1_feature_path_returns_canonical_key() -> None:
+    """Layer 1 feature shards should be partitioned by date and ticker."""
+    assert layer1_feature_path("2025-01-02", "AAPL") == "features/layer1/2025-01-02/AAPL.parquet"
+    assert (
+        layer1_feature_path(datetime(2025, 1, 2, 15, 30), "MSFT")
+        == "features/layer1/2025-01-02/MSFT.parquet"
     )
 
 
