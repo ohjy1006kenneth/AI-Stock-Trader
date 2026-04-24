@@ -2,12 +2,15 @@
 
 ## Blocked on human decision
 <!-- Codex adds entries here when it blocks. Human removes them after resolving. -->
+- [ ] #87 blocked pending human approval of schema migration #103 for sentence-level
+  news preprocessing fields.
 
 ## Schema migrations pending
 <!-- Codex adds entries here when a schema change issue is created -->
+- [ ] #103 Add per-sentence news preprocessing fields to `NewsSentimentRecord`.
 
 ## Known gaps — issues not yet created
-- [ ] context_features.py not yet implemented (macro, rates, earnings calendar)
+- [x] context_features.py not yet implemented (macro, rates, earnings calendar)
 - [ ] FinBERT source credibility weighting missing from sentiment_features.py
 - [ ] HMM regime detection needs training data pipeline before it can be fitted
 - [x] data/sample/ fixture files do not exist yet — needed for all unit tests

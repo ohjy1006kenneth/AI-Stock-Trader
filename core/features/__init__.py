@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from core.features.context_features import (
+    CONTEXT_FEATURE_COLUMNS,
+    compute_context_features,
+    context_features_to_records,
+)
 from core.features.fundamentals_features import (
     FUNDAMENTAL_FEATURE_COLUMNS,
     compute_fundamentals_features,
@@ -24,12 +29,15 @@ from core.features.market_features import (
 )
 
 __all__ = [
+    "CONTEXT_FEATURE_COLUMNS",
     "FUNDAMENTAL_FEATURE_COLUMNS",
     "MACRO_FEATURE_COLUMNS",
     "MARKET_FEATURE_COLUMNS",
+    "compute_context_features",
     "compute_fundamentals_features",
     "compute_macro_features",
     "compute_market_features",
+    "context_features_to_records",
     "feature_record_to_parquet_bytes",
     "fundamentals_features_to_records",
     "load_fundamentals_frame",
