@@ -21,6 +21,18 @@
     {
       "id": "BAMLH0A0HYM2",
       "description": "ICE BofA high yield option-adjusted spread"
+    },
+    {
+      "id": "VIXCLS",
+      "description": "CBOE Volatility Index (VIX) close"
+    },
+    {
+      "id": "DTWEXBGS",
+      "description": "Broad dollar index (USD vs. broad basket)"
+    },
+    {
+      "id": "DGS3MO",
+      "description": "3-month Treasury constant maturity rate"
     }
   ]
 }
