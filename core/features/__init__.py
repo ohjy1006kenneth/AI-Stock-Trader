@@ -27,12 +27,24 @@ from core.features.market_features import (
     compute_market_features,
     market_features_to_records,
 )
+from core.features.sentiment_features import (
+    DEFAULT_SOURCE_CREDIBILITY_CONFIG_PATH,
+    SENTIMENT_AGGREGATE_COLUMNS,
+    SourceCredibilityConfig,
+    aggregate_sentiment_by_ticker_day,
+    load_source_credibility_config,
+    sentiment_aggregates_to_records,
+)
 
 __all__ = [
     "CONTEXT_FEATURE_COLUMNS",
+    "DEFAULT_SOURCE_CREDIBILITY_CONFIG_PATH",
     "FUNDAMENTAL_FEATURE_COLUMNS",
     "MACRO_FEATURE_COLUMNS",
     "MARKET_FEATURE_COLUMNS",
+    "SENTIMENT_AGGREGATE_COLUMNS",
+    "SourceCredibilityConfig",
+    "aggregate_sentiment_by_ticker_day",
     "compute_context_features",
     "compute_fundamentals_features",
     "compute_macro_features",
@@ -43,9 +55,11 @@ __all__ = [
     "load_fundamentals_frame",
     "load_macro_frame",
     "load_ohlcv_frame",
+    "load_source_credibility_config",
     "macro_features_to_records",
     "market_features_to_records",
     "parquet_bytes_to_feature_record",
     "read_feature_record",
+    "sentiment_aggregates_to_records",
     "write_feature_record",
 ]

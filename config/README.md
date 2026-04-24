@@ -42,4 +42,6 @@ Use an R2 token/access key with read/write access to the bucket. Do not use the 
 ## Static config
 
 - `config/fred_series.json` controls the default FRED macro/rate series and historical backfill date range.
+- `config/source_credibility.json` controls source credibility weights used for
+  FinBERT sentiment aggregation.
 - `config/requirements/` is deprecated; dependency files live under repository-root `requirements/`.
