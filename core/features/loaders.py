@@ -53,6 +53,48 @@ def load_fundamentals_frame(
     return frame.reset_index(drop=True)
 
 
+def load_macro_frame(
+    writer: R2Writer | None = None,
+) -> pd.DataFrame:
+    """Return concatenated Layer 0 FRED macro shards sorted point-in-time safely.
+
+    Reads all `raw/macro/YYYY-MM-DD.parquet` shards through the active R2 (or
+    local mock) backend. Layer 1 callers pass the resulting frame to
+    `compute_macro_features`; no external data-provider calls are made here.
+    """
+    pd = _require_pandas()
+    active_writer = writer or R2Writer()
+    keys = sorted(active_writer.list_keys("raw/macro/"))
+    if not keys:
+        return pd.DataFrame(
+            columns=[
+                "source",
+                "series_id",
+                "observation_date",
+                "realtime_start",
+                "realtime_end",
+                "retrieved_at",
+                "value",
+                "is_missing",
+                "raw",
+            ]
+        )
+
+    frames = []
+    for key in keys:
+        payload = active_writer.get_object(key)
+        frames.append(pd.read_parquet(io.BytesIO(payload)))
+    frame = pd.concat(frames, ignore_index=True)
+    sort_columns = [
+        column
+        for column in ("series_id", "observation_date", "realtime_start", "realtime_end")
+        if column in frame.columns
+    ]
+    if sort_columns:
+        return frame.sort_values(sort_columns).reset_index(drop=True)
+    return frame.reset_index(drop=True)
+
+
 def _require_pandas() -> Any:
     """Import pandas/pyarrow lazily with a clear error when absent."""
     try:
