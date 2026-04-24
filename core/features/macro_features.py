@@ -65,7 +65,7 @@ CHANGE_5D_LOOKBACK_BDAYS = 5
 
 def compute_macro_features(
     macro: pd.DataFrame,
-    target_dates: Iterable[str],
+    target_dates: Iterable[Any],
 ) -> pd.DataFrame:
     """Return market-wide macro features for each target date.
 
@@ -73,7 +73,7 @@ def compute_macro_features(
         macro: Concatenated Layer 0 FRED shards with the canonical columns
             (`series_id`, `observation_date`, `realtime_start`, `value`,
             `is_missing`).
-        target_dates: Iterable of YYYY-MM-DD strings to emit features for.
+        target_dates: Iterable of date-like values to emit features for.
 
     Returns:
         DataFrame with columns (`date`, *MACRO_FEATURE_COLUMNS*). One row per
@@ -84,7 +84,7 @@ def compute_macro_features(
 
     _validate_columns(macro)
 
-    sorted_dates = sorted({str(value).strip() for value in target_dates if str(value).strip()})
+    sorted_dates = _normalize_target_dates(target_dates)
     if not sorted_dates:
         return _empty_frame(pd)
 
@@ -233,6 +233,17 @@ def _validate_columns(macro: pd.DataFrame) -> None:
     missing = sorted(REQUIRED_MACRO_COLUMNS - set(macro.columns))
     if missing:
         raise ValueError(f"Macro frame missing required columns: {missing}")
+
+
+def _normalize_target_dates(target_dates: Iterable[Any]) -> list[str]:
+    """Return sorted unique target dates normalized to YYYY-MM-DD."""
+    normalized: set[str] = set()
+    for value in target_dates:
+        target_date = _to_iso_date(value)
+        if target_date is None:
+            raise ValueError(f"target_dates must contain date-like values: {value!r}")
+        normalized.add(target_date)
+    return sorted(normalized)
 
 
 def _empty_frame(pd: Any) -> pd.DataFrame:

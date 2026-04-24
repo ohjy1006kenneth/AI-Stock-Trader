@@ -101,6 +101,46 @@ def test_daily_series_forward_fills_across_weekend_without_same_day_leakage() ->
     assert features.loc[3, "treasury_10y"] == pytest.approx(4.1)
 
 
+def test_timestamp_targets_do_not_allow_same_day_leakage() -> None:
+    """Datetime-like targets normalize to dates before leakage comparisons."""
+    macro = pd.DataFrame(
+        [
+            _macro_row(
+                series_id="DGS10",
+                observation_date="2024-04-10",
+                realtime_start="2024-04-10",
+                value=4.42,
+            )
+        ]
+    )
+
+    features = compute_macro_features(
+        macro,
+        [pd.Timestamp("2024-04-10 00:00:00"), pd.Timestamp("2024-04-11 00:00:00")],
+    )
+
+    assert features["date"].tolist() == ["2024-04-10", "2024-04-11"]
+    assert pd.isna(features.loc[0, "treasury_10y"])
+    assert features.loc[1, "treasury_10y"] == pytest.approx(4.42)
+
+
+def test_compute_macro_features_rejects_invalid_target_dates() -> None:
+    """Invalid target dates fail closed instead of entering string comparisons."""
+    macro = pd.DataFrame(
+        [
+            _macro_row(
+                series_id="DGS10",
+                observation_date="2024-04-10",
+                realtime_start="2024-04-10",
+                value=4.42,
+            )
+        ]
+    )
+
+    with pytest.raises(ValueError, match="target_dates"):
+        compute_macro_features(macro, ["not-a-date"])
+
+
 def test_lagged_monthly_series_uses_publication_date_not_observation_month() -> None:
     """Lagged releases appear only after their realtime_start date."""
     macro = pd.DataFrame(
