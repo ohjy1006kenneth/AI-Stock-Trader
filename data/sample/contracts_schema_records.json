@@ -1,0 +1,85 @@
+{
+  "universe_record": {
+    "date": "2026-04-06",
+    "ticker": "AAPL",
+    "in_universe": true
+  },
+  "ohlcv_record": {
+    "date": "2026-04-06",
+    "ticker": "AAPL",
+    "open": 100.0,
+    "high": 101.0,
+    "low": 99.0,
+    "close": 100.5,
+    "volume": 1000,
+    "adj_close": 100.5,
+    "dollar_volume": 1000000.0
+  },
+  "news_sentiment_record": {
+    "date": "2026-04-06",
+    "ticker": "AAPL",
+    "sentiment_positive": 0.7,
+    "sentiment_negative": 0.1,
+    "sentiment_neutral": 0.2
+  },
+  "feature_record": {
+    "date": "2026-04-06",
+    "ticker": "AAPL",
+    "features": {
+      "returns_1d": 0.01,
+      "regime_label": "bull"
+    }
+  },
+  "score_record": {
+    "date": "2026-04-06",
+    "ticker": "AAPL",
+    "return_score": 0.15,
+    "pos_prob": 0.61,
+    "rank_score": 0.88,
+    "regime": "bull",
+    "confidence": 0.72,
+    "model_version": "xgb-v1"
+  },
+  "portfolio_record": {
+    "date": "2026-04-06",
+    "ticker": "AAPL",
+    "weight": 0.1,
+    "target_dollars": 10000.0,
+    "current_dollars": 8000.0,
+    "change_dollars": 2000.0
+  },
+  "approved_order_record": {
+    "date": "2026-04-06",
+    "ticker": "AAPL",
+    "action": "BUY",
+    "target_dollars": 2000.0,
+    "approved": true
+  },
+  "execution_fill_record": {
+    "date": "2026-04-06",
+    "ticker": "AAPL",
+    "action": "SELL",
+    "shares_target": 100,
+    "shares_filled": 50,
+    "avg_fill_price": 100.0,
+    "estimated_fill_price": 100.2,
+    "slippage_bps": -20.0,
+    "status": "filled",
+    "retries": 0
+  },
+  "pipeline_manifest_record": {
+    "run_id": "run-001",
+    "stage": "feature_generation",
+    "status": "completed",
+    "started_at": "2026-04-06T20:00:00",
+    "finished_at": "2026-04-06T20:05:00"
+  },
+  "artifact_manifest_record": {
+    "artifact_id": "artifact-001",
+    "model_version": "xgb-v1",
+    "created_at": "2026-04-06T21:00:00",
+    "stage": "validation",
+    "bundle_path": "artifacts/bundles/xgb-v1.tar.gz",
+    "schema_version": "1.0.0"
+  }
+}

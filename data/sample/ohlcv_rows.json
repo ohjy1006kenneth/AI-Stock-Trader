@@ -1,0 +1,13 @@
+{
+  "valid": {
+    "date": "2025-01-02",
+    "ticker": " aapl ",
+    "open": 100.0,
+    "high": 105.0,
+    "low": 99.0,
+    "close": 104.0,
+    "volume": 1234,
+    "adj_close": 103.5,
+    "dollar_volume": 128336.0
+  }
+}

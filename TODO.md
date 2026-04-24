@@ -10,7 +10,7 @@
 - [ ] context_features.py not yet implemented (macro, rates, earnings calendar)
 - [ ] FinBERT source credibility weighting missing from sentiment_features.py
 - [ ] HMM regime detection needs training data pipeline before it can be fitted
-- [ ] data/sample/ fixture files do not exist yet — needed for all unit tests
+- [x] data/sample/ fixture files do not exist yet — needed for all unit tests
 
 ## Technical debt
 <!-- Things that work but should be improved -->
