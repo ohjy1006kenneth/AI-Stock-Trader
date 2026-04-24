@@ -122,6 +122,16 @@ def test_compute_context_features_rejects_missing_macro_columns() -> None:
         compute_context_features(fundamentals, ohlcv, macro, "AAPL")
 
 
+def test_compute_context_features_validates_macro_when_ohlcv_is_empty() -> None:
+    """Malformed macro archives fail fast even when no context rows will emit."""
+    fundamentals = pd.DataFrame(columns=["report_date", "availability_date", "raw_json"])
+    ohlcv = _ohlcv_frame([])
+    macro = pd.DataFrame([{"series_id": "DGS10", "value": 4.5}])
+
+    with pytest.raises(ValueError, match="observation_date"):
+        compute_context_features(fundamentals, ohlcv, macro, "AAPL")
+
+
 def test_compute_context_features_handles_nan_macro_values() -> None:
     """Non-finite macro observations are ignored instead of becoming feature values."""
     fundamentals = pd.DataFrame(columns=["report_date", "availability_date", "raw_json"])

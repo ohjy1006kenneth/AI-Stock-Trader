@@ -49,10 +49,10 @@ def compute_context_features(
         ohlcv=ohlcv,
         ticker=ticker,
     )
+    macro_features = compute_macro_features(macro, fundamental_features["date"].tolist())
     if len(fundamental_features) == 0:
         return _empty_context_frame(fundamental_features)
 
-    macro_features = compute_macro_features(macro, fundamental_features["date"].tolist())
     context = fundamental_features.merge(macro_features, on="date", how="left")
     return context[["date", "ticker", *CONTEXT_FEATURE_COLUMNS]]
 
