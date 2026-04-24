@@ -42,6 +42,6 @@ assignees: ''
 - `data/sample/`
 
 ---
-<!-- Codex: project manager/orchestrator owns label and project-board transitions by default -->
-<!-- Codex: do not mutate labels or project board unless this issue explicitly asks for it -->
+<!-- Codex: update labels and project board as work progresses (see AGENTS.md → GitHub issue/board ownership) -->
+<!-- Codex: backlog → in-progress when starting, in-progress → review when PR opens -->
 <!-- Codex: if you need a human decision, post BLOCKED comment format and stop -->

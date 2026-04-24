@@ -63,34 +63,31 @@ Rules:
 
 ---
 
-## GitHub issue/board ownership — project manager controlled
+## GitHub issue/board ownership — worker-managed
 
-Issue-label transitions and project board movement are owned by the project manager
-(orchestrator), not by implementation workers.
-
-Implementation workers (Codex/Claude Code) must **not** change labels or board status
-unless a task explicitly says otherwise.
+Implementation workers (Codex/Claude Code) own issue labels and project board
+transitions. There is no separate project manager.
 
 ### Worker responsibilities
 
 - Read required files and implement the code/tests
+- Update the issue label and project board as work progresses (see transitions below)
 - Follow BLOCKED protocol comment format when blocked
 - Open PRs when ready
-- Do not merge
-- Do **not** mutate labels/board state directly by default
+- Do not merge your own PRs — wait for human approval
 
-### Project manager responsibilities
+### Required label/board transitions
 
-The project manager handles these transitions after verifying state:
+Update the issue label and project board as work progresses:
 
 | Situation | Label/Board action |
 |---|---|
-| Worker is dispatched and starts | `backlog` → `in-progress`, board → In Progress |
+| Starting work on an issue | `backlog` → `in-progress`, board → In Progress |
 | PR is open and ready | `in-progress` → `review`, board → Review |
-| Worker reports true block | `in-progress` → `blocked`, board → Blocked |
+| Work is truly blocked | `in-progress` → `blocked`, board → Blocked |
 | Issue merged/closed | mark done/closed and board → Done |
 
-### Board/status references (for project manager automation)
+### Board/status references
 
 Project board option IDs:
 - Backlog:     f75ad846
