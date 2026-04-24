@@ -12,7 +12,7 @@
 ## Known gaps — issues not yet created
 - [x] context_features.py not yet implemented (macro, rates, earnings calendar)
 - [x] FinBERT source credibility weighting missing from sentiment_features.py
-- [ ] HMM regime detection needs training data pipeline before it can be fitted
+- [x] HMM regime detection needs training data pipeline before it can be fitted
 - [x] data/sample/ fixture files do not exist yet — needed for all unit tests
 
 ## Technical debt
