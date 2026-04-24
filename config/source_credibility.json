@@ -1,0 +1,13 @@
+{
+  "default_source_weight": 1.0,
+  "source_weights": {
+    "benzinga": 1.0,
+    "dow jones": 1.2,
+    "globenewswire": 0.9,
+    "marketwatch": 1.0,
+    "pr newswire": 0.9,
+    "reuters": 1.25,
+    "sec": 1.3,
+    "the wall street journal": 1.2
+  }
+}
