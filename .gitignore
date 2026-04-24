@@ -137,3 +137,5 @@ $RECYCLE.BIN/
 # Backtest outputs — large, stored in R2
 artifacts/backtests/results/
 artifacts/backtests/equity_curves/
+
+core.*
