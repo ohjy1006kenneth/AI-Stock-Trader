@@ -27,6 +27,12 @@ from core.features.market_features import (
     compute_market_features,
     market_features_to_records,
 )
+from core.features.regime_training import (
+    HMM_TRAINING_COLUMNS,
+    HMM_TRAINING_FEATURE_COLUMNS,
+    build_hmm_training_frame,
+    complete_hmm_training_matrix,
+)
 from core.features.sentiment_features import (
     DEFAULT_SOURCE_CREDIBILITY_CONFIG_PATH,
     SENTIMENT_AGGREGATE_COLUMNS,
@@ -40,11 +46,15 @@ __all__ = [
     "CONTEXT_FEATURE_COLUMNS",
     "DEFAULT_SOURCE_CREDIBILITY_CONFIG_PATH",
     "FUNDAMENTAL_FEATURE_COLUMNS",
+    "HMM_TRAINING_COLUMNS",
+    "HMM_TRAINING_FEATURE_COLUMNS",
     "MACRO_FEATURE_COLUMNS",
     "MARKET_FEATURE_COLUMNS",
     "SENTIMENT_AGGREGATE_COLUMNS",
     "SourceCredibilityConfig",
     "aggregate_sentiment_by_ticker_day",
+    "build_hmm_training_frame",
+    "complete_hmm_training_matrix",
     "compute_context_features",
     "compute_fundamentals_features",
     "compute_macro_features",
