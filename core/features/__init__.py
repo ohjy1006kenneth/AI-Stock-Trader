@@ -34,6 +34,15 @@ from core.features.news_preprocessing import (
     records_to_news_sentiment_frame,
     split_article_sentences,
 )
+from core.features.regime_detection import (
+    HMM_REGIME_COLUMNS,
+    HMM_REGIME_FEATURE_COLUMNS,
+    HMMRegimeConfig,
+    HMMRegimeModel,
+    emit_hmm_regime_features,
+    fit_and_emit_hmm_regime_features,
+    fit_hmm_regime_model,
+)
 from core.features.regime_training import (
     HMM_TRAINING_COLUMNS,
     HMM_TRAINING_FEATURE_COLUMNS,
@@ -53,8 +62,12 @@ __all__ = [
     "CONTEXT_FEATURE_COLUMNS",
     "DEFAULT_SOURCE_CREDIBILITY_CONFIG_PATH",
     "FUNDAMENTAL_FEATURE_COLUMNS",
+    "HMM_REGIME_COLUMNS",
+    "HMM_REGIME_FEATURE_COLUMNS",
     "HMM_TRAINING_COLUMNS",
     "HMM_TRAINING_FEATURE_COLUMNS",
+    "HMMRegimeConfig",
+    "HMMRegimeModel",
     "MACRO_FEATURE_COLUMNS",
     "MARKET_FEATURE_COLUMNS",
     "NewsPreprocessingConfig",
@@ -69,6 +82,9 @@ __all__ = [
     "compute_market_features",
     "context_features_to_records",
     "feature_record_to_parquet_bytes",
+    "emit_hmm_regime_features",
+    "fit_and_emit_hmm_regime_features",
+    "fit_hmm_regime_model",
     "fundamentals_features_to_records",
     "load_fundamentals_frame",
     "load_macro_frame",
