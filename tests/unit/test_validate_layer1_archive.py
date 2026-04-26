@@ -1,0 +1,191 @@
+from __future__ import annotations
+
+import io
+import json
+from pathlib import Path
+
+import pandas as pd
+import pytest
+
+from app.lab.data_pipelines.validate_layer1_archive import (
+    Layer1ValidationReport,
+    load_universe_mapping,
+    validate_layer1_archive,
+    write_validation_report,
+)
+from core.contracts.schemas import FeatureRecord
+from core.features.io import feature_record_to_parquet_bytes
+from services.r2.paths import layer1_feature_path
+
+
+class _Reader:
+    """Minimal in-memory stand-in for the R2 archive reader."""
+
+    def __init__(self, objects: dict[str, bytes]) -> None:
+        self.objects = dict(objects)
+
+    def exists(self, key: str) -> bool:
+        return key in self.objects
+
+    def get_object(self, key: str) -> bytes:
+        return self.objects[key]
+
+    def list_keys(self, prefix: str) -> list[str]:
+        return sorted(key for key in self.objects if key.startswith(prefix))
+
+
+def _shard_bytes(date: str, ticker: str) -> bytes:
+    """Return a valid Layer 1 feature shard payload for one (date, ticker)."""
+    record = FeatureRecord(
+        date=date,
+        ticker=ticker,
+        features={"returns_1d": 0.01},
+    )
+    return feature_record_to_parquet_bytes(record)
+
+
+def test_validate_layer1_archive_marks_ready_when_every_shard_present() -> None:
+    """A complete archive yields ready_for_layer2=True with no missing shards."""
+    universe = {
+        "2024-01-02": ["AAPL", "MSFT"],
+        "2024-01-03": ["AAPL"],
+    }
+    reader = _Reader(
+        {
+            layer1_feature_path("2024-01-02", "AAPL"): _shard_bytes("2024-01-02", "AAPL"),
+            layer1_feature_path("2024-01-02", "MSFT"): _shard_bytes("2024-01-02", "MSFT"),
+            layer1_feature_path("2024-01-03", "AAPL"): _shard_bytes("2024-01-03", "AAPL"),
+        }
+    )
+
+    report = validate_layer1_archive(
+        run_id="layer1-2024-01-02_to_2024-01-03",
+        from_date="2024-01-02",
+        to_date="2024-01-03",
+        universe=universe,
+        reader=reader,
+    )
+
+    assert report.ready_for_layer2 is True
+    assert report.expected_shards == 3
+    assert report.present_shards == 3
+    assert report.missing_shards == []
+    assert report.schema_failures == 0
+
+
+def test_validate_layer1_archive_reports_missing_shards() -> None:
+    """Missing shards keep ready_for_layer2=False and list the keys."""
+    universe = {
+        "2024-01-02": ["AAPL", "MSFT"],
+    }
+    reader = _Reader(
+        {
+            layer1_feature_path("2024-01-02", "AAPL"): _shard_bytes("2024-01-02", "AAPL"),
+        }
+    )
+
+    report = validate_layer1_archive(
+        run_id="layer1-missing",
+        from_date="2024-01-02",
+        to_date="2024-01-02",
+        universe=universe,
+        reader=reader,
+    )
+
+    assert report.ready_for_layer2 is False
+    assert report.expected_shards == 2
+    assert report.present_shards == 1
+    assert report.missing_shards == [layer1_feature_path("2024-01-02", "MSFT")]
+
+
+def test_validate_layer1_archive_flags_corrupt_shards() -> None:
+    """Shards that fail to decode are reported via schema_failures."""
+    bad_frame = pd.DataFrame(
+        [{"date": "2024-01-02", "ticker": "AAPL", "features": "not-json"}]
+    )
+    buffer = io.BytesIO()
+    bad_frame.to_parquet(buffer, index=False)
+    reader = _Reader({layer1_feature_path("2024-01-02", "AAPL"): buffer.getvalue()})
+
+    report = validate_layer1_archive(
+        run_id="layer1-corrupt",
+        from_date="2024-01-02",
+        to_date="2024-01-02",
+        universe={"2024-01-02": ["AAPL"]},
+        reader=reader,
+    )
+
+    assert report.ready_for_layer2 is False
+    assert report.schema_failures == 1
+    assert report.schema_failure_keys == [layer1_feature_path("2024-01-02", "AAPL")]
+
+
+def test_validate_layer1_archive_rejects_non_iso_dates() -> None:
+    """Non-canonical YYYY-MM-DD inputs raise immediately."""
+    reader = _Reader({})
+    with pytest.raises(ValueError, match="from_date"):
+        validate_layer1_archive(
+            run_id="layer1",
+            from_date="2024-1-2",
+            to_date="2024-01-03",
+            universe={},
+            reader=reader,
+        )
+
+
+def test_validate_layer1_archive_empty_universe_is_not_ready() -> None:
+    """An empty universe means we have nothing to check; never marked ready."""
+    reader = _Reader({})
+
+    report = validate_layer1_archive(
+        run_id="layer1-empty",
+        from_date="2024-01-02",
+        to_date="2024-01-02",
+        universe={},
+        reader=reader,
+    )
+
+    assert report.ready_for_layer2 is False
+    assert report.expected_shards == 0
+
+
+def test_write_validation_report_writes_json(tmp_path: Path) -> None:
+    """Validation reports are persisted as deterministic JSON under the report dir."""
+    report = Layer1ValidationReport(
+        run_id="layer1",
+        from_date="2024-01-02",
+        to_date="2024-01-02",
+        expected_shards=1,
+        present_shards=0,
+        schema_failures=0,
+        missing_shards=[layer1_feature_path("2024-01-02", "AAPL")],
+        ready_for_layer2=False,
+    )
+
+    path = write_validation_report(report, tmp_path)
+
+    assert path.name == "layer1_archive_validation_2024-01-02_to_2024-01-02.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["ready_for_layer2"] is False
+    assert payload["missing_shards"] == [layer1_feature_path("2024-01-02", "AAPL")]
+
+
+def test_load_universe_mapping_normalizes_tickers(tmp_path: Path) -> None:
+    """The universe loader uppercases tickers and validates the JSON shape."""
+    target = tmp_path / "universe.json"
+    target.write_text(
+        json.dumps({"2024-01-02": ["aapl", "msft"], "2024-01-03": ["googl"]}),
+        encoding="utf-8",
+    )
+
+    mapping = load_universe_mapping(target)
+
+    assert mapping == {"2024-01-02": ["AAPL", "MSFT"], "2024-01-03": ["GOOGL"]}
+
+
+def test_load_universe_mapping_rejects_non_object_payloads(tmp_path: Path) -> None:
+    """A list-shaped JSON file is rejected with a clear error."""
+    target = tmp_path / "universe.json"
+    target.write_text(json.dumps(["aapl"]), encoding="utf-8")
+    with pytest.raises(ValueError, match="object"):
+        load_universe_mapping(target)
