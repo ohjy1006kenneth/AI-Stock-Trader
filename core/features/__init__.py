@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from core.features.assembly import (
+    Layer1FeatureInput,
+    assemble_layer1_feature_records,
+    validate_feature_availability,
+)
 from core.features.context_features import (
     CONTEXT_FEATURE_COLUMNS,
     compute_context_features,
@@ -87,6 +92,7 @@ __all__ = [
     "HMM_TRAINING_FEATURE_COLUMNS",
     "HMMRegimeConfig",
     "HMMRegimeModel",
+    "Layer1FeatureInput",
     "MACRO_FEATURE_COLUMNS",
     "MARKET_FEATURE_COLUMNS",
     "NewsPreprocessingConfig",
@@ -98,6 +104,7 @@ __all__ = [
     "TextEmbeddingConfig",
     "TopicModelConfig",
     "aggregate_sentiment_by_ticker_day",
+    "assemble_layer1_feature_records",
     "build_hmm_training_frame",
     "complete_hmm_training_matrix",
     "compute_context_features",
@@ -133,5 +140,6 @@ __all__ = [
     "sentence_identity",
     "split_article_sentences",
     "topic_labels_to_feature_records",
+    "validate_feature_availability",
     "write_feature_record",
 ]
