@@ -73,8 +73,9 @@ before enabling the live daily loop.
 3. **Layer 1.5 regime detection** (Modal)
    - Read recent SPY returns, VIX, and FRED macro regime inputs from R2
    - Run HMM to classify current regime (bull / bear / sideways)
-   - Append regime label and confidence to today's feature row
-   - Write updated feature row to R2
+   - Write market-wide regime probabilities to `features/layer1_5/regime/{run_id}.parquet`
+   - Write `PipelineManifestRecord` (stage=layer1_5_regime)
+   - Layer 1 feature assembly broadcasts the regime label/probabilities onto ticker rows
 
 4. **Layer 2 inference** (Modal)
    - Read today's feature row from R2
