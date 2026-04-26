@@ -174,6 +174,7 @@ r2/
     reference/        # Symbol/security-reference snapshots
   features/
     layer1/           # Layer 1 feature shards as Parquet (one file per date/ticker)
+      news_sentiment/ # Sentence-level NewsSentimentRecord rows from Modal preprocessing
   processed/
     scores/           # Layer 2 score outputs as Parquet
     orders/           # Approved order proposals as CSV
@@ -301,7 +302,9 @@ Final feature table shape: `(N_dates × N_tickers)` rows × `M_features` columns
 ```
 RAW ARTICLES (Alpaca news)
   → Step 1: Preprocessing
-      Clean text, remove boilerplate, split into sentences, tag ticker mentions
+      Read raw/news and raw/universe from R2, split into sentences, tag
+      point-in-time tickers, write NewsSentimentRecord rows to
+      features/layer1/news_sentiment/{date}/{run_id}.parquet
   → Step 2a: Sentence Transformers (per article)
       Model: all-mpnet-base-v2
       Output: 384-dim embedding per article

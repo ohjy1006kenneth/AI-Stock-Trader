@@ -2,8 +2,6 @@
 
 ## Blocked on human decision
 <!-- Codex adds entries here when it blocks. Human removes them after resolving. -->
-- [ ] #87 blocked pending merge of schema migration #103 for sentence-level news
-  preprocessing fields.
 
 ## Schema migrations pending
 <!-- Codex adds entries here when a schema change issue is created -->

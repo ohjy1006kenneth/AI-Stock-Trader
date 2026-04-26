@@ -27,6 +27,13 @@ from core.features.market_features import (
     compute_market_features,
     market_features_to_records,
 )
+from core.features.news_preprocessing import (
+    NewsPreprocessingConfig,
+    news_sentiment_frame_to_records,
+    preprocess_news_articles,
+    records_to_news_sentiment_frame,
+    split_article_sentences,
+)
 from core.features.regime_training import (
     HMM_TRAINING_COLUMNS,
     HMM_TRAINING_FEATURE_COLUMNS,
@@ -50,6 +57,7 @@ __all__ = [
     "HMM_TRAINING_FEATURE_COLUMNS",
     "MACRO_FEATURE_COLUMNS",
     "MARKET_FEATURE_COLUMNS",
+    "NewsPreprocessingConfig",
     "SENTIMENT_AGGREGATE_COLUMNS",
     "SourceCredibilityConfig",
     "aggregate_sentiment_by_ticker_day",
@@ -68,8 +76,12 @@ __all__ = [
     "load_source_credibility_config",
     "macro_features_to_records",
     "market_features_to_records",
+    "news_sentiment_frame_to_records",
     "parquet_bytes_to_feature_record",
+    "preprocess_news_articles",
     "read_feature_record",
+    "records_to_news_sentiment_frame",
     "sentiment_aggregates_to_records",
+    "split_article_sentences",
     "write_feature_record",
 ]

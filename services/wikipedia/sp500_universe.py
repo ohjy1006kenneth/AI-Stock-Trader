@@ -53,6 +53,11 @@ def validate_supported_start_date(query_date: str, earliest_event_date: str, lab
         )
 
 
+def canonicalize_ticker(ticker: str) -> str:
+    """Normalize ticker formatting and known historical aliases."""
+    return _canonicalize_ticker(ticker)
+
+
 def _canonicalize_ticker(ticker: str) -> str:
     """Normalize ticker formatting and map historical aliases to canonical symbols."""
     normalized = ticker.strip().upper().replace(".", "-")
