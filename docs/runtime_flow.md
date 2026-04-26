@@ -69,6 +69,10 @@ before enabling the live daily loop.
    - Compute pinned-model sentence embeddings and BERTopic labels into
      `features/layer1/text_embeddings/`, `features/layer1/topic_labels/`, and
      `features/layer1/topic_features/`
+   - Score preprocessed news with FinBERT into
+     `features/layer1/news_sentiment_scored/{YYYY-MM-DD}/{run_id}.parquet` and aggregate
+     ticker-day sentiment FeatureRecords into
+     `features/layer1/sentiment_features/{YYYY-MM-DD}/{run_id}.parquet`
    - Compute market, NLP, and context features for today
    - Write aligned feature shards to `features/layer1/YYYY-MM-DD/TICKER.parquet` in R2
    - Write `PipelineManifestRecord` (stage=layer1)

@@ -99,6 +99,30 @@ def layer1_topic_feature_path(as_of_date: str | Date | datetime, run_id: str) ->
     )
 
 
+def layer1_sentiment_score_path(as_of_date: str | Date | datetime, run_id: str) -> str:
+    """Return the canonical Layer 1 scored FinBERT news path."""
+    safe_run_id = _validate_key_part(run_id)
+    return build_r2_key(
+        "features",
+        "layer1",
+        "news_sentiment_scored",
+        _format_date(as_of_date),
+        f"{safe_run_id}.parquet",
+    )
+
+
+def layer1_sentiment_feature_path(as_of_date: str | Date | datetime, run_id: str) -> str:
+    """Return the canonical Layer 1 ticker-day sentiment feature path."""
+    safe_run_id = _validate_key_part(run_id)
+    return build_r2_key(
+        "features",
+        "layer1",
+        "sentiment_features",
+        _format_date(as_of_date),
+        f"{safe_run_id}.parquet",
+    )
+
+
 def pipeline_manifest_path(stage: str, run_id: str) -> str:
     """Return the canonical pipeline manifest path for one stage/run pair."""
     safe_stage = _validate_key_part(stage)

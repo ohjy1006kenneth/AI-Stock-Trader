@@ -178,6 +178,8 @@ r2/
       text_embeddings/# Sentence embedding cache keyed by pinned model/version
       topic_labels/   # Sentence-level BERTopic labels from Modal
       topic_features/ # Ticker-day FeatureRecord topic summaries
+      news_sentiment_scored/ # Sentence-level NewsSentimentRecord rows scored by FinBERT
+      sentiment_features/ # Ticker-day FeatureRecord sentiment summaries
     layer1_5/         # Market-wide regime features from Modal HMM jobs
   processed/
     scores/           # Layer 2 score outputs as Parquet
@@ -324,7 +326,7 @@ RAW ARTICLES (Alpaca news)
   → Step 4: FinBERT scoring
       Model: ProsusAI/finbert (finance-domain fine-tuned BERT)
       Input: relevance-filtered articles, one sentence/chunk at a time
-      Output: (positive, negative, neutral) probabilities per article
+      Output: (positive, negative, neutral) probabilities per sentence/chunk
   → Step 5: Aggregation
       Combine FinBERT scores + topic assignments + source credibility weights
       into per-ticker per-day features

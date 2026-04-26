@@ -5,12 +5,13 @@ import importlib
 import json
 import math
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from core.contracts.schemas import NewsSentimentRecord
+from core.contracts.schemas import FeatureRecord, NewsSentimentRecord
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -54,6 +55,33 @@ class SourceCredibilityConfig:
     source_weights: Mapping[str, float]
 
 
+@dataclass(frozen=True)
+class SentimentScore:
+    """FinBERT class probabilities for one text chunk."""
+
+    positive: float
+    negative: float
+    neutral: float
+
+    def __post_init__(self) -> None:
+        """Validate model probabilities."""
+        for label, value in (
+            ("positive", self.positive),
+            ("negative", self.negative),
+            ("neutral", self.neutral),
+        ):
+            numeric = _to_float_or_none(value)
+            if numeric is None or numeric < 0.0 or numeric > 1.0:
+                raise ValueError(f"{label} must be a probability in [0, 1]")
+
+
+class SentimentScorer(Protocol):
+    """Text sentiment model used by the FinBERT scoring pipeline."""
+
+    def score(self, texts: Sequence[str]) -> Sequence[SentimentScore]:
+        """Return sentiment probabilities for each input text."""
+
+
 def load_source_credibility_config(
     path: Path = DEFAULT_SOURCE_CREDIBILITY_CONFIG_PATH,
 ) -> SourceCredibilityConfig:
@@ -68,10 +96,68 @@ def load_source_credibility_config(
     )
 
 
+def score_news_sentiment(
+    records: Sequence[NewsSentimentRecord],
+    *,
+    scorer: SentimentScorer,
+    batch_size: int = 32,
+    default_relevance_score: float = 1.0,
+) -> list[NewsSentimentRecord]:
+    """Score preprocessed news rows with an injected FinBERT-compatible scorer."""
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+    relevance = _to_float_or_none(default_relevance_score)
+    if relevance is None or relevance < 0.0:
+        raise ValueError("default_relevance_score must be a non-negative finite number")
+
+    scorable_records: list[NewsSentimentRecord] = []
+    texts: list[str] = []
+    for record in records:
+        text = _scoring_text(record)
+        if text is None:
+            continue
+        scorable_records.append(record)
+        texts.append(text)
+
+    scores: list[SentimentScore] = []
+    for start in range(0, len(texts), batch_size):
+        batch = texts[start : start + batch_size]
+        batch_scores = list(scorer.score(batch))
+        if len(batch_scores) != len(batch):
+            raise ValueError("sentiment scorer returned the wrong number of scores")
+        scores.extend(batch_scores)
+
+    scored_records: list[NewsSentimentRecord] = []
+    for record, score in zip(scorable_records, scores, strict=True):
+        active_relevance = record.relevance_score
+        if active_relevance is None:
+            active_relevance = relevance
+        scored_records.append(
+            NewsSentimentRecord(
+                date=record.date,
+                ticker=record.ticker,
+                headline=record.headline,
+                text=record.text,
+                article_id=record.article_id,
+                sentence_index=record.sentence_index,
+                source=record.source,
+                url=record.url,
+                published_at=record.published_at,
+                sentiment_positive=score.positive,
+                sentiment_negative=score.negative,
+                sentiment_neutral=score.neutral,
+                sentiment_score=score.positive - score.negative,
+                relevance_score=active_relevance,
+            )
+        )
+    return scored_records
+
+
 def aggregate_sentiment_by_ticker_day(
     scored_news: pd.DataFrame,
     *,
     credibility_config: SourceCredibilityConfig | None = None,
+    bucket_timezone: str = "America/New_York",
 ) -> pd.DataFrame:
     """Return source-weighted ticker-day sentiment aggregates.
 
@@ -87,42 +173,15 @@ def aggregate_sentiment_by_ticker_day(
         emitted per `(date, ticker)` group. The sentiment fields are weighted by
         source credibility and article relevance.
     """
-    pd = _require_pandas()
     config = _normalized_config(credibility_config or load_source_credibility_config())
-    _validate_columns(scored_news)
+    pd, frame = _prepare_scored_news_frame(
+        scored_news,
+        config=config,
+        bucket_timezone=bucket_timezone,
+    )
 
-    if len(scored_news) == 0:
+    if len(frame) == 0:
         return _empty_frame(pd)
-
-    frame = scored_news.copy()
-    frame["date"] = frame["date"].map(_to_iso_date)
-    if frame["date"].isna().any():
-        raise ValueError("sentiment rows must contain date-like values")
-
-    for column in (
-        "sentiment_positive",
-        "sentiment_negative",
-        "sentiment_neutral",
-        "sentiment_score",
-        "relevance_score",
-    ):
-        frame[column] = frame[column].map(_to_float_or_none)
-
-    required_numeric = (
-        "sentiment_positive",
-        "sentiment_negative",
-        "sentiment_neutral",
-        "sentiment_score",
-    )
-    if frame[list(required_numeric)].isna().any().any():
-        raise ValueError("sentiment probability and score columns must be numeric")
-    _validate_probability_columns(frame)
-
-    frame["_source_weight"] = frame["source"].map(
-        lambda value: _source_weight(value, config=config)
-    )
-    frame["_relevance_weight"] = frame["relevance_score"].map(_relevance_weight)
-    frame["_effective_weight"] = frame["_source_weight"] * frame["_relevance_weight"]
 
     rows: list[dict[str, Any]] = []
     for (date_value, ticker), group in frame.groupby(["date", "ticker"], sort=True, dropna=False):
@@ -156,6 +215,75 @@ def aggregate_sentiment_by_ticker_day(
     return pd.DataFrame(rows, columns=list(SENTIMENT_AGGREGATE_COLUMNS))
 
 
+def sentiment_feature_records_from_scored_news(
+    scored_news: pd.DataFrame,
+    *,
+    credibility_config: SourceCredibilityConfig | None = None,
+    bucket_timezone: str = "America/New_York",
+) -> list[FeatureRecord]:
+    """Aggregate scored news rows into ticker-day sentiment FeatureRecords."""
+    config = _normalized_config(credibility_config or load_source_credibility_config())
+    pd, frame = _prepare_scored_news_frame(
+        scored_news,
+        config=config,
+        bucket_timezone=bucket_timezone,
+    )
+    if len(frame) == 0:
+        return []
+
+    records: list[FeatureRecord] = []
+    for (date_value, ticker), group in frame.groupby(["date", "ticker"], sort=True, dropna=False):
+        if pd.isna(ticker):
+            raise ValueError("sentiment rows must contain ticker values")
+
+        strength_values = group[["sentiment_positive", "sentiment_negative"]].max(axis=1)
+        sentiment_std = group["sentiment_score"].astype(float).std(ddof=0)
+        records.append(
+            FeatureRecord(
+                date=str(date_value),
+                ticker=str(ticker),
+                features={
+                    "nlp_sentiment_positive": _weighted_average(
+                        group["sentiment_positive"], group["_effective_weight"]
+                    ),
+                    "nlp_sentiment_negative": _weighted_average(
+                        group["sentiment_negative"], group["_effective_weight"]
+                    ),
+                    "nlp_sentiment_neutral": _weighted_average(
+                        group["sentiment_neutral"], group["_effective_weight"]
+                    ),
+                    "nlp_sentiment_score": _weighted_average(
+                        group["sentiment_score"], group["_effective_weight"]
+                    ),
+                    "nlp_sentiment_strength": _weighted_average(
+                        strength_values, group["_effective_weight"]
+                    ),
+                    "nlp_sentiment_std": 0.0 if pd.isna(sentiment_std) else float(sentiment_std),
+                    "nlp_article_count": _article_count(group),
+                    "nlp_sentence_count": int(len(group)),
+                    "nlp_relevance_score": _weighted_average(
+                        group["relevance_score"], group["_source_weight"]
+                    ),
+                },
+            )
+        )
+    return records
+
+
+def sentiment_feature_records_to_frame(records: Sequence[FeatureRecord]) -> pd.DataFrame:
+    """Serialize sentiment FeatureRecords into a Parquet-ready DataFrame."""
+    pd = _require_pandas()
+    rows = [
+        {
+            "date": record.date,
+            "ticker": record.ticker,
+            "features": json.dumps(record.features, sort_keys=True, separators=(",", ":")),
+        }
+        for record in records
+    ]
+    return pd.DataFrame(rows, columns=["date", "ticker", "features"])
+
+
 def sentiment_aggregates_to_records(aggregates: pd.DataFrame) -> list[NewsSentimentRecord]:
     """Convert sentiment aggregate rows into `NewsSentimentRecord` instances."""
     _validate_columns(aggregates, required=frozenset(SENTIMENT_AGGREGATE_COLUMNS))
@@ -179,6 +307,59 @@ def sentiment_aggregates_to_records(aggregates: pd.DataFrame) -> list[NewsSentim
     return records
 
 
+def _prepare_scored_news_frame(
+    scored_news: pd.DataFrame,
+    *,
+    config: SourceCredibilityConfig,
+    bucket_timezone: str,
+) -> tuple[Any, pd.DataFrame]:
+    """Validate and normalize scored news rows for sentiment aggregation."""
+    pd = _require_pandas()
+    _validate_columns(scored_news)
+    _validate_timezone(bucket_timezone)
+
+    frame = scored_news.copy()
+    if len(frame) == 0:
+        return pd, frame
+
+    frame["date"] = [
+        _bucket_date(
+            row.get("published_at"),
+            fallback_date=row.get("date"),
+            bucket_timezone=bucket_timezone,
+        )
+        for row in frame.to_dict(orient="records")
+    ]
+    if frame["date"].isna().any():
+        raise ValueError("sentiment rows must contain date-like values")
+
+    for column in (
+        "sentiment_positive",
+        "sentiment_negative",
+        "sentiment_neutral",
+        "sentiment_score",
+        "relevance_score",
+    ):
+        frame[column] = frame[column].map(_to_float_or_none)
+
+    required_numeric = (
+        "sentiment_positive",
+        "sentiment_negative",
+        "sentiment_neutral",
+        "sentiment_score",
+    )
+    if frame[list(required_numeric)].isna().any().any():
+        raise ValueError("sentiment probability and score columns must be numeric")
+    _validate_probability_columns(frame)
+
+    frame["_source_weight"] = frame["source"].map(
+        lambda value: _source_weight(value, config=config)
+    )
+    frame["_relevance_weight"] = frame["relevance_score"].map(_relevance_weight)
+    frame["_effective_weight"] = frame["_source_weight"] * frame["_relevance_weight"]
+    return pd, frame
+
+
 def _validate_columns(
     frame: pd.DataFrame,
     *,
@@ -194,6 +375,14 @@ def _validate_config(config: SourceCredibilityConfig) -> None:
     """Raise when source credibility config contains invalid weights."""
     _validate_weight(config.default_source_weight, label="default_source_weight")
     _normalize_source_weights(config.source_weights)
+
+
+def _validate_timezone(timezone_name: str) -> None:
+    """Raise when the configured date-bucketing timezone is invalid."""
+    try:
+        ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError as exc:
+        raise ValueError(f"Invalid bucket_timezone: {timezone_name}") from exc
 
 
 def _normalized_config(config: SourceCredibilityConfig) -> SourceCredibilityConfig:
@@ -290,6 +479,43 @@ def _to_iso_date(value: Any) -> str | None:
     if timestamp is None or getattr(timestamp, "tzinfo", None) is None:
         return None
     return timestamp.date().isoformat()
+
+
+def _scoring_text(record: NewsSentimentRecord) -> str | None:
+    """Return the text chunk used for FinBERT scoring."""
+    return _normalize_optional_string(record.text) or _normalize_optional_string(record.headline)
+
+
+def _bucket_date(
+    published_at: Any,
+    *,
+    fallback_date: Any,
+    bucket_timezone: str,
+) -> str | None:
+    """Return the ticker-day bucket for a row using the configured timezone."""
+    pd = _require_pandas()
+    if published_at is not None and not pd.isna(published_at):
+        try:
+            timestamp = pd.to_datetime(published_at, utc=True)
+        except (TypeError, ValueError):
+            timestamp = None
+        if timestamp is not None and not pd.isna(timestamp):
+            return timestamp.tz_convert(bucket_timezone).date().isoformat()
+    return _to_iso_date(fallback_date)
+
+
+def _article_count(group: pd.DataFrame) -> int:
+    """Return unique article count when article ids exist, otherwise row count."""
+    if "article_id" not in group.columns:
+        return int(len(group))
+    article_ids = [
+        text
+        for text in group["article_id"].map(_normalize_optional_string).tolist()
+        if text is not None
+    ]
+    if not article_ids:
+        return int(len(group))
+    return len(set(article_ids))
 
 
 def _to_float_or_none(value: Any) -> float | None:
