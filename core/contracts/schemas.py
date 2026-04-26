@@ -6,7 +6,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-SCHEMA_VERSION = "1.0.0"
+SCHEMA_VERSION = "1.1.0"
 
 
 class ActionType(StrEnum):
@@ -60,14 +60,18 @@ class OHLCVRecord(BaseModel):
 
 
 class NewsSentimentRecord(BaseModel):
-    """Article-level or aggregated ticker-day sentiment record."""
+    """Sentence-level, article-level, or aggregated ticker-day sentiment record."""
 
     model_config = ConfigDict(extra="forbid")
 
     date: str
     ticker: str
     headline: str | None = None
+    text: str | None = None
+    article_id: str | None = None
+    sentence_index: int | None = Field(default=None, ge=0)
     source: str | None = None
+    url: str | None = None
     published_at: datetime | None = None
     sentiment_positive: float | None = Field(default=None, ge=0.0, le=1.0)
     sentiment_negative: float | None = Field(default=None, ge=0.0, le=1.0)

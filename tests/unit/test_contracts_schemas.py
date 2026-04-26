@@ -50,6 +50,28 @@ def test_news_sentiment_probability_bounds() -> None:
     assert record.sentiment_positive == 0.7
 
 
+def test_news_sentiment_sentence_fields_are_optional_and_validated() -> None:
+    """Sentence-level NLP fields should be optional with non-negative sentence indexes."""
+    fixture = _contracts_fixture()["news_sentiment_record"]
+    record = NewsSentimentRecord(**fixture)
+
+    assert record.text == "Apple supplier expands AI chip capacity."
+    assert record.article_id == "alpaca-news-001"
+    assert record.sentence_index == 0
+    assert record.url == "https://example.com/news/alpaca-news-001"
+
+    aggregate_record = NewsSentimentRecord(date="2026-04-06", ticker="AAPL")
+    assert aggregate_record.text is None
+    assert aggregate_record.article_id is None
+    assert aggregate_record.sentence_index is None
+
+    try:
+        NewsSentimentRecord(**{**fixture, "sentence_index": -1})
+    except ValidationError:
+        return
+    assert False, "Expected ValidationError for negative sentence_index"
+
+
 def test_feature_record_holds_dynamic_feature_map() -> None:
     """FeatureRecord should keep flexible features dictionary."""
     record = FeatureRecord(**_contracts_fixture()["feature_record"])

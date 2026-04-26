@@ -152,13 +152,17 @@ Notes:
 
 ### NewsSentimentRecord
 
-Represents one scored article or one aggregated ticker-day sentiment view.
+Represents one sentence-level, article-level, or aggregated ticker-day sentiment view.
 
 Fields:
 - `date`
 - `ticker`
 - `headline`
+- `text`
+- `article_id`
+- `sentence_index`
 - `source`
+- `url`
 - `published_at`
 - `sentiment_positive`
 - `sentiment_negative`
@@ -167,12 +171,16 @@ Fields:
 - `relevance_score`
 
 Use cases:
+- point-in-time sentence-level NLP preprocessing
 - text feature generation
 - article-level diagnostics
 - sentiment aggregation
 
 Input note:
 - generated from Layer 0 raw point-in-time news archives
+- sentence-level preprocessing rows should populate `text`, `article_id`, and
+  `sentence_index`; aggregated ticker-day rows may leave those fields unset
+- `published_at` must preserve the raw article timestamp exactly for downstream leakage checks
 
 ### FeatureRecord
 
