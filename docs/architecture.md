@@ -175,6 +175,7 @@ r2/
   features/
     layer1/           # Layer 1 feature shards as Parquet (one file per date/ticker)
       news_sentiment/ # Sentence-level NewsSentimentRecord rows from Modal preprocessing
+    layer1_5/         # Market-wide regime features from Modal HMM jobs
   processed/
     scores/           # Layer 2 score outputs as Parquet
     orders/           # Approved order proposals as CSV
@@ -708,6 +709,7 @@ The laptop is used for:
 ### Cloud (Modal)
 Modal is used for:
 - FinBERT inference (GPU)
+- HMM regime detection
 - XGBoost training and inference
 - retraining jobs
 - artifact packaging

@@ -1,0 +1,5 @@
+{
+  "hmm_regime_app_name": "ai-stock-trader-hmm-regime-detection",
+  "r2_secret_name": "ai-stock-trader-r2",
+  "timeout_seconds": 1800
+}
