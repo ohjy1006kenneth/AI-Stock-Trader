@@ -60,10 +60,12 @@ before enabling the live daily loop.
    - Write `PipelineManifestRecord` (stage=layer0)
 
 2. **Layer 1 feature generation** (Modal)
-   - Read today's OHLCV Parquet and news JSON Lines from R2
+   - Read today's OHLCV Parquet, news JSON Lines, and universe CSV from R2
    - Read point-in-time SimFin fundamentals and earnings dates from R2
    - Read FRED macro context series persisted for the run date from R2
    - Fail closed if the required Layer 0 raw archives or manifests are missing
+   - Preprocess news into sentence-level `NewsSentimentRecord` rows at
+     `features/layer1/news_sentiment/{YYYY-MM-DD}/{run_id}.parquet`
    - Compute market, NLP, and context features for today
    - Write aligned feature shards to `features/layer1/YYYY-MM-DD/TICKER.parquet` in R2
    - Write `PipelineManifestRecord` (stage=layer1)

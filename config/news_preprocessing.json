@@ -1,0 +1,5 @@
+{
+  "app_name": "ai-stock-trader-news-preprocessing",
+  "r2_secret_name": "ai-stock-trader-r2",
+  "timeout_seconds": 1800
+}
