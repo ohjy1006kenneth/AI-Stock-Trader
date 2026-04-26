@@ -1,0 +1,12 @@
+{
+  "app_name": "ai-stock-trader-finbert-sentiment",
+  "r2_secret_name": "ai-stock-trader-r2",
+  "timeout_seconds": 7200,
+  "model_name": "ProsusAI/finbert",
+  "model_revision": "main",
+  "batch_size": 16,
+  "default_relevance_score": 1.0,
+  "bucket_timezone": "America/New_York",
+  "source_credibility_config_path": "config/source_credibility.json",
+  "device": -1
+}

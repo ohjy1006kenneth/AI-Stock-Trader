@@ -7,6 +7,8 @@ import pytest
 from services.r2.paths import (
     build_r2_key,
     layer1_feature_path,
+    layer1_sentiment_feature_path,
+    layer1_sentiment_score_path,
     layer1_text_embedding_path,
     layer1_topic_feature_path,
     layer1_topic_label_path,
@@ -64,6 +66,14 @@ def test_layer1_text_artifact_paths_return_canonical_keys() -> None:
     assert (
         layer1_topic_feature_path("2025-01-02", "run-001")
         == "features/layer1/topic_features/2025-01-02/run-001.parquet"
+    )
+    assert (
+        layer1_sentiment_score_path("2025-01-02", "run-001")
+        == "features/layer1/news_sentiment_scored/2025-01-02/run-001.parquet"
+    )
+    assert (
+        layer1_sentiment_feature_path("2025-01-02", "run-001")
+        == "features/layer1/sentiment_features/2025-01-02/run-001.parquet"
     )
 
 
