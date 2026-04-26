@@ -7,6 +7,9 @@ import pytest
 from services.r2.paths import (
     build_r2_key,
     layer1_feature_path,
+    layer1_text_embedding_path,
+    layer1_topic_feature_path,
+    layer1_topic_label_path,
     pipeline_manifest_path,
     raw_fundamentals_path,
     raw_macro_path,
@@ -45,6 +48,22 @@ def test_layer1_feature_path_returns_canonical_key() -> None:
     assert (
         layer1_feature_path(datetime(2025, 1, 2, 15, 30), "MSFT")
         == "features/layer1/2025-01-02/MSFT.parquet"
+    )
+
+
+def test_layer1_text_artifact_paths_return_canonical_keys() -> None:
+    """Layer 1 text embedding/topic artifacts should be date and run partitioned."""
+    assert (
+        layer1_text_embedding_path("2025-01-02", "run-001")
+        == "features/layer1/text_embeddings/2025-01-02/run-001.parquet"
+    )
+    assert (
+        layer1_topic_label_path("2025-01-02", "run-001")
+        == "features/layer1/topic_labels/2025-01-02/run-001.parquet"
+    )
+    assert (
+        layer1_topic_feature_path("2025-01-02", "run-001")
+        == "features/layer1/topic_features/2025-01-02/run-001.parquet"
     )
 
 

@@ -1,0 +1,11 @@
+{
+  "app_name": "ai-stock-trader-text-topics",
+  "r2_secret_name": "ai-stock-trader-r2",
+  "timeout_seconds": 3600,
+  "embedding_model_name": "sentence-transformers/all-mpnet-base-v2",
+  "embedding_model_revision": "86eb780758622d085bac2d7f6aea99c157a5ee28",
+  "embedding_dimension": 768,
+  "topic_model_name": "BERTopic",
+  "topic_model_version": "bertopic-0.16.x",
+  "min_topic_size": 15
+}

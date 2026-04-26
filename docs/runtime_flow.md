@@ -66,6 +66,9 @@ before enabling the live daily loop.
    - Fail closed if the required Layer 0 raw archives or manifests are missing
    - Preprocess news into sentence-level `NewsSentimentRecord` rows at
      `features/layer1/news_sentiment/{YYYY-MM-DD}/{run_id}.parquet`
+   - Compute pinned-model sentence embeddings and BERTopic labels into
+     `features/layer1/text_embeddings/`, `features/layer1/topic_labels/`, and
+     `features/layer1/topic_features/`
    - Compute market, NLP, and context features for today
    - Write aligned feature shards to `features/layer1/YYYY-MM-DD/TICKER.parquet` in R2
    - Write `PipelineManifestRecord` (stage=layer1)
