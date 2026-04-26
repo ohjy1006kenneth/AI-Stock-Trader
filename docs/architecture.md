@@ -175,6 +175,9 @@ r2/
   features/
     layer1/           # Layer 1 feature shards as Parquet (one file per date/ticker)
       news_sentiment/ # Sentence-level NewsSentimentRecord rows from Modal preprocessing
+      text_embeddings/# Sentence embedding cache keyed by pinned model/version
+      topic_labels/   # Sentence-level BERTopic labels from Modal
+      topic_features/ # Ticker-day FeatureRecord topic summaries
     layer1_5/         # Market-wide regime features from Modal HMM jobs
   processed/
     scores/           # Layer 2 score outputs as Parquet
@@ -308,10 +311,10 @@ RAW ARTICLES (Alpaca news)
       features/layer1/news_sentiment/{date}/{run_id}.parquet
   → Step 2a: Sentence Transformers (per article)
       Model: all-mpnet-base-v2
-      Output: 384-dim embedding per article
+      Output: pinned-version sentence embedding cache in R2
   → Step 2b: BERTopic (across all articles today)
       Input: all articles in the universe today
-      Output: topic assignments and probabilities per article
+      Output: topic assignments, probabilities, and ticker-day topic FeatureRecords
       Recommended: 20–50 topics; tune minimum topic size
   → Step 3a: Relevance filter (cosine similarity)
       Keep only financially relevant articles using reference embeddings

@@ -63,6 +63,42 @@ def layer1_feature_path(as_of_date: str | Date | datetime, ticker: str) -> str:
     return build_r2_key("features", "layer1", _format_date(as_of_date), f"{safe_ticker}.parquet")
 
 
+def layer1_text_embedding_path(as_of_date: str | Date | datetime, run_id: str) -> str:
+    """Return the canonical Layer 1 sentence-embedding cache path."""
+    safe_run_id = _validate_key_part(run_id)
+    return build_r2_key(
+        "features",
+        "layer1",
+        "text_embeddings",
+        _format_date(as_of_date),
+        f"{safe_run_id}.parquet",
+    )
+
+
+def layer1_topic_label_path(as_of_date: str | Date | datetime, run_id: str) -> str:
+    """Return the canonical Layer 1 sentence-topic label path."""
+    safe_run_id = _validate_key_part(run_id)
+    return build_r2_key(
+        "features",
+        "layer1",
+        "topic_labels",
+        _format_date(as_of_date),
+        f"{safe_run_id}.parquet",
+    )
+
+
+def layer1_topic_feature_path(as_of_date: str | Date | datetime, run_id: str) -> str:
+    """Return the canonical Layer 1 ticker-day topic feature path."""
+    safe_run_id = _validate_key_part(run_id)
+    return build_r2_key(
+        "features",
+        "layer1",
+        "topic_features",
+        _format_date(as_of_date),
+        f"{safe_run_id}.parquet",
+    )
+
+
 def pipeline_manifest_path(stage: str, run_id: str) -> str:
     """Return the canonical pipeline manifest path for one stage/run pair."""
     safe_stage = _validate_key_part(stage)
