@@ -52,13 +52,22 @@ class R2Writer:
     """Unified object-store wrapper for real R2 and the local mock."""
 
     def __init__(self, local_root: Path | None = None) -> None:
-        """Select the real client when credentials exist, otherwise use the local mock."""
-        if has_required_r2_env_vars():
+        """Select the local mock when `local_root` is supplied, otherwise the real client.
+
+        Passing an explicit `local_root` is a hard request for the local mock — even when
+        Cloudflare R2 credentials are present in the environment. This prevents tests that
+        intend to write to a temporary directory from silently leaking objects into the
+        production R2 bucket. Production callers continue to construct `R2Writer()` with
+        no arguments, which selects the real client whenever env vars are configured.
+        """
+        if local_root is not None:
+            self._client = LocalR2Client(root=local_root.resolve())
+            self.mode = "local"
+        elif has_required_r2_env_vars():
             self._client = CloudflareR2Client.from_env()
             self.mode = "r2"
         else:
-            root = (local_root or DEFAULT_LOCAL_R2_ROOT).resolve()
-            self._client = LocalR2Client(root=root)
+            self._client = LocalR2Client(root=DEFAULT_LOCAL_R2_ROOT.resolve())
             self.mode = "local"
 
     def put_object(self, key: str, data: bytes | str) -> None:
