@@ -17,9 +17,13 @@ from core.features.fundamentals_features import (
 )
 from core.features.io import (
     feature_record_to_parquet_bytes,
+    feature_records_to_parquet_bytes,
     parquet_bytes_to_feature_record,
+    parquet_bytes_to_feature_records,
     read_feature_record,
+    read_feature_records,
     write_feature_record,
+    write_feature_records,
 )
 from core.features.loaders import load_fundamentals_frame, load_macro_frame, load_ohlcv_frame
 from core.features.macro_features import (
@@ -117,6 +121,7 @@ __all__ = [
     "context_features_to_records",
     "embedding_cache_key",
     "feature_record_to_parquet_bytes",
+    "feature_records_to_parquet_bytes",
     "feature_records_to_frame",
     "emit_hmm_regime_features",
     "fit_and_emit_hmm_regime_features",
@@ -130,8 +135,10 @@ __all__ = [
     "market_features_to_records",
     "news_sentiment_frame_to_records",
     "parquet_bytes_to_feature_record",
+    "parquet_bytes_to_feature_records",
     "preprocess_news_articles",
     "read_feature_record",
+    "read_feature_records",
     "records_to_news_sentiment_frame",
     "score_news_sentiment",
     "sentiment_aggregates_to_records",
@@ -142,4 +149,5 @@ __all__ = [
     "topic_labels_to_feature_records",
     "validate_feature_availability",
     "write_feature_record",
+    "write_feature_records",
 ]

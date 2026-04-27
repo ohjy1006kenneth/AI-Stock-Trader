@@ -63,6 +63,12 @@ def layer1_feature_path(as_of_date: str | Date | datetime, ticker: str) -> str:
     return build_r2_key("features", "layer1", _format_date(as_of_date), f"{safe_ticker}.parquet")
 
 
+def layer1_ticker_history_path(ticker: str) -> str:
+    """Return the canonical Layer 1 full-history Parquet path for one ticker."""
+    safe_ticker = _validate_key_part(ticker)
+    return build_r2_key("features", "layer1", f"{safe_ticker}.parquet")
+
+
 def layer1_text_embedding_path(as_of_date: str | Date | datetime, run_id: str) -> str:
     """Return the canonical Layer 1 sentence-embedding cache path."""
     safe_run_id = _validate_key_part(run_id)

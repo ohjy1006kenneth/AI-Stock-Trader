@@ -1,7 +1,7 @@
 """Modal-ready Layer 1 production-run orchestrator.
 
-Reads Layer 0 R2 archives and produces aligned feature shards for every
-`(date, ticker)` pair in the supplied ticker list. Per-branch feature
+Reads Layer 0 R2 archives and produces aligned feature histories for every
+ticker in the supplied ticker list. Per-branch feature
 computation respects each module's documented leakage invariant; the final
 assembly step also runs `assemble_layer1_feature_records` to defend against
 input misconfiguration.
@@ -13,12 +13,12 @@ The orchestrator iterates per ticker:
     3. Compute context features (M2.3 + M2.4) — fundamentals merged with
        macro/rates broadcast across every trading day.
     4. Wrap each branch's output in a `Layer1FeatureInput` and assemble into
-       per-(date, ticker) FeatureRecords with leakage validation.
-    5. Persist each record as `features/layer1/{date}/{ticker}.parquet`.
+       FeatureRecords with leakage validation.
+    5. Persist each ticker history as `features/layer1/{ticker}.parquet`.
 
 NLP and regime features have their own dedicated runners
 (`run_text_topics.py`, `run_finbert_sentiment.py`, regime training); the
-production validator (`validate_layer1_archive.py`) checks shard presence
+production validator (`validate_layer1_archive.py`) checks history-file presence
 across the universe.
 """
 from __future__ import annotations
@@ -44,7 +44,7 @@ from core.features.context_features import (  # noqa: E402
     compute_context_features,
     context_features_to_records,
 )
-from core.features.io import write_feature_record  # noqa: E402
+from core.features.io import write_feature_records  # noqa: E402
 from core.features.loaders import (  # noqa: E402
     load_fundamentals_frame,
     load_macro_frame,
@@ -96,7 +96,8 @@ class Layer1BackfillResult:
 
     run_id: str
     tickers_processed: int
-    shards_written: int
+    ticker_files_written: int
+    feature_rows_written: int
     started_at: datetime
     finished_at: datetime
     manifest_key: str
@@ -108,14 +109,15 @@ def backfill_layer1(
     writer: ObjectStore | None = None,
     now: datetime | None = None,
 ) -> Layer1BackfillResult:
-    """Compute aligned Layer 1 feature shards for every requested ticker."""
+    """Compute aligned Layer 1 feature histories for every requested ticker."""
     started = (now or datetime.now(UTC)).replace(microsecond=0)
     active_writer = writer or R2Writer()
 
     macro_frame = load_macro_frame(writer=active_writer)
     benchmark_bars = _try_load_benchmark(active_writer, config.benchmark_ticker)
 
-    shards_written = 0
+    ticker_files_written = 0
+    feature_rows_written = 0
     try:
         for ticker in config.tickers:
             logger.info("Backfilling Layer 1 features for ticker={}", ticker)
@@ -155,9 +157,9 @@ def backfill_layer1(
                     ),
                 ]
             )
-            for record in assembled:
-                write_feature_record(record, writer=active_writer)
-                shards_written += 1
+            written_keys = write_feature_records(assembled, writer=active_writer)
+            ticker_files_written += len(written_keys)
+            feature_rows_written += len(assembled)
 
         finished = (now or datetime.now(UTC)).replace(microsecond=0)
         manifest_key = _write_manifest(
@@ -168,19 +170,22 @@ def backfill_layer1(
             finished_at=finished,
             metadata={
                 "tickers_processed": len(config.tickers),
-                "shards_written": shards_written,
+                "ticker_files_written": ticker_files_written,
+                "feature_rows_written": feature_rows_written,
                 "benchmark_ticker": config.benchmark_ticker,
             },
         )
         logger.info(
-            "Layer 1 backfill finished run_id={} shards={}",
+            "Layer 1 backfill finished run_id={} ticker_files={} rows={}",
             config.run_id,
-            shards_written,
+            ticker_files_written,
+            feature_rows_written,
         )
         return Layer1BackfillResult(
             run_id=config.run_id,
             tickers_processed=len(config.tickers),
-            shards_written=shards_written,
+            ticker_files_written=ticker_files_written,
+            feature_rows_written=feature_rows_written,
             started_at=started,
             finished_at=finished,
             manifest_key=manifest_key,
@@ -195,7 +200,8 @@ def backfill_layer1(
             finished_at=finished,
             metadata={
                 "tickers_processed": len(config.tickers),
-                "shards_written": shards_written,
+                "ticker_files_written": ticker_files_written,
+                "feature_rows_written": feature_rows_written,
                 "benchmark_ticker": config.benchmark_ticker,
             },
         )
