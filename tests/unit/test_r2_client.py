@@ -298,6 +298,36 @@ def test_r2_writer_falls_back_to_local_mock(tmp_path: Path, monkeypatch) -> None
     assert writer.exists("raw/universe/2026-04-08.csv") is True
 
 
+def test_r2_writer_local_root_overrides_real_credentials(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """An explicit local_root forces the local mock even when env vars exist.
+
+    Regression: tests that pass `R2Writer(local_root=tmp_path)` must never silently
+    write to the production R2 bucket. Earlier behavior selected the real client whenever
+    env vars were configured, which polluted production R2 from integration tests.
+    """
+    monkeypatch.setenv(R2_ENDPOINT_ENV, "https://example.r2.cloudflarestorage.com")
+    monkeypatch.setenv(R2_ACCESS_KEY_ENV, "access-key")
+    monkeypatch.setenv(R2_SECRET_KEY_ENV, "secret-key")
+    monkeypatch.setenv(R2_BUCKET_ENV, "bucket-name")
+
+    def _fail(cls):
+        raise AssertionError("Real R2 client must not be constructed when local_root is given")
+
+    monkeypatch.setattr(
+        "services.r2.writer.CloudflareR2Client.from_env",
+        classmethod(_fail),
+    )
+
+    writer = R2Writer(local_root=tmp_path)
+    writer.put_object("raw/universe/2026-04-08.csv", "ticker,date")
+
+    assert writer.mode == "local"
+    assert (tmp_path / "raw/universe/2026-04-08.csv").read_text() == "ticker,date"
+
+
 def test_r2_writer_uses_remote_client_when_env_vars_exist(monkeypatch) -> None:
     """R2Writer should select the CloudflareR2Client when all env vars are present."""
     fake_client = FakeS3Client()
