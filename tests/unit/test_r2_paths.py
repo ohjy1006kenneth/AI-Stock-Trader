@@ -10,6 +10,7 @@ from services.r2.paths import (
     layer1_sentiment_feature_path,
     layer1_sentiment_score_path,
     layer1_text_embedding_path,
+    layer1_ticker_history_path,
     layer1_topic_feature_path,
     layer1_topic_label_path,
     pipeline_manifest_path,
@@ -45,12 +46,20 @@ def test_layer0_raw_path_builders_return_canonical_keys() -> None:
 
 
 def test_layer1_feature_path_returns_canonical_key() -> None:
-    """Layer 1 feature shards should be partitioned by date and ticker."""
-    assert layer1_feature_path("2025-01-02", "AAPL") == "features/layer1/2025-01-02/AAPL.parquet"
+    """Daily Layer 1 feature shards should be partitioned by date and ticker."""
+    assert (
+        layer1_feature_path("2025-01-02", "AAPL")
+        == "features/layer1/2025-01-02/AAPL.parquet"
+    )
     assert (
         layer1_feature_path(datetime(2025, 1, 2, 15, 30), "MSFT")
         == "features/layer1/2025-01-02/MSFT.parquet"
     )
+
+
+def test_layer1_ticker_history_path_returns_canonical_key() -> None:
+    """Layer 1 historical feature files should be partitioned by ticker only."""
+    assert layer1_ticker_history_path("AAPL") == "features/layer1/AAPL.parquet"
 
 
 def test_layer1_text_artifact_paths_return_canonical_keys() -> None:

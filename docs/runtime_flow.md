@@ -74,7 +74,8 @@ before enabling the live daily loop.
      ticker-day sentiment FeatureRecords into
      `features/layer1/sentiment_features/{YYYY-MM-DD}/{run_id}.parquet`
    - Compute market, NLP, and context features for today
-   - Write aligned feature shards to `features/layer1/YYYY-MM-DD/TICKER.parquet` in R2
+   - Refresh aligned per-ticker feature histories at `features/layer1/TICKER.parquet` in R2
+     while preserving daily single-record shard support for incremental runs
    - Write `PipelineManifestRecord` (stage=layer1)
 
 3. **Layer 1.5 regime detection** (Modal)

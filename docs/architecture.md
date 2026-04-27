@@ -173,7 +173,7 @@ r2/
     macro/            # FRED macro/rate observations as available on the run date
     reference/        # Symbol/security-reference snapshots
   features/
-    layer1/           # Layer 1 feature shards as Parquet (one file per date/ticker)
+    layer1/           # Layer 1 feature histories as Parquet (one file per ticker)
       news_sentiment/ # Sentence-level NewsSentimentRecord rows from Modal preprocessing
       text_embeddings/# Sentence embedding cache keyed by pinned model/version
       topic_labels/   # Sentence-level BERTopic labels from Modal
@@ -209,7 +209,7 @@ Any artifact that must survive a Pi restart or be accessed by Modal must be writ
 | Data type | Format | Reason |
 |---|---|---|
 | OHLCV history | Parquet (per ticker) | 10–50x faster than CSV; columnar reads; `pd.read_parquet()` |
-| Feature tables | Parquet (per date/ticker shard) | Keeps Layer 1 artifacts aligned to the FeatureRecord contract |
+| Feature tables | Parquet (per ticker history) | Keeps Layer 1 artifacts aligned to the FeatureRecord contract while reducing object count |
 | Model scores | Parquet | Small, fast to read |
 | News raw archive | JSON Lines | One article per line; easy to stream |
 | Fundamentals archive | Parquet | Point-in-time company fundamentals; efficient ticker/date joins |
@@ -300,6 +300,10 @@ All features must satisfy: **a feature value used on date T can only use informa
 before market open on date T.** Any violation is lookahead bias.
 
 Final feature table shape: `(N_dates × N_tickers)` rows × `M_features` columns.
+Historical backfills persist this table as one full-history Parquet file per ticker under
+`features/layer1/{ticker}.parquet`; daily incremental writers may still emit a single
+`features/layer1/{date}/{ticker}.parquet` shard for the current run before that ticker's
+history file is refreshed.
 
 #### Text / NLP branch
 

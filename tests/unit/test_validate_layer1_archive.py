@@ -14,8 +14,8 @@ from app.lab.data_pipelines.validate_layer1_archive import (
     write_validation_report,
 )
 from core.contracts.schemas import FeatureRecord
-from core.features.io import feature_record_to_parquet_bytes
-from services.r2.paths import layer1_feature_path
+from core.features.io import feature_records_to_parquet_bytes
+from services.r2.paths import layer1_ticker_history_path
 
 
 class _Reader:
@@ -34,27 +34,31 @@ class _Reader:
         return sorted(key for key in self.objects if key.startswith(prefix))
 
 
-def _shard_bytes(date: str, ticker: str) -> bytes:
-    """Return a valid Layer 1 feature shard payload for one (date, ticker)."""
-    record = FeatureRecord(
-        date=date,
-        ticker=ticker,
-        features={"returns_1d": 0.01},
-    )
-    return feature_record_to_parquet_bytes(record)
+def _history_bytes(ticker: str, dates: list[str]) -> bytes:
+    """Return a valid Layer 1 feature-history payload for one ticker."""
+    records = [
+        FeatureRecord(
+            date=as_of_date,
+            ticker=ticker,
+            features={"returns_1d": 0.01},
+        )
+        for as_of_date in dates
+    ]
+    return feature_records_to_parquet_bytes(records)
 
 
-def test_validate_layer1_archive_marks_ready_when_every_shard_present() -> None:
-    """A complete archive yields ready_for_layer2=True with no missing shards."""
+def test_validate_layer1_archive_marks_ready_when_every_history_present() -> None:
+    """A complete archive yields ready_for_layer2=True with no missing histories."""
     universe = {
         "2024-01-02": ["AAPL", "MSFT"],
         "2024-01-03": ["AAPL"],
     }
     reader = _Reader(
         {
-            layer1_feature_path("2024-01-02", "AAPL"): _shard_bytes("2024-01-02", "AAPL"),
-            layer1_feature_path("2024-01-02", "MSFT"): _shard_bytes("2024-01-02", "MSFT"),
-            layer1_feature_path("2024-01-03", "AAPL"): _shard_bytes("2024-01-03", "AAPL"),
+            layer1_ticker_history_path("AAPL"): _history_bytes(
+                "AAPL", ["2024-01-02", "2024-01-03"]
+            ),
+            layer1_ticker_history_path("MSFT"): _history_bytes("MSFT", ["2024-01-02"]),
         }
     )
 
@@ -67,20 +71,22 @@ def test_validate_layer1_archive_marks_ready_when_every_shard_present() -> None:
     )
 
     assert report.ready_for_layer2 is True
-    assert report.expected_shards == 3
-    assert report.present_shards == 3
-    assert report.missing_shards == []
+    assert report.expected_ticker_files == 2
+    assert report.present_ticker_files == 2
+    assert report.expected_rows == 3
+    assert report.present_rows == 3
+    assert report.missing_ticker_files == []
     assert report.schema_failures == 0
 
 
-def test_validate_layer1_archive_reports_missing_shards() -> None:
-    """Missing shards keep ready_for_layer2=False and list the keys."""
+def test_validate_layer1_archive_reports_missing_histories() -> None:
+    """Missing ticker histories keep ready_for_layer2=False and list the keys."""
     universe = {
         "2024-01-02": ["AAPL", "MSFT"],
     }
     reader = _Reader(
         {
-            layer1_feature_path("2024-01-02", "AAPL"): _shard_bytes("2024-01-02", "AAPL"),
+            layer1_ticker_history_path("AAPL"): _history_bytes("AAPL", ["2024-01-02"]),
         }
     )
 
@@ -93,19 +99,19 @@ def test_validate_layer1_archive_reports_missing_shards() -> None:
     )
 
     assert report.ready_for_layer2 is False
-    assert report.expected_shards == 2
-    assert report.present_shards == 1
-    assert report.missing_shards == [layer1_feature_path("2024-01-02", "MSFT")]
+    assert report.expected_ticker_files == 2
+    assert report.present_ticker_files == 1
+    assert report.missing_ticker_files == [layer1_ticker_history_path("MSFT")]
 
 
-def test_validate_layer1_archive_flags_corrupt_shards() -> None:
-    """Shards that fail to decode are reported via schema_failures."""
+def test_validate_layer1_archive_flags_corrupt_histories() -> None:
+    """Histories that fail to decode are reported via schema_failures."""
     bad_frame = pd.DataFrame(
         [{"date": "2024-01-02", "ticker": "AAPL", "features": "not-json"}]
     )
     buffer = io.BytesIO()
     bad_frame.to_parquet(buffer, index=False)
-    reader = _Reader({layer1_feature_path("2024-01-02", "AAPL"): buffer.getvalue()})
+    reader = _Reader({layer1_ticker_history_path("AAPL"): buffer.getvalue()})
 
     report = validate_layer1_archive(
         run_id="layer1-corrupt",
@@ -117,7 +123,26 @@ def test_validate_layer1_archive_flags_corrupt_shards() -> None:
 
     assert report.ready_for_layer2 is False
     assert report.schema_failures == 1
-    assert report.schema_failure_keys == [layer1_feature_path("2024-01-02", "AAPL")]
+    assert report.schema_failure_keys == [layer1_ticker_history_path("AAPL")]
+
+
+def test_validate_layer1_archive_flags_row_count_mismatch() -> None:
+    """History files must contain exactly the dates implied by the universe."""
+    reader = _Reader(
+        {layer1_ticker_history_path("AAPL"): _history_bytes("AAPL", ["2024-01-02"])}
+    )
+
+    report = validate_layer1_archive(
+        run_id="layer1-row-mismatch",
+        from_date="2024-01-02",
+        to_date="2024-01-03",
+        universe={"2024-01-02": ["AAPL"], "2024-01-03": ["AAPL"]},
+        reader=reader,
+    )
+
+    assert report.ready_for_layer2 is False
+    assert report.row_count_failures == 1
+    assert report.row_count_failure_keys == [layer1_ticker_history_path("AAPL")]
 
 
 def test_validate_layer1_archive_rejects_non_iso_dates() -> None:
@@ -146,7 +171,7 @@ def test_validate_layer1_archive_empty_universe_is_not_ready() -> None:
     )
 
     assert report.ready_for_layer2 is False
-    assert report.expected_shards == 0
+    assert report.expected_rows == 0
 
 
 def test_write_validation_report_writes_json(tmp_path: Path) -> None:
@@ -155,10 +180,13 @@ def test_write_validation_report_writes_json(tmp_path: Path) -> None:
         run_id="layer1",
         from_date="2024-01-02",
         to_date="2024-01-02",
-        expected_shards=1,
-        present_shards=0,
+        expected_ticker_files=1,
+        present_ticker_files=0,
+        expected_rows=1,
+        present_rows=0,
         schema_failures=0,
-        missing_shards=[layer1_feature_path("2024-01-02", "AAPL")],
+        row_count_failures=0,
+        missing_ticker_files=[layer1_ticker_history_path("AAPL")],
         ready_for_layer2=False,
     )
 
@@ -167,7 +195,7 @@ def test_write_validation_report_writes_json(tmp_path: Path) -> None:
     assert path.name == "layer1_archive_validation_2024-01-02_to_2024-01-02.json"
     payload = json.loads(path.read_text(encoding="utf-8"))
     assert payload["ready_for_layer2"] is False
-    assert payload["missing_shards"] == [layer1_feature_path("2024-01-02", "AAPL")]
+    assert payload["missing_ticker_files"] == [layer1_ticker_history_path("AAPL")]
 
 
 def test_load_universe_mapping_normalizes_tickers(tmp_path: Path) -> None:

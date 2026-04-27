@@ -14,6 +14,7 @@ from app.lab.data_pipelines.backfill_layer1 import (
     _resolve_tickers,
     backfill_layer1,
 )
+from core.features.io import read_feature_records
 from services.r2.client import (
     R2_ACCESS_KEY_ENV,
     R2_BUCKET_ENV,
@@ -21,6 +22,7 @@ from services.r2.client import (
     R2_SECRET_KEY_ENV,
 )
 from services.r2.paths import (
+    layer1_ticker_history_path,
     pipeline_manifest_path,
     raw_fundamentals_path,
     raw_macro_path,
@@ -107,11 +109,11 @@ def _write_empty_fundamentals(writer: R2Writer, ticker: str) -> None:
     writer.put_object(raw_fundamentals_path(ticker), buffer.getvalue())
 
 
-def test_backfill_layer1_writes_feature_shards_and_manifest(
+def test_backfill_layer1_writes_feature_histories_and_manifest(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The backfill writes one feature shard per (date, ticker) plus a manifest."""
+    """The backfill writes one feature history per ticker plus a manifest."""
     writer = _local_writer(tmp_path, monkeypatch)
     _write_synthetic_ohlcv(writer, "AAPL", num_bars=30)
     _write_synthetic_ohlcv(writer, "SPY", num_bars=30)
@@ -123,12 +125,17 @@ def test_backfill_layer1_writes_feature_shards_and_manifest(
     result = backfill_layer1(config, writer=writer, now=fixed_now)
 
     assert result.tickers_processed == 1
-    assert result.shards_written > 0
+    assert result.ticker_files_written == 1
+    assert result.feature_rows_written > 0
     feature_keys = writer.list_keys("features/layer1/")
-    assert len(feature_keys) == result.shards_written
+    assert feature_keys == [layer1_ticker_history_path("AAPL")]
+    loaded_records = read_feature_records("AAPL", writer=writer)
+    assert len(loaded_records) == result.feature_rows_written
     manifest_payload = writer.get_object(result.manifest_key)
     payload = json.loads(manifest_payload.decode("utf-8"))
     assert payload["status"] == "completed"
+    assert payload["metadata"]["ticker_files_written"] == 1
+    assert payload["metadata"]["feature_rows_written"] == result.feature_rows_written
     assert payload["metadata"]["benchmark_ticker"] == "SPY"
 
 
@@ -145,7 +152,8 @@ def test_backfill_layer1_skips_tickers_with_no_ohlcv(
     fixed_now = datetime(2024, 2, 15, 12, 0, tzinfo=UTC)
     result = backfill_layer1(config, writer=writer, now=fixed_now)
 
-    assert result.shards_written == 0
+    assert result.ticker_files_written == 0
+    assert result.feature_rows_written == 0
     manifest_payload = writer.get_object(
         pipeline_manifest_path(LAYER1_BACKFILL_STAGE, "layer1-skip"),
     )

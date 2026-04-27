@@ -35,6 +35,23 @@ def test_write_feature_record_round_trips_through_local_r2(tmp_path: Path) -> No
     assert loaded_record == record
 
 
+def test_write_feature_records_round_trips_per_ticker_history(tmp_path: Path) -> None:
+    """Feature histories should be persisted as one Parquet file per ticker."""
+    writer = R2Writer(local_root=tmp_path)
+    records = [
+        FeatureRecord(date="2026-04-22", ticker="AAPL", features={"returns_1d": 0.02}),
+        FeatureRecord(date="2026-04-21", ticker="AAPL", features={"returns_1d": 0.01}),
+    ]
+
+    keys = feature_io.write_feature_records(records, writer=writer)
+    loaded_records = feature_io.read_feature_records("AAPL", writer=writer)
+
+    assert keys == ["features/layer1/AAPL.parquet"]
+    assert writer.exists("features/layer1/AAPL.parquet") is True
+    assert [record.date for record in loaded_records] == ["2026-04-21", "2026-04-22"]
+    assert loaded_records[0].features == {"returns_1d": 0.01}
+
+
 def test_write_feature_record_rejects_non_conforming_rows(tmp_path: Path) -> None:
     """Feature shard writes should fail fast on invalid FeatureRecord payloads."""
     writer = R2Writer(local_root=tmp_path)
@@ -48,6 +65,26 @@ def test_write_feature_record_rejects_non_conforming_rows(tmp_path: Path) -> Non
             },
             writer=writer,
         )
+
+
+def test_write_feature_records_rejects_empty_histories(tmp_path: Path) -> None:
+    """Feature history writes require at least one row."""
+    writer = R2Writer(local_root=tmp_path)
+
+    with pytest.raises(ValueError, match="At least one FeatureRecord"):
+        feature_io.write_feature_records([], writer=writer)
+
+
+def test_write_feature_records_rejects_duplicate_ticker_dates(tmp_path: Path) -> None:
+    """Feature history writes reject duplicate dates for one ticker."""
+    writer = R2Writer(local_root=tmp_path)
+    records = [
+        FeatureRecord(date="2026-04-21", ticker="AAPL", features={"returns_1d": 0.01}),
+        FeatureRecord(date="2026-04-21", ticker="AAPL", features={"returns_1d": 0.02}),
+    ]
+
+    with pytest.raises(ValueError, match="Duplicate Layer 1 feature dates"):
+        feature_io.write_feature_records(records, writer=writer)
 
 
 def test_parquet_bytes_to_feature_record_rejects_multi_row_archives() -> None:

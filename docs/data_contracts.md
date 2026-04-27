@@ -199,6 +199,9 @@ Feature groups may include:
 Input note:
 - generated only from Layer 0 R2 archives and manifests; Layer 1 must not call external
   data providers for feature inputs
+- historical backfills store FeatureRecord rows as one per-ticker Parquet history under
+  `features/layer1/{ticker}.parquet`; daily incremental paths may still address a single
+  `(date, ticker)` row through `features/layer1/{date}/{ticker}.parquet`
 
 Examples:
 - `returns_1d`
