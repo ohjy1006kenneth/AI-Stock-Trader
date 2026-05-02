@@ -54,6 +54,10 @@ class _FakeWriter:
         self.objects[key] = data
         self.existing.add(key)
 
+    def get_object(self, key: str) -> bytes:
+        payload = self.objects[key]
+        return payload.encode("utf-8") if isinstance(payload, str) else payload
+
     def exists(self, key: str) -> bool:
         return key in self.existing
 
@@ -77,6 +81,10 @@ def _fixture_payload() -> dict[str, Any]:
 
 def _json_serializer(rows: list[dict[str, object]]) -> bytes:
     return json.dumps(rows, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _json_deserializer(payload: bytes) -> list[dict[str, object]]:
+    return json.loads(payload.decode("utf-8"))
 
 
 def _read_json(payload: bytes | str) -> list[dict[str, Any]]:
@@ -432,6 +440,68 @@ def test_backfill_is_idempotent_for_existing_archive() -> None:
     assert result.written == 0
     assert result.skipped == len(existing_keys)
     assert fetcher.calls
+
+
+def test_backfill_merge_existing_preserves_old_series_and_adds_new_rows() -> None:
+    """Merge mode updates existing macro shards without dropping old series rows."""
+    existing_row = normalize_fred_observations(
+        [_fixture_payload()["page1"]["observations"][0]],
+        series_id="FEDFUNDS",
+        retrieved_at=datetime(2024, 1, 4, tzinfo=UTC),
+    )[0]
+    new_row = normalize_fred_observations(
+        [_fixture_payload()["page1"]["observations"][0]],
+        series_id="VIXCLS",
+        retrieved_at=datetime(2024, 1, 4, tzinfo=UTC),
+    )[0]
+    key = raw_macro_path("2024-01-01")
+    writer = _FakeWriter(existing={key})
+    writer.objects[key] = _json_serializer([existing_row])
+    fetcher = _FakeFetcher([new_row])
+
+    result = backfill_fred_archive(
+        from_date=date(2024, 1, 1),
+        to_date=date(2024, 1, 1),
+        fetcher=fetcher,
+        writer=writer,
+        series_ids=["VIXCLS"],
+        merge_existing=True,
+        serializer=_json_serializer,
+        deserializer=_json_deserializer,
+    )
+
+    rows = _read_json(writer.objects[key])
+    assert result.written == 1
+    assert [row["series_id"] for row in rows] == ["FEDFUNDS", "VIXCLS"]
+    assert fetcher.calls[0]["series_ids"] == ("VIXCLS",)
+
+
+def test_backfill_merge_existing_skips_dates_that_already_have_requested_series() -> None:
+    """Merge mode is resumable when a prior run already populated a requested series."""
+    existing_row = normalize_fred_observations(
+        [_fixture_payload()["page1"]["observations"][0]],
+        series_id="VIXCLS",
+        retrieved_at=datetime(2024, 1, 4, tzinfo=UTC),
+    )[0]
+    key = raw_macro_path("2024-01-01")
+    writer = _FakeWriter(existing={key})
+    writer.objects[key] = _json_serializer([existing_row])
+    fetcher = _FakeFetcher([existing_row])
+
+    result = backfill_fred_archive(
+        from_date=date(2024, 1, 1),
+        to_date=date(2024, 1, 1),
+        fetcher=fetcher,
+        writer=writer,
+        series_ids=["VIXCLS"],
+        merge_existing=True,
+        serializer=_json_serializer,
+        deserializer=_json_deserializer,
+    )
+
+    assert result.written == 0
+    assert result.skipped == 1
+    assert _read_json(writer.objects[key]) == [existing_row]
 
 
 def test_parse_args_rejects_empty_series_ids_flag(monkeypatch: pytest.MonkeyPatch) -> None:

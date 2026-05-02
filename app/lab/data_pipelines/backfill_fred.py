@@ -34,6 +34,9 @@ class ObjectWriter(Protocol):
     def put_object(self, key: str, data: bytes | str) -> None:
         """Write an object to storage."""
 
+    def get_object(self, key: str) -> bytes:
+        """Read an object from storage."""
+
     def exists(self, key: str) -> bool:
         """Return True when an object already exists."""
 
@@ -58,6 +61,7 @@ class MacroFetcher(Protocol):
 
 
 MacroSerializer = Callable[[list[dict[str, object]]], bytes]
+MacroDeserializer = Callable[[bytes], list[dict[str, object]]]
 
 
 @dataclass(frozen=True)
@@ -80,8 +84,10 @@ def backfill_fred_archive(
     writer: ObjectWriter,
     series_ids: Sequence[str],
     overwrite: bool = False,
+    merge_existing: bool = False,
     limit: int = DEFAULT_FRED_PAGE_LIMIT,
     serializer: MacroSerializer | None = None,
+    deserializer: MacroDeserializer | None = None,
 ) -> BackfillResult:
     """Backfill FRED macro/rate observations into R2, sharding per observation_date."""
     if from_date > to_date:
@@ -91,7 +97,11 @@ def backfill_fred_archive(
 
     normalized_series_ids = _normalize_series_ids(series_ids)
 
-    if not overwrite and _macro_archive_covers_range(writer, from_date, to_date):
+    if (
+        not overwrite
+        and not merge_existing
+        and _macro_archive_covers_range(writer, from_date, to_date)
+    ):
         logger.info(
             "FRED macro archive already covers {}..{}; skipping provider fetch",
             from_date.isoformat(),
@@ -122,6 +132,7 @@ def backfill_fred_archive(
         rows_by_date.setdefault(observation_date, []).append(row)
 
     payload_serializer = serializer or _macro_to_parquet_bytes
+    payload_deserializer = deserializer or _macro_from_parquet_bytes
     output_keys: list[str] = []
     written = 0
     skipped = 0
@@ -130,15 +141,24 @@ def backfill_fred_archive(
     for observation_date in sorted(rows_by_date):
         date_rows = _sort_macro_observations(rows_by_date[observation_date])
         key = raw_macro_path(observation_date)
-        if not overwrite and writer.exists(key):
+        if writer.exists(key) and not overwrite and not merge_existing:
             skipped += 1
             continue
-        writer.put_object(key, payload_serializer(date_rows))
+        output_rows = date_rows
+        if writer.exists(key) and merge_existing and not overwrite:
+            existing_rows = payload_deserializer(writer.get_object(key))
+            if _rows_already_include_series(existing_rows, date_rows):
+                skipped += 1
+                continue
+            output_rows = _merge_macro_observations(existing_rows, date_rows)
+        writer.put_object(key, payload_serializer(output_rows))
         output_keys.append(key)
         written += 1
-        total_rows += len(date_rows)
-        if not date_rows:
+        total_rows += len(output_rows)
+        if not output_rows:
             empty += 1
+        if written % 100 == 0:
+            logger.info("FRED macro backfill progress written={} skipped={}", written, skipped)
     logger.info(
         "Wrote {} FRED macro day-files ({} rows)",
         len(output_keys),
@@ -171,6 +191,20 @@ def _macro_to_parquet_bytes(rows: list[dict[str, object]]) -> bytes:
     return buffer.getvalue()
 
 
+def _macro_from_parquet_bytes(payload: bytes) -> list[dict[str, object]]:
+    """Deserialize normalized FRED macro observations from Parquet bytes."""
+    try:
+        import pandas as pd
+        importlib.import_module("pyarrow")
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            "pandas and pyarrow are required to deserialize FRED macro observations."
+        ) from exc
+
+    frame = pd.read_parquet(BytesIO(payload))
+    return [dict(row) for row in frame.to_dict("records")]
+
+
 def _parquet_ready_row(row: dict[str, object]) -> dict[str, object]:
     """Convert nested raw payloads to deterministic JSON strings for Parquet."""
     output = dict(row)
@@ -178,6 +212,37 @@ def _parquet_ready_row(row: dict[str, object]) -> dict[str, object]:
     if raw is not None:
         output["raw_json"] = json.dumps(raw, sort_keys=True, separators=(",", ":"))
     return output
+
+
+def _merge_macro_observations(
+    existing_rows: list[dict[str, object]],
+    new_rows: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    """Merge new FRED rows into existing date shards, preferring new exact identities."""
+    merged: dict[tuple[str, str, str, str], dict[str, object]] = {}
+    for row in [*existing_rows, *new_rows]:
+        merged[_macro_observation_identity(row)] = row
+    return _sort_macro_observations(list(merged.values()))
+
+
+def _rows_already_include_series(
+    existing_rows: list[dict[str, object]],
+    new_rows: list[dict[str, object]],
+) -> bool:
+    """Return True when an existing day shard already has every fetched series."""
+    existing_series = {str(row.get("series_id") or "") for row in existing_rows}
+    new_series = {str(row.get("series_id") or "") for row in new_rows}
+    return bool(new_series) and new_series.issubset(existing_series)
+
+
+def _macro_observation_identity(row: dict[str, object]) -> tuple[str, str, str, str]:
+    """Return the identity used to deduplicate raw macro archive rows."""
+    return (
+        str(row.get("series_id") or ""),
+        str(row.get("observation_date") or ""),
+        str(row.get("realtime_start") or ""),
+        str(row.get("realtime_end") or ""),
+    )
 
 
 def _sort_macro_observations(rows: list[dict[str, object]]) -> list[dict[str, object]]:
@@ -210,6 +275,11 @@ def _parse_args() -> argparse.Namespace:
         help="Optional FRED series IDs. Defaults to config/fred_series.json.",
     )
     parser.add_argument("--overwrite", action="store_true", help="Rewrite existing R2 objects.")
+    parser.add_argument(
+        "--merge-existing",
+        action="store_true",
+        help="Merge fetched rows into existing day shards instead of skipping them.",
+    )
     parser.add_argument(
         "--limit",
         type=int,
@@ -248,6 +318,7 @@ def main() -> int:
         writer=writer,
         series_ids=series_ids,
         overwrite=args.overwrite,
+        merge_existing=args.merge_existing,
         limit=args.limit,
     )
     logger.info("FRED macro/rates backfill complete: {}", result)
