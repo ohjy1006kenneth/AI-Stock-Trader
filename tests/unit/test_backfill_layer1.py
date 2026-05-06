@@ -18,8 +18,7 @@ from app.lab.data_pipelines.backfill_layer1 import (
     backfill_layer1,
 )
 from core.contracts.schemas import FeatureRecord, PipelineManifestRecord, RunStatus
-from core.features.io import feature_records_to_parquet_bytes
-from core.features.io import read_feature_records
+from core.features.io import feature_records_to_parquet_bytes, read_feature_records
 from services.r2.client import (
     R2_ACCESS_KEY_ENV,
     R2_BUCKET_ENV,
