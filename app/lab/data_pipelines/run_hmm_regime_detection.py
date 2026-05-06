@@ -270,10 +270,31 @@ def _config_from_args(args: argparse.Namespace) -> HMMRegimePipelineConfig:
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Run HMM regime detection from the local command line."""
-    config = _config_from_args(_parse_args(argv))
-    result = run_hmm_regime_detection(config)
+    result = run_hmm_regime_detection(_config_from_args(_parse_args(argv)))
     logger.info("Manifest written to {}", result.manifest_key)
     return 0
+
+
+def modal_main(
+    run_id: str,
+    train_end_date: str,
+    inference_dates: str = "",
+    train_start_date: str | None = None,
+    benchmark_ticker: str = "SPY",
+    max_iterations: int = 100,
+    min_training_rows: int = 30,
+) -> None:
+    """Submit an HMM regime run to Modal from the local CLI."""
+    parsed_inference_dates = [item.strip() for item in inference_dates.split(",") if item.strip()]
+    globals()["modal_run_hmm_regime_detection"].remote(
+        run_id=run_id,
+        train_start_date=train_start_date,
+        train_end_date=train_end_date,
+        inference_dates=parsed_inference_dates,
+        benchmark_ticker=benchmark_ticker,
+        max_iterations=max_iterations,
+        min_training_rows=min_training_rows,
+    )
 
 
 def _define_modal_app() -> object | None:
@@ -293,6 +314,7 @@ def _define_modal_app() -> object | None:
         image=image,
         secrets=[modal.Secret.from_name(runtime.r2_secret_name)],
         timeout=runtime.timeout_seconds,
+        serialized=True,
     )
     def modal_run_hmm_regime_detection(
         run_id: str,
@@ -324,32 +346,8 @@ def _define_modal_app() -> object | None:
             "regime_rows": result.regime_rows,
         }
 
-    @app.local_entrypoint()
-    def modal_main(
-        run_id: str,
-        train_end_date: str,
-        inference_dates: str = "",
-        train_start_date: str | None = None,
-        benchmark_ticker: str = "SPY",
-        max_iterations: int = 100,
-        min_training_rows: int = 30,
-    ) -> None:
-        """Submit an HMM regime run to Modal from the local CLI."""
-        parsed_inference_dates = [
-            item.strip() for item in inference_dates.split(",") if item.strip()
-        ]
-        modal_run_hmm_regime_detection.remote(
-            run_id=run_id,
-            train_start_date=train_start_date,
-            train_end_date=train_end_date,
-            inference_dates=parsed_inference_dates,
-            benchmark_ticker=benchmark_ticker,
-            max_iterations=max_iterations,
-            min_training_rows=min_training_rows,
-        )
-
+    app.local_entrypoint()(modal_main)
     globals()["modal_run_hmm_regime_detection"] = modal_run_hmm_regime_detection
-    globals()["modal_main"] = modal_main
     return app
 
 

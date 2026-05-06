@@ -350,10 +350,19 @@ def _config_from_args(args: argparse.Namespace) -> TextTopicPipelineConfig:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Run text embeddings and topic labels from the local command line."""
+    """Run text embedding and topic labeling from the local command line."""
     result = run_text_topics(_config_from_args(_parse_args(argv)))
     logger.info("Manifest written to {}", result.manifest_key)
     return 0
+
+
+def modal_main(run_id: str, as_of_date: str, preprocessed_news_key: str) -> None:
+    """Submit a text-topic run to Modal from the local CLI."""
+    globals()["modal_run_text_topics"].remote(
+        run_id=run_id,
+        as_of_date=as_of_date,
+        preprocessed_news_key=preprocessed_news_key,
+    )
 
 
 def _define_modal_app() -> object | None:
@@ -373,6 +382,7 @@ def _define_modal_app() -> object | None:
         image=image,
         secrets=[modal.Secret.from_name(runtime.r2_secret_name)],
         timeout=runtime.timeout_seconds,
+        serialized=True,
     )
     def modal_run_text_topics(
         run_id: str,
@@ -400,17 +410,8 @@ def _define_modal_app() -> object | None:
             "topic_feature_rows": result.topic_feature_rows,
         }
 
-    @app.local_entrypoint()
-    def modal_main(run_id: str, as_of_date: str, preprocessed_news_key: str) -> None:
-        """Submit a text-topic run to Modal from the local CLI."""
-        modal_run_text_topics.remote(
-            run_id=run_id,
-            as_of_date=as_of_date,
-            preprocessed_news_key=preprocessed_news_key,
-        )
-
+    app.local_entrypoint()(modal_main)
     globals()["modal_run_text_topics"] = modal_run_text_topics
-    globals()["modal_main"] = modal_main
     return app
 
 
