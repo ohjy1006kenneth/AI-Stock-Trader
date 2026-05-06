@@ -2,6 +2,8 @@
   "app_name": "ai-stock-trader-finbert-sentiment",
   "r2_secret_name": "ai-stock-trader-r2",
   "timeout_seconds": 7200,
+  "python_version": "3.11",
+  "requirements_path": "requirements/modal.txt",
   "model_name": "ProsusAI/finbert",
   "model_revision": "main",
   "batch_size": 16,

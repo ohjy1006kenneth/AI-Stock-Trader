@@ -24,6 +24,7 @@ across the universe.
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import sys
 from collections.abc import Iterable, Sequence
@@ -58,6 +59,7 @@ from services.r2.paths import pipeline_manifest_path  # noqa: E402
 from services.r2.writer import R2Writer  # noqa: E402
 
 LAYER1_BACKFILL_STAGE = "layer1_backfill"
+MODAL_CONFIG_PATH = _REPO_ROOT / "config" / "modal.json"
 SENTINEL_ASSEMBLY_AS_OF = datetime(1900, 1, 1, 0, 0, 0, tzinfo=ZoneInfo("America/New_York"))
 
 
@@ -101,6 +103,30 @@ class Layer1BackfillResult:
     started_at: datetime
     finished_at: datetime
     manifest_key: str
+
+
+@dataclass(frozen=True)
+class ModalRuntimeConfig:
+    """Modal app configuration for Layer 1 backfill."""
+
+    app_name: str
+    r2_secret_name: str
+    timeout_seconds: int
+    python_version: str = "3.11"
+    requirements_path: str = "requirements/modal.txt"
+
+    def __post_init__(self) -> None:
+        """Validate Modal runtime settings loaded from repository config."""
+        if not self.app_name.strip():
+            raise ValueError("app_name cannot be empty")
+        if not self.r2_secret_name.strip():
+            raise ValueError("r2_secret_name cannot be empty")
+        if self.timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be positive")
+        if not self.python_version.strip():
+            raise ValueError("python_version cannot be empty")
+        if not self.requirements_path.strip():
+            raise ValueError("requirements_path cannot be empty")
 
 
 def backfill_layer1(
@@ -327,6 +353,18 @@ def _validate_tickers(values: Iterable[object]) -> tuple[str, ...]:
     return tuple(cleaned)
 
 
+def load_modal_runtime_config(path: Path = MODAL_CONFIG_PATH) -> ModalRuntimeConfig:
+    """Load Modal app and image settings from repository config."""
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    return ModalRuntimeConfig(
+        app_name=str(payload["layer1_backfill_app_name"]),
+        r2_secret_name=str(payload["r2_secret_name"]),
+        timeout_seconds=int(payload["layer1_backfill_timeout_seconds"]),
+        python_version=str(payload.get("python_version", "3.11")),
+        requirements_path=str(payload.get("requirements_path", "requirements/modal.txt")),
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """CLI entry point for `python -m app.lab.data_pipelines.backfill_layer1`."""
     args = _parse_args(argv)
@@ -338,6 +376,63 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     backfill_layer1(config)
     return 0
+
+
+def modal_main(run_id: str, tickers: str, benchmark_ticker: str = "SPY") -> None:
+    """Submit a Layer 1 backfill run to Modal from the local CLI."""
+    globals()["modal_run_backfill_layer1"].remote(
+        run_id=run_id,
+        tickers=list(_resolve_tickers(tickers)),
+        benchmark_ticker=benchmark_ticker.strip().upper(),
+    )
+
+
+def _define_modal_app() -> object | None:
+    """Create the Modal app when the modal package is installed."""
+    try:
+        modal = importlib.import_module("modal")
+    except ModuleNotFoundError:
+        return None
+
+    runtime = load_modal_runtime_config()
+    image = modal.Image.debian_slim(
+        python_version=runtime.python_version
+    ).pip_install_from_requirements(runtime.requirements_path)
+    app = modal.App(runtime.app_name)
+
+    @app.function(
+        image=image,
+        secrets=[modal.Secret.from_name(runtime.r2_secret_name)],
+        timeout=runtime.timeout_seconds,
+        serialized=True,
+    )
+    def modal_run_backfill_layer1(
+        run_id: str,
+        tickers: list[str],
+        benchmark_ticker: str = "SPY",
+    ) -> dict[str, object]:
+        """Run the Layer 1 feature backfill on Modal."""
+        result = backfill_layer1(
+            Layer1BackfillConfig(
+                run_id=run_id,
+                tickers=tuple(tickers),
+                benchmark_ticker=benchmark_ticker.strip().upper(),
+            )
+        )
+        return {
+            "run_id": result.run_id,
+            "tickers_processed": result.tickers_processed,
+            "ticker_files_written": result.ticker_files_written,
+            "feature_rows_written": result.feature_rows_written,
+            "manifest_key": result.manifest_key,
+        }
+
+    app.local_entrypoint()(modal_main)
+    globals()["modal_run_backfill_layer1"] = modal_run_backfill_layer1
+    return app
+
+
+app = _define_modal_app()
 
 
 if __name__ == "__main__":

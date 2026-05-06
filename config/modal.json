@@ -1,5 +1,9 @@
 {
+  "layer1_backfill_app_name": "ai-stock-trader-layer1-backfill",
   "hmm_regime_app_name": "ai-stock-trader-hmm-regime-detection",
   "r2_secret_name": "ai-stock-trader-r2",
-  "timeout_seconds": 1800
+  "layer1_backfill_timeout_seconds": 5400,
+  "hmm_regime_timeout_seconds": 1800,
+  "python_version": "3.11",
+  "requirements_path": "requirements/modal.txt"
 }

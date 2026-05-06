@@ -13,6 +13,7 @@ from app.lab.data_pipelines.backfill_layer1 import (
     Layer1BackfillConfig,
     _resolve_tickers,
     backfill_layer1,
+    load_modal_runtime_config,
 )
 from core.features.io import read_feature_records
 from services.r2.client import (
@@ -211,3 +212,14 @@ def test_resolve_tickers_supports_inline_and_file_inputs(tmp_path: Path) -> None
     json_path.write_text(json.dumps(["spy", "qqq"]), encoding="utf-8")
     file_based = _resolve_tickers(f"@{json_path}")
     assert file_based == ("SPY", "QQQ")
+
+
+def test_load_modal_runtime_config_reads_repo_config() -> None:
+    """Layer 1 backfill Modal settings are loaded from config rather than code."""
+    config = load_modal_runtime_config()
+
+    assert config.app_name
+    assert config.r2_secret_name
+    assert config.timeout_seconds > 0
+    assert config.python_version == "3.11"
+    assert config.requirements_path == "requirements/modal.txt"
