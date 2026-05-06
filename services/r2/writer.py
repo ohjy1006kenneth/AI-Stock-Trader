@@ -25,6 +25,12 @@ class LocalR2Client:
         """Read an object from the local mock root."""
         return self._resolve_key(key).read_bytes()
 
+    def delete_object(self, key: str) -> None:
+        """Delete an object from the local mock root when it exists."""
+        target = self._resolve_key(key)
+        if target.exists():
+            target.unlink()
+
     def list_keys(self, prefix: str) -> list[str]:
         """List all keys beneath the local mock root that match the prefix."""
         keys = [
@@ -77,6 +83,10 @@ class R2Writer:
     def get_object(self, key: str) -> bytes:
         """Read an object via the active backend."""
         return self._client.get_object(key)
+
+    def delete_object(self, key: str) -> None:
+        """Delete an object via the active backend."""
+        self._client.delete_object(key)
 
     def list_keys(self, prefix: str) -> list[str]:
         """List keys via the active backend."""

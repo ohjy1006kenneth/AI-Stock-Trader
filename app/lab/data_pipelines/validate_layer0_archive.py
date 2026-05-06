@@ -19,6 +19,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(_REPO_ROOT))
 
 from services.r2.paths import (  # noqa: E402
+    is_canonical_raw_price_key,
     pipeline_manifest_path,
     raw_fundamentals_path,
     raw_news_path,
@@ -58,6 +59,7 @@ class Layer0ArchiveValidationReport:
     from_date: str
     to_date: str
     price_archive_count: int
+    canonical_price_archive_count: int
     news_days_expected: int
     news_days_present: int
     universe_days_expected: int
@@ -70,6 +72,7 @@ class Layer0ArchiveValidationReport:
     macro_day_count: int
     manifest_present: bool
     missing_news_dates: list[str]
+    noncanonical_price_keys: list[str]
     missing_universe_dates: list[str]
     ready_for_layer1: bool
 
@@ -91,6 +94,10 @@ def validate_layer0_archive(
         raise ValueError("fundamentals_min_rows must be non-negative")
 
     price_keys = reader.list_keys("raw/prices/")
+    canonical_price_keys = [key for key in price_keys if is_canonical_raw_price_key(key)]
+    noncanonical_price_keys = sorted(
+        key for key in price_keys if not is_canonical_raw_price_key(key)
+    )
     fundamentals_keys = reader.list_keys("raw/fundamentals/")
     macro_keys = reader.list_keys("raw/macro/")
     calendar_days = _date_range(from_date, to_date)
@@ -117,7 +124,8 @@ def validate_layer0_archive(
             if counter(reader, key) < fundamentals_min_rows:
                 fundamentals_below_min.append(ticker)
 
-    ready = bool(price_keys) and not missing_news and not missing_universe
+    ready = bool(canonical_price_keys) and not noncanonical_price_keys
+    ready = ready and not missing_news and not missing_universe
     ready = ready and bool(fundamentals_keys) and bool(macro_keys) and manifest_present
     ready = ready and not fundamentals_below_min
 
@@ -125,6 +133,7 @@ def validate_layer0_archive(
         from_date=from_date.isoformat(),
         to_date=to_date.isoformat(),
         price_archive_count=len(price_keys),
+        canonical_price_archive_count=len(canonical_price_keys),
         news_days_expected=len(calendar_days),
         news_days_present=len(calendar_days) - len(missing_news),
         universe_days_expected=len(business_days),
@@ -137,6 +146,7 @@ def validate_layer0_archive(
         macro_day_count=len(macro_keys),
         manifest_present=manifest_present,
         missing_news_dates=missing_news,
+        noncanonical_price_keys=noncanonical_price_keys,
         missing_universe_dates=missing_universe,
         ready_for_layer1=ready,
     )
