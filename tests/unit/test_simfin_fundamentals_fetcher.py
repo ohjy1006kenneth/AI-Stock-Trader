@@ -11,9 +11,13 @@ import requests
 from app.lab.data_pipelines import backfill_simfin
 from app.lab.data_pipelines.backfill_simfin import backfill_simfin_archive
 from app.lab.data_pipelines.repair_simfin_coverage import (
+    FundamentalsCoverageRecord,
+    FundamentalsCoverageReport,
     affected_active_tickers,
+    count_fundamentals_rows,
     diagnose_fundamentals_coverage,
     refetch_active_fundamentals_gaps,
+    write_coverage_report,
 )
 from services.r2.paths import raw_fundamentals_path
 from services.simfin.fundamentals_fetcher import (
@@ -61,6 +65,10 @@ class _FakeWriter:
 
     def exists(self, key: str) -> bool:
         return key in self.existing
+
+    def get_object(self, key: str) -> bytes:
+        payload = self.objects[key]
+        return payload if isinstance(payload, bytes) else payload.encode("utf-8")
 
 
 class _FakeFetcher:
@@ -617,6 +625,61 @@ def test_diagnose_fundamentals_coverage_tags_active_and_delisted_gaps() -> None:
         ("OLD", 2, False, "below_min_rows"),
     ]
     assert affected_active_tickers(report) == ["GOOGL", "MSFT"]
+
+
+def test_count_fundamentals_rows_reads_parquet_payload() -> None:
+    """Coverage row counting reads raw Parquet objects from the archive reader."""
+    pd = pytest.importorskip("pandas")
+    pytest.importorskip("pyarrow")
+    key = raw_fundamentals_path("AAPL")
+    payload = pd.DataFrame(
+        [
+            {"ticker": "AAPL", "report_date": "2024-03-31"},
+            {"ticker": "AAPL", "report_date": "2024-06-30"},
+        ]
+    ).to_parquet(index=False)
+    writer = _FakeWriter(existing={key})
+    writer.objects[key] = payload
+
+    assert count_fundamentals_rows(writer, key) == 2
+
+
+def test_write_coverage_report_writes_sorted_json(tmp_path: Path) -> None:
+    """Coverage diagnostics are persisted as deterministic JSON audit records."""
+    report = FundamentalsCoverageReport(
+        generated_at="2024-08-05T00:00:00+00:00",
+        min_rows=10,
+        historical_ticker_count=2,
+        active_ticker_count=1,
+        records=[
+            FundamentalsCoverageRecord(
+                ticker="MSFT",
+                row_count=3,
+                active=True,
+                reason="below_min_rows",
+            )
+        ],
+    )
+
+    path = write_coverage_report(report, tmp_path)
+
+    assert path.name == "simfin_coverage_gaps_min10.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload == {
+        "active_ticker_count": 1,
+        "generated_at": "2024-08-05T00:00:00+00:00",
+        "historical_ticker_count": 2,
+        "min_rows": 10,
+        "records": [
+            {
+                "active": True,
+                "reason": "below_min_rows",
+                "row_count": 3,
+                "ticker": "MSFT",
+            }
+        ],
+    }
+    assert path.read_text(encoding="utf-8").endswith("\n")
 
 
 def test_refetch_active_fundamentals_gaps_targets_only_active_low_coverage_tickers() -> None:
