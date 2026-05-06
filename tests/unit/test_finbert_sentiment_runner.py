@@ -117,7 +117,7 @@ def test_load_finbert_runtime_config_reads_repo_config() -> None:
     assert config.python_version == "3.11"
     assert config.requirements_path == "requirements/modal.txt"
     assert config.model_name == "ProsusAI/finbert"
-    assert config.model_revision
+    assert config.model_revision == "db38d3727cbaed87c9aed72df7b3519e2ba5cca1"
     assert config.batch_size > 0
     assert config.bucket_timezone == "America/New_York"
 

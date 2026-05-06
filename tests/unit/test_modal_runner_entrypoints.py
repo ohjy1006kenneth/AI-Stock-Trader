@@ -181,7 +181,7 @@ def _install_fake_modal(monkeypatch: pytest.MonkeyPatch) -> _FakeModal:
                 "2024-01-31",
                 "2024-02-01,2024-02-02",
                 "2024-01-02",
-                "SPY",
+                " spy ",
                 10,
                 5,
             ),

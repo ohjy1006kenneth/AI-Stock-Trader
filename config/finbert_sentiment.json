@@ -5,7 +5,7 @@
   "python_version": "3.11",
   "requirements_path": "requirements/modal.txt",
   "model_name": "ProsusAI/finbert",
-  "model_revision": "main",
+  "model_revision": "db38d3727cbaed87c9aed72df7b3519e2ba5cca1",
   "batch_size": 16,
   "default_relevance_score": 1.0,
   "bucket_timezone": "America/New_York",

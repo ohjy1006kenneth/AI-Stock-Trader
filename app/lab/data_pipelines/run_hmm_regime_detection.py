@@ -279,7 +279,7 @@ def _config_from_args(args: argparse.Namespace) -> HMMRegimePipelineConfig:
         train_start_date=args.train_start_date,
         train_end_date=args.train_end_date,
         inference_dates=tuple(args.inference_date),
-        benchmark_ticker=args.benchmark_ticker,
+        benchmark_ticker=args.benchmark_ticker.strip().upper(),
         max_iterations=args.max_iterations,
         min_training_rows=args.min_training_rows,
     )
@@ -308,7 +308,7 @@ def modal_main(
         train_start_date=train_start_date,
         train_end_date=train_end_date,
         inference_dates=parsed_inference_dates,
-        benchmark_ticker=benchmark_ticker,
+        benchmark_ticker=benchmark_ticker.strip().upper(),
         max_iterations=max_iterations,
         min_training_rows=min_training_rows,
     )
@@ -349,7 +349,7 @@ def _define_modal_app() -> object | None:
                 train_start_date=train_start_date,
                 train_end_date=train_end_date,
                 inference_dates=tuple(inference_dates),
-                benchmark_ticker=benchmark_ticker,
+                benchmark_ticker=benchmark_ticker.strip().upper(),
                 max_iterations=max_iterations,
                 min_training_rows=min_training_rows,
             )

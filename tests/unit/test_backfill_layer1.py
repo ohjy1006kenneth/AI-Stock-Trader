@@ -162,6 +162,31 @@ def test_backfill_layer1_skips_tickers_with_no_ohlcv(
     assert payload["status"] == "completed"
 
 
+def test_backfill_layer1_uses_no_cross_asset_features_when_benchmark_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The backfill completes and writes features when the benchmark archive is absent."""
+    writer = _local_writer(tmp_path, monkeypatch)
+    _write_synthetic_ohlcv(writer, "AAPL", num_bars=30)
+    _write_empty_macro_shard(writer)
+    _write_empty_fundamentals(writer, "AAPL")
+
+    config = Layer1BackfillConfig(run_id="layer1-no-bench", tickers=("AAPL",))
+    fixed_now = datetime(2024, 2, 15, 12, 0, tzinfo=UTC)
+    result = backfill_layer1(config, writer=writer, now=fixed_now)
+
+    assert result.ticker_files_written == 1
+    assert result.feature_rows_written > 0
+    loaded_records = read_feature_records("AAPL", writer=writer)
+    assert loaded_records
+    assert all(
+        record.features.get("spy_return_1d") is None
+        and record.features.get("beta_60d") is None
+        for record in loaded_records
+    )
+
+
 def test_backfill_layer1_writes_failed_manifest_on_error(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
