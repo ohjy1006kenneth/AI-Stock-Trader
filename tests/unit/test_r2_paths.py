@@ -46,6 +46,8 @@ def test_layer0_raw_path_builders_return_canonical_keys() -> None:
         == "raw/reference/security_master/2025-01-02.json"
     )
     assert is_canonical_raw_price_key("raw/prices/AAPL.parquet") is True
+    assert is_canonical_raw_price_key("raw/prices/AAPL_2017-01-03_2025-01-02.parquet") is False
+    assert is_legacy_raw_price_key("raw/prices/AAPL.parquet") is False
     assert is_legacy_raw_price_key("raw/prices/AAPL_2017-01-03_2025-01-02.parquet") is True
     assert is_legacy_raw_price_key("raw/news/2025-01-02.jsonl") is False
 

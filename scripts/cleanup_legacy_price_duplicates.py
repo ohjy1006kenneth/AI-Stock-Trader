@@ -136,7 +136,10 @@ def _build_duplicate_record(
     """Verify one legacy raw-price object against its canonical ticker archive."""
     ticker = _legacy_ticker_from_key(legacy_key)
     canonical_key = raw_price_path(ticker)
-    legacy_dates, legacy_row_count = _read_dates_and_row_count(writer.get_object(legacy_key), legacy_key)
+    legacy_dates, legacy_row_count = _read_dates_and_row_count(
+        writer.get_object(legacy_key),
+        legacy_key,
+    )
     legacy_min_date = min(legacy_dates) if legacy_dates else None
     legacy_max_date = max(legacy_dates) if legacy_dates else None
 
