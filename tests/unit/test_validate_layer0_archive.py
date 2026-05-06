@@ -56,10 +56,12 @@ def test_validate_layer0_archive_reports_ready_when_required_keys_exist() -> Non
 
     assert report.ready_for_layer1 is True
     assert report.price_archive_count == 1
+    assert report.canonical_price_archive_count == 1
     assert report.news_days_present == 3
     assert report.universe_days_present == 3
     assert report.fundamentals_ticker_count == 1
     assert report.macro_day_count == 1
+    assert report.noncanonical_price_keys == []
 
 
 def test_validate_layer0_archive_blocks_layer1_when_active_fundamentals_are_missing_or_empty() -> None:
@@ -117,6 +119,36 @@ def test_validate_layer0_archive_reports_missing_dates() -> None:
         "2024-01-08",
     ]
     assert report.missing_universe_dates == ["2024-01-05", "2024-01-08"]
+
+
+def test_validate_layer0_archive_blocks_noncanonical_price_keys() -> None:
+    """Validation fails closed when the raw price archive contains legacy filenames."""
+    from_date = date(2024, 1, 1)
+    to_date = date(2024, 1, 1)
+    run_id = "layer0-historical-2024-01-01"
+    keys = {
+        raw_price_path("AAPL"),
+        "raw/prices/AAPL_2017-01-03_2024-01-01.parquet",
+        raw_news_path("2024-01-01"),
+        raw_universe_path("2024-01-01"),
+        raw_fundamentals_path("AAPL"),
+        raw_macro_path("2024-01-01"),
+        pipeline_manifest_path("layer0", run_id),
+    }
+
+    report = validate_layer0_archive(
+        from_date=from_date,
+        to_date=to_date,
+        run_id=run_id,
+        reader=_Reader(keys),
+    )
+
+    assert report.ready_for_layer1 is False
+    assert report.price_archive_count == 2
+    assert report.canonical_price_archive_count == 1
+    assert report.noncanonical_price_keys == [
+        "raw/prices/AAPL_2017-01-03_2024-01-01.parquet"
+    ]
 
 
 def test_write_validation_report_writes_json(tmp_path: Path) -> None:

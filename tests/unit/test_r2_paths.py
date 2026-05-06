@@ -6,6 +6,8 @@ import pytest
 
 from services.r2.paths import (
     build_r2_key,
+    is_canonical_raw_price_key,
+    is_legacy_raw_price_key,
     layer1_feature_path,
     layer1_sentiment_feature_path,
     layer1_sentiment_score_path,
@@ -43,6 +45,11 @@ def test_layer0_raw_path_builders_return_canonical_keys() -> None:
         raw_security_master_path("2025-01-02")
         == "raw/reference/security_master/2025-01-02.json"
     )
+    assert is_canonical_raw_price_key("raw/prices/AAPL.parquet") is True
+    assert is_canonical_raw_price_key("raw/prices/AAPL_2017-01-03_2025-01-02.parquet") is False
+    assert is_legacy_raw_price_key("raw/prices/AAPL.parquet") is False
+    assert is_legacy_raw_price_key("raw/prices/AAPL_2017-01-03_2025-01-02.parquet") is True
+    assert is_legacy_raw_price_key("raw/news/2025-01-02.jsonl") is False
 
 
 def test_layer1_feature_path_returns_canonical_key() -> None:

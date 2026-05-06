@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import re
 from datetime import date as Date
 from datetime import datetime
 from pathlib import PurePosixPath
+
+RAW_PRICE_PREFIX = "raw/prices/"
+_CANONICAL_RAW_PRICE_KEY_RE = re.compile(r"^raw/prices/[^/_]+\.parquet$")
 
 
 def build_r2_key(*parts: str) -> str:
@@ -22,6 +26,23 @@ def raw_price_path(security_id: str) -> str:
     """Return the canonical raw OHLCV Parquet path for one stable security identifier."""
     safe_security_id = _validate_key_part(security_id)
     return build_r2_key("raw", "prices", f"{safe_security_id}.parquet")
+
+
+def is_canonical_raw_price_key(key: str) -> bool:
+    """Return True when a raw price key follows the one-file-per-symbol pattern."""
+    if not isinstance(key, str):
+        raise TypeError("key must be a string")
+    return bool(_CANONICAL_RAW_PRICE_KEY_RE.fullmatch(key.strip()))
+
+
+def is_legacy_raw_price_key(key: str) -> bool:
+    """Return True when a raw price key is a legacy non-canonical Parquet filename."""
+    if not isinstance(key, str):
+        raise TypeError("key must be a string")
+    stripped = key.strip()
+    if not stripped.startswith(RAW_PRICE_PREFIX) or not stripped.endswith(".parquet"):
+        return False
+    return not is_canonical_raw_price_key(stripped)
 
 
 def raw_news_path(as_of_date: str | Date | datetime) -> str:

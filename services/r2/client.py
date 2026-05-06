@@ -64,6 +64,10 @@ class CloudflareR2Client:
             return body.getvalue()
         return _read_body(body)
 
+    def delete_object(self, key: str) -> None:
+        """Delete an object from the configured bucket."""
+        self._client.delete_object(Bucket=self.bucket_name, Key=key)
+
     def exists(self, key: str) -> bool:
         """Return True when an object key already exists in the bucket."""
         try:

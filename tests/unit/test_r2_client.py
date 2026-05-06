@@ -35,6 +35,7 @@ class FakeS3Client:
         """Initialize empty call tracking."""
         self.put_calls: list[dict[str, object]] = []
         self.get_calls: list[dict[str, str]] = []
+        self.delete_calls: list[dict[str, str]] = []
         self.head_calls: list[dict[str, str]] = []
         self.paginator = FakePaginator(
             pages=[
@@ -51,6 +52,10 @@ class FakeS3Client:
         """Return a stub get_object response."""
         self.get_calls.append(kwargs)
         return {"Body": BytesIO(b"payload")}
+
+    def delete_object(self, **kwargs: str) -> None:
+        """Record delete_object calls."""
+        self.delete_calls.append(kwargs)
 
     def head_object(self, **kwargs: str) -> dict[str, object]:
         """Return a stub head_object response or raise for missing keys."""
@@ -188,6 +193,7 @@ def test_cloudflare_r2_client_delegates_object_operations() -> None:
 
     client.put_object("raw/prices/AAPL.parquet", "hello")
     payload = client.get_object("raw/prices/AAPL.parquet")
+    client.delete_object("raw/prices/AAPL.parquet")
     keys = client.list_keys("raw/")
 
     assert fake_client.put_calls == [
@@ -198,6 +204,9 @@ def test_cloudflare_r2_client_delegates_object_operations() -> None:
         }
     ]
     assert fake_client.get_calls == [
+        {"Bucket": "bucket-name", "Key": "raw/prices/AAPL.parquet"}
+    ]
+    assert fake_client.delete_calls == [
         {"Bucket": "bucket-name", "Key": "raw/prices/AAPL.parquet"}
     ]
     assert payload == b"payload"
@@ -269,6 +278,9 @@ def test_local_r2_client_round_trips_objects(tmp_path: Path) -> None:
         "raw/prices/AAPL.parquet",
     ]
 
+    client.delete_object("raw/prices/AAPL.parquet")
+    assert client.exists("raw/prices/AAPL.parquet") is False
+
 
 def test_local_r2_client_rejects_path_escape(tmp_path: Path) -> None:
     """LocalR2Client should reject keys that escape the mock root."""
@@ -296,6 +308,8 @@ def test_r2_writer_falls_back_to_local_mock(tmp_path: Path, monkeypatch) -> None
     assert writer.mode == "local"
     assert writer.get_object("raw/universe/2026-04-08.csv") == b"ticker,date"
     assert writer.exists("raw/universe/2026-04-08.csv") is True
+    writer.delete_object("raw/universe/2026-04-08.csv")
+    assert writer.exists("raw/universe/2026-04-08.csv") is False
 
 
 def test_r2_writer_local_root_overrides_real_credentials(
