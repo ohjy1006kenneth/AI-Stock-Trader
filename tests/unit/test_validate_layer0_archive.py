@@ -62,6 +62,44 @@ def test_validate_layer0_archive_reports_ready_when_required_keys_exist() -> Non
     assert report.macro_day_count == 1
 
 
+def test_validate_layer0_archive_blocks_layer1_when_active_fundamentals_are_missing_or_empty() -> None:
+    """Layer 0 validation surfaces active constituent SimFin coverage gaps."""
+    from_date = date(2024, 1, 1)
+    to_date = date(2024, 1, 3)
+    run_id = "layer0-historical-2024-01-01_to_2024-01-03"
+    keys = {
+        raw_price_path("AAPL"),
+        raw_news_path("2024-01-01"),
+        raw_news_path("2024-01-02"),
+        raw_news_path("2024-01-03"),
+        raw_universe_path("2024-01-01"),
+        raw_universe_path("2024-01-02"),
+        raw_universe_path("2024-01-03"),
+        raw_fundamentals_path("AAPL"),
+        raw_fundamentals_path("MSFT"),
+        raw_macro_path("2024-01-02"),
+        pipeline_manifest_path("layer0", run_id),
+    }
+
+    report = validate_layer0_archive(
+        from_date=from_date,
+        to_date=to_date,
+        run_id=run_id,
+        reader=_Reader(keys),
+        active_fundamentals_tickers=["AAPL", "MSFT", "GOOGL"],
+        fundamentals_min_rows=1,
+        fundamentals_row_counter=lambda _reader, key: {
+            raw_fundamentals_path("AAPL"): 5,
+            raw_fundamentals_path("MSFT"): 0,
+        }.get(key, 0),
+    )
+
+    assert report.ready_for_layer1 is False
+    assert report.fundamentals_tickers_expected == 3
+    assert report.fundamentals_tickers_present == 2
+    assert report.fundamentals_tickers_below_min_rows == ["GOOGL", "MSFT"]
+
+
 def test_validate_layer0_archive_reports_missing_dates() -> None:
     """Validation reports exact missing news and business-day universe archives."""
     report = validate_layer0_archive(

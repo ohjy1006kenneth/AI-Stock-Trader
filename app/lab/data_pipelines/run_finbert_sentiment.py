@@ -358,6 +358,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0
 
 
+def modal_main(run_id: str, as_of_date: str, preprocessed_news_key: str) -> None:
+    """Submit a FinBERT sentiment run to Modal from the local CLI."""
+    globals()["modal_run_finbert_sentiment"].remote(
+        run_id=run_id,
+        as_of_date=as_of_date,
+        preprocessed_news_key=preprocessed_news_key,
+    )
+
+
 def _define_modal_app() -> object | None:
     """Create the Modal app when the modal package is installed."""
     try:
@@ -375,6 +384,7 @@ def _define_modal_app() -> object | None:
         image=image,
         secrets=[modal.Secret.from_name(runtime.r2_secret_name)],
         timeout=runtime.timeout_seconds,
+        serialized=True,
     )
     def modal_run_finbert_sentiment(
         run_id: str,
@@ -400,17 +410,8 @@ def _define_modal_app() -> object | None:
             "feature_rows": result.feature_rows,
         }
 
-    @app.local_entrypoint()
-    def modal_main(run_id: str, as_of_date: str, preprocessed_news_key: str) -> None:
-        """Submit a FinBERT sentiment run to Modal from the local CLI."""
-        modal_run_finbert_sentiment.remote(
-            run_id=run_id,
-            as_of_date=as_of_date,
-            preprocessed_news_key=preprocessed_news_key,
-        )
-
+    app.local_entrypoint()(modal_main)
     globals()["modal_run_finbert_sentiment"] = modal_run_finbert_sentiment
-    globals()["modal_main"] = modal_main
     return app
 
 

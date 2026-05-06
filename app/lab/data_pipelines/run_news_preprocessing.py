@@ -265,6 +265,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0
 
 
+def modal_main(run_id: str, as_of_date: str, min_sentence_chars: int = 2) -> None:
+    """Submit a news preprocessing run to Modal from the local CLI."""
+    globals()["modal_run_news_preprocessing"].remote(
+        run_id=run_id,
+        as_of_date=as_of_date,
+        min_sentence_chars=min_sentence_chars,
+    )
+
+
 def _define_modal_app() -> object | None:
     """Create the Modal app when the modal package is installed."""
     try:
@@ -282,6 +291,7 @@ def _define_modal_app() -> object | None:
         image=image,
         secrets=[modal.Secret.from_name(runtime.r2_secret_name)],
         timeout=runtime.timeout_seconds,
+        serialized=True,
     )
     def modal_run_news_preprocessing(
         run_id: str,
@@ -304,17 +314,8 @@ def _define_modal_app() -> object | None:
             "sentence_rows": result.sentence_rows,
         }
 
-    @app.local_entrypoint()
-    def modal_main(run_id: str, as_of_date: str, min_sentence_chars: int = 2) -> None:
-        """Submit a news preprocessing run to Modal from the local CLI."""
-        modal_run_news_preprocessing.remote(
-            run_id=run_id,
-            as_of_date=as_of_date,
-            min_sentence_chars=min_sentence_chars,
-        )
-
+    app.local_entrypoint()(modal_main)
     globals()["modal_run_news_preprocessing"] = modal_run_news_preprocessing
-    globals()["modal_main"] = modal_main
     return app
 
 

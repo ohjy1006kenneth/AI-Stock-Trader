@@ -100,7 +100,7 @@ class SimFinFundamentalsFetcher:
 
         payload = self._request_json(
             params={
-                "ticker": ",".join(normalized_tickers),
+                "ticker": ",".join(_simfin_request_ticker(ticker) for ticker in normalized_tickers),
                 "statements": ",".join(normalized_statements),
                 "period": ",".join(normalized_periods),
                 "start": start,
@@ -560,6 +560,11 @@ def _normalize_ticker(ticker: str) -> str:
     if not cleaned:
         raise ValueError("ticker cannot be empty")
     return cleaned
+
+
+def _simfin_request_ticker(ticker: str) -> str:
+    """Translate canonical archive tickers to SimFin's request symbol convention."""
+    return ticker.replace("-", ".")
 
 
 def _normalize_tokens(values: Sequence[str], field_name: str) -> tuple[str, ...]:

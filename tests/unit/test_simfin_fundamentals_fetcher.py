@@ -10,6 +10,11 @@ import requests
 
 from app.lab.data_pipelines import backfill_simfin
 from app.lab.data_pipelines.backfill_simfin import backfill_simfin_archive
+from app.lab.data_pipelines.repair_simfin_coverage import (
+    affected_active_tickers,
+    diagnose_fundamentals_coverage,
+    refetch_active_fundamentals_gaps,
+)
 from services.r2.paths import raw_fundamentals_path
 from services.simfin.fundamentals_fetcher import (
     DEFAULT_SIMFIN_PERIODS,
@@ -436,6 +441,48 @@ def test_fetch_statement_rows_accepts_nested_company_payload_shape() -> None:
     assert page.rows[0]["statement"] == "pl"
 
 
+def test_fetch_statement_rows_uses_simfin_share_class_symbols() -> None:
+    """SP500 class-share archive tickers are translated to SimFin vendor symbols."""
+    payload = [
+        {
+            "ticker": "BRK.B",
+            "currency": "USD",
+            "statements": [
+                {
+                    "statement": "PL",
+                    "columns": ["Fiscal Period", "Fiscal Year", "Report Date", "Publish Date"],
+                    "data": [["Q1", 2024, "2024-03-31", "2024-05-03"]],
+                }
+            ],
+        },
+        {
+            "ticker": "BF.B",
+            "currency": "USD",
+            "statements": [
+                {
+                    "statement": "BS",
+                    "columns": ["Fiscal Period", "Fiscal Year", "Report Date", "Publish Date"],
+                    "data": [["Q1", 2024, "2024-03-31", "2024-05-04"]],
+                }
+            ],
+        },
+    ]
+    session = _FakeSession([_FakeResponse(payload)])
+    fetcher = SimFinFundamentalsFetcher(
+        SimFinClientConfig(api_key="test-key", retry_sleep_seconds=0),
+        session=session,  # type: ignore[arg-type]
+    )
+
+    page = fetcher.fetch_statement_rows(
+        tickers=["BRK-B", "BF-B"],
+        start_date="2024-01-01",
+        end_date="2024-12-31",
+    )
+
+    assert session.calls[0]["params"]["ticker"] == "BRK.B,BF.B"
+    assert [row["ticker"] for row in page.rows] == ["BRK-B", "BF-B"]
+
+
 def test_normalize_accepts_missing_optional_fields() -> None:
     """Optional earnings/currency metadata can be absent without losing raw data."""
     retrieved_at = datetime(2024, 5, 4, tzinfo=UTC)
@@ -540,6 +587,66 @@ def test_backfill_is_idempotent_for_existing_archive() -> None:
     assert result.written == 0
     assert result.skipped == 1
     assert fetcher.calls == []
+
+
+def test_diagnose_fundamentals_coverage_tags_active_and_delisted_gaps() -> None:
+    """Coverage diagnostics list low-row archives and identify active constituents."""
+    writer = _FakeWriter(
+        existing={
+            raw_fundamentals_path("AAPL"),
+            raw_fundamentals_path("MSFT"),
+            raw_fundamentals_path("OLD"),
+        }
+    )
+
+    report = diagnose_fundamentals_coverage(
+        reader=writer,
+        historical_tickers=["AAPL", "MSFT", "OLD", "GOOGL"],
+        active_tickers=["AAPL", "MSFT", "GOOGL"],
+        min_rows=10,
+        row_counter=lambda _reader, key: {
+            raw_fundamentals_path("AAPL"): 129,
+            raw_fundamentals_path("MSFT"): 3,
+            raw_fundamentals_path("OLD"): 2,
+        }.get(key, 0),
+    )
+
+    assert [(record.ticker, record.row_count, record.active, record.reason) for record in report.records] == [
+        ("GOOGL", 0, True, "missing_archive"),
+        ("MSFT", 3, True, "below_min_rows"),
+        ("OLD", 2, False, "below_min_rows"),
+    ]
+    assert affected_active_tickers(report) == ["GOOGL", "MSFT"]
+
+
+def test_refetch_active_fundamentals_gaps_targets_only_active_low_coverage_tickers() -> None:
+    """Recovery refetch is scoped to active tickers below the coverage threshold."""
+    writer = _FakeWriter()
+    retrieved_at = datetime(2024, 5, 4, tzinfo=UTC)
+    fetcher = _FakeFetcher(
+        normalize_simfin_fundamental_rows(
+            [
+                {"ticker": "GOOGL", "reportDate": "2024-03-31", "publishDate": "2024-05-01"},
+                {"ticker": "MSFT", "reportDate": "2024-03-31", "publishDate": "2024-05-02"},
+            ],
+            retrieved_at=retrieved_at,
+        )
+    )
+
+    result = refetch_active_fundamentals_gaps(
+        from_date=date(2024, 1, 1),
+        to_date=date(2024, 12, 31),
+        fetcher=fetcher,
+        writer=writer,
+        tickers=["GOOGL", "MSFT"],
+        retrieved_at=retrieved_at,
+        serializer=_json_serializer,
+    )
+
+    assert result.written == 2
+    assert fetcher.calls[0]["tickers"] == ["GOOGL", "MSFT"]
+    assert fetcher.calls[0]["retrieved_at"] == retrieved_at
+    assert set(writer.objects) == {raw_fundamentals_path("GOOGL"), raw_fundamentals_path("MSFT")}
 
 
 def test_parse_args_rejects_empty_tickers_flag(monkeypatch: pytest.MonkeyPatch) -> None:
