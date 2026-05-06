@@ -9,11 +9,16 @@ import pandas as pd
 import pytest
 
 from app.lab.data_pipelines.backfill_layer1 import (
+    FINBERT_SENTIMENT_STAGE,
     LAYER1_BACKFILL_STAGE,
+    REGIME_STAGE,
+    TEXT_TOPICS_STAGE,
     Layer1BackfillConfig,
     _resolve_tickers,
     backfill_layer1,
 )
+from core.contracts.schemas import FeatureRecord, PipelineManifestRecord, RunStatus
+from core.features.io import feature_records_to_parquet_bytes
 from core.features.io import read_feature_records
 from services.r2.client import (
     R2_ACCESS_KEY_ENV,
@@ -22,7 +27,10 @@ from services.r2.client import (
     R2_SECRET_KEY_ENV,
 )
 from services.r2.paths import (
+    layer1_regime_path,
+    layer1_sentiment_feature_path,
     layer1_ticker_history_path,
+    layer1_topic_feature_path,
     pipeline_manifest_path,
     raw_fundamentals_path,
     raw_macro_path,
@@ -109,6 +117,72 @@ def _write_empty_fundamentals(writer: R2Writer, ticker: str) -> None:
     writer.put_object(raw_fundamentals_path(ticker), buffer.getvalue())
 
 
+def _write_daily_feature_artifact(
+    writer: R2Writer,
+    *,
+    stage: str,
+    branch_name: str,
+    as_of_date: str,
+    run_id: str,
+    records: list[FeatureRecord],
+    finished_at: datetime,
+) -> None:
+    """Persist one completed daily feature artifact plus its manifest."""
+    if branch_name == "sentiment":
+        output_key = layer1_sentiment_feature_path(as_of_date, run_id)
+    elif branch_name == "topics":
+        output_key = layer1_topic_feature_path(as_of_date, run_id)
+    else:
+        raise ValueError(f"Unsupported branch_name: {branch_name}")
+
+    writer.put_object(output_key, feature_records_to_parquet_bytes(records))
+    manifest = PipelineManifestRecord(
+        run_id=run_id,
+        stage=stage,
+        status=RunStatus.COMPLETED,
+        started_at=finished_at,
+        finished_at=finished_at,
+        output_path=output_key,
+        metadata={"as_of_date": as_of_date},
+    )
+    writer.put_object(
+        pipeline_manifest_path(stage, run_id),
+        manifest.model_dump_json().encode("utf-8"),
+    )
+
+
+def _write_regime_artifact(
+    writer: R2Writer,
+    *,
+    run_id: str,
+    rows: list[dict[str, object]],
+    train_end_date: str,
+    inference_dates: tuple[str, ...],
+    finished_at: datetime,
+) -> None:
+    """Persist one completed regime artifact plus its manifest."""
+    buffer = io.BytesIO()
+    pd.DataFrame(rows).to_parquet(buffer, index=False)
+    output_key = layer1_regime_path(run_id)
+    writer.put_object(output_key, buffer.getvalue())
+    manifest = PipelineManifestRecord(
+        run_id=run_id,
+        stage=REGIME_STAGE,
+        status=RunStatus.COMPLETED,
+        started_at=finished_at,
+        finished_at=finished_at,
+        output_path=output_key,
+        metadata={
+            "train_end_date": train_end_date,
+            "inference_dates": list(inference_dates),
+        },
+    )
+    writer.put_object(
+        pipeline_manifest_path(REGIME_STAGE, run_id),
+        manifest.model_dump_json().encode("utf-8"),
+    )
+
+
 def test_backfill_layer1_writes_feature_histories_and_manifest(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -139,6 +213,106 @@ def test_backfill_layer1_writes_feature_histories_and_manifest(
     assert payload["metadata"]["benchmark_ticker"] == "SPY"
 
 
+def test_backfill_layer1_merges_optional_branch_outputs_into_final_histories(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Layer 1 histories include sentiment, topic, and regime branch features."""
+    writer = _local_writer(tmp_path, monkeypatch)
+    _write_synthetic_ohlcv(writer, "AAPL", num_bars=3)
+    _write_synthetic_ohlcv(writer, "SPY", num_bars=3)
+    _write_empty_macro_shard(writer)
+    _write_empty_fundamentals(writer, "AAPL")
+
+    finished_at = datetime(2024, 2, 14, 22, 0, tzinfo=UTC)
+    for as_of_date, sentiment_score, topic_id, regime_label in (
+        ("2024-01-02", 0.40, 7, "bull"),
+        ("2024-01-03", 0.20, 3, "sideways"),
+        ("2024-01-04", -0.10, 1, "bear"),
+    ):
+        _write_daily_feature_artifact(
+            writer,
+            stage=FINBERT_SENTIMENT_STAGE,
+            branch_name="sentiment",
+            as_of_date=as_of_date,
+            run_id=f"sentiment-{as_of_date}",
+            records=[
+                FeatureRecord(
+                    date=as_of_date,
+                    ticker="AAPL",
+                    features={
+                        "nlp_sentiment_score": sentiment_score,
+                        "nlp_sentence_count": 2,
+                    },
+                )
+            ],
+            finished_at=finished_at,
+        )
+        _write_daily_feature_artifact(
+            writer,
+            stage=TEXT_TOPICS_STAGE,
+            branch_name="topics",
+            as_of_date=as_of_date,
+            run_id=f"topics-{as_of_date}",
+            records=[
+                FeatureRecord(
+                    date=as_of_date,
+                    ticker="AAPL",
+                    features={
+                        "nlp_sentence_count": 2,
+                        "nlp_topic_count": 1,
+                        "nlp_dominant_topic_id": topic_id,
+                    },
+                )
+            ],
+            finished_at=finished_at,
+        )
+
+    _write_regime_artifact(
+        writer,
+        run_id="regime-run",
+        train_end_date="2024-01-01",
+        inference_dates=("2024-01-02", "2024-01-03", "2024-01-04"),
+        finished_at=finished_at,
+        rows=[
+            {
+                "date": "2024-01-02",
+                "regime_label": "bull",
+                "regime_confidence": 0.80,
+                "regime_prob_bear": 0.10,
+                "regime_prob_sideways": 0.10,
+                "regime_prob_bull": 0.80,
+            },
+            {
+                "date": "2024-01-03",
+                "regime_label": "sideways",
+                "regime_confidence": 0.70,
+                "regime_prob_bear": 0.15,
+                "regime_prob_sideways": 0.70,
+                "regime_prob_bull": 0.15,
+            },
+            {
+                "date": "2024-01-04",
+                "regime_label": "bear",
+                "regime_confidence": 0.90,
+                "regime_prob_bear": 0.90,
+                "regime_prob_sideways": 0.05,
+                "regime_prob_bull": 0.05,
+            },
+        ],
+    )
+
+    backfill_layer1(Layer1BackfillConfig(run_id="layer1-optional", tickers=("AAPL",)), writer=writer)
+
+    records = read_feature_records("AAPL", writer=writer)
+    by_date = {record.date: record.features for record in records}
+    assert by_date["2024-01-02"]["nlp_sentiment_score"] == 0.40
+    assert by_date["2024-01-02"]["nlp_topic_count"] == 1
+    assert by_date["2024-01-02"]["nlp_dominant_topic_id"] == 7
+    assert by_date["2024-01-02"]["regime_label"] == "bull"
+    assert by_date["2024-01-04"]["regime_prob_bear"] == 0.90
+
+
 def test_backfill_layer1_skips_tickers_with_no_ohlcv(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -159,6 +333,102 @@ def test_backfill_layer1_skips_tickers_with_no_ohlcv(
     )
     payload = json.loads(manifest_payload.decode("utf-8"))
     assert payload["status"] == "completed"
+
+
+def test_backfill_layer1_fails_closed_when_optional_branch_is_required(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Configured required optional branches abort the run when no artifact is available."""
+    writer = _local_writer(tmp_path, monkeypatch)
+    _write_synthetic_ohlcv(writer, "AAPL", num_bars=5)
+    _write_synthetic_ohlcv(writer, "SPY", num_bars=5)
+    _write_empty_macro_shard(writer)
+    _write_empty_fundamentals(writer, "AAPL")
+
+    with pytest.raises(FileNotFoundError, match="No completed sentiment artifacts"):
+        backfill_layer1(
+            Layer1BackfillConfig(
+                run_id="layer1-require-sentiment",
+                tickers=("AAPL",),
+                require_sentiment_features=True,
+            ),
+            writer=writer,
+        )
+
+    manifest_payload = writer.get_object(
+        pipeline_manifest_path(LAYER1_BACKFILL_STAGE, "layer1-require-sentiment"),
+    )
+    payload = json.loads(manifest_payload.decode("utf-8"))
+    assert payload["status"] == "failed"
+
+
+def test_backfill_layer1_rejects_duplicate_optional_branch_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Duplicate `(date, ticker)` rows inside one optional branch artifact are rejected."""
+    writer = _local_writer(tmp_path, monkeypatch)
+    _write_synthetic_ohlcv(writer, "AAPL", num_bars=5)
+    _write_synthetic_ohlcv(writer, "SPY", num_bars=5)
+    _write_empty_macro_shard(writer)
+    _write_empty_fundamentals(writer, "AAPL")
+    _write_daily_feature_artifact(
+        writer,
+        stage=FINBERT_SENTIMENT_STAGE,
+        branch_name="sentiment",
+        as_of_date="2024-01-02",
+        run_id="sentiment-dup",
+        records=[
+            FeatureRecord(
+                date="2024-01-02",
+                ticker="AAPL",
+                features={"nlp_sentiment_score": 0.4},
+            ),
+            FeatureRecord(
+                date="2024-01-02",
+                ticker="AAPL",
+                features={"nlp_sentiment_score": 0.2},
+            ),
+        ],
+        finished_at=datetime(2024, 2, 14, 22, 0, tzinfo=UTC),
+    )
+
+    with pytest.raises(ValueError, match="Duplicate sentiment rows found"):
+        backfill_layer1(Layer1BackfillConfig(run_id="layer1-dup", tickers=("AAPL",)), writer=writer)
+
+
+def test_backfill_layer1_rejects_cross_date_optional_branch_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Daily optional branch artifacts cannot leak rows from another trading date."""
+    writer = _local_writer(tmp_path, monkeypatch)
+    _write_synthetic_ohlcv(writer, "AAPL", num_bars=5)
+    _write_synthetic_ohlcv(writer, "SPY", num_bars=5)
+    _write_empty_macro_shard(writer)
+    _write_empty_fundamentals(writer, "AAPL")
+    _write_daily_feature_artifact(
+        writer,
+        stage=TEXT_TOPICS_STAGE,
+        branch_name="topics",
+        as_of_date="2024-01-02",
+        run_id="topics-leak",
+        records=[
+            FeatureRecord(
+                date="2024-01-03",
+                ticker="AAPL",
+                features={"nlp_sentence_count": 1, "nlp_topic_count": 1},
+            )
+        ],
+        finished_at=datetime(2024, 2, 14, 22, 0, tzinfo=UTC),
+    )
+
+    with pytest.raises(ValueError, match="outside as_of_date=2024-01-02"):
+        backfill_layer1(
+            Layer1BackfillConfig(run_id="layer1-cross-date", tickers=("AAPL",)),
+            writer=writer,
+        )
 
 
 def test_backfill_layer1_writes_failed_manifest_on_error(
