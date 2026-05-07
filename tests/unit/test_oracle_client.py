@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from app.pi.network import oracle_client
 from app.pi.network.oracle_client import (
     CommandResult,
     Layer1TriggerConfig,
@@ -69,7 +70,7 @@ def test_trigger_layer1_feature_generation_builds_modal_command() -> None:
                 "--benchmark-ticker",
                 "SPY",
             ),
-            Path("/DATA/nas/Projects/AI-Stock-Trader"),
+            oracle_client._REPO_ROOT,
         )
     ]
 
