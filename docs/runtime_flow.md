@@ -43,6 +43,19 @@ The backfill is idempotent and safe to re-run; skips dates/archives already stor
 After backfill: run model training and walk-forward validation (Milestones 2-4)
 before enabling the live daily loop.
 
+Layer 1 historical feature generation is also a cloud/lab concern, not a Pi concern:
+
+```bash
+modal run app/lab/data_pipelines/backfill_layer1.py \
+    --run-id layer1-history-20240131 \
+    --tickers SPY,AAPL \
+    --benchmark-ticker SPY
+```
+
+This keeps feature-history assembly, sentence embeddings, FinBERT scoring, topic modeling,
+and HMM regime work off the Pi path. The Pi orchestrator should only trigger Modal jobs and
+consume their R2 outputs.
+
 ---
 
 ## Phase 1 - Daily loop (automated, Pi cron)
@@ -60,9 +73,9 @@ before enabling the live daily loop.
    - Write `PipelineManifestRecord` (stage=layer0)
 
 2. **Layer 1 feature generation** (Modal)
-   - Read today's OHLCV Parquet, news JSON Lines, and universe CSV from R2
-   - Read point-in-time SimFin fundamentals and earnings dates from R2
-   - Read FRED macro context series persisted for the run date from R2
+  - Read today's OHLCV Parquet, news JSON Lines, and universe CSV from R2
+  - Read point-in-time SimFin fundamentals and earnings dates from R2
+  - Read FRED macro context series persisted for the run date from R2
    - Fail closed if the required Layer 0 raw archives or manifests are missing
    - Preprocess news into sentence-level `NewsSentimentRecord` rows at
      `features/layer1/news_sentiment/{YYYY-MM-DD}/{run_id}.parquet`
@@ -73,17 +86,25 @@ before enabling the live daily loop.
      `features/layer1/news_sentiment_scored/{YYYY-MM-DD}/{run_id}.parquet` and aggregate
      ticker-day sentiment FeatureRecords into
      `features/layer1/sentiment_features/{YYYY-MM-DD}/{run_id}.parquet`
-   - Compute market, NLP, and context features for today
-   - Refresh aligned per-ticker feature histories at `features/layer1/TICKER.parquet` in R2
+  - Compute market, NLP, and context features for today
+  - Refresh aligned per-ticker feature histories at `features/layer1/TICKER.parquet` in R2
      while preserving daily single-record shard support for incremental runs
-   - Write `PipelineManifestRecord` (stage=layer1)
+  - Write `PipelineManifestRecord` (stage=layer1)
+  - Modal runner entrypoints:
+    `run_news_preprocessing.py`, `run_text_topics.py`, `run_finbert_sentiment.py`,
+    and `backfill_layer1.py`
+  - CPU / GPU expectations:
+    preprocessing is CPU only; text topics and FinBERT stay on Modal and must not be
+    redirected to Pi-local model execution
 
 3. **Layer 1.5 regime detection** (Modal)
-   - Read recent SPY returns, VIX, and FRED macro regime inputs from R2
-   - Run HMM to classify current regime (bull / bear / sideways)
-   - Write market-wide regime probabilities to `features/layer1_5/regime/{run_id}.parquet`
-   - Write `PipelineManifestRecord` (stage=layer1_5_regime)
-   - Layer 1 feature assembly broadcasts the regime label/probabilities onto ticker rows
+  - Read recent SPY returns, VIX, and FRED macro regime inputs from R2
+  - Run HMM to classify current regime (bull / bear / sideways)
+  - Write market-wide regime probabilities to `features/layer1_5/regime/{run_id}.parquet`
+  - Write `PipelineManifestRecord` (stage=layer1_5_regime)
+  - Layer 1 feature assembly broadcasts the regime label/probabilities onto ticker rows
+  - Modal runner entrypoint: `run_hmm_regime_detection.py`
+  - CPU expectation: HMM fitting stays on Modal/lab; do not move this compute onto the Pi
 
 4. **Layer 2 inference** (Modal)
    - Read today's feature row from R2

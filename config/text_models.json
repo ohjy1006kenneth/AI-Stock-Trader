@@ -2,6 +2,8 @@
   "app_name": "ai-stock-trader-text-topics",
   "r2_secret_name": "ai-stock-trader-r2",
   "timeout_seconds": 3600,
+  "python_version": "3.11",
+  "requirements_path": "requirements/modal.txt",
   "embedding_model_name": "sentence-transformers/all-mpnet-base-v2",
   "embedding_model_revision": "86eb780758622d085bac2d7f6aea99c157a5ee28",
   "embedding_dimension": 768,
