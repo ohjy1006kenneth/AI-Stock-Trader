@@ -338,7 +338,7 @@ def test_backfill_layer1_fails_closed_when_optional_branch_is_required(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Configured required optional branches abort the run when no artifact is available."""
+    """Required sentiment artifacts abort the run when none are available."""
     writer = _local_writer(tmp_path, monkeypatch)
     _write_synthetic_ohlcv(writer, "AAPL", num_bars=5)
     _write_synthetic_ohlcv(writer, "SPY", num_bars=5)
@@ -357,6 +357,34 @@ def test_backfill_layer1_fails_closed_when_optional_branch_is_required(
 
     manifest_payload = writer.get_object(
         pipeline_manifest_path(LAYER1_BACKFILL_STAGE, "layer1-require-sentiment"),
+    )
+    payload = json.loads(manifest_payload.decode("utf-8"))
+    assert payload["status"] == "failed"
+
+
+def test_backfill_layer1_fails_closed_when_regime_branch_is_required(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Required regime artifacts abort the run when none are available."""
+    writer = _local_writer(tmp_path, monkeypatch)
+    _write_synthetic_ohlcv(writer, "AAPL", num_bars=5)
+    _write_synthetic_ohlcv(writer, "SPY", num_bars=5)
+    _write_empty_macro_shard(writer)
+    _write_empty_fundamentals(writer, "AAPL")
+
+    with pytest.raises(FileNotFoundError, match="No completed regime artifacts"):
+        backfill_layer1(
+            Layer1BackfillConfig(
+                run_id="layer1-require-regime",
+                tickers=("AAPL",),
+                require_regime_features=True,
+            ),
+            writer=writer,
+        )
+
+    manifest_payload = writer.get_object(
+        pipeline_manifest_path(LAYER1_BACKFILL_STAGE, "layer1-require-regime"),
     )
     payload = json.loads(manifest_payload.decode("utf-8"))
     assert payload["status"] == "failed"
