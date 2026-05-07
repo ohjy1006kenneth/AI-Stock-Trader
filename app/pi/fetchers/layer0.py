@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections.abc import Sequence
 from datetime import date
 from pathlib import Path
 
@@ -12,7 +13,11 @@ from loguru import logger
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(_REPO_ROOT))
 
-from core.data.layer0_pipeline import DailyLayer0Config, run_daily_layer0_incremental  # noqa: E402
+from core.data.layer0_pipeline import (  # noqa: E402
+    DailyLayer0Config,
+    Layer0PipelineResult,
+    run_daily_layer0_incremental,
+)
 from services.alpaca.market_data import AlpacaMarketDataClient, AlpacaMarketDataConfig  # noqa: E402
 from services.alpaca.news import DEFAULT_ALPACA_NEWS_PAGE_LIMIT, AlpacaNewsClient  # noqa: E402
 from services.fred.macro_fetcher import (  # noqa: E402
@@ -28,34 +33,61 @@ from services.simfin.fundamentals_fetcher import (  # noqa: E402
 )
 
 
+def run_layer0_incremental(
+    *,
+    as_of_date: date,
+    tickers: Sequence[str],
+    series_ids: Sequence[str] | None = None,
+    overwrite: bool = False,
+    run_id: str | None = None,
+    news_limit: int = DEFAULT_ALPACA_NEWS_PAGE_LIMIT,
+    simfin_limit: int = 1000,
+    fred_limit: int = 1000,
+    config_path: Path = DEFAULT_FRED_CONFIG_PATH,
+    writer: R2Writer | None = None,
+) -> Layer0PipelineResult:
+    """Run one daily Layer 0 incremental ingest with production dependencies."""
+    archive_config = load_fred_archive_config(config_path)
+    alpaca_config = AlpacaMarketDataConfig.from_env()
+    config = DailyLayer0Config(
+        as_of_date=as_of_date,
+        tickers=tickers,
+        fred_series_ids=series_ids or archive_config.series_ids,
+        overwrite=overwrite,
+        news_limit=news_limit,
+        simfin_limit=simfin_limit,
+        fred_limit=fred_limit,
+        run_id=run_id,
+    )
+    return run_daily_layer0_incremental(
+        config=config,
+        live_price_fetcher=AlpacaMarketDataClient(alpaca_config),
+        news_fetcher=AlpacaNewsClient(alpaca_config),
+        fundamentals_fetcher=SimFinFundamentalsFetcher(SimFinClientConfig.from_env()),
+        macro_fetcher=FredMacroFetcher(FredClientConfig.from_env()),
+        writer=writer or R2Writer(),
+    )
+
+
 def main() -> int:
     """Run one daily Layer 0 incremental ingest from the command line."""
     args = _parse_args()
-    archive_config = load_fred_archive_config(Path(args.config))
     try:
         as_of_date = date.fromisoformat(args.as_of_date)
     except ValueError as exc:
         logger.error("Invalid --as-of-date: {}", exc)
         return 1
 
-    alpaca_config = AlpacaMarketDataConfig.from_env()
-    config = DailyLayer0Config(
+    result = run_layer0_incremental(
         as_of_date=as_of_date,
         tickers=args.tickers,
-        fred_series_ids=args.series_ids or archive_config.series_ids,
+        series_ids=args.series_ids,
         overwrite=args.overwrite,
+        run_id=args.run_id,
         news_limit=args.news_limit,
         simfin_limit=args.simfin_limit,
         fred_limit=args.fred_limit,
-        run_id=args.run_id,
-    )
-    result = run_daily_layer0_incremental(
-        config=config,
-        live_price_fetcher=AlpacaMarketDataClient(alpaca_config),
-        news_fetcher=AlpacaNewsClient(alpaca_config),
-        fundamentals_fetcher=SimFinFundamentalsFetcher(SimFinClientConfig.from_env()),
-        macro_fetcher=FredMacroFetcher(FredClientConfig.from_env()),
-        writer=R2Writer(),
+        config_path=Path(args.config),
     )
     logger.info("Daily Layer 0 incremental ingest complete: {}", result)
     return 0
