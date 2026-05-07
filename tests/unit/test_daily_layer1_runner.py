@@ -6,8 +6,6 @@ from pathlib import Path
 import pytest
 
 from app.lab.data_pipelines import run_daily_layer1 as daily_layer1_module
-from app.lab.data_pipelines.run_finbert_sentiment import FINBERT_SENTIMENT_STAGE
-from app.lab.data_pipelines.run_hmm_regime_detection import REGIME_STAGE
 from app.lab.data_pipelines.run_daily_layer1 import (
     LAYER1_DAILY_STAGE,
     Layer1DailyConfig,
@@ -20,6 +18,8 @@ from app.lab.data_pipelines.run_daily_layer1 import (
     main,
     run_daily_layer1,
 )
+from app.lab.data_pipelines.run_finbert_sentiment import FINBERT_SENTIMENT_STAGE
+from app.lab.data_pipelines.run_hmm_regime_detection import REGIME_STAGE
 from app.lab.data_pipelines.run_news_preprocessing import NLP_PREPROCESSING_STAGE
 from app.lab.data_pipelines.run_text_topics import TEXT_TOPICS_STAGE
 from app.lab.data_pipelines.validate_layer1_archive import Layer1ValidationReport

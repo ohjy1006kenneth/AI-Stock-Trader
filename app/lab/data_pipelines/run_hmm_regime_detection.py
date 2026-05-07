@@ -20,6 +20,7 @@ from typing import Protocol
 
 from loguru import logger
 
+
 def _resolve_repo_root() -> Path:
     """Return the repository root for local runs and Modal-mounted runs."""
     env_root = os.getenv("AI_STOCK_TRADER_REPO_ROOT")

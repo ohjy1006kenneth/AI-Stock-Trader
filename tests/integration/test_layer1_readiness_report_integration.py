@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from app.lab.data_pipelines.validate_layer1_archive import load_universe_mapping_from_r2
 from app.lab.data_pipelines.run_daily_layer1 import Layer1DailyConfig, run_daily_layer1
+from app.lab.data_pipelines.validate_layer1_archive import load_universe_mapping_from_r2
 from core.contracts.schemas import FeatureRecord, PipelineManifestRecord, RunStatus
 from core.features.io import read_feature_records, write_feature_records
 from services.r2.paths import pipeline_manifest_path
