@@ -40,7 +40,15 @@ def assemble_layer1_feature_records(
 
     assembled: dict[tuple[str, str], dict[str, Any]] = {}
     for feature_input in inputs:
+        seen_keys: set[tuple[str, str]] = set()
         for record in feature_input.records:
+            key = (record.date, record.ticker)
+            if key in seen_keys:
+                raise ValueError(
+                    f"Duplicate FeatureRecord for {feature_input.name}: "
+                    f"{record.date}/{record.ticker}"
+                )
+            seen_keys.add(key)
             _validate_no_leakage(
                 record=record,
                 as_of_timestamp=feature_input.as_of_timestamp,
@@ -49,7 +57,6 @@ def assemble_layer1_feature_records(
                 input_name=feature_input.name,
             )
             clean_features = _validated_features(record.features, input_name=feature_input.name)
-            key = (record.date, record.ticker)
             target = assembled.setdefault(key, {})
             _merge_features(target, clean_features, input_name=feature_input.name)
 

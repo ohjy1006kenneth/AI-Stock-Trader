@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import io
 import json
 import sys
 from collections.abc import Iterable, Sequence
@@ -45,7 +46,7 @@ from core.features.context_features import (  # noqa: E402
     compute_context_features,
     context_features_to_records,
 )
-from core.features.io import write_feature_records  # noqa: E402
+from core.features.io import parquet_bytes_to_feature_records, write_feature_records  # noqa: E402
 from core.features.loaders import (  # noqa: E402
     load_fundamentals_frame,
     load_macro_frame,
@@ -55,10 +56,15 @@ from core.features.market_features import (  # noqa: E402
     compute_market_features,
     market_features_to_records,
 )
-from services.r2.paths import pipeline_manifest_path  # noqa: E402
+from core.features.regime_detection import HMM_REGIME_FEATURE_COLUMNS  # noqa: E402
+from services.r2.paths import build_r2_key, layer1_regime_path, pipeline_manifest_path  # noqa: E402
 from services.r2.writer import R2Writer  # noqa: E402
 
 LAYER1_BACKFILL_STAGE = "layer1_backfill"
+FINBERT_SENTIMENT_STAGE = "layer1_finbert_sentiment"
+TEXT_TOPICS_STAGE = "layer1_text_topics"
+REGIME_STAGE = "layer1_5_regime"
+MODAL_CONFIG_PATH = _REPO_ROOT / "config" / "modal.json"
 MODAL_CONFIG_PATH = _REPO_ROOT / "config" / "modal.json"
 SENTINEL_ASSEMBLY_AS_OF = datetime(1900, 1, 1, 0, 0, 0, tzinfo=ZoneInfo("America/New_York"))
 
@@ -72,6 +78,9 @@ class ObjectStore(Protocol):
     def get_object(self, key: str) -> bytes:
         """Read an object from storage."""
 
+    def list_keys(self, prefix: str) -> list[str]:
+        """List object keys beneath a prefix."""
+
 
 @dataclass(frozen=True)
 class Layer1BackfillConfig:
@@ -80,6 +89,9 @@ class Layer1BackfillConfig:
     run_id: str
     tickers: tuple[str, ...]
     benchmark_ticker: str = "SPY"
+    require_sentiment_features: bool = False
+    require_topic_features: bool = False
+    require_regime_features: bool = False
 
     def __post_init__(self) -> None:
         """Validate run identity and ticker list."""
@@ -90,6 +102,25 @@ class Layer1BackfillConfig:
         for ticker in self.tickers:
             if not ticker.strip():
                 raise ValueError("tickers cannot contain empty strings")
+
+
+@dataclass(frozen=True)
+class OptionalFeatureBranch:
+    """Loaded per-ticker optional FeatureRecord artifacts for one branch."""
+
+    name: str
+    records_by_ticker: dict[str, tuple[FeatureRecord, ...]]
+    covered_dates: frozenset[str]
+    artifact_keys: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class OptionalRegimeBranch:
+    """Loaded market-wide regime features keyed by date."""
+
+    features_by_date: dict[str, dict[str, object]]
+    covered_dates: frozenset[str]
+    artifact_keys: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -144,7 +175,42 @@ def backfill_layer1(
 
     ticker_files_written = 0
     feature_rows_written = 0
+    processed_dates: set[str] = set()
+    sentiment_branch = OptionalFeatureBranch(
+        name="sentiment",
+        records_by_ticker={},
+        covered_dates=frozenset(),
+        artifact_keys=(),
+    )
+    topic_branch = OptionalFeatureBranch(
+        name="topics",
+        records_by_ticker={},
+        covered_dates=frozenset(),
+        artifact_keys=(),
+    )
+    regime_branch = OptionalRegimeBranch(
+        features_by_date={},
+        covered_dates=frozenset(),
+        artifact_keys=(),
+    )
     try:
+        sentiment_branch = _load_optional_feature_branch(
+            writer=active_writer,
+            stage=FINBERT_SENTIMENT_STAGE,
+            branch_name="sentiment",
+            require_artifacts=config.require_sentiment_features,
+        )
+        topic_branch = _load_optional_feature_branch(
+            writer=active_writer,
+            stage=TEXT_TOPICS_STAGE,
+            branch_name="topics",
+            require_artifacts=config.require_topic_features,
+        )
+        regime_branch = _load_optional_regime_branch(
+            writer=active_writer,
+            require_artifacts=config.require_regime_features,
+        )
+
         for ticker in config.tickers:
             logger.info("Backfilling Layer 1 features for ticker={}", ticker)
             try:
@@ -168,24 +234,65 @@ def backfill_layer1(
                 fundamentals=fundamentals,
                 macro=macro_frame,
             )
+            ticker_dates = frozenset(str(value) for value in ohlcv["date"].astype(str).tolist())
+            processed_dates.update(ticker_dates)
 
-            assembled = assemble_layer1_feature_records(
-                [
-                    Layer1FeatureInput(
-                        name="market",
-                        records=market_records,
-                        as_of_timestamp=SENTINEL_ASSEMBLY_AS_OF,
-                    ),
-                    Layer1FeatureInput(
-                        name="context",
-                        records=context_records,
-                        as_of_timestamp=SENTINEL_ASSEMBLY_AS_OF,
-                    ),
-                ]
+            inputs = [
+                Layer1FeatureInput(
+                    name="market",
+                    records=market_records,
+                    as_of_timestamp=SENTINEL_ASSEMBLY_AS_OF,
+                ),
+                Layer1FeatureInput(
+                    name="context",
+                    records=context_records,
+                    as_of_timestamp=SENTINEL_ASSEMBLY_AS_OF,
+                ),
+            ]
+            sentiment_input = _optional_branch_input(
+                name="sentiment",
+                records=_records_for_ticker_branch(
+                    sentiment_branch,
+                    ticker=ticker,
+                    allowed_dates=ticker_dates,
+                ),
             )
+            if sentiment_input is not None:
+                inputs.append(sentiment_input)
+
+            topic_input = _optional_branch_input(
+                name="topics",
+                records=_records_for_ticker_branch(
+                    topic_branch,
+                    ticker=ticker,
+                    allowed_dates=ticker_dates,
+                ),
+            )
+            if topic_input is not None:
+                inputs.append(topic_input)
+
+            regime_input = _optional_branch_input(
+                name="regime",
+                records=_regime_records_for_ticker(
+                    regime_branch,
+                    ticker=ticker,
+                    allowed_dates=ticker_dates,
+                ),
+            )
+            if regime_input is not None:
+                inputs.append(regime_input)
+
+            assembled = assemble_layer1_feature_records(inputs)
             written_keys = write_feature_records(assembled, writer=active_writer)
             ticker_files_written += len(written_keys)
             feature_rows_written += len(assembled)
+
+        missing_sentiment_dates = _missing_branch_dates(processed_dates, sentiment_branch.covered_dates)
+        missing_topic_dates = _missing_branch_dates(processed_dates, topic_branch.covered_dates)
+        missing_regime_dates = _missing_branch_dates(processed_dates, regime_branch.covered_dates)
+        _log_missing_optional_branch_dates("sentiment", missing_sentiment_dates)
+        _log_missing_optional_branch_dates("topics", missing_topic_dates)
+        _log_missing_optional_branch_dates("regime", missing_regime_dates)
 
         finished = (now or datetime.now(UTC)).replace(microsecond=0)
         manifest_key = _write_manifest(
@@ -199,6 +306,12 @@ def backfill_layer1(
                 "ticker_files_written": ticker_files_written,
                 "feature_rows_written": feature_rows_written,
                 "benchmark_ticker": config.benchmark_ticker,
+                "sentiment_artifacts_loaded": len(sentiment_branch.artifact_keys),
+                "topic_artifacts_loaded": len(topic_branch.artifact_keys),
+                "regime_artifacts_loaded": len(regime_branch.artifact_keys),
+                "missing_sentiment_dates": len(missing_sentiment_dates),
+                "missing_topic_dates": len(missing_topic_dates),
+                "missing_regime_dates": len(missing_regime_dates),
             },
         )
         logger.info(
@@ -229,9 +342,326 @@ def backfill_layer1(
                 "ticker_files_written": ticker_files_written,
                 "feature_rows_written": feature_rows_written,
                 "benchmark_ticker": config.benchmark_ticker,
+                "sentiment_artifacts_loaded": len(sentiment_branch.artifact_keys),
+                "topic_artifacts_loaded": len(topic_branch.artifact_keys),
+                "regime_artifacts_loaded": len(regime_branch.artifact_keys),
             },
         )
         raise
+
+
+def _load_optional_feature_branch(
+    *,
+    writer: ObjectStore,
+    stage: str,
+    branch_name: str,
+    require_artifacts: bool,
+) -> OptionalFeatureBranch:
+    """Load the latest completed daily FeatureRecord artifact for each branch date."""
+    manifests = _latest_completed_daily_manifests(writer=writer, stage=stage)
+    if not manifests:
+        message = f"No completed {branch_name} artifacts found for stage={stage}"
+        if require_artifacts:
+            raise FileNotFoundError(message)
+        logger.warning(message)
+        return OptionalFeatureBranch(
+            name=branch_name,
+            records_by_ticker={},
+            covered_dates=frozenset(),
+            artifact_keys=(),
+        )
+
+    records_by_ticker: dict[str, list[FeatureRecord]] = {}
+    covered_dates: set[str] = set()
+    artifact_keys: list[str] = []
+    seen_keys: set[tuple[str, str]] = set()
+
+    for as_of_date, manifest in sorted(manifests.items()):
+        output_path = _manifest_output_path(manifest, branch_name=branch_name)
+        try:
+            payload = writer.get_object(output_path)
+        except FileNotFoundError:
+            message = (
+                f"{branch_name} artifact missing for date={as_of_date} "
+                f"run_id={manifest.run_id}: {output_path}"
+            )
+            if require_artifacts:
+                raise FileNotFoundError(message) from None
+            logger.warning(message)
+            continue
+
+        records = parquet_bytes_to_feature_records(payload)
+        _validate_daily_feature_records(
+            records,
+            branch_name=branch_name,
+            as_of_date=as_of_date,
+            artifact_key=output_path,
+        )
+        artifact_keys.append(output_path)
+        covered_dates.add(as_of_date)
+        for record in records:
+            key = (record.date, record.ticker)
+            if key in seen_keys:
+                raise ValueError(
+                    f"Duplicate {branch_name} FeatureRecord across selected artifacts for "
+                    f"{record.date}/{record.ticker}"
+                )
+            seen_keys.add(key)
+            records_by_ticker.setdefault(record.ticker, []).append(record)
+
+    return OptionalFeatureBranch(
+        name=branch_name,
+        records_by_ticker={
+            ticker: tuple(sorted(ticker_records, key=lambda record: record.date))
+            for ticker, ticker_records in sorted(records_by_ticker.items())
+        },
+        covered_dates=frozenset(covered_dates),
+        artifact_keys=tuple(artifact_keys),
+    )
+
+
+def _load_optional_regime_branch(
+    *,
+    writer: ObjectStore,
+    require_artifacts: bool,
+) -> OptionalRegimeBranch:
+    """Load the latest completed regime row for each inference date."""
+    manifests = _completed_manifests(writer=writer, stage=REGIME_STAGE)
+    if not manifests:
+        message = "No completed regime artifacts found for stage=layer1_5_regime"
+        if require_artifacts:
+            raise FileNotFoundError(message)
+        logger.warning(message)
+        return OptionalRegimeBranch(
+            features_by_date={},
+            covered_dates=frozenset(),
+            artifact_keys=(),
+        )
+
+    selected_rows: dict[str, tuple[datetime, str, dict[str, object]]] = {}
+    for manifest in manifests:
+        output_path = _manifest_output_path(manifest, branch_name="regime")
+        expected_output_path = layer1_regime_path(manifest.run_id)
+        if output_path != expected_output_path:
+            raise ValueError(
+                f"regime manifest {manifest.run_id} output_path must equal "
+                f"{expected_output_path}, got {output_path}"
+            )
+        try:
+            frame = _parquet_bytes_to_frame(writer.get_object(output_path))
+        except FileNotFoundError:
+            message = f"regime artifact missing for run_id={manifest.run_id}: {output_path}"
+            if require_artifacts:
+                raise FileNotFoundError(message) from None
+            logger.warning(message)
+            continue
+
+        _require_columns(frame, ("date", *HMM_REGIME_FEATURE_COLUMNS), branch_name="regime")
+        expected_dates = _metadata_inference_dates(manifest)
+        train_end_date = _metadata_iso_date(manifest, "train_end_date", required=False)
+        seen_dates_in_file: set[str] = set()
+        ranking_timestamp = manifest.finished_at or manifest.started_at
+
+        for row in frame.to_dict(orient="records"):
+            date_value = _validated_iso_date(str(row["date"]), label="regime date")
+            if date_value in seen_dates_in_file:
+                raise ValueError(
+                    f"Duplicate regime rows found in artifact {output_path} for date={date_value}"
+                )
+            seen_dates_in_file.add(date_value)
+            if expected_dates is not None and date_value not in expected_dates:
+                raise ValueError(
+                    f"regime artifact {output_path} contains unexpected date={date_value}"
+                )
+            if train_end_date is not None and date_value <= train_end_date:
+                raise ValueError(
+                    f"regime artifact {output_path} contains non-forward date={date_value} "
+                    f"for train_end_date={train_end_date}"
+                )
+
+            normalized_features = {
+                "regime_label": _optional_string(row.get("regime_label")),
+                "regime_confidence": _optional_numeric(row.get("regime_confidence")),
+                "regime_prob_bear": _optional_numeric(row.get("regime_prob_bear")),
+                "regime_prob_sideways": _optional_numeric(row.get("regime_prob_sideways")),
+                "regime_prob_bull": _optional_numeric(row.get("regime_prob_bull")),
+            }
+            current = selected_rows.get(date_value)
+            if current is None or ranking_timestamp >= current[0]:
+                selected_rows[date_value] = (ranking_timestamp, output_path, normalized_features)
+
+    if not selected_rows and require_artifacts:
+        raise FileNotFoundError(
+            "No readable regime artifacts were available for Layer 1 assembly"
+        )
+
+    return OptionalRegimeBranch(
+        features_by_date={
+            date_value: payload[2]
+            for date_value, payload in sorted(selected_rows.items())
+        },
+        covered_dates=frozenset(selected_rows.keys()),
+        artifact_keys=tuple(sorted({payload[1] for payload in selected_rows.values()})),
+    )
+
+
+def _latest_completed_daily_manifests(
+    *,
+    writer: ObjectStore,
+    stage: str,
+) -> dict[str, PipelineManifestRecord]:
+    """Return the latest completed manifest for each daily branch date."""
+    manifests = _completed_manifests(writer=writer, stage=stage)
+    selected: dict[str, PipelineManifestRecord] = {}
+    for manifest in manifests:
+        as_of_date = _metadata_iso_date(manifest, "as_of_date", required=True)
+        current = selected.get(as_of_date)
+        current_finished_at = current.finished_at if current is not None else None
+        finished_at = manifest.finished_at or manifest.started_at
+        if current is None or current_finished_at is None or finished_at >= current_finished_at:
+            selected[as_of_date] = manifest
+    return selected
+
+
+def _completed_manifests(
+    *,
+    writer: ObjectStore,
+    stage: str,
+) -> list[PipelineManifestRecord]:
+    """Load completed manifests for one pipeline stage."""
+    prefix = build_r2_key("artifacts", "manifests", stage)
+    manifests: list[PipelineManifestRecord] = []
+    for key in sorted(writer.list_keys(prefix)):
+        manifest = PipelineManifestRecord.model_validate_json(writer.get_object(key))
+        if manifest.status == RunStatus.COMPLETED:
+            manifests.append(manifest)
+    return manifests
+
+
+def _manifest_output_path(manifest: PipelineManifestRecord, *, branch_name: str) -> str:
+    """Return the output path declared by a completed manifest."""
+    if manifest.output_path is None or not manifest.output_path.strip():
+        raise ValueError(f"{branch_name} manifest {manifest.run_id} is missing output_path")
+    return manifest.output_path
+
+
+def _metadata_iso_date(
+    manifest: PipelineManifestRecord,
+    field_name: str,
+    *,
+    required: bool,
+) -> str | None:
+    """Return one validated ISO date from manifest metadata."""
+    raw_value = manifest.metadata.get(field_name)
+    if raw_value is None:
+        if required:
+            raise ValueError(f"manifest {manifest.run_id} is missing metadata[{field_name!r}]")
+        return None
+    if not isinstance(raw_value, str):
+        raise ValueError(f"manifest {manifest.run_id} metadata[{field_name!r}] must be a string")
+    return _validated_iso_date(raw_value, label=field_name)
+
+
+def _metadata_inference_dates(
+    manifest: PipelineManifestRecord,
+) -> set[str] | None:
+    """Return the validated regime inference dates from manifest metadata when present."""
+    raw_value = manifest.metadata.get("inference_dates")
+    if raw_value is None:
+        return None
+    if not isinstance(raw_value, list):
+        raise ValueError(f"manifest {manifest.run_id} metadata['inference_dates'] must be a list")
+    return {
+        _validated_iso_date(str(value), label="inference_dates")
+        for value in raw_value
+    }
+
+
+def _validate_daily_feature_records(
+    records: Sequence[FeatureRecord],
+    *,
+    branch_name: str,
+    as_of_date: str,
+    artifact_key: str,
+) -> None:
+    """Reject duplicate or cross-date rows inside one daily branch artifact."""
+    seen_keys: set[tuple[str, str]] = set()
+    for record in records:
+        if record.date != as_of_date:
+            raise ValueError(
+                f"{branch_name} artifact {artifact_key} contains record date={record.date} "
+                f"outside as_of_date={as_of_date}"
+            )
+        key = (record.date, record.ticker)
+        if key in seen_keys:
+            raise ValueError(
+                f"Duplicate {branch_name} rows found in artifact {artifact_key} for "
+                f"{record.date}/{record.ticker}"
+            )
+        seen_keys.add(key)
+
+
+def _records_for_ticker_branch(
+    branch: OptionalFeatureBranch,
+    *,
+    ticker: str,
+    allowed_dates: frozenset[str],
+) -> list[FeatureRecord]:
+    """Return selected optional branch rows for one ticker and date set."""
+    return [
+        record
+        for record in branch.records_by_ticker.get(ticker, ())
+        if record.date in allowed_dates
+    ]
+
+
+def _regime_records_for_ticker(
+    branch: OptionalRegimeBranch,
+    *,
+    ticker: str,
+    allowed_dates: frozenset[str],
+) -> list[FeatureRecord]:
+    """Broadcast market-wide regime features onto one ticker's available dates."""
+    return [
+        FeatureRecord(date=date_value, ticker=ticker, features=dict(features))
+        for date_value, features in sorted(branch.features_by_date.items())
+        if date_value in allowed_dates
+    ]
+
+
+def _optional_branch_input(
+    *,
+    name: str,
+    records: Sequence[FeatureRecord],
+) -> Layer1FeatureInput | None:
+    """Wrap optional records in a validated assembly input when rows exist."""
+    if not records:
+        return None
+    return Layer1FeatureInput(
+        name=name,
+        records=list(records),
+        as_of_timestamp=SENTINEL_ASSEMBLY_AS_OF,
+    )
+
+
+def _missing_branch_dates(processed_dates: set[str], covered_dates: frozenset[str]) -> list[str]:
+    """Return processed dates that had no selected optional artifact coverage."""
+    return sorted(date_value for date_value in processed_dates if date_value not in covered_dates)
+
+
+def _log_missing_optional_branch_dates(branch_name: str, missing_dates: Sequence[str]) -> None:
+    """Log one aggregate warning when optional branch coverage is incomplete."""
+    if not missing_dates:
+        return
+    sample = ", ".join(missing_dates[:5])
+    suffix = "" if len(missing_dates) <= 5 else ", ..."
+    logger.warning(
+        "Layer 1 {} artifacts missing for {} processed dates: {}{}",
+        branch_name,
+        len(missing_dates),
+        sample,
+        suffix,
+    )
 
 
 def _compute_market_records(
@@ -288,6 +718,61 @@ def _empty_fundamentals_frame(ohlcv):
     )
 
 
+def _parquet_bytes_to_frame(payload: bytes):
+    """Deserialize Parquet bytes into a pandas DataFrame."""
+    pd = _require_pandas()
+    return pd.read_parquet(io.BytesIO(payload))
+
+
+def _require_pandas():
+    """Import pandas/pyarrow lazily with a clear dependency error."""
+    try:
+        import pandas as pd
+
+        importlib.import_module("pyarrow")
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            "pandas and pyarrow are required to assemble Layer 1 feature histories."
+        ) from exc
+    return pd
+
+
+def _require_columns(frame, columns: Sequence[str], *, branch_name: str) -> None:
+    """Validate that a DataFrame contains each required branch-artifact column."""
+    missing = [column for column in columns if column not in frame.columns]
+    if missing:
+        raise ValueError(f"{branch_name} artifact missing required columns: {missing}")
+
+
+def _optional_numeric(value: object) -> float | None:
+    """Normalize optional numeric artifact values, converting NaN to None."""
+    if value is None:
+        return None
+    numeric = float(value)
+    if numeric != numeric:
+        return None
+    return numeric
+
+
+def _optional_string(value: object) -> str | None:
+    """Normalize optional string artifact values."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    return text
+
+
+def _validated_iso_date(value: str, *, label: str) -> str:
+    """Validate a canonical YYYY-MM-DD string and return it unchanged."""
+    try:
+        parsed = datetime.strptime(value, "%Y-%m-%d")
+    except ValueError as exc:
+        raise ValueError(f"{label} must be YYYY-MM-DD: {value}") from exc
+    return parsed.date().isoformat()
+
+
 def _write_manifest(
     writer: ObjectStore,
     *,
@@ -325,6 +810,21 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--benchmark-ticker",
         default="SPY",
         help="Benchmark ticker used for cross-asset features (default: SPY).",
+    )
+    parser.add_argument(
+        "--require-sentiment-features",
+        action="store_true",
+        help="Fail closed when no completed FinBERT sentiment artifacts are available.",
+    )
+    parser.add_argument(
+        "--require-topic-features",
+        action="store_true",
+        help="Fail closed when no completed topic-feature artifacts are available.",
+    )
+    parser.add_argument(
+        "--require-regime-features",
+        action="store_true",
+        help="Fail closed when no completed regime artifacts are available.",
     )
     return parser.parse_args(argv)
 
@@ -373,6 +873,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         run_id=args.run_id.strip(),
         tickers=tickers,
         benchmark_ticker=args.benchmark_ticker.strip().upper(),
+        require_sentiment_features=bool(args.require_sentiment_features),
+        require_topic_features=bool(args.require_topic_features),
+        require_regime_features=bool(args.require_regime_features),
     )
     backfill_layer1(config)
     return 0

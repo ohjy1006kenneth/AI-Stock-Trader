@@ -113,6 +113,21 @@ def test_assemble_layer1_feature_records_rejects_conflicting_features() -> None:
         assemble_layer1_feature_records([first, second])
 
 
+def test_assemble_layer1_feature_records_rejects_duplicate_rows_in_one_branch() -> None:
+    """One branch cannot emit duplicate rows for the same date and ticker."""
+    source = Layer1FeatureInput(
+        name="sentiment",
+        as_of_timestamp=datetime(2024, 1, 2, 13, 0, tzinfo=UTC),
+        records=[
+            FeatureRecord(date="2024-01-02", ticker="AAPL", features={"x": 1.0}),
+            FeatureRecord(date="2024-01-02", ticker="AAPL", features={"y": 2.0}),
+        ],
+    )
+
+    with pytest.raises(ValueError, match="Duplicate FeatureRecord"):
+        assemble_layer1_feature_records([source])
+
+
 def test_assemble_layer1_feature_records_rejects_nan_feature_values() -> None:
     """NaN feature values fail before they reach the final FeatureRecord."""
     source = Layer1FeatureInput(

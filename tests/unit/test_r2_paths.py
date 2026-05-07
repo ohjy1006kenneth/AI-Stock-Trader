@@ -9,6 +9,7 @@ from services.r2.paths import (
     is_canonical_raw_price_key,
     is_legacy_raw_price_key,
     layer1_feature_path,
+    layer1_regime_path,
     layer1_sentiment_feature_path,
     layer1_sentiment_score_path,
     layer1_text_embedding_path,
@@ -91,6 +92,7 @@ def test_layer1_text_artifact_paths_return_canonical_keys() -> None:
         layer1_sentiment_feature_path("2025-01-02", "run-001")
         == "features/layer1/sentiment_features/2025-01-02/run-001.parquet"
     )
+    assert layer1_regime_path("run-001") == "features/layer1_5/regime/run-001.parquet"
 
 
 def test_pipeline_manifest_path_returns_canonical_key() -> None:

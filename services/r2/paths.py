@@ -150,6 +150,12 @@ def layer1_sentiment_feature_path(as_of_date: str | Date | datetime, run_id: str
     )
 
 
+def layer1_regime_path(run_id: str) -> str:
+    """Return the canonical Layer 1.5 regime-feature path for one run."""
+    safe_run_id = _validate_key_part(run_id)
+    return build_r2_key("features", "layer1_5", "regime", f"{safe_run_id}.parquet")
+
+
 def layer1_label_path(as_of_date: str | Date | datetime, ticker: str) -> str:
     """Return the canonical Layer 1 label-shard Parquet path for one date/ticker pair."""
     safe_ticker = _validate_key_part(ticker)
