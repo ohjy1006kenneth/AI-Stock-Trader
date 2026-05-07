@@ -26,12 +26,18 @@ archives only; they do not call Wikipedia, Alpaca, SimFin, or FRED for feature i
 - Scheduler: host cron
 - Runtime process: Docker container
 - Runtime engine in container: OpenClaw
+- Pi image includes only lightweight orchestration dependencies; heavy Layer 1 ML packages
+  stay in Modal images even though the Pi image carries the `run_daily_layer1.py` entrypoint
+  needed for `modal run`
 
 Expected execution chain:
 1. Cron triggers scheduled command on Pi host
 2. Host starts or invokes the edge runtime container
-3. OpenClaw executes the daily runtime entrypoint inside container
-4. Runtime emits deterministic manifests and reports
+3. OpenClaw/Hermes executes the daily runtime entrypoint inside container
+4. Pi runtime runs Layer 0 incremental locally and writes the Layer 0 manifest
+5. Pi runtime triggers the Modal Layer 1 daily feature job
+6. Pi runtime waits on the Layer 1 manifest in R2 before continuing to inference
+7. Runtime emits deterministic manifests and reports
 
 ## Baseline rollout order
 
@@ -39,11 +45,13 @@ Expected execution chain:
    Wikipedia universe, Alpaca delayed SIP OHLCV, Alpaca news, SimFin fundamentals/earnings, and FRED macro/rates
 2. Validate the Layer 0 daily incremental path:
    Alpaca live bars/news, SimFin refreshes, FRED refreshes, universe masks, and manifests
-3. Build Layer 1 features strictly from existing R2 Layer 0 archives
-4. Deploy cloud oracle with fixed contracts
-5. Validate edge-to-cloud handshake plus Alpaca live-market-data normalization
-6. Dry-run risk and execution path
-7. Enable paper execution
+3. Validate the Pi -> Modal Layer 1 handoff:
+   Pi submits the daily Modal job, then blocks on the R2 Layer 1 manifest
+4. Build Layer 1 features strictly from existing R2 Layer 0 archives
+5. Deploy cloud oracle with fixed contracts
+6. Validate edge-to-cloud handshake plus Alpaca live-market-data normalization
+7. Dry-run risk and execution path
+8. Enable paper execution
 
 ## Modal deployment for Layer 1 and Layer 1.5
 
@@ -53,7 +61,7 @@ Install the cloud dependency set on the machine you use to deploy Modal apps:
 python -m pip install -r requirements/modal.txt
 ```
 
-Deploy each runner from the repo root:
+Deploy each long-lived runner from the repo root:
 
 ```bash
 modal deploy app/lab/data_pipelines/run_news_preprocessing.py
@@ -109,8 +117,9 @@ Config ownership:
   image settings.
 - `config/finbert_sentiment.json` owns the FinBERT app name, R2 secret, timeout, and
   Modal image settings.
-- `config/modal.json` owns the Layer 1 backfill and HMM regime app names, R2 secret,
-  timeouts, and shared Modal image settings.
+- `config/modal.json` owns the Pi-triggered daily Layer 1 app name and poll settings, the
+  Layer 1 backfill and HMM regime app names, their timeouts, and shared Modal image
+  settings.
 
 Baseline paper execution is long-only equities. Hedge and long-short capabilities must stay
 disabled by policy until the relevant risk and execution gates are implemented:

@@ -13,6 +13,7 @@ polygon-api-client>=1.14,<2
 
 # Object storage — Cloudflare R2 (S3-compatible)
 boto3>=1.35,<2
+modal>=0.64,<1         # lightweight client/CLI used to submit Layer 1 jobs to Modal
 
 # Data handling
 pandas>=2.2,<3

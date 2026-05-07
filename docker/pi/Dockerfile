@@ -14,11 +14,15 @@ WORKDIR /app
 # Install Python dependencies first (layer cached unless requirements change)
 COPY requirements/base.txt requirements/base.txt
 COPY requirements/pi.txt requirements/pi.txt
+# The Pi image ships this file so Modal can resolve it during `modal run`; it is not
+# installed into the Pi container because the heavy ML stack stays Modal-only.
+COPY requirements/modal.txt requirements/modal.txt
 RUN pip install --no-cache-dir -r requirements/pi.txt
 
 # Copy source — only what the Pi runtime needs
 COPY core/ core/
 COPY services/ services/
+COPY app/lab/data_pipelines/ app/lab/data_pipelines/
 COPY app/pi/ app/pi/
 COPY config/ config/
 

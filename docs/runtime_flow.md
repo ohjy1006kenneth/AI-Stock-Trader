@@ -7,6 +7,7 @@ Execution context:
 - Pi host cron schedules the daily run.
 - The daily run executes inside a Docker container on the Pi.
 - OpenClaw is the runtime engine inside that container.
+- Hermes/Codex-owned Pi orchestration triggers Modal jobs but does not run heavy ML locally.
 - Heavy compute (FinBERT, XGBoost) runs on Modal and reads/writes R2.
 
 ---
@@ -60,6 +61,13 @@ consume their R2 outputs.
 
 ## Phase 1 - Daily loop (automated, Pi cron)
 
+Execution chain:
+1. Cron starts the Pi runtime container on the host.
+2. OpenClaw/Hermes runs the Pi daily entrypoint inside that container.
+3. The Pi runtime completes Layer 0 locally, then submits the daily Layer 1 job to Modal.
+4. The Pi runtime polls the Layer 1 `PipelineManifestRecord` in R2 and does not continue
+   to inference until the manifest is present, current, and `status=completed`.
+
 ### After market close
 
 1. **Layer 0 incremental** (`app/pi/fetchers/layer0.py`)
@@ -72,10 +80,13 @@ consume their R2 outputs.
    - Write `raw/universe/YYYY-MM-DD.csv` to R2
    - Write `PipelineManifestRecord` (stage=layer0)
 
-2. **Layer 1 feature generation** (Modal)
-  - Read today's OHLCV Parquet, news JSON Lines, and universe CSV from R2
-  - Read point-in-time SimFin fundamentals and earnings dates from R2
-  - Read FRED macro context series persisted for the run date from R2
+2. **Layer 1 feature generation** (Modal, triggered by Pi/Hermes after Layer 0)
+   - Pi runtime shells out through the lightweight Modal client/CLI only
+   - Pi passes `run_id`, `as_of_date`, and the completed Layer 0 `run_id`
+   - Pi records the expected Layer 1 manifest key and waits on R2 before moving on
+   - Read today's OHLCV Parquet, news JSON Lines, and universe CSV from R2
+   - Read point-in-time SimFin fundamentals and earnings dates from R2
+   - Read FRED macro context series persisted for the run date from R2
    - Fail closed if the required Layer 0 raw archives or manifests are missing
    - Preprocess news into sentence-level `NewsSentimentRecord` rows at
      `features/layer1/news_sentiment/{YYYY-MM-DD}/{run_id}.parquet`
@@ -86,16 +97,16 @@ consume their R2 outputs.
      `features/layer1/news_sentiment_scored/{YYYY-MM-DD}/{run_id}.parquet` and aggregate
      ticker-day sentiment FeatureRecords into
      `features/layer1/sentiment_features/{YYYY-MM-DD}/{run_id}.parquet`
-  - Compute market, NLP, and context features for today
-  - Refresh aligned per-ticker feature histories at `features/layer1/TICKER.parquet` in R2
+   - Compute market, NLP, and context features for today
+   - Refresh aligned per-ticker feature histories at `features/layer1/TICKER.parquet` in R2
      while preserving daily single-record shard support for incremental runs
-  - Write `PipelineManifestRecord` (stage=layer1)
-  - Modal runner entrypoints:
-    `run_news_preprocessing.py`, `run_text_topics.py`, `run_finbert_sentiment.py`,
-    and `backfill_layer1.py`
-  - CPU / GPU expectations:
-    preprocessing is CPU only; text topics and FinBERT stay on Modal and must not be
-    redirected to Pi-local model execution
+   - Write `PipelineManifestRecord` (stage=layer1)
+   - Modal runner entrypoints:
+     `run_news_preprocessing.py`, `run_text_topics.py`, `run_finbert_sentiment.py`,
+     `run_daily_layer1.py`, and `backfill_layer1.py`
+   - CPU / GPU expectations:
+     preprocessing is CPU only; text topics and FinBERT stay on Modal and must not be
+     redirected to Pi-local model execution
 
 3. **Layer 1.5 regime detection** (Modal)
   - Read recent SPY returns, VIX, and FRED macro regime inputs from R2
@@ -161,6 +172,8 @@ consume their R2 outputs.
 Every stage writes a `PipelineManifestRecord` to R2 on completion or failure.
 The next stage reads the manifest to verify the upstream stage completed before proceeding.
 If a manifest is missing or `status=failed`, the stage halts and alerts.
+For the Pi-to-Modal handoff specifically, the Pi runtime must also reject stale Layer 1
+manifests whose `as_of_date` or upstream `layer0_run_id` metadata do not match the current run.
 
 Source-of-truth rules for the daily loop:
 - Alpaca delayed SIP is the canonical historical archive source for raw adjusted prices

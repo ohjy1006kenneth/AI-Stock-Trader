@@ -3,7 +3,10 @@ from __future__ import annotations
 from app.pi.main import run_main
 
 EXPECTED_STAGES = [
-    "pull_market_and_news",
+    "collect_market_context",
+    "run_layer0_incremental",
+    "trigger_layer1_modal",
+    "wait_for_layer1_manifest",
     "run_cloud_inference",
     "construct_portfolio_targets",
     "apply_hard_risk_controls",
@@ -29,6 +32,15 @@ def test_pi_runtime_includes_container_runtime_metadata() -> None:
     assert all(row["runtime_context"]["runtime_engine"] == "openclaw" for row in manifests)
     assert all(row["runtime_context"]["execution_environment"] == "docker" for row in manifests)
     assert all(row["runtime_context"]["scheduler"] == "cron" for row in manifests)
+
+
+def test_pi_runtime_records_layer1_manifest_gate_before_inference() -> None:
+    """Dry-run keeps the Layer 1 Modal trigger/wait steps ahead of inference."""
+    manifests = run_main("2026-04-06")
+    by_stage = {row["stage"]: row for row in manifests}
+
+    assert by_stage["trigger_layer1_modal"]["metadata"]["layer1_manifest_key"].endswith(".json")
+    assert by_stage["wait_for_layer1_manifest"]["metadata"]["layer1_status"] == "completed"
 
 
 def test_pi_runtime_dry_run_is_deterministic() -> None:
