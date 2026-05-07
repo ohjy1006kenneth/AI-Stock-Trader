@@ -78,6 +78,8 @@ class FinBERTModelRuntimeConfig:
     app_name: str
     r2_secret_name: str
     timeout_seconds: int
+    python_version: str
+    requirements_path: str
     model_name: str
     model_revision: str
     batch_size: int
@@ -94,6 +96,10 @@ class FinBERTModelRuntimeConfig:
             raise ValueError("r2_secret_name cannot be empty")
         if self.timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
+        if not self.python_version.strip():
+            raise ValueError("python_version cannot be empty")
+        if not self.requirements_path.strip():
+            raise ValueError("requirements_path cannot be empty")
         if not self.model_name.strip():
             raise ValueError("model_name cannot be empty")
         if not self.model_revision.strip():
@@ -246,6 +252,8 @@ def load_finbert_runtime_config(path: Path = FINBERT_CONFIG_PATH) -> FinBERTMode
         app_name=str(payload["app_name"]),
         r2_secret_name=str(payload["r2_secret_name"]),
         timeout_seconds=int(payload["timeout_seconds"]),
+        python_version=str(payload.get("python_version", "3.11")),
+        requirements_path=str(payload.get("requirements_path", "requirements/modal.txt")),
         model_name=str(payload["model_name"]),
         model_revision=str(payload["model_revision"]),
         batch_size=int(payload["batch_size"]),
@@ -375,9 +383,9 @@ def _define_modal_app() -> object | None:
         return None
 
     runtime = load_finbert_runtime_config()
-    image = modal.Image.debian_slim(python_version="3.11").pip_install_from_requirements(
-        "requirements/modal.txt"
-    )
+    image = modal.Image.debian_slim(
+        python_version=runtime.python_version
+    ).pip_install_from_requirements(runtime.requirements_path)
     app = modal.App(runtime.app_name)
 
     @app.function(

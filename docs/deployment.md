@@ -45,6 +45,73 @@ Expected execution chain:
 6. Dry-run risk and execution path
 7. Enable paper execution
 
+## Modal deployment for Layer 1 and Layer 1.5
+
+Install the cloud dependency set on the machine you use to deploy Modal apps:
+
+```bash
+python -m pip install -r requirements/modal.txt
+```
+
+Deploy each runner from the repo root:
+
+```bash
+modal deploy app/lab/data_pipelines/run_news_preprocessing.py
+modal deploy app/lab/data_pipelines/run_text_topics.py
+modal deploy app/lab/data_pipelines/run_finbert_sentiment.py
+modal deploy app/lab/data_pipelines/run_hmm_regime_detection.py
+modal deploy app/lab/data_pipelines/backfill_layer1.py
+```
+
+Smoke-run each entrypoint without relying on Pi-local ML:
+
+```bash
+modal run app/lab/data_pipelines/run_news_preprocessing.py \
+  --run-id smoke-news \
+  --as-of-date 2024-01-02
+
+modal run app/lab/data_pipelines/run_text_topics.py \
+  --run-id smoke-topics \
+  --as-of-date 2024-01-02 \
+  --preprocessed-news-key features/layer1/news_sentiment/2024-01-02/smoke-news.parquet
+
+modal run app/lab/data_pipelines/run_finbert_sentiment.py \
+  --run-id smoke-finbert \
+  --as-of-date 2024-01-02 \
+  --preprocessed-news-key features/layer1/news_sentiment/2024-01-02/smoke-news.parquet
+
+modal run app/lab/data_pipelines/run_hmm_regime_detection.py \
+  --run-id smoke-hmm \
+  --train-start-date 2024-01-02 \
+  --train-end-date 2024-01-31 \
+  --inference-date 2024-02-01
+
+modal run app/lab/data_pipelines/backfill_layer1.py \
+  --run-id smoke-layer1 \
+  --tickers SPY,AAPL \
+  --benchmark-ticker SPY
+```
+
+Runtime expectations:
+- `run_news_preprocessing.py`: CPU only; contract normalization and sentence splitting.
+- `run_text_topics.py`: cloud-only embeddings/topic modeling; CPU smoke path, GPU optional
+  when backfilling larger historical corpora.
+- `run_finbert_sentiment.py`: cloud-only heavy NLP; CPU smoke path, GPU recommended when
+  throughput matters.
+- `run_hmm_regime_detection.py`: CPU only; keep regime fitting off the Pi.
+- `backfill_layer1.py`: CPU only; historical Layer 1 feature assembly runs on Modal/lab,
+  not on the Pi runtime container.
+
+Config ownership:
+- `config/news_preprocessing.json` owns the news preprocessing app name, R2 secret, and
+  timeout.
+- `config/text_models.json` owns the text-topics app name, R2 secret, timeout, and Modal
+  image settings.
+- `config/finbert_sentiment.json` owns the FinBERT app name, R2 secret, timeout, and
+  Modal image settings.
+- `config/modal.json` owns the Layer 1 backfill and HMM regime app names, R2 secret,
+  timeouts, and shared Modal image settings.
+
 Baseline paper execution is long-only equities. Hedge and long-short capabilities must stay
 disabled by policy until the relevant risk and execution gates are implemented:
 - defensive index hedges: explicit approved instrument list, hedge notional caps, and

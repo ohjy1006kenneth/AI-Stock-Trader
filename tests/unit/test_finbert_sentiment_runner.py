@@ -114,8 +114,10 @@ def test_load_finbert_runtime_config_reads_repo_config() -> None:
     assert config.app_name
     assert config.r2_secret_name
     assert config.timeout_seconds > 0
+    assert config.python_version == "3.11"
+    assert config.requirements_path == "requirements/modal.txt"
     assert config.model_name == "ProsusAI/finbert"
-    assert config.model_revision
+    assert config.model_revision == "db38d3727cbaed87c9aed72df7b3519e2ba5cca1"
     assert config.batch_size > 0
     assert config.bucket_timezone == "America/New_York"
 
@@ -170,6 +172,8 @@ def _runtime_config(tmp_path: Path) -> FinBERTModelRuntimeConfig:
         app_name="test-finbert-sentiment",
         r2_secret_name="ai-stock-trader-r2",
         timeout_seconds=60,
+        python_version="3.11",
+        requirements_path="requirements/modal.txt",
         model_name="test-finbert",
         model_revision="test-revision",
         batch_size=2,

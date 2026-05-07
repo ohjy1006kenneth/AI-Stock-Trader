@@ -1,5 +1,6 @@
 # Modal / cloud dependencies — heavy ML stack
 # Install inside Modal container images (app/lab/, app/cloud/).
+# Layer 1 and Layer 1.5 Modal entrypoints build their images from this file.
 # Do NOT install on Pi — too large and unnecessary there.
 
 -r base.txt
