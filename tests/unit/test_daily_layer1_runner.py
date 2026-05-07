@@ -6,18 +6,27 @@ from pathlib import Path
 import pytest
 
 from app.lab.data_pipelines import run_daily_layer1 as daily_layer1_module
+from app.lab.data_pipelines.run_finbert_sentiment import FINBERT_SENTIMENT_STAGE
+from app.lab.data_pipelines.run_hmm_regime_detection import REGIME_STAGE
 from app.lab.data_pipelines.run_daily_layer1 import (
     LAYER1_DAILY_STAGE,
     Layer1DailyConfig,
     Layer1ValidationError,
+    _existing_finbert_runner,
+    _existing_news_runner,
+    _existing_regime_runner,
+    _existing_text_topic_runner,
     load_modal_runtime_config,
     main,
     run_daily_layer1,
 )
+from app.lab.data_pipelines.run_news_preprocessing import NLP_PREPROCESSING_STAGE
+from app.lab.data_pipelines.run_text_topics import TEXT_TOPICS_STAGE
 from app.lab.data_pipelines.validate_layer1_archive import Layer1ValidationReport
 from core.contracts.schemas import PipelineManifestRecord, RunStatus
 from core.features.io import read_feature_records
 from services.r2.paths import pipeline_manifest_path
+from services.r2.writer import R2Writer
 from tests.fixtures.layer1_support import (
     fake_news_runner,
     fake_regime_runner,
@@ -224,6 +233,106 @@ def test_run_daily_layer1_rerun_replaces_target_dates_without_duplicates(
     assert second_history == first_history
 
 
+def test_run_daily_layer1_reuses_completed_branch_outputs_when_precomputed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The orchestrator can assemble histories from precomputed stage outputs."""
+    writer = local_writer(tmp_path, monkeypatch)
+    seed_layer0_archives(
+        writer,
+        dates=["2024-01-03"],
+        tickers=["AAPL"],
+        layer0_run_ids=("layer1-precomputed",),
+    )
+    stage_run_id = "layer1-precomputed-2024-01-03"
+    news_result = fake_news_runner(writer, ["AAPL"])(
+        daily_layer1_module.NewsPreprocessingPipelineConfig(
+            run_id=stage_run_id,
+            as_of_date="2024-01-03",
+        ),
+        writer=writer,
+    )
+    _write_completed_stage_manifest(
+        writer=writer,
+        stage=NLP_PREPROCESSING_STAGE,
+        run_id=stage_run_id,
+        output_path=news_result.output_key,
+    )
+    topic_result = fake_topic_runner(writer, ["AAPL"])(
+        daily_layer1_module.TextTopicPipelineConfig(
+            run_id=stage_run_id,
+            as_of_date="2024-01-03",
+            preprocessed_news_key=news_result.output_key,
+        ),
+        writer=writer,
+    )
+    _write_completed_stage_manifest(
+        writer=writer,
+        stage=TEXT_TOPICS_STAGE,
+        run_id=stage_run_id,
+        output_path=topic_result.topic_feature_key,
+    )
+    sentiment_result = fake_sentiment_runner(writer, ["AAPL"])(
+        daily_layer1_module.FinBERTPipelineConfig(
+            run_id=stage_run_id,
+            as_of_date="2024-01-03",
+            preprocessed_news_key=news_result.output_key,
+        ),
+        writer=writer,
+    )
+    _write_completed_stage_manifest(
+        writer=writer,
+        stage=FINBERT_SENTIMENT_STAGE,
+        run_id=stage_run_id,
+        output_path=sentiment_result.sentiment_feature_key,
+    )
+    regime_result = fake_regime_runner(writer)(
+        daily_layer1_module.HMMRegimePipelineConfig(
+            run_id=stage_run_id,
+            train_start_date=None,
+            train_end_date="2024-01-02",
+            inference_dates=("2024-01-03",),
+            benchmark_ticker="SPY",
+            max_iterations=100,
+            min_training_rows=30,
+        ),
+        writer=writer,
+    )
+    _write_completed_stage_manifest(
+        writer=writer,
+        stage=REGIME_STAGE,
+        run_id=stage_run_id,
+        output_path=regime_result.output_key,
+    )
+
+    result = run_daily_layer1(
+        Layer1DailyConfig(
+            run_id="layer1-precomputed",
+            from_date="2024-01-03",
+            to_date="2024-01-03",
+        ),
+        writer=writer,
+        news_runner=_existing_news_runner({"2024-01-03": news_result.output_key}),
+        text_topic_runner=_existing_text_topic_runner(
+            {"2024-01-03": topic_result.topic_feature_key}
+        ),
+        finbert_runner=_existing_finbert_runner(
+            {"2024-01-03": sentiment_result.sentiment_feature_key}
+        ),
+        regime_runner=_existing_regime_runner({"2024-01-03": regime_result.output_key}),
+        validation_output_dir=tmp_path / "reports",
+    )
+
+    history = read_feature_records("AAPL", writer=writer)
+
+    assert result.ready_for_layer2 is True
+    assert result.history_files_written == 1
+    assert history[0].features["nlp_topic_count"] == 1
+    assert history[0].features["nlp_sentiment_score"] == pytest.approx(0.25)
+    assert history[0].features["regime_label"] == "bull"
+
+
 def test_main_returns_nonzero_when_validation_is_not_ready(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -270,6 +379,50 @@ def test_main_returns_nonzero_when_validation_is_not_ready(
     assert logged_messages == [str(error)]
 
 
+def test_main_single_date_delegates_to_modal_orchestration_when_available(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Single-date CLI runs use the Modal orchestration path when the app is available."""
+    recorded: list[dict[str, object]] = []
+
+    monkeypatch.setattr(daily_layer1_module, "_modal_run_daily_layer1", object())
+    monkeypatch.setattr(
+        daily_layer1_module,
+        "modal_main",
+        lambda **kwargs: recorded.append(kwargs),
+    )
+    monkeypatch.setattr(
+        daily_layer1_module,
+        "run_daily_layer1",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected local run")),
+    )
+
+    exit_code = main(
+        [
+            "--run-id",
+            "layer1-single-day",
+            "--as-of-date",
+            "2024-01-03",
+            "--layer0-run-id",
+            "layer0-daily-2024-01-03",
+            "--benchmark-ticker",
+            " spy ",
+            "--allow-layer0-manifest-date-range",
+        ]
+    )
+
+    assert exit_code == 0
+    assert recorded == [
+        {
+            "run_id": "layer1-single-day",
+            "as_of_date": "2024-01-03",
+            "layer0_run_id": "layer0-daily-2024-01-03",
+            "benchmark_ticker": "SPY",
+            "allow_layer0_manifest_date_range": True,
+        }
+    ]
+
+
 def test_layer1_daily_config_rejects_invalid_dates() -> None:
     """The orchestrator config validates ISO dates and ordering."""
     with pytest.raises(ValueError, match="from_date"):
@@ -285,3 +438,25 @@ def test_load_modal_runtime_config_reads_repo_config() -> None:
     assert config.app_name
     assert config.r2_secret_name
     assert config.timeout_seconds > 0
+
+
+def _write_completed_stage_manifest(
+    *,
+    writer: R2Writer,
+    stage: str,
+    run_id: str,
+    output_path: str,
+) -> None:
+    """Persist a completed stage manifest for precomputed branch tests."""
+    manifest = PipelineManifestRecord(
+        run_id=run_id,
+        stage=stage,
+        status=RunStatus.COMPLETED,
+        started_at=datetime(2024, 1, 3, 12, 0, tzinfo=UTC),
+        finished_at=datetime(2024, 1, 3, 12, 1, tzinfo=UTC),
+        output_path=output_path,
+    )
+    writer.put_object(
+        pipeline_manifest_path(stage, run_id),
+        manifest.model_dump_json(),
+    )
