@@ -32,6 +32,7 @@ from services.r2.writer import R2Writer  # noqa: E402
 
 LAYER1_STAGE = "layer1"
 MODAL_CONFIG_PATH = _REPO_ROOT / "config" / "modal.json"
+_modal_run_daily_layer1: ModalRemoteFunction | None = None
 
 
 class ObjectStore(Protocol):
@@ -45,6 +46,20 @@ class ObjectStore(Protocol):
 
     def exists(self, key: str) -> bool:
         """Return True when the object exists."""
+
+
+class ModalRemoteFunction(Protocol):
+    """Minimal Modal remote-call surface used by the local entrypoint."""
+
+    def remote(
+        self,
+        *,
+        run_id: str,
+        as_of_date: str,
+        layer0_run_id: str,
+        benchmark_ticker: str = "SPY",
+    ) -> None:
+        """Submit the configured Modal function asynchronously."""
 
 
 @dataclass(frozen=True)
@@ -293,7 +308,9 @@ def modal_main(
     benchmark_ticker: str = "SPY",
 ) -> None:
     """Submit a daily Layer 1 run to Modal from the local CLI."""
-    globals()["modal_run_daily_layer1"].remote(
+    if _modal_run_daily_layer1 is None:
+        raise RuntimeError("Modal app is unavailable because the modal package is not installed")
+    _modal_run_daily_layer1.remote(
         run_id=run_id,
         as_of_date=as_of_date,
         layer0_run_id=layer0_run_id,
@@ -303,6 +320,8 @@ def modal_main(
 
 def _define_modal_app() -> object | None:
     """Create the Modal app when the modal package is installed."""
+    global _modal_run_daily_layer1
+
     try:
         modal = importlib.import_module("modal")
     except ModuleNotFoundError:
@@ -346,7 +365,7 @@ def _define_modal_app() -> object | None:
         }
 
     app.local_entrypoint()(modal_main)
-    globals()["modal_run_daily_layer1"] = modal_run_daily_layer1
+    _modal_run_daily_layer1 = modal_run_daily_layer1
     return app
 
 

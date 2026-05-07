@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -216,6 +217,34 @@ def test_load_pi_modal_runtime_config_reads_repo_config() -> None:
 
     assert config.layer1_poll_interval_seconds > 0
     assert config.layer1_poll_timeout_seconds > 0
+    config_payload = json.loads((oracle_client._REPO_ROOT / "config" / "modal.json").read_text())
+    assert config.layer1_poll_timeout_seconds >= int(config_payload["timeout_seconds"])
+
+
+def test_load_pi_modal_runtime_config_rejects_poll_timeout_shorter_than_modal_timeout(
+    tmp_path: Path,
+) -> None:
+    """Pi startup fails closed when polling would expire before the Modal job deadline."""
+    config_path = tmp_path / "modal.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "layer1_daily_app_name": "ai-stock-trader-layer1-daily",
+                "hmm_regime_app_name": "ai-stock-trader-hmm-regime-detection",
+                "r2_secret_name": "ai-stock-trader-r2",
+                "timeout_seconds": 1800,
+                "layer1_poll_interval_seconds": 5,
+                "layer1_poll_timeout_seconds": 900,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="layer1_poll_timeout_seconds must be greater than or equal to timeout_seconds",
+    ):
+        load_pi_modal_runtime_config(config_path)
 
 
 def _manifest_payload(

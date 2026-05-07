@@ -103,9 +103,24 @@ class SubprocessCommandRunner:
 def load_pi_modal_runtime_config(path: Path = _MODAL_CONFIG_PATH) -> PiModalRuntimeConfig:
     """Load Pi-side Modal poll settings from repository config."""
     payload = json.loads(path.read_text(encoding="utf-8"))
+    modal_timeout_seconds = int(payload["timeout_seconds"])
+    poll_interval_seconds = int(payload["layer1_poll_interval_seconds"])
+    poll_timeout_seconds = int(payload["layer1_poll_timeout_seconds"])
+
+    if modal_timeout_seconds <= 0:
+        raise ValueError("timeout_seconds must be positive")
+    if poll_interval_seconds <= 0:
+        raise ValueError("layer1_poll_interval_seconds must be positive")
+    if poll_timeout_seconds <= 0:
+        raise ValueError("layer1_poll_timeout_seconds must be positive")
+    if poll_timeout_seconds < modal_timeout_seconds:
+        raise ValueError(
+            "layer1_poll_timeout_seconds must be greater than or equal to timeout_seconds"
+        )
+
     return PiModalRuntimeConfig(
-        layer1_poll_interval_seconds=int(payload["layer1_poll_interval_seconds"]),
-        layer1_poll_timeout_seconds=int(payload["layer1_poll_timeout_seconds"]),
+        layer1_poll_interval_seconds=poll_interval_seconds,
+        layer1_poll_timeout_seconds=poll_timeout_seconds,
     )
 
 

@@ -19,9 +19,15 @@ The system is designed around four deployment surfaces:
 
 2. **Cloud (heavy compute) — Modal**
    Used for:
+   - daily Layer 1 feature generation after the Pi finishes Layer 0
    - FinBERT inference on news text
    - XGBoost inference and retraining
    - larger offline backtests and packaging jobs
+
+   The daily Layer 1 Modal submission entrypoint lives in
+   `app/lab/data_pipelines/run_daily_layer1.py`. The Pi image carries that lightweight
+   script so it can invoke `modal run`, but the heavy Layer 1 compute and dependencies still
+   execute only inside Modal.
 
 3. **Raspberry Pi 5 (edge runtime / orchestration)**
    Used for:
@@ -829,7 +835,9 @@ A candidate becomes promotable only if it survives:
 ## Repository mapping
 
 - `app/lab/` — cloud training, validation, packaging, and one-time data backfill jobs
-  - `app/lab/data_pipelines/` — historical backfill entrypoints (run on laptop or Modal, not Pi)
+  - `app/lab/data_pipelines/` — historical backfill and Modal pipeline entrypoints; the Pi
+    image carries `run_daily_layer1.py` only as a lightweight `modal run` dispatch surface,
+    while backfills and heavy feature jobs still run on laptop or Modal rather than on the Pi
 - `app/cloud/` — cloud inference surface (Modal)
 - `app/pi/` — edge runtime surface (Pi, daily incremental only)
 - `core/contracts/` — shared inter-layer schemas

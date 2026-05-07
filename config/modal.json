@@ -4,5 +4,5 @@
   "r2_secret_name": "ai-stock-trader-r2",
   "timeout_seconds": 1800,
   "layer1_poll_interval_seconds": 5,
-  "layer1_poll_timeout_seconds": 900
+  "layer1_poll_timeout_seconds": 1800
 }
