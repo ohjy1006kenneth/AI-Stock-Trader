@@ -86,6 +86,20 @@ class _FakeRegisteredFunction:
         self.remote_calls.append(kwargs)
 
 
+@dataclass
+class _FakeFunctionCall:
+    """Minimal Modal function-call handle used for `.spawn()` tests."""
+
+    payload: dict[str, object]
+    get_calls: int = 0
+
+    def get(self, timeout: float | None = None) -> dict[str, object]:
+        """Return the staged payload and record the await."""
+        del timeout
+        self.get_calls += 1
+        return dict(self.payload)
+
+
 class _FakeApp:
     """Minimal Modal app stub that records functions and entrypoints."""
 
@@ -284,11 +298,14 @@ def test_daily_layer1_modal_app_builds_workspace_image(
     assert app.name == runtime.app_name
     assert app.local_entrypoints == ["modal_main"]
     assert image.python_version == runtime.python_version
-    assert image.workdir_path == "/workspace/AI-Stock-Trader"
-    assert image.env_vars["AI_STOCK_TRADER_REPO_ROOT"] == "/workspace/AI-Stock-Trader"
-    assert image.env_vars["PYTHONPATH"] == "/workspace/AI-Stock-Trader"
+    assert image.workdir_path == run_daily_layer1.MODAL_REPO_ROOT
+    assert image.env_vars["AI_STOCK_TRADER_REPO_ROOT"] == run_daily_layer1.MODAL_REPO_ROOT
+    assert image.env_vars["PYTHONPATH"] == run_daily_layer1.MODAL_REPO_ROOT
     assert image.commands == [
-        "python -m pip install -r /workspace/AI-Stock-Trader/requirements/modal.txt"
+        (
+            "python -m pip install -r "
+            f"{run_daily_layer1.MODAL_REPO_ROOT}/requirements/modal.txt"
+        )
     ]
     assert registered.options["timeout"] == runtime.timeout_seconds
     assert registered.options["secrets"][0].name == runtime.r2_secret_name
@@ -302,11 +319,19 @@ def test_daily_layer1_modal_main_orchestrates_stage_apps_before_final_assembly(
     class _FakeStageRemote:
         def __init__(self, payload: dict[str, object]) -> None:
             self.payload = payload
-            self.calls: list[dict[str, object]] = []
+            self.remote_calls: list[dict[str, object]] = []
+            self.spawn_calls: list[dict[str, object]] = []
+            self.spawn_handles: list[_FakeFunctionCall] = []
 
         def remote(self, **kwargs: object) -> dict[str, object]:
-            self.calls.append(kwargs)
+            self.remote_calls.append(kwargs)
             return dict(self.payload)
+
+        def spawn(self, **kwargs: object) -> _FakeFunctionCall:
+            self.spawn_calls.append(kwargs)
+            handle = _FakeFunctionCall(dict(self.payload))
+            self.spawn_handles.append(handle)
+            return handle
 
     final_remote = _FakeRegisteredFunction(name="modal_run_daily_layer1", options={})
     news_remote = _FakeStageRemote(
@@ -335,6 +360,12 @@ def test_daily_layer1_modal_main_orchestrates_stage_apps_before_final_assembly(
         "modal_run_hmm_regime_detection",
         regime_remote,
     )
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        run_daily_layer1.logger,
+        "warning",
+        lambda message: warnings.append(message),
+    )
 
     run_daily_layer1.modal_main(
         "smoke-daily",
@@ -342,38 +373,50 @@ def test_daily_layer1_modal_main_orchestrates_stage_apps_before_final_assembly(
         "layer0-daily-2024-01-02",
         " spy ",
         True,
+        min_sentence_chars=5,
+        hmm_train_start_date="2023-10-01",
+        hmm_max_iterations=77,
+        hmm_min_training_rows=11,
     )
 
-    assert news_remote.calls == [
+    assert warnings == [
+        (
+            "allow_layer0_manifest_date_range=True is intended for historical readiness runs "
+            "only and must not be used on the Pi daily path"
+        )
+    ]
+    assert news_remote.remote_calls == [
         {
             "run_id": "smoke-daily-2024-01-02",
             "as_of_date": "2024-01-02",
-            "min_sentence_chars": 2,
+            "min_sentence_chars": 5,
         }
     ]
-    assert topics_remote.calls == [
+    assert topics_remote.spawn_calls == [
         {
             "run_id": "smoke-daily-2024-01-02",
             "as_of_date": "2024-01-02",
             "preprocessed_news_key": "features/layer1/news_sentiment/2024-01-02/smoke.parquet",
         }
     ]
-    assert finbert_remote.calls == [
+    assert finbert_remote.spawn_calls == [
         {
             "run_id": "smoke-daily-2024-01-02",
             "as_of_date": "2024-01-02",
             "preprocessed_news_key": "features/layer1/news_sentiment/2024-01-02/smoke.parquet",
         }
     ]
-    assert regime_remote.calls == [
+    assert topics_remote.spawn_handles[0].get_calls == 1
+    assert finbert_remote.spawn_handles[0].get_calls == 1
+    assert regime_remote.remote_calls == [
         {
             "run_id": "smoke-daily-2024-01-02",
-            "train_start_date": None,
+            "train_start_date": "2023-10-01",
             "train_end_date": "2024-01-01",
             "inference_dates": ["2024-01-02"],
             "benchmark_ticker": "SPY",
-            "max_iterations": 100,
-            "min_training_rows": 30,
+            "max_iterations": 77,
+            "min_training_rows": 11,
         }
     ]
     assert final_remote.remote_calls == [
@@ -383,6 +426,10 @@ def test_daily_layer1_modal_main_orchestrates_stage_apps_before_final_assembly(
             "layer0_run_id": "layer0-daily-2024-01-02",
             "benchmark_ticker": "SPY",
             "allow_layer0_manifest_date_range": True,
+            "min_sentence_chars": 5,
+            "hmm_train_start_date": "2023-10-01",
+            "hmm_max_iterations": 77,
+            "hmm_min_training_rows": 11,
             "preprocessed_news_key": "features/layer1/news_sentiment/2024-01-02/smoke.parquet",
             "topic_feature_key": "features/layer1/topic_features/2024-01-02/smoke.parquet",
             "sentiment_feature_key": "features/layer1/sentiment_features/2024-01-02/smoke.parquet",

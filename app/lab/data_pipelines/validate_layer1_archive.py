@@ -18,6 +18,7 @@ import csv
 import io
 import json
 import os
+import random
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
@@ -239,6 +240,7 @@ def validate_layer1_archive(
     leakage_spot_checks = _build_leakage_spot_checks(
         reader=reader,
         expected_dates_by_ticker=expected_dates_by_ticker,
+        run_id=run_id,
     )
     if any(check["status"] == "fail" for check in leakage_spot_checks):
         ready = False
@@ -384,17 +386,19 @@ def _build_leakage_spot_checks(
     *,
     reader: ArchiveReader,
     expected_dates_by_ticker: Mapping[str, set[str]],
+    run_id: str,
     sample_limit: int = 10,
 ) -> list[dict[str, object]]:
     """Run lightweight alignment checks on a sample of daily Layer 1 shards."""
-    sampled_pairs: list[tuple[str, str]] = []
-    for ticker, date_values in sorted(expected_dates_by_ticker.items()):
-        for date_text in sorted(date_values):
-            sampled_pairs.append((date_text, ticker))
-            if len(sampled_pairs) >= sample_limit:
-                break
-        if len(sampled_pairs) >= sample_limit:
-            break
+    candidate_pairs = [
+        (date_text, ticker)
+        for ticker, date_values in sorted(expected_dates_by_ticker.items())
+        for date_text in sorted(date_values)
+    ]
+    if len(candidate_pairs) <= sample_limit:
+        sampled_pairs = candidate_pairs
+    else:
+        sampled_pairs = sorted(random.Random(run_id).sample(candidate_pairs, k=sample_limit))
 
     failures: list[dict[str, object]] = []
     seen_daily_shard = False

@@ -174,6 +174,38 @@ def test_validate_layer1_archive_empty_universe_is_not_ready() -> None:
     assert report.expected_rows == 0
 
 
+def test_validate_layer1_archive_samples_daily_shards_deterministically() -> None:
+    """Leakage spot checks keep a stable bounded sample for larger universes."""
+    universe = {
+        "2024-01-02": ["AAPL", "MSFT", "NVDA"],
+        "2024-01-03": ["AAPL", "MSFT", "NVDA"],
+        "2024-01-04": ["AAPL", "MSFT", "NVDA"],
+        "2024-01-05": ["AAPL", "MSFT", "NVDA"],
+    }
+    reader = _Reader({})
+
+    first_report = validate_layer1_archive(
+        run_id="layer1-sampled",
+        from_date="2024-01-02",
+        to_date="2024-01-05",
+        universe=universe,
+        reader=reader,
+    )
+    second_report = validate_layer1_archive(
+        run_id="layer1-sampled",
+        from_date="2024-01-02",
+        to_date="2024-01-05",
+        universe=universe,
+        reader=reader,
+    )
+
+    first_sample = first_report.leakage_spot_checks[0]["sampled_pairs"]
+    second_sample = second_report.leakage_spot_checks[0]["sampled_pairs"]
+
+    assert len(first_sample) == 10
+    assert first_sample == second_sample
+
+
 def test_write_validation_report_writes_json(tmp_path: Path) -> None:
     """Validation reports are persisted as deterministic JSON under the report dir."""
     report = Layer1ValidationReport(

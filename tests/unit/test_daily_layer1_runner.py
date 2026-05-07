@@ -407,6 +407,14 @@ def test_main_single_date_delegates_to_modal_orchestration_when_available(
             "layer0-daily-2024-01-03",
             "--benchmark-ticker",
             " spy ",
+            "--min-sentence-chars",
+            "7",
+            "--hmm-train-start-date",
+            "2023-11-01",
+            "--hmm-max-iterations",
+            "44",
+            "--hmm-min-training-rows",
+            "9",
             "--allow-layer0-manifest-date-range",
         ]
     )
@@ -419,8 +427,31 @@ def test_main_single_date_delegates_to_modal_orchestration_when_available(
             "layer0_run_id": "layer0-daily-2024-01-03",
             "benchmark_ticker": "SPY",
             "allow_layer0_manifest_date_range": True,
+            "min_sentence_chars": 7,
+            "hmm_train_start_date": "2023-11-01",
+            "hmm_max_iterations": 44,
+            "hmm_min_training_rows": 9,
         }
     ]
+
+
+def test_existing_regime_runner_rejects_empty_inference_dates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Precomputed regime reuse requires at least one requested inference date."""
+    writer = local_writer(tmp_path, monkeypatch)
+    runner = _existing_regime_runner({"2024-01-03": "features/layer1_5/regime/run.parquet"})
+
+    with pytest.raises(ValueError, match="inference_dates must not be empty"):
+        runner(
+            daily_layer1_module.HMMRegimePipelineConfig(
+                run_id="layer1-precomputed-2024-01-03",
+                train_end_date="2024-01-02",
+                inference_dates=(),
+            ),
+            writer=writer,
+        )
 
 
 def test_layer1_daily_config_rejects_invalid_dates() -> None:

@@ -12,7 +12,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from datetime import date as Date
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Protocol
 
 from loguru import logger
@@ -95,7 +95,15 @@ from core.features.market_features import (  # noqa: E402
 )
 from core.features.regime_detection import regime_features_to_records  # noqa: E402
 from services.r2.paths import (  # noqa: E402
+    layer1_feature_path,
+    layer1_news_preprocessing_path,
+    layer1_regime_path,
+    layer1_sentiment_feature_path,
+    layer1_sentiment_score_path,
+    layer1_text_embedding_path,
     layer1_ticker_history_path,
+    layer1_topic_feature_path,
+    layer1_topic_label_path,
     pipeline_manifest_path,
     raw_fundamentals_path,
     raw_macro_path,
@@ -107,6 +115,7 @@ from services.r2.writer import R2Writer  # noqa: E402
 
 LAYER1_DAILY_STAGE = "layer1"
 MODAL_CONFIG_PATH = _REPO_ROOT / "config" / "modal.json"
+MODAL_REPO_ROOT = "/workspace/AI-Stock-Trader"
 # Sentinel for batch historical assembly: intentionally pre-dates any real trade date
 # so assemble_layer1_feature_records's no-leakage guard always passes. Point-in-time
 # safety is enforced by the Layer 0 archive/manifest checks rather than these branch timestamps.
@@ -141,19 +150,33 @@ class ModalRemoteFunction(Protocol):
         layer0_run_id: str,
         benchmark_ticker: str = "SPY",
         allow_layer0_manifest_date_range: bool = False,
+        min_sentence_chars: int = 2,
+        hmm_train_start_date: str | None = None,
+        hmm_max_iterations: int = 100,
+        hmm_min_training_rows: int = 30,
         preprocessed_news_key: str | None = None,
         topic_feature_key: str | None = None,
         sentiment_feature_key: str | None = None,
         regime_output_key: str | None = None,
-    ) -> None:
+    ) -> dict[str, object]:
         """Submit the configured Modal function asynchronously."""
 
 
+class StageModalFunctionCall(Protocol):
+    """Handle returned by Modal `.spawn()` calls."""
+
+    def get(self, timeout: float | None = None) -> dict[str, object]:
+        """Wait for the spawned stage call and return its payload."""
+
+
 class StageModalRemoteFunction(Protocol):
-    """Generic Modal remote-call surface for one stage runner."""
+    """Generic Modal call surface for one stage runner."""
 
     def remote(self, **kwargs: object) -> dict[str, object]:
         """Run the configured stage and return its summary payload."""
+
+    def spawn(self, **kwargs: object) -> StageModalFunctionCall:
+        """Start the stage asynchronously and return a handle for its payload."""
 
 
 NewsRunner = Callable[
@@ -870,25 +893,47 @@ def _stage_run_id(run_id: str, date_text: str) -> str:
 def _output_prefixes_for_report(processed_dates: Sequence[str]) -> dict[str, str]:
     """Return deterministic R2 prefixes relevant to one Layer 1 readiness report."""
     latest_date = processed_dates[-1] if processed_dates else ""
+    prefix_date = latest_date or "2000-01-01"
     prefixes = {
-        "layer1_history": "features/layer1/",
-        "layer1_daily_shards": "features/layer1/<YYYY-MM-DD>/",
-        "news_sentiment": "features/layer1/news_sentiment/",
-        "text_embeddings": "features/layer1/text_embeddings/",
-        "topic_labels": "features/layer1/topic_labels/",
-        "topic_features": "features/layer1/topic_features/",
-        "sentiment_scores": "features/layer1/news_sentiment_scored/",
-        "sentiment_features": "features/layer1/sentiment_features/",
-        "regime_outputs": "features/layer1_5/regime/",
-        "layer1_manifests": "artifacts/manifests/layer1/",
-        "news_manifests": "artifacts/manifests/layer1_news_preprocessing/",
-        "topic_manifests": "artifacts/manifests/layer1_text_topics/",
-        "sentiment_manifests": "artifacts/manifests/layer1_finbert_sentiment/",
-        "regime_manifests": "artifacts/manifests/layer1_5_regime/",
+        "layer1_history": _prefix_for_key(layer1_ticker_history_path("<TICKER>")),
+        "layer1_daily_shards": _prefix_for_key(layer1_feature_path(prefix_date, "<TICKER>")),
+        "news_sentiment": _prefix_for_key(
+            layer1_news_preprocessing_path(prefix_date, "<RUN_ID>")
+        ),
+        "text_embeddings": _prefix_for_key(layer1_text_embedding_path(prefix_date, "<RUN_ID>")),
+        "topic_labels": _prefix_for_key(layer1_topic_label_path(prefix_date, "<RUN_ID>")),
+        "topic_features": _prefix_for_key(layer1_topic_feature_path(prefix_date, "<RUN_ID>")),
+        "sentiment_scores": _prefix_for_key(
+            layer1_sentiment_score_path(prefix_date, "<RUN_ID>")
+        ),
+        "sentiment_features": _prefix_for_key(
+            layer1_sentiment_feature_path(prefix_date, "<RUN_ID>")
+        ),
+        "regime_outputs": _prefix_for_key(layer1_regime_path("<RUN_ID>")),
+        "layer1_manifests": _prefix_for_key(
+            pipeline_manifest_path(LAYER1_DAILY_STAGE, "<RUN_ID>")
+        ),
+        "news_manifests": _prefix_for_key(
+            pipeline_manifest_path(NLP_PREPROCESSING_STAGE, "<RUN_ID>")
+        ),
+        "topic_manifests": _prefix_for_key(
+            pipeline_manifest_path(TEXT_TOPICS_STAGE, "<RUN_ID>")
+        ),
+        "sentiment_manifests": _prefix_for_key(
+            pipeline_manifest_path(FINBERT_SENTIMENT_STAGE, "<RUN_ID>")
+        ),
+        "regime_manifests": _prefix_for_key(
+            pipeline_manifest_path(REGIME_STAGE, "<RUN_ID>")
+        ),
     }
     if latest_date:
         prefixes["latest_processed_date"] = latest_date
     return prefixes
+
+
+def _prefix_for_key(key: str) -> str:
+    """Return one trailing-slash prefix derived from a canonical R2 object key."""
+    return f"{PurePosixPath(key).parent.as_posix()}/"
 
 
 def _single_as_of_date(config: Layer1DailyConfig) -> str | None:
@@ -994,16 +1039,19 @@ def _config_from_args(args: argparse.Namespace) -> Layer1DailyConfig:
 def main(argv: Sequence[str] | None = None) -> int:
     """CLI entry point for the Layer 1 daily orchestrator."""
     args = _parse_args(argv)
+    config = _config_from_args(args)
     if args.as_of_date is not None and _modal_run_daily_layer1 is not None:
         try:
             modal_main(
-                run_id=args.run_id.strip(),
-                as_of_date=args.as_of_date.strip(),
-                layer0_run_id=(
-                    args.layer0_run_id.strip() if args.layer0_run_id else args.run_id.strip()
-                ),
-                benchmark_ticker=args.benchmark_ticker.strip().upper(),
-                allow_layer0_manifest_date_range=bool(args.allow_layer0_manifest_date_range),
+                run_id=config.run_id,
+                as_of_date=config.from_date,
+                layer0_run_id=config.layer0_run_id or config.run_id,
+                benchmark_ticker=config.benchmark_ticker,
+                allow_layer0_manifest_date_range=config.allow_layer0_manifest_date_range,
+                min_sentence_chars=config.min_sentence_chars,
+                hmm_train_start_date=config.hmm_train_start_date,
+                hmm_max_iterations=config.hmm_max_iterations,
+                hmm_min_training_rows=config.hmm_min_training_rows,
             )
         except Exception as exc:  # noqa: BLE001
             logger.error("Layer 1 Modal orchestration failed: {}", exc)
@@ -1011,7 +1059,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     try:
         result = run_daily_layer1(
-            _config_from_args(args),
+            config,
             validation_output_dir=Path(args.validation_output_dir),
         )
     except Layer1ValidationError as exc:
@@ -1035,42 +1083,59 @@ def modal_main(
     layer0_run_id: str,
     benchmark_ticker: str = "SPY",
     allow_layer0_manifest_date_range: bool = False,
+    min_sentence_chars: int = 2,
+    hmm_train_start_date: str | None = None,
+    hmm_max_iterations: int = 100,
+    hmm_min_training_rows: int = 30,
 ) -> None:
     """Submit the single-date Layer 1 flow using stage-specific Modal runners."""
     if _modal_run_daily_layer1 is None:
         raise RuntimeError("Modal app is unavailable because the modal package is not installed")
+    if allow_layer0_manifest_date_range:
+        logger.warning(
+            "allow_layer0_manifest_date_range=True is intended for historical readiness runs "
+            "only and must not be used on the Pi daily path"
+        )
     stage_run_id = _stage_run_id(run_id, as_of_date)
     news_result = _modal_stage_remote(news_module, "modal_run_news_preprocessing").remote(
         run_id=stage_run_id,
         as_of_date=as_of_date,
-        min_sentence_chars=2,
+        min_sentence_chars=min_sentence_chars,
     )
     preprocessed_news_key = _require_result_key(news_result, "output_key")
-    topic_result = _modal_stage_remote(text_topics_module, "modal_run_text_topics").remote(
+    topic_call = _modal_stage_remote(text_topics_module, "modal_run_text_topics").spawn(
         run_id=stage_run_id,
         as_of_date=as_of_date,
         preprocessed_news_key=preprocessed_news_key,
     )
-    sentiment_result = _modal_stage_remote(finbert_module, "modal_run_finbert_sentiment").remote(
+    sentiment_call = _modal_stage_remote(
+        finbert_module, "modal_run_finbert_sentiment"
+    ).spawn(
         run_id=stage_run_id,
         as_of_date=as_of_date,
         preprocessed_news_key=preprocessed_news_key,
     )
     regime_result = _modal_stage_remote(regime_module, "modal_run_hmm_regime_detection").remote(
         run_id=stage_run_id,
-        train_start_date=None,
+        train_start_date=hmm_train_start_date,
         train_end_date=_previous_business_day(as_of_date),
         inference_dates=[as_of_date],
         benchmark_ticker=benchmark_ticker.strip().upper(),
-        max_iterations=100,
-        min_training_rows=30,
+        max_iterations=hmm_max_iterations,
+        min_training_rows=hmm_min_training_rows,
     )
+    topic_result = topic_call.get()
+    sentiment_result = sentiment_call.get()
     _modal_run_daily_layer1.remote(
         run_id=run_id,
         as_of_date=as_of_date,
         layer0_run_id=layer0_run_id,
         benchmark_ticker=benchmark_ticker.strip().upper(),
         allow_layer0_manifest_date_range=allow_layer0_manifest_date_range,
+        min_sentence_chars=min_sentence_chars,
+        hmm_train_start_date=hmm_train_start_date,
+        hmm_max_iterations=hmm_max_iterations,
+        hmm_min_training_rows=hmm_min_training_rows,
         preprocessed_news_key=preprocessed_news_key,
         topic_feature_key=_require_result_key(topic_result, "topic_feature_key"),
         sentiment_feature_key=_require_result_key(sentiment_result, "sentiment_feature_key"),
@@ -1084,6 +1149,10 @@ def _modal_run_daily_layer1_entry(
     layer0_run_id: str,
     benchmark_ticker: str = "SPY",
     allow_layer0_manifest_date_range: bool = False,
+    min_sentence_chars: int = 2,
+    hmm_train_start_date: str | None = None,
+    hmm_max_iterations: int = 100,
+    hmm_min_training_rows: int = 30,
     preprocessed_news_key: str | None = None,
     topic_feature_key: str | None = None,
     sentiment_feature_key: str | None = None,
@@ -1118,6 +1187,10 @@ def _modal_run_daily_layer1_entry(
             layer0_run_id=layer0_run_id,
             benchmark_ticker=benchmark_ticker.strip().upper(),
             allow_layer0_manifest_date_range=allow_layer0_manifest_date_range,
+            min_sentence_chars=min_sentence_chars,
+            hmm_train_start_date=hmm_train_start_date,
+            hmm_max_iterations=hmm_max_iterations,
+            hmm_min_training_rows=hmm_min_training_rows,
         ),
         news_runner=news_runner,
         text_topic_runner=text_topic_runner,
@@ -1136,6 +1209,10 @@ def _modal_run_daily_layer1_entry(
         "as_of_date": as_of_date,
         "layer0_run_id": layer0_run_id,
         "allow_layer0_manifest_date_range": allow_layer0_manifest_date_range,
+        "min_sentence_chars": min_sentence_chars,
+        "hmm_train_start_date": hmm_train_start_date,
+        "hmm_max_iterations": hmm_max_iterations,
+        "hmm_min_training_rows": hmm_min_training_rows,
         "preprocessed_news_key": preprocessed_news_key,
         "topic_feature_key": topic_feature_key,
         "sentiment_feature_key": sentiment_feature_key,
@@ -1169,26 +1246,25 @@ def _build_modal_image(modal_module: object, runtime: ModalRuntimeConfig):
     """Build the Modal image while preserving local `-r base.txt` includes."""
     requirements_path = Path(runtime.requirements_path)
     requirements_dir = requirements_path.parent
-    remote_repo_root = "/workspace/AI-Stock-Trader"
-    remote_requirements_path = f"{remote_repo_root}/{requirements_path.as_posix()}"
+    remote_requirements_path = f"{MODAL_REPO_ROOT}/{requirements_path.as_posix()}"
     return (
         modal_module.Image.debian_slim(python_version=runtime.python_version)
-        .add_local_dir(_REPO_ROOT / "app", f"{remote_repo_root}/app", copy=True)
-        .add_local_dir(_REPO_ROOT / "core", f"{remote_repo_root}/core", copy=True)
-        .add_local_dir(_REPO_ROOT / "services", f"{remote_repo_root}/services", copy=True)
-        .add_local_dir(_REPO_ROOT / "config", f"{remote_repo_root}/config", copy=True)
+        .add_local_dir(_REPO_ROOT / "app", f"{MODAL_REPO_ROOT}/app", copy=True)
+        .add_local_dir(_REPO_ROOT / "core", f"{MODAL_REPO_ROOT}/core", copy=True)
+        .add_local_dir(_REPO_ROOT / "services", f"{MODAL_REPO_ROOT}/services", copy=True)
+        .add_local_dir(_REPO_ROOT / "config", f"{MODAL_REPO_ROOT}/config", copy=True)
         .add_local_dir(
             _REPO_ROOT / requirements_dir,
-            f"{remote_repo_root}/{requirements_dir.as_posix()}",
+            f"{MODAL_REPO_ROOT}/{requirements_dir.as_posix()}",
             copy=True,
         )
         .env(
             {
-                "AI_STOCK_TRADER_REPO_ROOT": remote_repo_root,
-                "PYTHONPATH": remote_repo_root,
+                "AI_STOCK_TRADER_REPO_ROOT": MODAL_REPO_ROOT,
+                "PYTHONPATH": MODAL_REPO_ROOT,
             }
         )
-        .workdir(remote_repo_root)
+        .workdir(MODAL_REPO_ROOT)
         .run_commands(f"python -m pip install -r {remote_requirements_path}")
     )
 
@@ -1315,6 +1391,8 @@ def _existing_regime_runner(
         *,
         writer: ObjectStore,
     ) -> HMMRegimePipelineResult:
+        if not config.inference_dates:
+            raise ValueError("HMMRegimePipelineConfig.inference_dates must not be empty")
         inference_date = config.inference_dates[0]
         output_key = _required_output_key(output_keys_by_date, inference_date, "regime")
         manifest_key = pipeline_manifest_path(REGIME_STAGE, config.run_id)
