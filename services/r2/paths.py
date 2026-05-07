@@ -90,6 +90,18 @@ def layer1_ticker_history_path(ticker: str) -> str:
     return build_r2_key("features", "layer1", f"{safe_ticker}.parquet")
 
 
+def layer1_news_preprocessing_path(as_of_date: str | Date | datetime, run_id: str) -> str:
+    """Return the canonical Layer 1 preprocessed-news parquet path."""
+    safe_run_id = _validate_key_part(run_id)
+    return build_r2_key(
+        "features",
+        "layer1",
+        "news_sentiment",
+        _format_date(as_of_date),
+        f"{safe_run_id}.parquet",
+    )
+
+
 def layer1_text_embedding_path(as_of_date: str | Date | datetime, run_id: str) -> str:
     """Return the canonical Layer 1 sentence-embedding cache path."""
     safe_run_id = _validate_key_part(run_id)

@@ -1,4 +1,4 @@
-.PHONY: install test test-r2-live lint typecheck clean docker-pi
+.PHONY: install test test-r2-live layer1-daily lint typecheck clean docker-pi
 
 # ── Local development ──────────────────────────────────────────────────────────
 
@@ -20,6 +20,17 @@ test-r2-live:
 
 test-cov:
 	$(PYTEST) tests/unit/ -v --tb=short --cov=core --cov=services --cov-report=term-missing
+
+layer1-daily:
+	@test -n "$(RUN_ID)" || (echo "RUN_ID is required"; exit 1)
+	@test -n "$(FROM_DATE)" || (echo "FROM_DATE is required"; exit 1)
+	$(PYTHON) app/lab/data_pipelines/run_daily_layer1.py \
+		--run-id "$(RUN_ID)" \
+		--from-date "$(FROM_DATE)" \
+		$(if $(TO_DATE),--to-date "$(TO_DATE)",) \
+		$(if $(LAYER0_RUN_ID),--layer0-run-id "$(LAYER0_RUN_ID)",) \
+		$(if $(TICKERS),--tickers $(TICKERS),) \
+		$(if $(VALIDATION_OUTPUT_DIR),--validation-output-dir "$(VALIDATION_OUTPUT_DIR)",)
 
 validate-universe:
 	$(PYTHON) app/lab/data_pipelines/validate_universe_membership.py --max-violation-rate 0.01

@@ -51,6 +51,7 @@ from core.features.regime_detection import (
     emit_hmm_regime_features,
     fit_and_emit_hmm_regime_features,
     fit_hmm_regime_model,
+    regime_features_to_records,
 )
 from core.features.regime_training import (
     HMM_TRAINING_COLUMNS,
@@ -139,6 +140,7 @@ __all__ = [
     "preprocess_news_articles",
     "read_feature_record",
     "read_feature_records",
+    "regime_features_to_records",
     "records_to_news_sentiment_frame",
     "score_news_sentiment",
     "sentiment_aggregates_to_records",

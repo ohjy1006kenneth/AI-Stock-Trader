@@ -48,6 +48,12 @@ Expected execution chain:
 3. Validate the Pi -> Modal Layer 1 handoff:
    Pi submits the daily Modal job, then blocks on the R2 Layer 1 manifest
 4. Build Layer 1 features strictly from existing R2 Layer 0 archives
+   - Use `app/lab/data_pipelines/run_daily_layer1.py` as the single orchestration entrypoint
+   - Pi-triggered single-date runs invoke the same module through `python -m modal run`
+     with `--as-of-date` and `--layer0-run-id`
+   - Lab/backfill runs can supply a shared `run_id` plus `--from-date` / `--to-date`
+   - The command derives ticker scope from Layer 0 universe masks and fails closed on
+     missing upstream manifests or archives
 5. Deploy cloud oracle with fixed contracts
 6. Validate edge-to-cloud handshake plus Alpaca live-market-data normalization
 7. Dry-run risk and execution path
@@ -64,6 +70,7 @@ python -m pip install -r requirements/modal.txt
 Deploy each long-lived runner from the repo root:
 
 ```bash
+modal deploy app/lab/data_pipelines/run_daily_layer1.py
 modal deploy app/lab/data_pipelines/run_news_preprocessing.py
 modal deploy app/lab/data_pipelines/run_text_topics.py
 modal deploy app/lab/data_pipelines/run_finbert_sentiment.py
@@ -71,36 +78,9 @@ modal deploy app/lab/data_pipelines/run_hmm_regime_detection.py
 modal deploy app/lab/data_pipelines/backfill_layer1.py
 ```
 
-Smoke-run each entrypoint without relying on Pi-local ML:
-
-```bash
-modal run app/lab/data_pipelines/run_news_preprocessing.py \
-  --run-id smoke-news \
-  --as-of-date 2024-01-02
-
-modal run app/lab/data_pipelines/run_text_topics.py \
-  --run-id smoke-topics \
-  --as-of-date 2024-01-02 \
-  --preprocessed-news-key features/layer1/news_sentiment/2024-01-02/smoke-news.parquet
-
-modal run app/lab/data_pipelines/run_finbert_sentiment.py \
-  --run-id smoke-finbert \
-  --as-of-date 2024-01-02 \
-  --preprocessed-news-key features/layer1/news_sentiment/2024-01-02/smoke-news.parquet
-
-modal run app/lab/data_pipelines/run_hmm_regime_detection.py \
-  --run-id smoke-hmm \
-  --train-start-date 2024-01-02 \
-  --train-end-date 2024-01-31 \
-  --inference-date 2024-02-01
-
-modal run app/lab/data_pipelines/backfill_layer1.py \
-  --run-id smoke-layer1 \
-  --tickers SPY,AAPL \
-  --benchmark-ticker SPY
-```
-
 Runtime expectations:
+- `run_daily_layer1.py`: cloud-only orchestration entrypoint for Pi-triggered single-date
+  jobs plus local/lab date-range orchestration from existing Layer 0 archives.
 - `run_news_preprocessing.py`: CPU only; contract normalization and sentence splitting.
 - `run_text_topics.py`: cloud-only embeddings/topic modeling; CPU smoke path, GPU optional
   when backfilling larger historical corpora.
