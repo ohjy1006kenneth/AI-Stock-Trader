@@ -778,7 +778,7 @@ Without the historical backfill, Layer 1 feature generation and model training c
 
 ### After market close (daily, Pi)
 1. Pi runs Layer 0 incremental: fetches today's live bar snapshot from Alpaca, today's news from Alpaca, newly available SimFin data, and current FRED observations, then appends normalized raw data to R2
-2. Pi triggers Modal: build/refresh aligned feature table for today from existing Layer 0 R2 data → R2
+2. Pi triggers Modal: build/refresh aligned feature table for today from existing Layer 0 R2 data plus the latest completed Layer 1.5 regime artifacts already in R2 → R2
 3. Modal reads Layer 0 manifests and fails closed if required raw inputs are missing
 4. Modal runs FinBERT + XGBoost inference → scores to R2
 5. Pi reads scores from R2

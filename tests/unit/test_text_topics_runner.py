@@ -123,6 +123,8 @@ def test_load_text_model_runtime_config_reads_repo_config() -> None:
     assert config.app_name
     assert config.r2_secret_name
     assert config.timeout_seconds > 0
+    assert config.python_version == "3.11"
+    assert config.requirements_path == "requirements/modal.txt"
     assert config.embedding_config.model_name == "sentence-transformers/all-mpnet-base-v2"
     assert config.embedding_config.model_revision
     assert config.embedding_config.embedding_dimension == 768
@@ -177,6 +179,8 @@ def _runtime_config() -> TextModelRuntimeConfig:
         app_name="test-text-topics",
         r2_secret_name="ai-stock-trader-r2",
         timeout_seconds=60,
+        python_version="3.11",
+        requirements_path="requirements/modal.txt",
         embedding_config=TextEmbeddingConfig(
             model_name="test-embedder",
             model_revision="test-revision",

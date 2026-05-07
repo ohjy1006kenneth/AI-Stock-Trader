@@ -101,6 +101,21 @@ class ModalRuntimeConfig:
     hmm_regime_app_name: str
     r2_secret_name: str
     timeout_seconds: int
+    python_version: str = "3.11"
+    requirements_path: str = "requirements/modal.txt"
+
+    def __post_init__(self) -> None:
+        """Validate Modal runtime settings loaded from repository config."""
+        if not self.hmm_regime_app_name.strip():
+            raise ValueError("hmm_regime_app_name cannot be empty")
+        if not self.r2_secret_name.strip():
+            raise ValueError("r2_secret_name cannot be empty")
+        if self.timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be positive")
+        if not self.python_version.strip():
+            raise ValueError("python_version cannot be empty")
+        if not self.requirements_path.strip():
+            raise ValueError("requirements_path cannot be empty")
 
 
 def run_hmm_regime_detection(
@@ -188,7 +203,9 @@ def load_modal_runtime_config(path: Path = MODAL_CONFIG_PATH) -> ModalRuntimeCon
     return ModalRuntimeConfig(
         hmm_regime_app_name=str(payload["hmm_regime_app_name"]),
         r2_secret_name=str(payload["r2_secret_name"]),
-        timeout_seconds=int(payload["timeout_seconds"]),
+        timeout_seconds=int(payload["hmm_regime_timeout_seconds"]),
+        python_version=str(payload.get("python_version", "3.11")),
+        requirements_path=str(payload.get("requirements_path", "requirements/modal.txt")),
     )
 
 
@@ -262,7 +279,7 @@ def _config_from_args(args: argparse.Namespace) -> HMMRegimePipelineConfig:
         train_start_date=args.train_start_date,
         train_end_date=args.train_end_date,
         inference_dates=tuple(args.inference_date),
-        benchmark_ticker=args.benchmark_ticker,
+        benchmark_ticker=args.benchmark_ticker.strip().upper(),
         max_iterations=args.max_iterations,
         min_training_rows=args.min_training_rows,
     )
@@ -291,7 +308,7 @@ def modal_main(
         train_start_date=train_start_date,
         train_end_date=train_end_date,
         inference_dates=parsed_inference_dates,
-        benchmark_ticker=benchmark_ticker,
+        benchmark_ticker=benchmark_ticker.strip().upper(),
         max_iterations=max_iterations,
         min_training_rows=min_training_rows,
     )
@@ -305,9 +322,9 @@ def _define_modal_app() -> object | None:
         return None
 
     runtime = load_modal_runtime_config()
-    image = modal.Image.debian_slim(python_version="3.11").pip_install_from_requirements(
-        "requirements/modal.txt"
-    )
+    image = modal.Image.debian_slim(
+        python_version=runtime.python_version
+    ).pip_install_from_requirements(runtime.requirements_path)
     app = modal.App(runtime.hmm_regime_app_name)
 
     @app.function(
@@ -332,7 +349,7 @@ def _define_modal_app() -> object | None:
                 train_start_date=train_start_date,
                 train_end_date=train_end_date,
                 inference_dates=tuple(inference_dates),
-                benchmark_ticker=benchmark_ticker,
+                benchmark_ticker=benchmark_ticker.strip().upper(),
                 max_iterations=max_iterations,
                 min_training_rows=min_training_rows,
             )

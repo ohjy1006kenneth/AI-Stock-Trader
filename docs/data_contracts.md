@@ -197,7 +197,8 @@ Feature groups may include:
 - regime features
 
 Input note:
-- generated only from Layer 0 R2 archives and manifests; Layer 1 must not call external
+- generated from Layer 0 R2 archives/manifests plus the latest completed Layer 1.5
+  regime artifacts/manifests already persisted in R2; Layer 1 must not call external
   data providers for feature inputs
 - historical backfills store FeatureRecord rows as one per-ticker Parquet history under
   `features/layer1/{ticker}.parquet`; daily incremental paths may still address a single

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import io
 import json
 from pathlib import Path
@@ -9,6 +10,7 @@ import pandas as pd
 from app.lab.data_pipelines.run_hmm_regime_detection import (
     REGIME_STAGE,
     HMMRegimePipelineConfig,
+    _config_from_args,
     hmm_regime_output_path,
     load_modal_runtime_config,
     run_hmm_regime_detection,
@@ -94,6 +96,25 @@ def test_load_modal_runtime_config_reads_repo_config() -> None:
     assert config.hmm_regime_app_name
     assert config.r2_secret_name
     assert config.timeout_seconds > 0
+    assert config.python_version == "3.11"
+    assert config.requirements_path == "requirements/modal.txt"
+
+
+def test_config_from_args_normalizes_benchmark_ticker() -> None:
+    """CLI parsing normalizes benchmark tickers before building the pipeline config."""
+    config = _config_from_args(
+        argparse.Namespace(
+            run_id="hmm-cli",
+            train_start_date="2024-01-02",
+            train_end_date="2024-01-31",
+            inference_date=["2024-02-01"],
+            benchmark_ticker=" spy ",
+            max_iterations=10,
+            min_training_rows=5,
+        )
+    )
+
+    assert config.benchmark_ticker == "SPY"
 
 
 def _local_writer(tmp_path: Path, monkeypatch) -> R2Writer:
