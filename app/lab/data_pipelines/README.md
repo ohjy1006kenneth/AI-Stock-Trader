@@ -10,13 +10,13 @@ This is where news, market, and context inputs are aligned into training-ready t
   FeatureRecords.
 - `run_finbert_sentiment.py` writes FinBERT-scored news rows and ticker-day sentiment
   FeatureRecords.
-- `run_hmm_regime_detection.py` writes market-wide regime probabilities under
-  `features/layer1_5/regime/` from SPY and macro archives.
-- `backfill_layer1.py` assembles final per-ticker `features/layer1/{ticker}.parquet`
-  histories from market/context features plus the latest completed sentiment, topic, and
-  regime branch artifacts. Use `--require-sentiment-features`,
-  `--require-topic-features`, and `--require-regime-features` to fail closed when those
-  optional branches are missing.
+- `run_hmm_regime_detection.py` writes market-wide Layer 1.5 regime features from Layer 0
+  price and macro archives.
+- `run_daily_layer1.py` is the single-command Layer 1 orchestration entrypoint: it validates
+  Layer 0 readiness, derives ticker scope from universe masks, runs the text/regime branches,
+  assembles aligned per-ticker histories, and runs final Layer 1 archive validation.
+  The Pi daily runtime invokes the same module through `modal run` for single-date jobs after
+  Layer 0 completes, while local/lab runs can use `python ... --from-date/--to-date`.
 
 ## Modal entrypoints
 
@@ -28,6 +28,7 @@ python -m pip install -r requirements/modal.txt
 
 | Runner | Deploy command | Smoke run | Config owner | CPU / GPU expectation |
 |---|---|---|---|---|
+| Daily Layer 1 orchestrator | `modal deploy app/lab/data_pipelines/run_daily_layer1.py` | Pi/Hermes invokes this through `python -m modal run app/lab/data_pipelines/run_daily_layer1.py --run-id <run_id> --as-of-date <YYYY-MM-DD> --layer0-run-id <run_id>` after Layer 0 completes | `config/modal.json` | Cloud-only orchestration entrypoint for single-date Pi-triggered runs |
 | News preprocessing | `modal deploy app/lab/data_pipelines/run_news_preprocessing.py` | `modal run app/lab/data_pipelines/run_news_preprocessing.py --run-id smoke-news --as-of-date 2024-01-02` | `config/news_preprocessing.json` | CPU only |
 | Text topics | `modal deploy app/lab/data_pipelines/run_text_topics.py` | `modal run app/lab/data_pipelines/run_text_topics.py --run-id smoke-topics --as-of-date 2024-01-02 --preprocessed-news-key features/layer1/news_sentiment/2024-01-02/smoke-news.parquet` | `config/text_models.json` | Cloud-only embeddings/topic modeling; CPU smoke path, GPU optional for larger historical batches |
 | FinBERT sentiment | `modal deploy app/lab/data_pipelines/run_finbert_sentiment.py` | `modal run app/lab/data_pipelines/run_finbert_sentiment.py --run-id smoke-finbert --as-of-date 2024-01-02 --preprocessed-news-key features/layer1/news_sentiment/2024-01-02/smoke-news.parquet` | `config/finbert_sentiment.json` | Cloud-only heavy NLP; CPU smoke path, GPU recommended when throughput matters |

@@ -81,13 +81,18 @@ Execution chain:
    - Write `PipelineManifestRecord` (stage=layer0)
 
 2. **Layer 1 feature generation** (Modal, triggered by Pi/Hermes after Layer 0)
+   - Canonical orchestration entrypoint:
+     `python app/lab/data_pipelines/run_daily_layer1.py --run-id <run_id> --from-date <YYYY-MM-DD> [--to-date <YYYY-MM-DD>]`
    - Pi runtime shells out through the lightweight Modal client/CLI only
-   - Pi passes `run_id`, `as_of_date`, and the completed Layer 0 `run_id`
+   - Pi passes `run_id`, `as_of_date`, and the completed Layer 0 `run_id` when invoking
+     `modal run app/lab/data_pipelines/run_daily_layer1.py` for the daily single-date flow
    - Pi records the expected Layer 1 manifest key and waits on R2 before moving on
    - Read today's OHLCV Parquet, news JSON Lines, and universe CSV from R2
    - Read point-in-time SimFin fundamentals and earnings dates from R2
    - Read FRED macro context series persisted for the run date from R2
    - Fail closed if the required Layer 0 raw archives or manifests are missing
+   - Derive the ticker scope from Layer 0 universe masks; optional ticker filters may only
+     narrow that scope, never replace it with a hand-maintained production list
    - Preprocess news into sentence-level `NewsSentimentRecord` rows at
      `features/layer1/news_sentiment/{YYYY-MM-DD}/{run_id}.parquet`
    - Compute pinned-model sentence embeddings and BERTopic labels into
@@ -100,7 +105,8 @@ Execution chain:
    - Compute market, NLP, and context features for today
    - Refresh aligned per-ticker feature histories at `features/layer1/TICKER.parquet` in R2
      while preserving daily single-record shard support for incremental runs
-   - Write `PipelineManifestRecord` (stage=layer1)
+   - Run final archive validation and return nonzero unless `ready_for_layer2=true`
+   - Write `PipelineManifestRecord` (stage=layer1, statuses: running/completed/failed)
    - Modal runner entrypoints:
      `run_news_preprocessing.py`, `run_text_topics.py`, `run_finbert_sentiment.py`,
      `run_daily_layer1.py`, and `backfill_layer1.py`
@@ -109,13 +115,11 @@ Execution chain:
      redirected to Pi-local model execution
 
 3. **Layer 1.5 regime detection** (Modal)
-  - Read recent SPY returns, VIX, and FRED macro regime inputs from R2
-  - Run HMM to classify current regime (bull / bear / sideways)
-  - Write market-wide regime probabilities to `features/layer1_5/regime/{run_id}.parquet`
-  - Write `PipelineManifestRecord` (stage=layer1_5_regime)
-  - Layer 1 feature assembly broadcasts the regime label/probabilities onto ticker rows
-  - Modal runner entrypoint: `run_hmm_regime_detection.py`
-  - CPU expectation: HMM fitting stays on Modal/lab; do not move this compute onto the Pi
+   - Read recent SPY returns, VIX, and FRED macro regime inputs from R2
+   - Run HMM to classify current regime (bull / bear / sideways)
+   - Write market-wide regime probabilities to `features/layer1_5/regime/{run_id}.parquet`
+   - Write `PipelineManifestRecord` (stage=layer1_5_regime)
+   - Layer 1 feature assembly broadcasts the regime label/probabilities onto ticker rows
 
 4. **Layer 2 inference** (Modal)
    - Read today's feature row from R2

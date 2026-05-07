@@ -7,6 +7,7 @@ import pytest
 
 from app.lab.data_pipelines import (
     backfill_layer1,
+    run_daily_layer1,
     run_finbert_sentiment,
     run_hmm_regime_detection,
     run_news_preprocessing,
@@ -123,6 +124,25 @@ def _install_fake_modal(monkeypatch: pytest.MonkeyPatch) -> _FakeModal:
         "expected_remote_kwargs",
     ),
     [
+        (
+            run_daily_layer1,
+            "_define_modal_app",
+            "load_modal_runtime_config",
+            "app_name",
+            "modal_run_daily_layer1",
+            (
+                "smoke-daily",
+                "2024-01-02",
+                "layer0-daily-2024-01-02",
+                " spy ",
+            ),
+            {
+                "run_id": "smoke-daily",
+                "as_of_date": "2024-01-02",
+                "layer0_run_id": "layer0-daily-2024-01-02",
+                "benchmark_ticker": "SPY",
+            },
+        ),
         (
             run_news_preprocessing,
             "_define_modal_app",

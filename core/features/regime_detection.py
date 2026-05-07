@@ -6,6 +6,7 @@ import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from core.contracts.schemas import FeatureRecord
 from core.features.regime_training import HMM_TRAINING_FEATURE_COLUMNS
 
 if TYPE_CHECKING:
@@ -167,6 +168,29 @@ def fit_and_emit_hmm_regime_features(
         model=model,
         inference_dates=inference_dates,
     )
+
+
+def regime_features_to_records(features: pd.DataFrame) -> list[FeatureRecord]:
+    """Convert HMM regime output rows into validated FeatureRecords."""
+    _validate_regime_feature_frame(features)
+    records: list[FeatureRecord] = []
+    for row in features.to_dict(orient="records"):
+        records.append(
+            FeatureRecord(
+                date=str(row["date"]),
+                ticker="__REGIME__",
+                features={
+                    "regime_label": _normalize_optional_string(row.get("regime_label")),
+                    "regime_confidence": _normalize_optional_float(row.get("regime_confidence")),
+                    "regime_prob_bear": _normalize_optional_float(row.get("regime_prob_bear")),
+                    "regime_prob_sideways": _normalize_optional_float(
+                        row.get("regime_prob_sideways")
+                    ),
+                    "regime_prob_bull": _normalize_optional_float(row.get("regime_prob_bull")),
+                },
+            )
+        )
+    return records
 
 
 def _fit_gaussian_hmm(
@@ -463,6 +487,13 @@ def _validate_training_frame(
         raise ValueError(f"HMM training frame missing required columns: {missing}")
 
 
+def _validate_regime_feature_frame(features: pd.DataFrame) -> None:
+    """Raise if a regime feature frame lacks required output columns."""
+    missing = sorted(set(HMM_REGIME_COLUMNS) - set(features.columns))
+    if missing:
+        raise ValueError(f"HMM regime output missing required columns: {missing}")
+
+
 def _standardize(matrix: np.ndarray, np: Any) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Return standardized matrix plus center and scale vectors."""
     center = matrix.mean(axis=0)
@@ -493,6 +524,27 @@ def _logsumexp(values: np.ndarray, *, axis: int | None, np: Any) -> np.ndarray |
     if axis is None:
         return float(result.squeeze())
     return result.squeeze(axis=axis)
+
+
+def _normalize_optional_float(value: object) -> float | None:
+    """Return a finite float or None for optional regime outputs."""
+    if value is None:
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(numeric) or math.isinf(numeric):
+        return None
+    return numeric
+
+
+def _normalize_optional_string(value: object) -> str | None:
+    """Return a stripped string or None for optional regime labels."""
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
 
 
 def _require_pandas() -> Any:

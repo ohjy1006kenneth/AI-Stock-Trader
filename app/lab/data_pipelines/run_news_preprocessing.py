@@ -25,7 +25,7 @@ from core.features.news_preprocessing import (  # noqa: E402
     records_to_news_sentiment_frame,
 )
 from services.r2.paths import (  # noqa: E402
-    build_r2_key,
+    layer1_news_preprocessing_path,
     pipeline_manifest_path,
     raw_news_path,
     raw_universe_path,
@@ -148,7 +148,7 @@ def run_news_preprocessing(
 
 def news_preprocessing_output_path(run_id: str, as_of_date: str) -> str:
     """Return the canonical R2 output key for preprocessed news rows."""
-    return build_r2_key("features", "layer1", "news_sentiment", as_of_date, f"{run_id}.parquet")
+    return layer1_news_preprocessing_path(as_of_date, run_id)
 
 
 def load_modal_runtime_config(path: Path = MODAL_CONFIG_PATH) -> ModalRuntimeConfig:

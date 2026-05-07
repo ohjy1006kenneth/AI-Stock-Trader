@@ -9,6 +9,7 @@ from services.r2.paths import (
     is_canonical_raw_price_key,
     is_legacy_raw_price_key,
     layer1_feature_path,
+    layer1_news_preprocessing_path,
     layer1_regime_path,
     layer1_sentiment_feature_path,
     layer1_sentiment_score_path,
@@ -72,6 +73,10 @@ def test_layer1_ticker_history_path_returns_canonical_key() -> None:
 
 def test_layer1_text_artifact_paths_return_canonical_keys() -> None:
     """Layer 1 text embedding/topic artifacts should be date and run partitioned."""
+    assert (
+        layer1_news_preprocessing_path("2025-01-02", "run-001")
+        == "features/layer1/news_sentiment/2025-01-02/run-001.parquet"
+    )
     assert (
         layer1_text_embedding_path("2025-01-02", "run-001")
         == "features/layer1/text_embeddings/2025-01-02/run-001.parquet"
