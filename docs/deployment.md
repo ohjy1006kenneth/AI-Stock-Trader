@@ -51,6 +51,9 @@ Expected execution chain:
    - Use `app/lab/data_pipelines/run_daily_layer1.py` as the single orchestration entrypoint
    - Pi-triggered single-date runs invoke the same module through `python -m modal run`
      with `--as-of-date` and `--layer0-run-id`
+   - The single-date CLI path submits the heavy NLP/HMM stages through their dedicated
+     Modal apps first, then invokes the final daily Layer 1 app only for history assembly
+     and validation
    - Lab/backfill runs can supply a shared `run_id` plus `--from-date` / `--to-date`
    - The command derives ticker scope from Layer 0 universe masks and fails closed on
      missing upstream manifests or archives
@@ -79,8 +82,10 @@ modal deploy app/lab/data_pipelines/backfill_layer1.py
 ```
 
 Runtime expectations:
-- `run_daily_layer1.py`: cloud-only orchestration entrypoint for Pi-triggered single-date
-  jobs plus local/lab date-range orchestration from existing Layer 0 archives.
+- `run_daily_layer1.py`: orchestration entrypoint for Pi-triggered single-date jobs plus
+  local/lab date-range orchestration from existing Layer 0 archives. The single-date
+  `--as-of-date` path delegates heavy NLP/HMM work to the stage-specific Modal apps before
+  running the final daily Layer 1 assembly/validation app.
 - `run_news_preprocessing.py`: CPU only; contract normalization and sentence splitting.
 - `run_text_topics.py`: cloud-only embeddings/topic modeling; CPU smoke path, GPU optional
   when backfilling larger historical corpora.
@@ -100,6 +105,25 @@ Config ownership:
 - `config/modal.json` owns the Pi-triggered daily Layer 1 app name and poll settings, the
   Layer 1 backfill and HMM regime app names, their timeouts, and shared Modal image
   settings.
+
+Production readiness command and inspection:
+
+```bash
+HOME=/home/juyoungoh ./.venv/bin/modal run app/lab/data_pipelines/run_daily_layer1.py \
+    --run-id layer1-readiness-2026-04-10-v7 \
+    --as-of-date 2026-04-10 \
+    --layer0-run-id layer0-historical-2017-01-01_to_2026-04-10 \
+    --allow-layer0-manifest-date-range
+```
+
+Inspect R2 outputs via:
+- `artifacts/manifests/layer1_news_preprocessing/{run_id}-{date}.json`
+- `artifacts/manifests/layer1_text_topics/{run_id}-{date}.json`
+- `artifacts/manifests/layer1_finbert_sentiment/{run_id}-{date}.json`
+- `artifacts/manifests/layer1_5_regime/{run_id}-{date}.json`
+- `artifacts/manifests/layer1/{run_id}.json`
+- `features/layer1/`, `features/layer1/news_sentiment/`, `features/layer1/topic_features/`,
+  `features/layer1/sentiment_features/`, and `features/layer1_5/regime/`
 
 Baseline paper execution is long-only equities. Hedge and long-short capabilities must stay
 disabled by policy until the relevant risk and execution gates are implemented:

@@ -14,7 +14,11 @@ round-trip through the FeatureRecord contract with the expected dates.
 from __future__ import annotations
 
 import argparse
+import csv
+import io
 import json
+import os
+import random
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
@@ -24,11 +28,25 @@ from typing import Protocol
 
 from loguru import logger
 
-_REPO_ROOT = Path(__file__).resolve().parents[3]
+
+def _resolve_repo_root() -> Path:
+    """Return the repository root for local runs and Modal-mounted runs."""
+    env_root = os.getenv("AI_STOCK_TRADER_REPO_ROOT")
+    if env_root:
+        return Path(env_root).resolve()
+    resolved = Path(__file__).resolve()
+    return resolved.parents[3] if len(resolved.parents) > 3 else resolved.parent
+
+
+_REPO_ROOT = _resolve_repo_root()
 sys.path.insert(0, str(_REPO_ROOT))
 
 from core.features.io import parquet_bytes_to_feature_records  # noqa: E402
-from services.r2.paths import layer1_ticker_history_path  # noqa: E402
+from services.r2.paths import (  # noqa: E402
+    layer1_feature_path,
+    layer1_ticker_history_path,
+    raw_universe_path,
+)
 
 DEFAULT_REPORT_DIR = Path("artifacts/reports/integration")
 
@@ -62,6 +80,17 @@ class Layer1ValidationReport:
     missing_ticker_files: list[str] = field(default_factory=list)
     schema_failure_keys: list[str] = field(default_factory=list)
     row_count_failure_keys: list[str] = field(default_factory=list)
+    requested_dates: list[str] = field(default_factory=list)
+    universe_counts_by_date: dict[str, int] = field(default_factory=dict)
+    present_rows_by_ticker: dict[str, int] = field(default_factory=dict)
+    missing_ticker_dates: dict[str, list[str]] = field(default_factory=dict)
+    unexpected_ticker_dates: dict[str, list[str]] = field(default_factory=dict)
+    duplicate_ticker_dates: dict[str, list[str]] = field(default_factory=dict)
+    foreign_ticker_rows: dict[str, list[str]] = field(default_factory=dict)
+    skipped_tickers: list[dict[str, object]] = field(default_factory=list)
+    skipped_dates: list[dict[str, object]] = field(default_factory=list)
+    output_prefixes: dict[str, str] = field(default_factory=dict)
+    leakage_spot_checks: list[dict[str, object]] = field(default_factory=list)
     ready_for_layer2: bool = False
 
     def to_dict(self) -> dict:
@@ -76,6 +105,7 @@ def validate_layer1_archive(
     to_date: str,
     universe: Mapping[str, Sequence[str]],
     reader: ArchiveReader,
+    output_prefixes: Mapping[str, str] | None = None,
 ) -> Layer1ValidationReport:
     """Validate that every ticker in `universe` has a complete feature history.
 
@@ -94,16 +124,46 @@ def validate_layer1_archive(
     _validate_iso_date(to_date, "to_date")
 
     expected_dates_by_ticker = _expected_dates_by_ticker(universe)
+    requested_dates = _date_range_strings(from_date, to_date)
+    universe_counts_by_date = {
+        as_of_date: len({_normalize_ticker(ticker) for ticker in tickers})
+        for as_of_date, tickers in sorted(universe.items())
+    }
     missing: list[str] = []
     schema_failures: list[str] = []
     row_count_failures: list[str] = []
     present_files = 0
     present_rows = 0
+    present_rows_by_ticker: dict[str, int] = {}
+    missing_ticker_dates: dict[str, list[str]] = {}
+    unexpected_ticker_dates: dict[str, list[str]] = {}
+    duplicate_ticker_dates: dict[str, list[str]] = {}
+    foreign_ticker_rows: dict[str, list[str]] = {}
+    skipped_tickers: list[dict[str, object]] = []
+    skipped_dates: list[dict[str, object]] = []
 
     for ticker, expected_dates in sorted(expected_dates_by_ticker.items()):
         key = layer1_ticker_history_path(ticker)
         if not reader.exists(key):
             missing.append(key)
+            expected_window_dates = sorted(expected_dates)
+            missing_ticker_dates[ticker] = expected_window_dates
+            skipped_tickers.append(
+                {
+                    "ticker": ticker,
+                    "reason": "missing_history_file",
+                    "history_key": key,
+                    "expected_dates": expected_window_dates,
+                }
+            )
+            for date_text in expected_window_dates:
+                skipped_dates.append(
+                    {
+                        "ticker": ticker,
+                        "date": date_text,
+                        "reason": "missing_history_file",
+                    }
+                )
             continue
         present_files += 1
         try:
@@ -111,28 +171,80 @@ def validate_layer1_archive(
         except Exception as exc:  # noqa: BLE001 — record any decode failure
             logger.warning("Layer 1 ticker history {} failed schema check: {}", key, exc)
             schema_failures.append(key)
+            skipped_tickers.append(
+                {
+                    "ticker": ticker,
+                    "reason": "schema_validation_failed",
+                    "history_key": key,
+                }
+            )
             continue
 
-        present_rows += len(records)
-        actual_dates = {record.date for record in records if record.ticker == ticker}
-        has_foreign_rows = any(record.ticker != ticker for record in records)
+        ticker_dates: list[str] = []
+        date_counts: dict[str, int] = {}
+        foreign_rows: list[str] = []
+        for record in records:
+            if record.ticker != ticker:
+                foreign_rows.append(f"{record.date}/{record.ticker}")
+                continue
+            if record.date in expected_dates:
+                ticker_dates.append(record.date)
+                date_counts[record.date] = date_counts.get(record.date, 0) + 1
+
+        actual_dates = set(ticker_dates)
+        missing_dates = sorted(expected_dates - actual_dates)
+        unexpected_dates = sorted(actual_dates - expected_dates)
+        duplicate_dates = sorted(
+            date_text for date_text, count in date_counts.items() if count > 1
+        )
+        present_rows_by_ticker[ticker] = len(ticker_dates)
+        present_rows += len(ticker_dates)
+        if missing_dates:
+            missing_ticker_dates[ticker] = missing_dates
+        if unexpected_dates:
+            unexpected_ticker_dates[ticker] = unexpected_dates
+        if duplicate_dates:
+            duplicate_ticker_dates[ticker] = duplicate_dates
+        if foreign_rows:
+            foreign_ticker_rows[ticker] = sorted(foreign_rows)
+
         if (
-            has_foreign_rows
-            or actual_dates != expected_dates
-            or len(records) != len(expected_dates)
+            bool(foreign_rows)
+            or bool(missing_dates)
+            or bool(unexpected_dates)
+            or bool(duplicate_dates)
         ):
             logger.warning(
-                "Layer 1 ticker history {} row coverage mismatch expected={} actual={} foreign={}",
+                "Layer 1 ticker history {} window coverage mismatch expected={} actual={} "
+                "missing={} unexpected={} duplicates={} foreign={}",
                 key,
                 len(expected_dates),
                 len(actual_dates),
-                has_foreign_rows,
+                len(missing_dates),
+                len(unexpected_dates),
+                len(duplicate_dates),
+                bool(foreign_rows),
             )
             row_count_failures.append(key)
+            for date_text in missing_dates:
+                skipped_dates.append(
+                    {
+                        "ticker": ticker,
+                        "date": date_text,
+                        "reason": "missing_window_row",
+                    }
+                )
 
     expected_files = len(expected_dates_by_ticker)
     expected_rows = sum(len(dates) for dates in expected_dates_by_ticker.values())
     ready = expected_rows > 0 and not missing and not schema_failures and not row_count_failures
+    leakage_spot_checks = _build_leakage_spot_checks(
+        reader=reader,
+        expected_dates_by_ticker=expected_dates_by_ticker,
+        run_id=run_id,
+    )
+    if any(check["status"] == "fail" for check in leakage_spot_checks):
+        ready = False
     return Layer1ValidationReport(
         run_id=run_id,
         from_date=from_date,
@@ -146,6 +258,17 @@ def validate_layer1_archive(
         missing_ticker_files=missing,
         schema_failure_keys=schema_failures,
         row_count_failure_keys=row_count_failures,
+        requested_dates=requested_dates,
+        universe_counts_by_date=universe_counts_by_date,
+        present_rows_by_ticker=present_rows_by_ticker,
+        missing_ticker_dates=missing_ticker_dates,
+        unexpected_ticker_dates=unexpected_ticker_dates,
+        duplicate_ticker_dates=duplicate_ticker_dates,
+        foreign_ticker_rows=foreign_ticker_rows,
+        skipped_tickers=skipped_tickers,
+        skipped_dates=skipped_dates,
+        output_prefixes=dict(output_prefixes or {}),
+        leakage_spot_checks=leakage_spot_checks,
         ready_for_layer2=ready,
     )
 
@@ -186,6 +309,41 @@ def load_universe_mapping(path: Path) -> dict[str, list[str]]:
     return universe
 
 
+def load_universe_mapping_from_r2(
+    *,
+    from_date: str,
+    to_date: str,
+    reader: ArchiveReader,
+    requested_tickers: Sequence[str] | None = None,
+) -> dict[str, list[str]]:
+    """Load the eligible Layer 1 universe directly from Layer 0 R2 universe masks."""
+    allowed_tickers = (
+        {_normalize_ticker(ticker) for ticker in requested_tickers}
+        if requested_tickers is not None
+        else None
+    )
+    universe: dict[str, list[str]] = {}
+    for date_text in _date_range_strings(from_date, to_date):
+        payload = reader.get_object(raw_universe_path(date_text)).decode("utf-8")
+        date_tickers: list[str] = []
+        for row in csv.DictReader(io.StringIO(payload)):
+            ticker = _normalize_csv_ticker(row.get("ticker"))
+            if ticker is None:
+                continue
+            if allowed_tickers is not None and ticker not in allowed_tickers:
+                continue
+            if (
+                _truthy(row.get("in_universe"))
+                and _truthy(row.get("tradable"), default=True)
+                and _truthy(row.get("liquid"), default=True)
+                and _truthy(row.get("data_quality_ok"), default=True)
+                and not _truthy(row.get("halted"))
+            ):
+                date_tickers.append(ticker)
+        universe[date_text] = sorted(set(date_tickers))
+    return universe
+
+
 def _expected_dates_by_ticker(
     universe: Mapping[str, Sequence[str]],
 ) -> dict[str, set[str]]:
@@ -203,6 +361,114 @@ def _expected_dates_by_ticker(
     return expected
 
 
+def _date_range_strings(from_date: str, to_date: str) -> list[str]:
+    """Return every date between the inclusive ISO bounds."""
+    start = Date.fromisoformat(from_date)
+    end = Date.fromisoformat(to_date)
+    if start > end:
+        raise ValueError("from_date must be <= to_date")
+    current = start
+    dates: list[str] = []
+    while current <= end:
+        dates.append(current.isoformat())
+        current = current.fromordinal(current.toordinal() + 1)
+    return dates
+
+
+def _normalize_ticker(ticker: str) -> str:
+    """Normalize one ticker symbol for report aggregation."""
+    normalized = ticker.strip().upper()
+    if not normalized:
+        raise ValueError("ticker entries must be non-empty strings")
+    return normalized
+
+
+def _build_leakage_spot_checks(
+    *,
+    reader: ArchiveReader,
+    expected_dates_by_ticker: Mapping[str, set[str]],
+    run_id: str,
+    sample_limit: int = 10,
+) -> list[dict[str, object]]:
+    """Run lightweight alignment checks on a sample of daily Layer 1 shards."""
+    candidate_pairs = [
+        (date_text, ticker)
+        for ticker, date_values in sorted(expected_dates_by_ticker.items())
+        for date_text in sorted(date_values)
+    ]
+    if len(candidate_pairs) <= sample_limit:
+        sampled_pairs = candidate_pairs
+    else:
+        sampled_pairs = sorted(random.Random(run_id).sample(candidate_pairs, k=sample_limit))
+
+    failures: list[dict[str, object]] = []
+    seen_daily_shard = False
+    for date_text, ticker in sampled_pairs:
+        key = layer1_feature_path(date_text, ticker)
+        if not reader.exists(key):
+            failures.append(
+                {
+                    "ticker": ticker,
+                    "date": date_text,
+                    "reason": "missing_daily_shard",
+                    "key": key,
+                }
+            )
+            continue
+        seen_daily_shard = True
+        try:
+            records = parquet_bytes_to_feature_records(reader.get_object(key))
+        except Exception as exc:  # noqa: BLE001
+            failures.append(
+                {
+                    "ticker": ticker,
+                    "date": date_text,
+                    "reason": "daily_shard_decode_failed",
+                    "key": key,
+                    "error": str(exc),
+                }
+            )
+            continue
+        if len(records) != 1:
+            failures.append(
+                {
+                    "ticker": ticker,
+                    "date": date_text,
+                    "reason": "daily_shard_row_count_mismatch",
+                    "key": key,
+                    "rows": len(records),
+                }
+            )
+            continue
+        record = records[0]
+        if record.date != date_text or record.ticker != ticker:
+            failures.append(
+                {
+                    "ticker": ticker,
+                    "date": date_text,
+                    "reason": "daily_shard_identity_mismatch",
+                    "key": key,
+                    "record_date": record.date,
+                    "record_ticker": record.ticker,
+                }
+            )
+
+    return [
+        {
+            "name": "daily_shard_identity_alignment",
+            "sampled_pairs": [
+                {"date": date_text, "ticker": ticker} for date_text, ticker in sampled_pairs
+            ],
+            "status": (
+                "skipped"
+                if not seen_daily_shard
+                else ("pass" if not failures else "fail")
+            ),
+            "failures": failures,
+        }
+    ]
+
+
 def _validate_iso_date(value: str, label: str) -> None:
     """Raise ValueError if `value` is not a canonical YYYY-MM-DD string."""
     try:
@@ -213,23 +479,57 @@ def _validate_iso_date(value: str, label: str) -> None:
         raise ValueError(f"{label} must be YYYY-MM-DD: {value!r}")
 
 
+def _normalize_csv_ticker(value: object) -> str | None:
+    """Normalize a CSV ticker field, returning None for blank rows."""
+    if value is None:
+        return None
+    ticker = str(value).strip().upper()
+    return ticker or None
+
+
+def _truthy(value: object, *, default: bool = False) -> bool:
+    """Return True for common CSV boolean values."""
+    if value is None:
+        return default
+    normalized = str(value).strip().lower()
+    if not normalized:
+        return default
+    return normalized in {"1", "true", "t", "yes", "y"}
+
+
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     """Parse CLI arguments for the validator."""
     parser = argparse.ArgumentParser(description="Validate the Layer 1 feature archive.")
     parser.add_argument("--run-id", required=True, help="Run identifier for the validation pass.")
     parser.add_argument("--from-date", required=True, help="Inclusive lower bound (YYYY-MM-DD).")
     parser.add_argument("--to-date", required=True, help="Inclusive upper bound (YYYY-MM-DD).")
-    parser.add_argument(
+    source_group = parser.add_mutually_exclusive_group(required=True)
+    source_group.add_argument(
         "--universe",
-        required=True,
         help="Path to a JSON file mapping date -> [tickers].",
+    )
+    source_group.add_argument(
+        "--use-r2-universe",
+        action="store_true",
+        help="Load the validation universe directly from Layer 0 raw/universe/*.csv in R2.",
+    )
+    parser.add_argument(
+        "--tickers",
+        nargs="*",
+        default=None,
+        help="Optional ticker filter when --use-r2-universe is selected.",
     )
     parser.add_argument(
         "--output-dir",
         default=str(DEFAULT_REPORT_DIR),
         help=f"Output directory for the JSON report (default: {DEFAULT_REPORT_DIR}).",
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.tickers == []:
+        parser.error("--tickers requires at least one ticker when provided")
+    if args.tickers is not None and not args.use_r2_universe:
+        parser.error("--tickers may only be used with --use-r2-universe")
+    return args
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -237,8 +537,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     from services.r2.writer import R2Writer
 
     args = _parse_args(argv)
-    universe = load_universe_mapping(Path(args.universe))
     reader = R2Writer()
+    if args.use_r2_universe:
+        universe = load_universe_mapping_from_r2(
+            from_date=args.from_date.strip(),
+            to_date=args.to_date.strip(),
+            reader=reader,
+            requested_tickers=args.tickers,
+        )
+    else:
+        universe = load_universe_mapping(Path(args.universe))
     report = validate_layer1_archive(
         run_id=args.run_id.strip(),
         from_date=args.from_date.strip(),

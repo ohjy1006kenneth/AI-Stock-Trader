@@ -21,6 +21,10 @@ class _FakeImage:
 
     python_version: str
     requirements_path: str | None = None
+    local_dirs: list[tuple[str, str, bool]] = field(default_factory=list)
+    env_vars: dict[str, str] = field(default_factory=dict)
+    workdir_path: str | None = None
+    commands: list[str] = field(default_factory=list)
 
     @classmethod
     def debian_slim(cls, *, python_version: str) -> _FakeImage:
@@ -30,6 +34,26 @@ class _FakeImage:
     def pip_install_from_requirements(self, path: str) -> _FakeImage:
         """Record the requirements file used to build the fake image."""
         self.requirements_path = path
+        return self
+
+    def add_local_dir(self, local_path, remote_path: str, *, copy: bool) -> _FakeImage:
+        """Record one mounted local directory."""
+        self.local_dirs.append((str(local_path), remote_path, copy))
+        return self
+
+    def env(self, payload: dict[str, str]) -> _FakeImage:
+        """Record image environment variables."""
+        self.env_vars.update(payload)
+        return self
+
+    def workdir(self, path: str) -> _FakeImage:
+        """Record the image working directory."""
+        self.workdir_path = path
+        return self
+
+    def run_commands(self, *commands: str) -> _FakeImage:
+        """Record image build commands."""
+        self.commands.extend(commands)
         return self
 
 
@@ -60,6 +84,20 @@ class _FakeRegisteredFunction:
     def remote(self, **kwargs: object) -> None:
         """Record one remote invocation."""
         self.remote_calls.append(kwargs)
+
+
+@dataclass
+class _FakeFunctionCall:
+    """Minimal Modal function-call handle used for `.spawn()` tests."""
+
+    payload: dict[str, object]
+    get_calls: int = 0
+
+    def get(self, timeout: float | None = None) -> dict[str, object]:
+        """Return the staged payload and record the await."""
+        del timeout
+        self.get_calls += 1
+        return dict(self.payload)
 
 
 class _FakeApp:
@@ -124,25 +162,6 @@ def _install_fake_modal(monkeypatch: pytest.MonkeyPatch) -> _FakeModal:
         "expected_remote_kwargs",
     ),
     [
-        (
-            run_daily_layer1,
-            "_define_modal_app",
-            "load_modal_runtime_config",
-            "app_name",
-            "modal_run_daily_layer1",
-            (
-                "smoke-daily",
-                "2024-01-02",
-                "layer0-daily-2024-01-02",
-                " spy ",
-            ),
-            {
-                "run_id": "smoke-daily",
-                "as_of_date": "2024-01-02",
-                "layer0_run_id": "layer0-daily-2024-01-02",
-                "benchmark_ticker": "SPY",
-            },
-        ),
         (
             run_news_preprocessing,
             "_define_modal_app",
@@ -263,3 +282,157 @@ def test_modal_runner_entrypoints_build_apps_and_dispatch_remote_calls(
     getattr(module, "modal_main")(*modal_args)
 
     assert registered.remote_calls == [expected_remote_kwargs]
+
+
+def test_daily_layer1_modal_app_builds_workspace_image(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The daily orchestrator app packages the repo workspace into the Modal image."""
+    _install_fake_modal(monkeypatch)
+
+    app = run_daily_layer1._define_modal_app()
+    runtime = run_daily_layer1.load_modal_runtime_config()
+    registered = app.functions["_modal_run_daily_layer1_entry"]
+    image = registered.options["image"]
+
+    assert app.name == runtime.app_name
+    assert app.local_entrypoints == ["modal_main"]
+    assert image.python_version == runtime.python_version
+    assert image.workdir_path == run_daily_layer1.MODAL_REPO_ROOT
+    assert image.env_vars["AI_STOCK_TRADER_REPO_ROOT"] == run_daily_layer1.MODAL_REPO_ROOT
+    assert image.env_vars["PYTHONPATH"] == run_daily_layer1.MODAL_REPO_ROOT
+    assert image.commands == [
+        (
+            "python -m pip install -r "
+            f"{run_daily_layer1.MODAL_REPO_ROOT}/requirements/modal.txt"
+        )
+    ]
+    assert registered.options["timeout"] == runtime.timeout_seconds
+    assert registered.options["secrets"][0].name == runtime.r2_secret_name
+
+
+def test_daily_layer1_modal_main_orchestrates_stage_apps_before_final_assembly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The daily local entrypoint delegates heavy work to stage-specific Modal apps."""
+
+    class _FakeStageRemote:
+        def __init__(self, payload: dict[str, object]) -> None:
+            self.payload = payload
+            self.remote_calls: list[dict[str, object]] = []
+            self.spawn_calls: list[dict[str, object]] = []
+            self.spawn_handles: list[_FakeFunctionCall] = []
+
+        def remote(self, **kwargs: object) -> dict[str, object]:
+            self.remote_calls.append(kwargs)
+            return dict(self.payload)
+
+        def spawn(self, **kwargs: object) -> _FakeFunctionCall:
+            self.spawn_calls.append(kwargs)
+            handle = _FakeFunctionCall(dict(self.payload))
+            self.spawn_handles.append(handle)
+            return handle
+
+    final_remote = _FakeRegisteredFunction(name="modal_run_daily_layer1", options={})
+    news_remote = _FakeStageRemote(
+        {"output_key": "features/layer1/news_sentiment/2024-01-02/smoke.parquet"}
+    )
+    topics_remote = _FakeStageRemote(
+        {"topic_feature_key": "features/layer1/topic_features/2024-01-02/smoke.parquet"}
+    )
+    finbert_remote = _FakeStageRemote(
+        {"sentiment_feature_key": "features/layer1/sentiment_features/2024-01-02/smoke.parquet"}
+    )
+    regime_remote = _FakeStageRemote(
+        {"output_key": "features/layer1_5/regime/smoke-daily-2024-01-02.parquet"}
+    )
+
+    monkeypatch.setattr(run_daily_layer1, "_modal_run_daily_layer1", final_remote)
+    monkeypatch.setattr(run_daily_layer1.news_module, "modal_run_news_preprocessing", news_remote)
+    monkeypatch.setattr(run_daily_layer1.text_topics_module, "modal_run_text_topics", topics_remote)
+    monkeypatch.setattr(
+        run_daily_layer1.finbert_module,
+        "modal_run_finbert_sentiment",
+        finbert_remote,
+    )
+    monkeypatch.setattr(
+        run_daily_layer1.regime_module,
+        "modal_run_hmm_regime_detection",
+        regime_remote,
+    )
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        run_daily_layer1.logger,
+        "warning",
+        lambda message: warnings.append(message),
+    )
+
+    run_daily_layer1.modal_main(
+        "smoke-daily",
+        "2024-01-02",
+        "layer0-daily-2024-01-02",
+        " spy ",
+        True,
+        min_sentence_chars=5,
+        hmm_train_start_date="2023-10-01",
+        hmm_max_iterations=77,
+        hmm_min_training_rows=11,
+    )
+
+    assert warnings == [
+        (
+            "allow_layer0_manifest_date_range=True is intended for historical readiness runs "
+            "only and must not be used on the Pi daily path"
+        )
+    ]
+    assert news_remote.remote_calls == [
+        {
+            "run_id": "smoke-daily-2024-01-02",
+            "as_of_date": "2024-01-02",
+            "min_sentence_chars": 5,
+        }
+    ]
+    assert topics_remote.spawn_calls == [
+        {
+            "run_id": "smoke-daily-2024-01-02",
+            "as_of_date": "2024-01-02",
+            "preprocessed_news_key": "features/layer1/news_sentiment/2024-01-02/smoke.parquet",
+        }
+    ]
+    assert finbert_remote.spawn_calls == [
+        {
+            "run_id": "smoke-daily-2024-01-02",
+            "as_of_date": "2024-01-02",
+            "preprocessed_news_key": "features/layer1/news_sentiment/2024-01-02/smoke.parquet",
+        }
+    ]
+    assert topics_remote.spawn_handles[0].get_calls == 1
+    assert finbert_remote.spawn_handles[0].get_calls == 1
+    assert regime_remote.remote_calls == [
+        {
+            "run_id": "smoke-daily-2024-01-02",
+            "train_start_date": "2023-10-01",
+            "train_end_date": "2024-01-01",
+            "inference_dates": ["2024-01-02"],
+            "benchmark_ticker": "SPY",
+            "max_iterations": 77,
+            "min_training_rows": 11,
+        }
+    ]
+    assert final_remote.remote_calls == [
+        {
+            "run_id": "smoke-daily",
+            "as_of_date": "2024-01-02",
+            "layer0_run_id": "layer0-daily-2024-01-02",
+            "benchmark_ticker": "SPY",
+            "allow_layer0_manifest_date_range": True,
+            "min_sentence_chars": 5,
+            "hmm_train_start_date": "2023-10-01",
+            "hmm_max_iterations": 77,
+            "hmm_min_training_rows": 11,
+            "preprocessed_news_key": "features/layer1/news_sentiment/2024-01-02/smoke.parquet",
+            "topic_feature_key": "features/layer1/topic_features/2024-01-02/smoke.parquet",
+            "sentiment_feature_key": "features/layer1/sentiment_features/2024-01-02/smoke.parquet",
+            "regime_output_key": "features/layer1_5/regime/smoke-daily-2024-01-02.parquet",
+        }
+    ]

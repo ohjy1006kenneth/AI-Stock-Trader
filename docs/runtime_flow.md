@@ -86,6 +86,11 @@ Execution chain:
    - Pi runtime shells out through the lightweight Modal client/CLI only
    - Pi passes `run_id`, `as_of_date`, and the completed Layer 0 `run_id` when invoking
      `modal run app/lab/data_pipelines/run_daily_layer1.py` for the daily single-date flow
+   - Single-date `--as-of-date` invocations fan out through the stage-specific Modal apps
+     first:
+     `run_news_preprocessing.py`, `run_text_topics.py`, `run_finbert_sentiment.py`, and
+     `run_hmm_regime_detection.py`; the final Layer 1 app then only assembles histories,
+     writes the `layer1` manifest, and runs archive validation
    - Pi records the expected Layer 1 manifest key and waits on R2 before moving on
    - Read today's OHLCV Parquet, news JSON Lines, and universe CSV from R2
    - Read point-in-time SimFin fundamentals and earnings dates from R2
@@ -113,6 +118,31 @@ Execution chain:
    - CPU / GPU expectations:
      preprocessing is CPU only; text topics and FinBERT stay on Modal and must not be
      redirected to Pi-local model execution
+   - Example readiness rerun command used during Issue `#126`:
+
+```bash
+HOME=/home/juyoungoh ./.venv/bin/modal run app/lab/data_pipelines/run_daily_layer1.py \
+    --run-id layer1-readiness-2026-04-10-v7 \
+    --as-of-date 2026-04-10 \
+    --layer0-run-id layer0-historical-2017-01-01_to_2026-04-10 \
+    --allow-layer0-manifest-date-range
+```
+
+   - Inspect the produced artifacts through R2 manifests and validation outputs:
+     `artifacts/manifests/layer1_news_preprocessing/{run_id}-{date}.json`,
+     `artifacts/manifests/layer1_text_topics/{run_id}-{date}.json`,
+     `artifacts/manifests/layer1_finbert_sentiment/{run_id}-{date}.json`,
+     `artifacts/manifests/layer1_5_regime/{run_id}-{date}.json`, and
+     `artifacts/manifests/layer1/{run_id}.json`
+   - Re-run the readiness validator against the canonical R2 universe when needed:
+
+```bash
+python app/lab/data_pipelines/validate_layer1_archive.py \
+    --run-id layer1-readiness-2026-04-10-v7 \
+    --from-date 2026-04-10 \
+    --to-date 2026-04-10 \
+    --use-r2-universe
+```
 
 3. **Layer 1.5 regime detection** (Modal)
    - Read recent SPY returns, VIX, and FRED macro regime inputs from R2

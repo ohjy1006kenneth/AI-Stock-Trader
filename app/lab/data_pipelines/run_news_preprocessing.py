@@ -6,6 +6,7 @@ import csv
 import importlib
 import io
 import json
+import os
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -15,7 +16,17 @@ from typing import Protocol
 
 from loguru import logger
 
-_REPO_ROOT = Path(__file__).resolve().parents[3]
+
+def _resolve_repo_root() -> Path:
+    """Return the repository root for local runs and Modal-mounted runs."""
+    env_root = os.getenv("AI_STOCK_TRADER_REPO_ROOT")
+    if env_root:
+        return Path(env_root).resolve()
+    resolved = Path(__file__).resolve()
+    return resolved.parents[3] if len(resolved.parents) > 3 else resolved.parent
+
+
+_REPO_ROOT = _resolve_repo_root()
 sys.path.insert(0, str(_REPO_ROOT))
 
 from core.contracts.schemas import PipelineManifestRecord, RunStatus  # noqa: E402
