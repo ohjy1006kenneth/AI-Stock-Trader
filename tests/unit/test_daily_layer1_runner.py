@@ -25,7 +25,7 @@ from app.lab.data_pipelines.run_text_topics import TEXT_TOPICS_STAGE
 from app.lab.data_pipelines.validate_layer1_archive import Layer1ValidationReport
 from core.contracts.schemas import PipelineManifestRecord, RunStatus
 from core.features.io import read_feature_records
-from services.r2.paths import pipeline_manifest_path
+from services.r2.paths import layer1_validation_report_path, pipeline_manifest_path
 from services.r2.writer import R2Writer
 from tests.fixtures.layer1_support import (
     fake_news_runner,
@@ -77,10 +77,17 @@ def test_run_daily_layer1_happy_path_writes_history_and_completed_manifest(
     assert history[0].features["nlp_sentiment_score"] == pytest.approx(0.25)
     assert history[0].features["regime_label"] == "bull"
     assert writer.exists("features/layer1/2024-01-03/AAPL.parquet") is True
+    assert writer.exists(
+        layer1_validation_report_path("layer1-daily", "2024-01-03", "2024-01-04")
+    ) is True
     assert manifest.stage == LAYER1_DAILY_STAGE
     assert manifest.status is RunStatus.COMPLETED
     assert manifest.metadata["ready_for_layer2"] is True
     assert Path(str(manifest.metadata["validation_report_path"])).exists()
+    assert (
+        manifest.metadata["validation_report_key"]
+        == layer1_validation_report_path("layer1-daily", "2024-01-03", "2024-01-04")
+    )
 
 
 def test_run_daily_layer1_single_date_manifest_contains_modal_wait_metadata(
@@ -115,6 +122,9 @@ def test_run_daily_layer1_single_date_manifest_contains_modal_wait_metadata(
 
     assert manifest.metadata["as_of_date"] == "2024-01-03"
     assert manifest.metadata["layer0_run_id"] == "layer1-single-day"
+    assert result.validation_report_key == layer1_validation_report_path(
+        "layer1-single-day", "2024-01-03", "2024-01-03"
+    )
 
 
 def test_run_daily_layer1_fails_closed_when_layer0_manifest_is_missing(
@@ -342,6 +352,7 @@ def test_main_returns_nonzero_when_validation_is_not_ready(
         run_id="layer1-cli-fail",
         from_date="2024-01-03",
         to_date="2024-01-03",
+        validation_status="failed",
         expected_ticker_files=1,
         present_ticker_files=0,
         expected_rows=1,

@@ -110,7 +110,9 @@ Execution chain:
    - Compute market, NLP, and context features for today
    - Refresh aligned per-ticker feature histories at `features/layer1/TICKER.parquet` in R2
      while preserving daily single-record shard support for incremental runs
-   - Run final archive validation and return nonzero unless `ready_for_layer2=true`
+   - Run final archive validation, persist the JSON report under
+     `artifacts/reports/integration/layer1_archive_validation_{run_id}_{from}_to_{to}.json`,
+     and return nonzero unless `ready_for_layer2=true`
    - Write `PipelineManifestRecord` (stage=layer1, statuses: running/completed/failed)
    - Modal runner entrypoints:
      `run_news_preprocessing.py`, `run_text_topics.py`, `run_finbert_sentiment.py`,

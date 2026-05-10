@@ -14,6 +14,13 @@ from app.lab.data_pipelines import (
     run_text_topics,
 )
 
+_WORKSPACE_IMAGE_MODULES = {
+    run_news_preprocessing,
+    run_text_topics,
+    run_finbert_sentiment,
+    run_hmm_regime_detection,
+}
+
 
 @dataclass
 class _FakeImage:
@@ -228,7 +235,7 @@ def _install_fake_modal(monkeypatch: pytest.MonkeyPatch) -> _FakeModal:
                 "run_id": "smoke-hmm",
                 "train_start_date": "2024-01-02",
                 "train_end_date": "2024-01-31",
-                "inference_dates": ["2024-02-01", "2024-02-02"],
+                "inference_dates": "2024-02-01,2024-02-02",
                 "benchmark_ticker": "SPY",
                 "max_iterations": 10,
                 "min_training_rows": 5,
@@ -266,7 +273,11 @@ def test_modal_runner_entrypoints_build_apps_and_dispatch_remote_calls(
     config_loader = getattr(module, config_loader_name)
     app = builder()
     runtime = config_loader()
-    registered = app.functions[function_name]
+    registered = app.functions.get(function_name)
+    if registered is None:
+        assert module in _WORKSPACE_IMAGE_MODULES
+        assert len(app.functions) == 1
+        registered = next(iter(app.functions.values()))
     image = registered.options["image"]
     expected_python = getattr(runtime, "python_version", "3.11")
     expected_requirements = getattr(runtime, "requirements_path", "requirements/modal.txt")
@@ -274,9 +285,22 @@ def test_modal_runner_entrypoints_build_apps_and_dispatch_remote_calls(
     assert app.name == getattr(runtime, app_name_attr)
     assert app.local_entrypoints == ["modal_main"]
     assert image.python_version == expected_python
-    assert image.requirements_path == expected_requirements
+    if module in _WORKSPACE_IMAGE_MODULES:
+        modal_repo_root = getattr(module, "MODAL_REPO_ROOT")
+        assert image.requirements_path is None
+        assert image.workdir_path == modal_repo_root
+        assert image.env_vars["AI_STOCK_TRADER_REPO_ROOT"] == modal_repo_root
+        assert image.env_vars["PYTHONPATH"] == modal_repo_root
+        assert image.commands == [
+            f"python -m pip install -r {modal_repo_root}/{expected_requirements}"
+        ]
+    else:
+        assert image.requirements_path == expected_requirements
     assert registered.options["timeout"] == runtime.timeout_seconds
-    assert registered.options["serialized"] is True
+    if module in _WORKSPACE_IMAGE_MODULES:
+        assert "serialized" not in registered.options
+    else:
+        assert registered.options["serialized"] is True
     assert registered.options["secrets"][0].name == runtime.r2_secret_name
 
     getattr(module, "modal_main")(*modal_args)
@@ -413,7 +437,7 @@ def test_daily_layer1_modal_main_orchestrates_stage_apps_before_final_assembly(
             "run_id": "smoke-daily-2024-01-02",
             "train_start_date": "2023-10-01",
             "train_end_date": "2024-01-01",
-            "inference_dates": ["2024-01-02"],
+            "inference_dates": "2024-01-02",
             "benchmark_ticker": "SPY",
             "max_iterations": 77,
             "min_training_rows": 11,

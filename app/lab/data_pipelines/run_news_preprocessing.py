@@ -45,6 +45,7 @@ from services.r2.writer import R2Writer  # noqa: E402
 
 NLP_PREPROCESSING_STAGE = "layer1_news_preprocessing"
 MODAL_CONFIG_PATH = _REPO_ROOT / "config" / "news_preprocessing.json"
+MODAL_REPO_ROOT = "/workspace/AI-Stock-Trader"
 
 
 class ObjectStore(Protocol):
@@ -95,6 +96,8 @@ class ModalRuntimeConfig:
     app_name: str
     r2_secret_name: str
     timeout_seconds: int
+    python_version: str = "3.11"
+    requirements_path: str = "requirements/modal.txt"
 
 
 def run_news_preprocessing(
@@ -169,6 +172,8 @@ def load_modal_runtime_config(path: Path = MODAL_CONFIG_PATH) -> ModalRuntimeCon
         app_name=str(payload["app_name"]),
         r2_secret_name=str(payload["r2_secret_name"]),
         timeout_seconds=int(payload["timeout_seconds"]),
+        python_version=str(payload.get("python_version", "3.11")),
+        requirements_path=str(payload.get("requirements_path", "requirements/modal.txt")),
     )
 
 
@@ -285,6 +290,28 @@ def modal_main(run_id: str, as_of_date: str, min_sentence_chars: int = 2) -> Non
     )
 
 
+def _modal_run_news_preprocessing_entry(
+    run_id: str,
+    as_of_date: str,
+    min_sentence_chars: int = 2,
+) -> dict[str, object]:
+    """Run Layer 1 news preprocessing on Modal."""
+    result = run_news_preprocessing(
+        NewsPreprocessingPipelineConfig(
+            run_id=run_id,
+            as_of_date=as_of_date,
+            min_sentence_chars=min_sentence_chars,
+        )
+    )
+    return {
+        "run_id": result.run_id,
+        "output_key": result.output_key,
+        "manifest_key": result.manifest_key,
+        "article_rows": result.article_rows,
+        "sentence_rows": result.sentence_rows,
+    }
+
+
 def _define_modal_app() -> object | None:
     """Create the Modal app when the modal package is installed."""
     try:
@@ -293,41 +320,45 @@ def _define_modal_app() -> object | None:
         return None
 
     runtime = load_modal_runtime_config()
-    image = modal.Image.debian_slim(python_version="3.11").pip_install_from_requirements(
-        "requirements/modal.txt"
-    )
+    image = _build_modal_image(modal, runtime)
     app = modal.App(runtime.app_name)
 
-    @app.function(
+    modal_run_news_preprocessing = app.function(
         image=image,
         secrets=[modal.Secret.from_name(runtime.r2_secret_name)],
         timeout=runtime.timeout_seconds,
-        serialized=True,
-    )
-    def modal_run_news_preprocessing(
-        run_id: str,
-        as_of_date: str,
-        min_sentence_chars: int = 2,
-    ) -> dict[str, object]:
-        """Run Layer 1 news preprocessing on Modal."""
-        result = run_news_preprocessing(
-            NewsPreprocessingPipelineConfig(
-                run_id=run_id,
-                as_of_date=as_of_date,
-                min_sentence_chars=min_sentence_chars,
-            )
-        )
-        return {
-            "run_id": result.run_id,
-            "output_key": result.output_key,
-            "manifest_key": result.manifest_key,
-            "article_rows": result.article_rows,
-            "sentence_rows": result.sentence_rows,
-        }
+    )(_modal_run_news_preprocessing_entry)
 
     app.local_entrypoint()(modal_main)
     globals()["modal_run_news_preprocessing"] = modal_run_news_preprocessing
     return app
+
+
+def _build_modal_image(modal_module: object, runtime: ModalRuntimeConfig):
+    """Build the Modal image while preserving local `-r base.txt` includes."""
+    requirements_path = Path(runtime.requirements_path)
+    requirements_dir = requirements_path.parent
+    remote_requirements_path = f"{MODAL_REPO_ROOT}/{requirements_path.as_posix()}"
+    return (
+        modal_module.Image.debian_slim(python_version=runtime.python_version)
+        .add_local_dir(_REPO_ROOT / "app", f"{MODAL_REPO_ROOT}/app", copy=True)
+        .add_local_dir(_REPO_ROOT / "core", f"{MODAL_REPO_ROOT}/core", copy=True)
+        .add_local_dir(_REPO_ROOT / "services", f"{MODAL_REPO_ROOT}/services", copy=True)
+        .add_local_dir(_REPO_ROOT / "config", f"{MODAL_REPO_ROOT}/config", copy=True)
+        .add_local_dir(
+            _REPO_ROOT / requirements_dir,
+            f"{MODAL_REPO_ROOT}/{requirements_dir.as_posix()}",
+            copy=True,
+        )
+        .env(
+            {
+                "AI_STOCK_TRADER_REPO_ROOT": MODAL_REPO_ROOT,
+                "PYTHONPATH": MODAL_REPO_ROOT,
+            }
+        )
+        .workdir(MODAL_REPO_ROOT)
+        .run_commands(f"python -m pip install -r {remote_requirements_path}")
+    )
 
 
 app = _define_modal_app()

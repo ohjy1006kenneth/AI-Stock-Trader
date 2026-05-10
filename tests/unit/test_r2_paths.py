@@ -17,6 +17,7 @@ from services.r2.paths import (
     layer1_ticker_history_path,
     layer1_topic_feature_path,
     layer1_topic_label_path,
+    layer1_validation_report_path,
     pipeline_manifest_path,
     raw_fundamentals_path,
     raw_macro_path,
@@ -98,6 +99,11 @@ def test_layer1_text_artifact_paths_return_canonical_keys() -> None:
         == "features/layer1/sentiment_features/2025-01-02/run-001.parquet"
     )
     assert layer1_regime_path("run-001") == "features/layer1_5/regime/run-001.parquet"
+    assert (
+        layer1_validation_report_path("run-001", "2025-01-02", "2025-01-03")
+        == "artifacts/reports/integration/"
+        "layer1_archive_validation_run-001_2025-01-02_to_2025-01-03.json"
+    )
 
 
 def test_pipeline_manifest_path_returns_canonical_key() -> None:

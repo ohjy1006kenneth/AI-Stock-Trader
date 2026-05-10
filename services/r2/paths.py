@@ -168,6 +168,17 @@ def layer1_regime_path(run_id: str) -> str:
     return build_r2_key("features", "layer1_5", "regime", f"{safe_run_id}.parquet")
 
 
+def layer1_validation_report_path(run_id: str, from_date: str, to_date: str) -> str:
+    """Return the canonical durable Layer 1 validation-report key for one run window."""
+    safe_run_id = _validate_key_part(run_id)
+    return build_r2_key(
+        "artifacts",
+        "reports",
+        "integration",
+        f"layer1_archive_validation_{safe_run_id}_{_format_date(from_date)}_to_{_format_date(to_date)}.json",
+    )
+
+
 def layer1_label_path(as_of_date: str | Date | datetime, ticker: str) -> str:
     """Return the canonical Layer 1 label-shard Parquet path for one date/ticker pair."""
     safe_ticker = _validate_key_part(ticker)
