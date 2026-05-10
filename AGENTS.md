@@ -29,8 +29,10 @@ Before touching any code or issue, read these files in order:
 
 If you are about to create or comment on a GitHub issue, also read:
 - `.github/ISSUE_TEMPLATE/codex_task.md`
+- `.github/ISSUE_TEMPLATE/production_readiness.md`
 - `.github/ISSUE_TEMPLATE/schema_migration.md`
 - `.github/ISSUE_TEMPLATE/bug_report.md`
+- `.github/ISSUE_TEMPLATE/my_task.md`
 
 ---
 
@@ -155,7 +157,7 @@ For every issue you work on, follow this sequence exactly:
 6. gh issue edit <number> --remove-label "backlog" --add-label "in-progress"
 7. Write the code
 8. Write or update tests in tests/unit/ or tests/integration/
-9. Run: pytest tests/unit/ -v --tb=short
+9. Run: ./.venv/bin/pytest tests/unit/ -v --tb=short
 10. Fix all failures — never open a PR with failing tests
 11. Open PR using .github/pull_request_template.md
 12. Write "Closes #<number>" in the PR body
@@ -324,7 +326,7 @@ Every PR that adds or modifies logic must include tests. No exceptions.
 - Use `data/sample/` fixture files — never fetch live data in unit tests
 - Cover: happy path, empty input, missing columns, NaN input
 - Minimum: one test per public function
-- Must pass before opening PR: `pytest tests/unit/ -v --tb=short`
+- Must pass before opening PR: `./.venv/bin/pytest tests/unit/ -v --tb=short`
 
 ---
 

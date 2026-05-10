@@ -1,7 +1,7 @@
 ---
 name: Human task
 about: Task Kenneth or another human must perform personally, usually credentials, account setup, approval, or external configuration
-title: "[My task] "
+title: "[Human task] "
 labels: backlog, owner:me
 assignees: ''
 ---

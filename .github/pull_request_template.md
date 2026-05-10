@@ -34,7 +34,7 @@ Closes #
 - [ ] No bare `except:` or silent exception swallowing
 
 ### Tests
-- [ ] `pytest tests/unit/ -v --tb=short` passes with zero failures
+- [ ] `./.venv/bin/pytest tests/unit/ -v --tb=short` passes with zero failures
 - [ ] New public functions have at least one unit test each
 - [ ] Tests cover: happy path, empty input, missing columns, NaN input
 - [ ] No live API calls in unit tests — fixtures used from `data/sample/`
