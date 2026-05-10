@@ -7,7 +7,16 @@ assignees: ''
 ---
 
 ## Which schema is changing
-<!-- File and class name in core/contracts/ -->
+<!-- File and class name in core/contracts/. -->
+
+## Layers affected
+- [ ] Layer 0 — Data & universe
+- [ ] Layer 1 — Features
+- [ ] Layer 2 — Model
+- [ ] Layer 3 — Portfolio
+- [ ] Layer 4 — Risk
+- [ ] Layer 5 — Execution
+- [ ] Infrastructure / services
 
 ## Current schema
 ```python
@@ -21,22 +30,26 @@ assignees: ''
 
 ## Reason for change
 
-## Layers affected
-<!-- List every layer that reads or writes this schema -->
-- 
-
 ## Migration plan
-<!-- How will existing Parquet files in R2 be handled? -->
+<!-- How will existing Parquet files/manifests/reports in R2 be handled? -->
 - [ ] Backward compatible — no migration needed
 - [ ] Migration script needed → `scripts/migrate_<schema>_v<N>.py`
 - [ ] Breaking change — coordinate with all consumers before merging
 
-## Checklist
+## Files to read first
+- `AGENTS.md`
+- `TODO.md`
+- `docs/data_contracts.md`
+- `core/contracts/schemas.py`
+
+## Acceptance checklist
+- [ ] Human approved the proposed contract change before implementation
 - [ ] All consumers updated in same PR or follow-up issues created
 - [ ] Migration script written and tested if needed
-- [ ] R2 sample fixtures updated in `data/sample/`
-- [ ] `config/schemas/` JSON schemas updated
+- [ ] Fixtures updated under `tests/fixtures/` or another documented test fixture location
+- [ ] Docs updated: `docs/data_contracts.md` and any affected runtime/deployment docs
+- [ ] R2/backfill impact documented
 
 ---
-<!-- Schema changes must be reviewed by human before Codex implements consumers -->
-<!-- Label: blocked until human approves the proposed schema -->
+<!-- Schema changes must be reviewed by human before Codex implements consumers. -->
+<!-- Use blocked label until human approves the proposed schema when needed. -->
