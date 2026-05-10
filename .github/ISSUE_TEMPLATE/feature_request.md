@@ -17,8 +17,8 @@ assignees: ''
 - [ ] Layer 4 — Risk
 - [ ] Layer 5 — Execution
 - [ ] Infrastructure / services
-- [ ] Observability
-- [ ] Other
+- [ ] Tests only
+- [ ] Docs only
 
 ## Proposed approach
 <!-- High-level design. If multiple approaches have meaningful tradeoffs, list them. -->
