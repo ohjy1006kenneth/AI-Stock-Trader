@@ -25,7 +25,11 @@ from app.lab.data_pipelines.run_text_topics import TEXT_TOPICS_STAGE
 from app.lab.data_pipelines.validate_layer1_archive import Layer1ValidationReport
 from core.contracts.schemas import PipelineManifestRecord, RunStatus
 from core.features.io import feature_records_to_parquet_bytes, read_feature_records
-from services.r2.paths import layer1_validation_report_path, pipeline_manifest_path
+from services.r2.paths import (
+    layer1_sentiment_feature_path,
+    layer1_validation_report_path,
+    pipeline_manifest_path,
+)
 from services.r2.writer import R2Writer
 from tests.fixtures.layer1_support import (
     fake_news_runner,
@@ -104,10 +108,7 @@ def test_run_daily_layer1_prefers_topic_sentence_count_when_sentiment_conflicts(
     )
 
     def conflicting_sentiment_runner(config, *, writer: R2Writer):
-        output_key = daily_layer1_module.layer1_sentiment_feature_path(
-            config.as_of_date,
-            config.run_id,
-        )
+        output_key = layer1_sentiment_feature_path(config.as_of_date, config.run_id)
         records = [
             daily_layer1_module.FeatureRecord(
                 date=config.as_of_date,

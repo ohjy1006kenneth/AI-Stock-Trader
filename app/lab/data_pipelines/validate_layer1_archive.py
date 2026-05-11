@@ -8,10 +8,12 @@ JSON report under
 Daily Layer 1 orchestration also uploads the rendered JSON to the durable R2 key
 `artifacts/reports/integration/layer1_archive_validation_{run_id}_{from}_to_{to}.json`.
 
-The validator does not re-run feature computation. It only checks history-file
-presence, row coverage, and basic schema integrity. `ready_for_layer2` flips to
-True iff every expected ticker history is present and the present histories
-round-trip through the FeatureRecord contract with the expected dates.
+The validator does not re-run feature computation. It checks history-file
+presence, row coverage, basic schema integrity, and related manifest state so
+operators can see which run is authoritative and which sibling manifests are
+stale. `ready_for_layer2` flips to True iff every expected ticker history is
+present, the present histories round-trip through the FeatureRecord contract
+with the expected dates, and any requested manifest check passes.
 """
 from __future__ import annotations
 
@@ -21,6 +23,7 @@ import io
 import json
 import os
 import random
+import re
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
@@ -46,11 +49,22 @@ sys.path.insert(0, str(_REPO_ROOT))
 from core.features.io import parquet_bytes_to_feature_records  # noqa: E402
 from services.r2.paths import (  # noqa: E402
     layer1_feature_path,
+    layer1_news_preprocessing_path,
+    layer1_regime_path,
+    layer1_sentiment_feature_path,
+    layer1_sentiment_score_path,
+    layer1_text_embedding_path,
     layer1_ticker_history_path,
+    layer1_topic_feature_path,
+    layer1_topic_label_path,
+    layer1_validation_report_path,
+    pipeline_manifest_path,
     raw_universe_path,
 )
 
 DEFAULT_REPORT_DIR = Path("artifacts/reports/integration")
+LAYER1_MANIFEST_PREFIX = "artifacts/manifests/layer1/"
+_RUN_ID_VERSION_RE = re.compile(r"^(?P<family>.+)-v(?P<version>\d+)$")
 
 
 class ArchiveReader(Protocol):
@@ -82,6 +96,11 @@ class Layer1ValidationReport:
     row_count_failures: int
     manifest_key: str | None = None
     report_key: str | None = None
+    manifest_status: str | None = None
+    manifest_finished_at: str | None = None
+    manifest_errors: list[str] = field(default_factory=list)
+    related_manifests: list[dict[str, object]] = field(default_factory=list)
+    stale_manifest_keys: list[str] = field(default_factory=list)
     missing_ticker_files: list[str] = field(default_factory=list)
     schema_failure_keys: list[str] = field(default_factory=list)
     row_count_failure_keys: list[str] = field(default_factory=list)
@@ -111,6 +130,8 @@ def validate_layer1_archive(
     universe: Mapping[str, Sequence[str]],
     reader: ArchiveReader,
     output_prefixes: Mapping[str, str] | None = None,
+    require_completed_manifest: bool = False,
+    inspect_related_manifests: bool = False,
 ) -> Layer1ValidationReport:
     """Validate that every ticker in `universe` has a complete feature history.
 
@@ -121,6 +142,10 @@ def validate_layer1_archive(
         universe: Mapping of `date` (YYYY-MM-DD) to the list of tickers expected
             to have a Layer 1 shard on that date.
         reader: Object store providing `exists`/`get_object`/`list_keys`.
+        require_completed_manifest: Fail closed if the exact Layer 1 manifest is
+            absent or not completed.
+        inspect_related_manifests: Include exact/sibling manifest state in the
+            report without requiring a completed exact manifest.
 
     Returns:
         Layer1ValidationReport.
@@ -128,6 +153,8 @@ def validate_layer1_archive(
     _validate_iso_date(from_date, "from_date")
     _validate_iso_date(to_date, "to_date")
 
+    manifest_key = pipeline_manifest_path("layer1", run_id)
+    report_key = layer1_validation_report_path(run_id, from_date, to_date)
     expected_dates_by_ticker = _expected_dates_by_ticker(universe)
     requested_dates = _date_range_strings(from_date, to_date)
     universe_counts_by_date = {
@@ -250,6 +277,15 @@ def validate_layer1_archive(
     )
     if any(check["status"] == "fail" for check in leakage_spot_checks):
         ready = False
+    manifest_state = _empty_manifest_inspection()
+    if require_completed_manifest or inspect_related_manifests:
+        manifest_state = _inspect_layer1_manifests(
+            reader=reader,
+            run_id=run_id,
+            require_completed_manifest=require_completed_manifest,
+        )
+    if manifest_state.manifest_errors:
+        ready = False
     return Layer1ValidationReport(
         run_id=run_id,
         from_date=from_date,
@@ -261,6 +297,13 @@ def validate_layer1_archive(
         present_rows=present_rows,
         schema_failures=len(schema_failures),
         row_count_failures=len(row_count_failures),
+        manifest_key=manifest_key,
+        report_key=report_key,
+        manifest_status=manifest_state.manifest_status,
+        manifest_finished_at=manifest_state.manifest_finished_at,
+        manifest_errors=manifest_state.manifest_errors,
+        related_manifests=manifest_state.related_manifests,
+        stale_manifest_keys=manifest_state.stale_manifest_keys,
         missing_ticker_files=missing,
         schema_failure_keys=schema_failures,
         row_count_failure_keys=row_count_failures,
@@ -277,6 +320,58 @@ def validate_layer1_archive(
         leakage_spot_checks=leakage_spot_checks,
         ready_for_layer2=ready,
     )
+
+
+@dataclass(frozen=True)
+class ManifestInspectionResult:
+    """Manifest-state summary for one validated Layer 1 run family."""
+
+    manifest_status: str | None
+    manifest_finished_at: str | None
+    manifest_errors: list[str]
+    related_manifests: list[dict[str, object]]
+    stale_manifest_keys: list[str]
+
+
+def _empty_manifest_inspection() -> ManifestInspectionResult:
+    """Return the default manifest summary for validations that skip inspection."""
+    return ManifestInspectionResult(
+        manifest_status=None,
+        manifest_finished_at=None,
+        manifest_errors=[],
+        related_manifests=[],
+        stale_manifest_keys=[],
+    )
+
+
+def build_layer1_output_prefixes(processed_dates: Sequence[str]) -> dict[str, str]:
+    """Return deterministic R2 prefixes relevant to one Layer 1 readiness report."""
+    latest_date = processed_dates[-1] if processed_dates else ""
+    prefix_date = latest_date or "2000-01-01"
+    prefixes = {
+        "layer1_history": _prefix_for_key(layer1_ticker_history_path("<TICKER>")),
+        "layer1_daily_shards": _prefix_for_key(layer1_feature_path(prefix_date, "<TICKER>")),
+        "news_sentiment": _prefix_for_key(
+            layer1_news_preprocessing_path(prefix_date, "<RUN_ID>")
+        ),
+        "text_embeddings": _prefix_for_key(layer1_text_embedding_path(prefix_date, "<RUN_ID>")),
+        "topic_labels": _prefix_for_key(layer1_topic_label_path(prefix_date, "<RUN_ID>")),
+        "topic_features": _prefix_for_key(layer1_topic_feature_path(prefix_date, "<RUN_ID>")),
+        "sentiment_scores": _prefix_for_key(
+            layer1_sentiment_score_path(prefix_date, "<RUN_ID>")
+        ),
+        "sentiment_features": _prefix_for_key(
+            layer1_sentiment_feature_path(prefix_date, "<RUN_ID>")
+        ),
+        "regime_outputs": _prefix_for_key(layer1_regime_path("<RUN_ID>")),
+        "layer1_manifests": _prefix_for_key(pipeline_manifest_path("layer1", "<RUN_ID>")),
+        "validation_reports": _prefix_for_key(
+            layer1_validation_report_path("<RUN_ID>", prefix_date, prefix_date)
+        ),
+    }
+    if latest_date:
+        prefixes["latest_processed_date"] = latest_date
+    return prefixes
 
 
 def write_validation_report(
@@ -483,6 +578,147 @@ def _build_leakage_spot_checks(
     ]
 
 
+def _inspect_layer1_manifests(
+    *,
+    reader: ArchiveReader,
+    run_id: str,
+    require_completed_manifest: bool,
+) -> ManifestInspectionResult:
+    """Inspect exact and sibling Layer 1 manifests for operator-facing reporting."""
+    exact_key = pipeline_manifest_path("layer1", run_id)
+    related_manifests: list[dict[str, object]] = []
+    manifest_status: str | None = None
+    manifest_finished_at: str | None = None
+    manifest_errors: list[str] = []
+    family = _manifest_family(run_id)
+    exact_manifest_found = False
+    exact_manifest_loaded = False
+
+    for key in _sorted_manifest_keys(reader.list_keys(LAYER1_MANIFEST_PREFIX)):
+        related_run_id = _manifest_run_id_from_key(key)
+        if not _same_manifest_family(run_id, related_run_id, family):
+            continue
+        if key == exact_key:
+            exact_manifest_found = True
+        if not reader.exists(key):
+            entry = {
+                "key": key,
+                "run_id": related_run_id,
+                "status": "missing",
+                "finished_at": None,
+                "error": "object_missing",
+            }
+            related_manifests.append(entry)
+            if key == exact_key:
+                manifest_errors.append("exact_manifest_missing_during_read")
+            continue
+        try:
+            payload = reader.get_object(key).decode("utf-8")
+        except (FileNotFoundError, KeyError) as exc:
+            entry = {
+                "key": key,
+                "run_id": related_run_id,
+                "status": "missing",
+                "finished_at": None,
+                "error": str(exc),
+            }
+            related_manifests.append(entry)
+            if key == exact_key:
+                manifest_errors.append("exact_manifest_missing_during_read")
+            continue
+        try:
+            manifest = json.loads(payload)
+        except json.JSONDecodeError as exc:
+            entry = {
+                "key": key,
+                "run_id": related_run_id,
+                "status": "invalid",
+                "finished_at": None,
+                "error": str(exc),
+            }
+            related_manifests.append(entry)
+            if key == exact_key:
+                manifest_errors.append("exact_manifest_invalid_json")
+            continue
+
+        status = manifest.get("status")
+        finished_at = manifest.get("finished_at")
+        entry = {
+            "key": key,
+            "run_id": str(manifest.get("run_id", related_run_id)),
+            "status": str(status) if status is not None else None,
+            "finished_at": str(finished_at) if finished_at is not None else None,
+        }
+        related_manifests.append(entry)
+        if key == exact_key:
+            exact_manifest_loaded = True
+            manifest_status = entry["status"]
+            manifest_finished_at = entry["finished_at"]
+
+    stale_manifest_keys = [
+        str(entry["key"])
+        for entry in related_manifests
+        if entry.get("status") == "running" and entry.get("key") != exact_key
+    ]
+    if require_completed_manifest:
+        if not exact_manifest_found:
+            manifest_errors.append("missing_exact_manifest")
+        elif exact_manifest_loaded and manifest_status != "completed":
+            manifest_errors.append(
+                f"exact_manifest_not_completed:{manifest_status or 'unknown'}"
+            )
+
+    return ManifestInspectionResult(
+        manifest_status=manifest_status,
+        manifest_finished_at=manifest_finished_at,
+        manifest_errors=manifest_errors,
+        related_manifests=related_manifests,
+        stale_manifest_keys=stale_manifest_keys,
+    )
+
+
+def _manifest_family(run_id: str) -> str:
+    """Return the version-family prefix for one Layer 1 run identifier."""
+    match = _RUN_ID_VERSION_RE.fullmatch(run_id)
+    if match is None:
+        return run_id
+    return str(match.group("family"))
+
+
+def _same_manifest_family(requested_run_id: str, candidate_run_id: str, family: str) -> bool:
+    """Return True when two run identifiers belong to the same readiness family."""
+    if candidate_run_id == requested_run_id:
+        return True
+    if family == requested_run_id:
+        return False
+    match = _RUN_ID_VERSION_RE.fullmatch(candidate_run_id)
+    return match is not None and str(match.group("family")) == family
+
+
+def _manifest_run_id_from_key(key: str) -> str:
+    """Return the run identifier encoded in one Layer 1 manifest key."""
+    return Path(key).stem
+
+
+def _sorted_manifest_keys(keys: Sequence[str]) -> list[str]:
+    """Sort manifest keys by family and numeric version when present."""
+    return sorted(keys, key=_manifest_sort_key)
+
+
+def _manifest_sort_key(key: str) -> tuple[str, int, str]:
+    """Return a stable sort key for manifest names with optional -vN suffixes."""
+    run_id = _manifest_run_id_from_key(key)
+    match = _RUN_ID_VERSION_RE.fullmatch(run_id)
+    if match is None:
+        return (run_id, -1, run_id)
+    return (str(match.group("family")), int(match.group("version")), run_id)
+
+
+def _prefix_for_key(key: str) -> str:
+    """Return the containing prefix for one canonical R2 object key."""
+    return f"{Path(key).parent.as_posix()}/"
+
+
 def _validate_iso_date(value: str, label: str) -> None:
     """Raise ValueError if `value` is not a canonical YYYY-MM-DD string."""
     try:
@@ -567,6 +803,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         to_date=args.to_date.strip(),
         universe=universe,
         reader=reader,
+        output_prefixes=build_layer1_output_prefixes(sorted(universe.keys())),
+        require_completed_manifest=True,
     )
     output_path = write_validation_report(report, Path(args.output_dir))
     logger.info(
