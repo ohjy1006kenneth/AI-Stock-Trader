@@ -423,8 +423,6 @@ def run_daily_layer1(
             validation_output_dir=validation_output_dir,
             require_completed_manifest=final_status is RunStatus.COMPLETED,
         )
-        if report.report_key is None:
-            raise ValueError("Layer 1 validation report_key was not populated")
         metadata.update(
             {
                 "validation_report_path": str(report_path),
@@ -433,7 +431,6 @@ def run_daily_layer1(
                 "manifest_status": report.manifest_status,
                 "ready_for_layer2": report.ready_for_layer2,
                 "stale_manifest_keys": report.stale_manifest_keys,
-                "supersedes_manifest_keys": report.stale_manifest_keys,
                 "related_manifest_keys": [
                     str(entry["key"])
                     for entry in report.related_manifests
@@ -481,8 +478,6 @@ def run_daily_layer1(
         raise RuntimeError("Layer 1 validation report was not written")
     if not report.ready_for_layer2:
         raise Layer1ValidationError(report, report_path)
-    if report.report_key is None:
-        raise ValueError("Layer 1 validation report_key was not populated")
     return Layer1DailyResult(
         run_id=config.run_id,
         manifest_key=manifest_key,

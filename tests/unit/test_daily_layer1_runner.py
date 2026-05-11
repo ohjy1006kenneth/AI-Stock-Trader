@@ -512,7 +512,7 @@ def test_run_daily_layer1_marks_stale_sibling_manifests_in_report_and_metadata(
 
     assert manifest.status is RunStatus.COMPLETED
     assert manifest.metadata["stale_manifest_keys"] == [stale_key]
-    assert manifest.metadata["supersedes_manifest_keys"] == [stale_key]
+    assert "supersedes_manifest_keys" not in manifest.metadata
     assert stale_key in manifest.metadata["related_manifest_keys"]
     assert report_payload["manifest_status"] == "completed"
     assert report_payload["stale_manifest_keys"] == [stale_key]
