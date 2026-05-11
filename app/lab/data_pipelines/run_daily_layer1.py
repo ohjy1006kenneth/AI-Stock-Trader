@@ -279,6 +279,11 @@ def run_daily_layer1(
     active_writer = writer or R2Writer()
     started_at = (now or datetime.now(UTC)).replace(microsecond=0)
     manifest_key = pipeline_manifest_path(LAYER1_DAILY_STAGE, config.run_id)
+    report_path: Path | None = None
+    report: Layer1ValidationReport | None = None
+    tickers_processed = 0
+    history_files_written = 0
+    feature_rows_written = 0
     processed_dates = _business_dates(config.from_date, config.to_date)
     metadata: dict[str, object] = {
         "from_date": config.from_date,
@@ -323,6 +328,7 @@ def run_daily_layer1(
             requested_tickers=config.tickers,
         )
         scope_tickers = _scope_tickers(universe_by_date)
+        tickers_processed = len(scope_tickers)
         metadata["scope_tickers"] = scope_tickers
         _require_upstream_archives(
             active_writer,
@@ -367,29 +373,19 @@ def run_daily_layer1(
             regime_results=regime_results,
         )
 
-        report = validate_layer1_archive(
+        preliminary_report = validate_layer1_archive(
             run_id=config.run_id,
             from_date=config.from_date,
             to_date=config.to_date,
             universe=universe_by_date,
             reader=active_writer,
             output_prefixes=build_layer1_output_prefixes(processed_dates),
+            inspect_related_manifests=True,
         )
-        if report.report_key is None:
-            raise ValueError("Layer 1 validation report_key was not populated")
-        report_key = report.report_key
-        report_path = write_validation_report(
-            report,
-            validation_output_dir if validation_output_dir is not None else DEFAULT_REPORT_DIR,
-        )
-        active_writer.put_object(report_key, render_validation_report(report))
         metadata.update(
             {
                 "history_files_written": history_files_written,
                 "feature_rows_written": feature_rows_written,
-                "validation_report_path": str(report_path),
-                "validation_report_key": report_key,
-                "ready_for_layer2": report.ready_for_layer2,
                 "news_output_keys": {
                     date_text: result.output_key for date_text, result in news_results.items()
                 },
@@ -406,15 +402,56 @@ def run_daily_layer1(
                 },
             }
         )
-        if not report.ready_for_layer2:
-            raise Layer1ValidationError(report, report_path)
-
         finished_at = (now or datetime.now(UTC)).replace(microsecond=0)
+        final_status = (
+            RunStatus.COMPLETED if preliminary_report.ready_for_layer2 else RunStatus.FAILED
+        )
         _write_manifest(
             writer=active_writer,
             key=manifest_key,
             config=config,
-            status=RunStatus.COMPLETED,
+            status=final_status,
+            started_at=started_at,
+            finished_at=finished_at,
+            metadata=metadata,
+        )
+        report, report_path = _write_terminal_validation_report(
+            writer=active_writer,
+            config=config,
+            processed_dates=processed_dates,
+            universe_by_date=universe_by_date,
+            validation_output_dir=validation_output_dir,
+            require_completed_manifest=final_status is RunStatus.COMPLETED,
+        )
+        if report.report_key is None:
+            raise ValueError("Layer 1 validation report_key was not populated")
+        metadata.update(
+            {
+                "validation_report_path": str(report_path),
+                "validation_report_key": report.report_key,
+                "validation_status": report.validation_status,
+                "manifest_status": report.manifest_status,
+                "ready_for_layer2": report.ready_for_layer2,
+                "stale_manifest_keys": report.stale_manifest_keys,
+                "supersedes_manifest_keys": report.stale_manifest_keys,
+                "related_manifest_keys": [
+                    str(entry["key"])
+                    for entry in report.related_manifests
+                    if "key" in entry
+                ],
+            }
+        )
+        if not report.ready_for_layer2:
+            metadata["error"] = {
+                "type": Layer1ValidationError.__name__,
+                "message": "Layer 1 validation failed: ready_for_layer2 is false",
+                "validation_report_key": report.report_key,
+            }
+        _write_manifest(
+            writer=active_writer,
+            key=manifest_key,
+            config=config,
+            status=final_status,
             started_at=started_at,
             finished_at=finished_at,
             metadata=metadata,
@@ -423,19 +460,8 @@ def run_daily_layer1(
             "Layer 1 orchestration complete run_id={} dates={} tickers={} ready_for_layer2={}",
             config.run_id,
             len(processed_dates),
-            len(scope_tickers),
+            tickers_processed,
             report.ready_for_layer2,
-        )
-        return Layer1DailyResult(
-            run_id=config.run_id,
-            manifest_key=manifest_key,
-            validation_report_path=report_path,
-            validation_report_key=report_key,
-            processed_dates=processed_dates,
-            tickers_processed=len(scope_tickers),
-            history_files_written=history_files_written,
-            feature_rows_written=feature_rows_written,
-            ready_for_layer2=report.ready_for_layer2,
         )
     except Exception as exc:
         metadata["error"] = {"type": type(exc).__name__, "message": str(exc)}
@@ -451,6 +477,23 @@ def run_daily_layer1(
         )
         logger.exception("Layer 1 orchestration failed run_id={}", config.run_id)
         raise
+    if report is None or report_path is None:
+        raise RuntimeError("Layer 1 validation report was not written")
+    if not report.ready_for_layer2:
+        raise Layer1ValidationError(report, report_path)
+    if report.report_key is None:
+        raise ValueError("Layer 1 validation report_key was not populated")
+    return Layer1DailyResult(
+        run_id=config.run_id,
+        manifest_key=manifest_key,
+        validation_report_path=report_path,
+        validation_report_key=report.report_key,
+        processed_dates=processed_dates,
+        tickers_processed=tickers_processed,
+        history_files_written=history_files_written,
+        feature_rows_written=feature_rows_written,
+        ready_for_layer2=report.ready_for_layer2,
+    )
 
 
 def load_modal_runtime_config(path: Path = MODAL_CONFIG_PATH) -> ModalRuntimeConfig:
@@ -868,6 +911,36 @@ def _scope_tickers(universe_by_date: Mapping[str, Sequence[str]]) -> list[str]:
     """Return the sorted union ticker scope implied by the universe mapping."""
     tickers = {ticker for tickers in universe_by_date.values() for ticker in tickers}
     return sorted(tickers)
+
+
+def _write_terminal_validation_report(
+    *,
+    writer: ObjectStore,
+    config: Layer1DailyConfig,
+    processed_dates: Sequence[str],
+    universe_by_date: Mapping[str, Sequence[str]],
+    validation_output_dir: Path | None,
+    require_completed_manifest: bool,
+) -> tuple[Layer1ValidationReport, Path]:
+    """Write the final readiness report after the Layer 1 manifest reaches terminal state."""
+    report = validate_layer1_archive(
+        run_id=config.run_id,
+        from_date=config.from_date,
+        to_date=config.to_date,
+        universe=universe_by_date,
+        reader=writer,
+        output_prefixes=build_layer1_output_prefixes(processed_dates),
+        require_completed_manifest=require_completed_manifest,
+        inspect_related_manifests=not require_completed_manifest,
+    )
+    if report.report_key is None:
+        raise ValueError("Layer 1 validation report_key was not populated")
+    report_path = write_validation_report(
+        report,
+        validation_output_dir if validation_output_dir is not None else DEFAULT_REPORT_DIR,
+    )
+    writer.put_object(report.report_key, render_validation_report(report))
+    return report, report_path
 
 
 def _expected_dates_by_ticker(

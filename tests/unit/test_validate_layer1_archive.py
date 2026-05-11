@@ -442,7 +442,7 @@ def test_write_validation_report_writes_json(tmp_path: Path) -> None:
 
     path = write_validation_report(report, tmp_path)
 
-    assert path.name == "layer1_archive_validation_2024-01-02_to_2024-01-02.json"
+    assert path.name == "layer1_archive_validation_layer1_2024-01-02_to_2024-01-02.json"
     payload = json.loads(path.read_text(encoding="utf-8"))
     assert payload["validation_status"] == "failed"
     assert payload["ready_for_layer2"] is False

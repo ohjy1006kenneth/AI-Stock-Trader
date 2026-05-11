@@ -116,6 +116,16 @@ HOME=/home/juyoungoh ./.venv/bin/modal run app/lab/data_pipelines/run_daily_laye
     --allow-layer0-manifest-date-range
 ```
 
+Generate the final operator-facing readiness report for the same run/window:
+
+```bash
+HOME=/home/juyoungoh ./.venv/bin/python app/lab/data_pipelines/validate_layer1_archive.py \
+    --run-id layer1-readiness-2026-04-10-v7 \
+    --from-date 2026-04-10 \
+    --to-date 2026-04-10 \
+    --use-r2-universe
+```
+
 Inspect R2 outputs via:
 - `artifacts/manifests/layer1_news_preprocessing/{run_id}-{date}.json`
 - `artifacts/manifests/layer1_text_topics/{run_id}-{date}.json`
@@ -125,6 +135,13 @@ Inspect R2 outputs via:
 - `artifacts/reports/integration/layer1_archive_validation_{run_id}_{from}_to_{to}.json`
 - `features/layer1/`, `features/layer1/news_sentiment/`, `features/layer1/topic_features/`,
   `features/layer1/sentiment_features/`, and `features/layer1_5/regime/`
+
+Operational notes for the readiness report:
+- The local validator writes
+  `artifacts/reports/integration/layer1_archive_validation_{run_id}_{from}_to_{to}.json`.
+- The report records the authoritative manifest key/status plus sibling stale `running`
+  manifests so operators can distinguish the successful run from interrupted attempts such as
+  `...-v4` or `...-v6`.
 
 Baseline paper execution is long-only equities. Hedge and long-short capabilities must stay
 disabled by policy until the relevant risk and execution gates are implemented:

@@ -4,7 +4,7 @@ Mirrors the Layer 0 validator: confirms that every ticker in the declared
 universe has a per-ticker feature history at `features/layer1/{ticker}.parquet`,
 then checks that each file contains the expected universe dates. It emits a
 JSON report under
-`artifacts/reports/integration/layer1_archive_validation_{from}_to_{to}.json`.
+`artifacts/reports/integration/layer1_archive_validation_{run_id}_{from}_to_{to}.json`.
 Daily Layer 1 orchestration also uploads the rendered JSON to the durable R2 key
 `artifacts/reports/integration/layer1_archive_validation_{run_id}_{from}_to_{to}.json`.
 
@@ -389,7 +389,10 @@ def write_validation_report(
 
 def validation_report_filename(report: Layer1ValidationReport) -> str:
     """Return the deterministic local filename for a Layer 1 validation report."""
-    return f"layer1_archive_validation_{report.from_date}_to_{report.to_date}.json"
+    return (
+        f"layer1_archive_validation_{report.run_id}_{report.from_date}"
+        f"_to_{report.to_date}.json"
+    )
 
 
 def render_validation_report(report: Layer1ValidationReport) -> str:
