@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -92,6 +93,17 @@ def test_run_daily_layer1_happy_path_writes_history_and_completed_manifest(
         manifest.metadata["validation_report_key"]
         == layer1_validation_report_path("layer1-daily", "2024-01-03", "2024-01-04")
     )
+    report_payload = json.loads(writer.get_object(result.validation_report_key).decode("utf-8"))
+    assert report_payload["manifest_status"] == "completed"
+    assert report_payload["ready_for_layer2"] is True
+    assert report_payload["related_manifests"] == [
+        {
+            "key": result.manifest_key,
+            "run_id": "layer1-daily",
+            "status": "completed",
+            "finished_at": "2024-01-05T12:00:00Z",
+        }
+    ]
 
 
 def test_run_daily_layer1_prefers_topic_sentence_count_when_sentiment_conflicts(
@@ -454,6 +466,57 @@ def test_run_daily_layer1_reuses_completed_branch_outputs_when_precomputed(
     assert history[0].features["nlp_topic_count"] == 1
     assert history[0].features["nlp_sentiment_score"] == pytest.approx(0.25)
     assert history[0].features["regime_label"] == "bull"
+
+
+def test_run_daily_layer1_marks_stale_sibling_manifests_in_report_and_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Final readiness artifacts call out interrupted sibling runs without deleting them."""
+    writer = local_writer(tmp_path, monkeypatch)
+    seed_layer0_archives(
+        writer,
+        dates=["2024-01-03"],
+        tickers=["AAPL"],
+        layer0_run_ids=("layer1-readiness-2024-01-03-v7",),
+    )
+    stale_key = pipeline_manifest_path("layer1", "layer1-readiness-2024-01-03-v4")
+    writer.put_object(
+        stale_key,
+        PipelineManifestRecord(
+            run_id="layer1-readiness-2024-01-03-v4",
+            stage=LAYER1_DAILY_STAGE,
+            status=RunStatus.RUNNING,
+            started_at=datetime(2024, 1, 3, 12, 0, tzinfo=UTC),
+            output_path="features/layer1/",
+        ).model_dump_json(),
+    )
+
+    result = run_daily_layer1(
+        Layer1DailyConfig(
+            run_id="layer1-readiness-2024-01-03-v7",
+            from_date="2024-01-03",
+            to_date="2024-01-03",
+        ),
+        writer=writer,
+        news_runner=fake_news_runner(writer, ["AAPL"]),
+        text_topic_runner=fake_topic_runner(writer, ["AAPL"]),
+        finbert_runner=fake_sentiment_runner(writer, ["AAPL"]),
+        regime_runner=fake_regime_runner(writer),
+        validation_output_dir=tmp_path / "reports",
+        now=datetime(2024, 1, 5, 12, 0, tzinfo=UTC),
+    )
+
+    manifest = PipelineManifestRecord.model_validate_json(writer.get_object(result.manifest_key))
+    report_payload = json.loads(writer.get_object(result.validation_report_key).decode("utf-8"))
+
+    assert manifest.status is RunStatus.COMPLETED
+    assert manifest.metadata["stale_manifest_keys"] == [stale_key]
+    assert "supersedes_manifest_keys" not in manifest.metadata
+    assert stale_key in manifest.metadata["related_manifest_keys"]
+    assert report_payload["manifest_status"] == "completed"
+    assert report_payload["stale_manifest_keys"] == [stale_key]
+    assert report_payload["ready_for_layer2"] is True
 
 
 def test_main_returns_nonzero_when_validation_is_not_ready(
