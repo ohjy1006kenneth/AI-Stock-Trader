@@ -9,10 +9,10 @@ import json
 import os
 import sys
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from datetime import date as Date
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Protocol
 
 from loguru import logger
@@ -62,6 +62,7 @@ from app.lab.data_pipelines.run_text_topics import (  # noqa: E402
 from app.lab.data_pipelines.validate_layer1_archive import (  # noqa: E402
     DEFAULT_REPORT_DIR,
     Layer1ValidationReport,
+    build_layer1_output_prefixes,
     render_validation_report,
     validate_layer1_archive,
     write_validation_report,
@@ -97,15 +98,8 @@ from core.features.market_features import (  # noqa: E402
 )
 from core.features.regime_detection import regime_features_to_records  # noqa: E402
 from services.r2.paths import (  # noqa: E402
-    layer1_feature_path,
-    layer1_news_preprocessing_path,
-    layer1_regime_path,
     layer1_sentiment_feature_path,
-    layer1_sentiment_score_path,
-    layer1_text_embedding_path,
     layer1_ticker_history_path,
-    layer1_topic_feature_path,
-    layer1_topic_label_path,
     layer1_validation_report_path,
     pipeline_manifest_path,
     raw_fundamentals_path,
@@ -381,18 +375,9 @@ def run_daily_layer1(
             to_date=config.to_date,
             universe=universe_by_date,
             reader=active_writer,
-            output_prefixes=_output_prefixes_for_report(processed_dates),
+            output_prefixes=build_layer1_output_prefixes(processed_dates),
         )
-        report_key = layer1_validation_report_path(
-            config.run_id,
-            config.from_date,
-            config.to_date,
-        )
-        report = replace(
-            report,
-            manifest_key=manifest_key,
-            report_key=report_key,
-        )
+        report_key = layer1_validation_report_path(config.run_id, config.from_date, config.to_date)
         report_path = write_validation_report(
             report,
             validation_output_dir if validation_output_dir is not None else DEFAULT_REPORT_DIR,
@@ -934,52 +919,6 @@ def _read_parquet_frame(payload: bytes):
 def _stage_run_id(run_id: str, date_text: str) -> str:
     """Return a deterministic per-date branch run identifier."""
     return f"{run_id}-{date_text}"
-
-
-def _output_prefixes_for_report(processed_dates: Sequence[str]) -> dict[str, str]:
-    """Return deterministic R2 prefixes relevant to one Layer 1 readiness report."""
-    latest_date = processed_dates[-1] if processed_dates else ""
-    prefix_date = latest_date or "2000-01-01"
-    prefixes = {
-        "layer1_history": _prefix_for_key(layer1_ticker_history_path("<TICKER>")),
-        "layer1_daily_shards": _prefix_for_key(layer1_feature_path(prefix_date, "<TICKER>")),
-        "news_sentiment": _prefix_for_key(
-            layer1_news_preprocessing_path(prefix_date, "<RUN_ID>")
-        ),
-        "text_embeddings": _prefix_for_key(layer1_text_embedding_path(prefix_date, "<RUN_ID>")),
-        "topic_labels": _prefix_for_key(layer1_topic_label_path(prefix_date, "<RUN_ID>")),
-        "topic_features": _prefix_for_key(layer1_topic_feature_path(prefix_date, "<RUN_ID>")),
-        "sentiment_scores": _prefix_for_key(
-            layer1_sentiment_score_path(prefix_date, "<RUN_ID>")
-        ),
-        "sentiment_features": _prefix_for_key(
-            layer1_sentiment_feature_path(prefix_date, "<RUN_ID>")
-        ),
-        "regime_outputs": _prefix_for_key(layer1_regime_path("<RUN_ID>")),
-        "layer1_manifests": _prefix_for_key(
-            pipeline_manifest_path(LAYER1_DAILY_STAGE, "<RUN_ID>")
-        ),
-        "news_manifests": _prefix_for_key(
-            pipeline_manifest_path(NLP_PREPROCESSING_STAGE, "<RUN_ID>")
-        ),
-        "topic_manifests": _prefix_for_key(
-            pipeline_manifest_path(TEXT_TOPICS_STAGE, "<RUN_ID>")
-        ),
-        "sentiment_manifests": _prefix_for_key(
-            pipeline_manifest_path(FINBERT_SENTIMENT_STAGE, "<RUN_ID>")
-        ),
-        "regime_manifests": _prefix_for_key(
-            pipeline_manifest_path(REGIME_STAGE, "<RUN_ID>")
-        ),
-    }
-    if latest_date:
-        prefixes["latest_processed_date"] = latest_date
-    return prefixes
-
-
-def _prefix_for_key(key: str) -> str:
-    """Return one trailing-slash prefix derived from a canonical R2 object key."""
-    return f"{PurePosixPath(key).parent.as_posix()}/"
 
 
 def _single_as_of_date(config: Layer1DailyConfig) -> str | None:
