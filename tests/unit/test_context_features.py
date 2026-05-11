@@ -11,7 +11,7 @@ from core.features.context_features import (
     context_features_to_records,
 )
 from core.features.fundamentals_features import FUNDAMENTAL_FEATURE_COLUMNS
-from core.features.macro_features import MACRO_FEATURE_COLUMNS
+from core.features.macro_features import MACRO_FEATURE_COLUMNS, compute_macro_features
 
 
 def _fundamentals_row(
@@ -150,6 +150,54 @@ def test_compute_context_features_handles_nan_macro_values() -> None:
     features = compute_context_features(fundamentals, ohlcv, macro, "AAPL")
 
     assert pd.isna(features.loc[0, "treasury_10y"])
+
+
+def test_compute_context_features_reuses_precomputed_macro_features(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Precomputed macro frames skip per-ticker macro recomputation."""
+    fundamentals = pd.DataFrame(
+        [_fundamentals_row(availability_date="2024-05-03", earnings_date="2024-05-10")]
+    )
+    ohlcv = _ohlcv_frame(["2024-05-03", "2024-05-06", "2024-05-13"])
+    macro = pd.DataFrame(
+        [
+            _macro_row(
+                series_id="DGS10",
+                observation_date="2024-05-03",
+                realtime_start="2024-05-03",
+                value=4.5,
+            ),
+            _macro_row(
+                series_id="DGS2",
+                observation_date="2024-05-03",
+                realtime_start="2024-05-03",
+                value=4.2,
+            ),
+        ]
+    )
+    precomputed = compute_macro_features(macro, ["2024-05-06", "2024-05-13"])
+
+    def _unexpected_macro_recompute(*args, **kwargs):
+        raise AssertionError("compute_macro_features should not run when macro_features is passed")
+
+    monkeypatch.setattr(
+        "core.features.context_features.compute_macro_features",
+        _unexpected_macro_recompute,
+    )
+
+    features = compute_context_features(
+        fundamentals,
+        ohlcv,
+        macro,
+        "AAPL",
+        macro_features=precomputed,
+        target_dates=["2024-05-06", "2024-05-13"],
+    )
+
+    assert features["date"].tolist() == ["2024-05-06", "2024-05-13"]
+    assert features.loc[0, "treasury_10y"] == pytest.approx(4.5)
+    assert features.loc[0, "yield_curve_slope_10y_2y"] == pytest.approx(0.3)
 
 
 def test_context_features_to_records_converts_nan_to_none() -> None:

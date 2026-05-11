@@ -10,12 +10,13 @@ import pytest
 from app.lab.data_pipelines.validate_layer1_archive import (
     Layer1ValidationReport,
     load_universe_mapping,
+    render_validation_report,
     validate_layer1_archive,
     write_validation_report,
 )
 from core.contracts.schemas import FeatureRecord
 from core.features.io import feature_records_to_parquet_bytes
-from services.r2.paths import layer1_ticker_history_path
+from services.r2.paths import layer1_ticker_history_path, layer1_validation_report_path
 
 
 class _Reader:
@@ -212,6 +213,7 @@ def test_write_validation_report_writes_json(tmp_path: Path) -> None:
         run_id="layer1",
         from_date="2024-01-02",
         to_date="2024-01-02",
+        validation_status="failed",
         expected_ticker_files=1,
         present_ticker_files=0,
         expected_rows=1,
@@ -226,8 +228,36 @@ def test_write_validation_report_writes_json(tmp_path: Path) -> None:
 
     assert path.name == "layer1_archive_validation_2024-01-02_to_2024-01-02.json"
     payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["validation_status"] == "failed"
     assert payload["ready_for_layer2"] is False
     assert payload["missing_ticker_files"] == [layer1_ticker_history_path("AAPL")]
+
+
+def test_render_validation_report_preserves_manifest_and_report_keys() -> None:
+    """Rendered validation JSON includes manifest/report linkage for durable storage."""
+    report = Layer1ValidationReport(
+        run_id="layer1",
+        from_date="2024-01-02",
+        to_date="2024-01-02",
+        validation_status="completed",
+        expected_ticker_files=1,
+        present_ticker_files=1,
+        expected_rows=1,
+        present_rows=1,
+        schema_failures=0,
+        row_count_failures=0,
+        manifest_key="artifacts/manifests/layer1/layer1.json",
+        report_key=layer1_validation_report_path("layer1", "2024-01-02", "2024-01-02"),
+        ready_for_layer2=True,
+    )
+
+    payload = json.loads(render_validation_report(report))
+
+    assert payload["manifest_key"] == "artifacts/manifests/layer1/layer1.json"
+    assert payload["report_key"] == layer1_validation_report_path(
+        "layer1", "2024-01-02", "2024-01-02"
+    )
+    assert payload["validation_status"] == "completed"
 
 
 def test_load_universe_mapping_normalizes_tickers(tmp_path: Path) -> None:

@@ -116,3 +116,19 @@ def test_fit_hmm_regime_model_rejects_missing_training_columns() -> None:
 
     with pytest.raises(ValueError, match="spy_log_return_1d"):
         fit_hmm_regime_model(training, train_end_date="2024-12-31")
+
+
+def test_fit_hmm_regime_model_drops_all_nan_features_in_train_window() -> None:
+    """The fitter ignores features that are entirely unavailable in the bounded window."""
+    training = _synthetic_training_frame()
+    training["high_yield_spread"] = float("nan")
+    train_end_date = str(training.loc[100, "date"])
+
+    model = fit_hmm_regime_model(
+        training,
+        train_end_date=train_end_date,
+        config=HMMRegimeConfig(min_training_rows=90, max_iterations=20),
+    )
+
+    assert "high_yield_spread" not in model.feature_columns
+    assert "spy_log_return_1d" in model.feature_columns

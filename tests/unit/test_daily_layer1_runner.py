@@ -24,8 +24,8 @@ from app.lab.data_pipelines.run_news_preprocessing import NLP_PREPROCESSING_STAG
 from app.lab.data_pipelines.run_text_topics import TEXT_TOPICS_STAGE
 from app.lab.data_pipelines.validate_layer1_archive import Layer1ValidationReport
 from core.contracts.schemas import PipelineManifestRecord, RunStatus
-from core.features.io import read_feature_records
-from services.r2.paths import pipeline_manifest_path
+from core.features.io import feature_records_to_parquet_bytes, read_feature_records
+from services.r2.paths import layer1_validation_report_path, pipeline_manifest_path
 from services.r2.writer import R2Writer
 from tests.fixtures.layer1_support import (
     fake_news_runner,
@@ -77,10 +77,129 @@ def test_run_daily_layer1_happy_path_writes_history_and_completed_manifest(
     assert history[0].features["nlp_sentiment_score"] == pytest.approx(0.25)
     assert history[0].features["regime_label"] == "bull"
     assert writer.exists("features/layer1/2024-01-03/AAPL.parquet") is True
+    assert writer.exists(
+        layer1_validation_report_path("layer1-daily", "2024-01-03", "2024-01-04")
+    ) is True
     assert manifest.stage == LAYER1_DAILY_STAGE
     assert manifest.status is RunStatus.COMPLETED
     assert manifest.metadata["ready_for_layer2"] is True
     assert Path(str(manifest.metadata["validation_report_path"])).exists()
+    assert (
+        manifest.metadata["validation_report_key"]
+        == layer1_validation_report_path("layer1-daily", "2024-01-03", "2024-01-04")
+    )
+
+
+def test_run_daily_layer1_prefers_topic_sentence_count_when_sentiment_conflicts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Layer 1 assembly keeps the topic-owned sentence count when sentiment disagrees."""
+    writer = local_writer(tmp_path, monkeypatch)
+    seed_layer0_archives(
+        writer,
+        dates=["2024-01-03"],
+        tickers=["AAPL"],
+        layer0_run_ids=("layer1-conflicting-sentences",),
+    )
+
+    def conflicting_sentiment_runner(config, *, writer: R2Writer):
+        output_key = daily_layer1_module.layer1_sentiment_feature_path(
+            config.as_of_date,
+            config.run_id,
+        )
+        records = [
+            daily_layer1_module.FeatureRecord(
+                date=config.as_of_date,
+                ticker="AAPL",
+                features={
+                    "nlp_sentiment_score": 0.25,
+                    "nlp_article_count": 1,
+                    "nlp_sentence_count": 3,
+                },
+            )
+        ]
+        writer.put_object(output_key, feature_records_to_parquet_bytes(records))
+        return daily_layer1_module.FinBERTPipelineResult(
+            run_id=config.run_id,
+            scored_news_key="unused",
+            sentiment_feature_key=output_key,
+            manifest_key=pipeline_manifest_path("layer1_finbert_sentiment", config.run_id),
+            input_rows=3,
+            scored_rows=3,
+            feature_rows=1,
+        )
+
+    result = run_daily_layer1(
+        Layer1DailyConfig(
+            run_id="layer1-conflicting-sentences",
+            from_date="2024-01-03",
+            to_date="2024-01-03",
+        ),
+        writer=writer,
+        news_runner=fake_news_runner(writer, ["AAPL"]),
+        text_topic_runner=fake_topic_runner(writer, ["AAPL"]),
+        finbert_runner=conflicting_sentiment_runner,
+        regime_runner=fake_regime_runner(writer),
+        validation_output_dir=tmp_path / "reports",
+        now=datetime(2024, 1, 4, 12, 0, tzinfo=UTC),
+    )
+
+    history = read_feature_records("AAPL", writer=writer)
+
+    assert result.ready_for_layer2 is True
+    assert history[0].features["nlp_sentence_count"] == 1
+    assert history[0].features["nlp_sentiment_score"] == pytest.approx(0.25)
+
+
+def test_run_daily_layer1_computes_shared_macro_features_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Daily assembly reuses one market-wide macro frame across all tickers."""
+    writer = local_writer(tmp_path, monkeypatch)
+    seed_layer0_archives(
+        writer,
+        dates=["2024-01-01", "2024-01-02", "2024-01-03"],
+        tickers=["AAPL", "MSFT"],
+        layer0_run_ids=("layer1-shared-macro",),
+    )
+    original_compute_macro_features = daily_layer1_module.compute_macro_features
+    call_count = 0
+    target_dates_arg: list[str] = []
+
+    def counting_compute_macro_features(macro, target_dates):
+        nonlocal call_count
+        call_count += 1
+        target_dates_arg[:] = [str(value) for value in target_dates]
+        return original_compute_macro_features(macro, target_dates)
+
+    monkeypatch.setattr(
+        daily_layer1_module,
+        "compute_macro_features",
+        counting_compute_macro_features,
+    )
+
+    result = run_daily_layer1(
+        Layer1DailyConfig(
+            run_id="layer1-shared-macro",
+            from_date="2024-01-03",
+            to_date="2024-01-03",
+            allow_layer0_manifest_date_range=True,
+        ),
+        writer=writer,
+        news_runner=fake_news_runner(writer, ["AAPL", "MSFT"]),
+        text_topic_runner=fake_topic_runner(writer, ["AAPL", "MSFT"]),
+        finbert_runner=fake_sentiment_runner(writer, ["AAPL", "MSFT"]),
+        regime_runner=fake_regime_runner(writer),
+        validation_output_dir=tmp_path / "reports",
+        now=datetime(2024, 1, 4, 12, 0, tzinfo=UTC),
+    )
+
+    assert result.ready_for_layer2 is True
+    assert call_count == 1
+    assert "2024-01-03" in target_dates_arg
+    assert len(target_dates_arg) > 1
 
 
 def test_run_daily_layer1_single_date_manifest_contains_modal_wait_metadata(
@@ -115,6 +234,9 @@ def test_run_daily_layer1_single_date_manifest_contains_modal_wait_metadata(
 
     assert manifest.metadata["as_of_date"] == "2024-01-03"
     assert manifest.metadata["layer0_run_id"] == "layer1-single-day"
+    assert result.validation_report_key == layer1_validation_report_path(
+        "layer1-single-day", "2024-01-03", "2024-01-03"
+    )
 
 
 def test_run_daily_layer1_fails_closed_when_layer0_manifest_is_missing(
@@ -342,6 +464,7 @@ def test_main_returns_nonzero_when_validation_is_not_ready(
         run_id="layer1-cli-fail",
         from_date="2024-01-03",
         to_date="2024-01-03",
+        validation_status="failed",
         expected_ticker_files=1,
         present_ticker_files=0,
         expected_rows=1,

@@ -122,6 +122,7 @@ Inspect R2 outputs via:
 - `artifacts/manifests/layer1_finbert_sentiment/{run_id}-{date}.json`
 - `artifacts/manifests/layer1_5_regime/{run_id}-{date}.json`
 - `artifacts/manifests/layer1/{run_id}.json`
+- `artifacts/reports/integration/layer1_archive_validation_{run_id}_{from}_to_{to}.json`
 - `features/layer1/`, `features/layer1/news_sentiment/`, `features/layer1/topic_features/`,
   `features/layer1/sentiment_features/`, and `features/layer1_5/regime/`
 

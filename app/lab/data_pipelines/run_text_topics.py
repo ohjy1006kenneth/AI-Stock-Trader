@@ -48,6 +48,7 @@ from services.r2.writer import R2Writer  # noqa: E402
 
 TEXT_TOPICS_STAGE = "layer1_text_topics"
 TEXT_MODEL_CONFIG_PATH = _REPO_ROOT / "config" / "text_models.json"
+MODAL_REPO_ROOT = "/workspace/AI-Stock-Trader"
 
 
 class ObjectStore(Protocol):
@@ -384,6 +385,34 @@ def modal_main(run_id: str, as_of_date: str, preprocessed_news_key: str) -> None
     )
 
 
+def _modal_run_text_topics_entry(
+    run_id: str,
+    as_of_date: str,
+    preprocessed_news_key: str,
+) -> dict[str, object]:
+    """Run text embeddings and BERTopic labels on Modal."""
+    runtime = load_text_model_runtime_config()
+    result = run_text_topics(
+        TextTopicPipelineConfig(
+            run_id=run_id,
+            as_of_date=as_of_date,
+            preprocessed_news_key=preprocessed_news_key,
+        ),
+        runtime_config=runtime,
+    )
+    return {
+        "run_id": result.run_id,
+        "embedding_key": result.embedding_key,
+        "topic_label_key": result.topic_label_key,
+        "topic_feature_key": result.topic_feature_key,
+        "manifest_key": result.manifest_key,
+        "sentence_rows": result.sentence_rows,
+        "embedding_rows": result.embedding_rows,
+        "topic_label_rows": result.topic_label_rows,
+        "topic_feature_rows": result.topic_feature_rows,
+    }
+
+
 def _define_modal_app() -> object | None:
     """Create the Modal app when the modal package is installed."""
     try:
@@ -392,46 +421,45 @@ def _define_modal_app() -> object | None:
         return None
 
     runtime = load_text_model_runtime_config()
-    image = modal.Image.debian_slim(
-        python_version=runtime.python_version
-    ).pip_install_from_requirements(runtime.requirements_path)
+    image = _build_modal_image(modal, runtime)
     app = modal.App(runtime.app_name)
 
-    @app.function(
+    modal_run_text_topics = app.function(
         image=image,
         secrets=[modal.Secret.from_name(runtime.r2_secret_name)],
         timeout=runtime.timeout_seconds,
-        serialized=True,
-    )
-    def modal_run_text_topics(
-        run_id: str,
-        as_of_date: str,
-        preprocessed_news_key: str,
-    ) -> dict[str, object]:
-        """Run text embeddings and BERTopic labels on Modal."""
-        result = run_text_topics(
-            TextTopicPipelineConfig(
-                run_id=run_id,
-                as_of_date=as_of_date,
-                preprocessed_news_key=preprocessed_news_key,
-            ),
-            runtime_config=runtime,
-        )
-        return {
-            "run_id": result.run_id,
-            "embedding_key": result.embedding_key,
-            "topic_label_key": result.topic_label_key,
-            "topic_feature_key": result.topic_feature_key,
-            "manifest_key": result.manifest_key,
-            "sentence_rows": result.sentence_rows,
-            "embedding_rows": result.embedding_rows,
-            "topic_label_rows": result.topic_label_rows,
-            "topic_feature_rows": result.topic_feature_rows,
-        }
+    )(_modal_run_text_topics_entry)
 
     app.local_entrypoint()(modal_main)
     globals()["modal_run_text_topics"] = modal_run_text_topics
     return app
+
+
+def _build_modal_image(modal_module: object, runtime: TextModelRuntimeConfig):
+    """Build the Modal image while preserving local `-r base.txt` includes."""
+    requirements_path = Path(runtime.requirements_path)
+    requirements_dir = requirements_path.parent
+    remote_requirements_path = f"{MODAL_REPO_ROOT}/{requirements_path.as_posix()}"
+    return (
+        modal_module.Image.debian_slim(python_version=runtime.python_version)
+        .add_local_dir(_REPO_ROOT / "app", f"{MODAL_REPO_ROOT}/app", copy=True)
+        .add_local_dir(_REPO_ROOT / "core", f"{MODAL_REPO_ROOT}/core", copy=True)
+        .add_local_dir(_REPO_ROOT / "services", f"{MODAL_REPO_ROOT}/services", copy=True)
+        .add_local_dir(_REPO_ROOT / "config", f"{MODAL_REPO_ROOT}/config", copy=True)
+        .add_local_dir(
+            _REPO_ROOT / requirements_dir,
+            f"{MODAL_REPO_ROOT}/{requirements_dir.as_posix()}",
+            copy=True,
+        )
+        .env(
+            {
+                "AI_STOCK_TRADER_REPO_ROOT": MODAL_REPO_ROOT,
+                "PYTHONPATH": MODAL_REPO_ROOT,
+            }
+        )
+        .workdir(MODAL_REPO_ROOT)
+        .run_commands(f"python -m pip install -r {remote_requirements_path}")
+    )
 
 
 app = _define_modal_app()

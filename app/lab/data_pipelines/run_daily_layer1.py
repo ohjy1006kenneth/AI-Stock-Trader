@@ -9,7 +9,7 @@ import json
 import os
 import sys
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from datetime import date as Date
 from pathlib import Path, PurePosixPath
@@ -62,6 +62,7 @@ from app.lab.data_pipelines.run_text_topics import (  # noqa: E402
 from app.lab.data_pipelines.validate_layer1_archive import (  # noqa: E402
     DEFAULT_REPORT_DIR,
     Layer1ValidationReport,
+    render_validation_report,
     validate_layer1_archive,
     write_validation_report,
 )
@@ -89,6 +90,7 @@ from core.features.loaders import (  # noqa: E402
     load_macro_frame,
     load_ohlcv_frame,
 )
+from core.features.macro_features import compute_macro_features  # noqa: E402
 from core.features.market_features import (  # noqa: E402
     compute_market_features,
     market_features_to_records,
@@ -104,6 +106,7 @@ from services.r2.paths import (  # noqa: E402
     layer1_ticker_history_path,
     layer1_topic_feature_path,
     layer1_topic_label_path,
+    layer1_validation_report_path,
     pipeline_manifest_path,
     raw_fundamentals_path,
     raw_macro_path,
@@ -237,6 +240,7 @@ class Layer1DailyResult:
     run_id: str
     manifest_key: str
     validation_report_path: Path
+    validation_report_key: str
     processed_dates: tuple[str, ...]
     tickers_processed: int
     history_files_written: int
@@ -379,15 +383,27 @@ def run_daily_layer1(
             reader=active_writer,
             output_prefixes=_output_prefixes_for_report(processed_dates),
         )
+        report_key = layer1_validation_report_path(
+            config.run_id,
+            config.from_date,
+            config.to_date,
+        )
+        report = replace(
+            report,
+            manifest_key=manifest_key,
+            report_key=report_key,
+        )
         report_path = write_validation_report(
             report,
             validation_output_dir if validation_output_dir is not None else DEFAULT_REPORT_DIR,
         )
+        active_writer.put_object(report_key, render_validation_report(report))
         metadata.update(
             {
                 "history_files_written": history_files_written,
                 "feature_rows_written": feature_rows_written,
                 "validation_report_path": str(report_path),
+                "validation_report_key": report_key,
                 "ready_for_layer2": report.ready_for_layer2,
                 "news_output_keys": {
                     date_text: result.output_key for date_text, result in news_results.items()
@@ -429,6 +445,7 @@ def run_daily_layer1(
             run_id=config.run_id,
             manifest_key=manifest_key,
             validation_report_path=report_path,
+            validation_report_key=report_key,
             processed_dates=processed_dates,
             tickers_processed=len(scope_tickers),
             history_files_written=history_files_written,
@@ -570,16 +587,22 @@ def _assemble_and_write_histories(
     target_dates_by_ticker = _expected_dates_by_ticker(universe_by_date)
     benchmark_bars = load_ohlcv_frame(benchmark_ticker, writer=writer)  # type: ignore[arg-type]
     macro = load_macro_frame(writer=writer)  # type: ignore[arg-type]
+    shared_macro_features = compute_macro_features(
+        macro,
+        benchmark_bars["date"].tolist(),
+    )
     topic_records = _load_feature_records_by_key(
         writer,
         {date_text: result.topic_feature_key for date_text, result in topic_results.items()},
     )
-    sentiment_records = _load_feature_records_by_key(
-        writer,
-        {
-            date_text: result.sentiment_feature_key
-            for date_text, result in sentiment_results.items()
-        },
+    sentiment_records = _assembly_safe_sentiment_records(
+        _load_feature_records_by_key(
+            writer,
+            {
+                date_text: result.sentiment_feature_key
+                for date_text, result in sentiment_results.items()
+            },
+        )
     )
     regime_records = _load_regime_records_by_key(
         writer,
@@ -604,6 +627,8 @@ def _assemble_and_write_histories(
                     ohlcv=ohlcv,
                     macro=macro,
                     ticker=ticker,
+                    macro_features=shared_macro_features,
+                    target_dates=target_dates,
                 )
             ),
             target_dates,
@@ -674,6 +699,27 @@ def _load_feature_records_by_key(
         for record in parquet_bytes_to_feature_records(writer.get_object(key)):
             grouped.setdefault(record.ticker, []).append(record)
     return grouped
+
+
+def _assembly_safe_sentiment_records(
+    grouped_records: Mapping[str, Sequence[FeatureRecord]],
+) -> dict[str, list[FeatureRecord]]:
+    """Drop duplicate sentiment keys that are already owned by the topic branch."""
+    cleaned: dict[str, list[FeatureRecord]] = {}
+    for ticker, records in grouped_records.items():
+        cleaned[ticker] = [
+            FeatureRecord(
+                date=record.date,
+                ticker=record.ticker,
+                features={
+                    key: value
+                    for key, value in record.features.items()
+                    if key != "nlp_sentence_count"
+                },
+            )
+            for record in records
+        ]
+    return cleaned
 
 
 def _load_regime_records_by_key(
@@ -1072,7 +1118,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     logger.info(
         "Layer 1 orchestration manifest={} validation_report={}",
         result.manifest_key,
-        result.validation_report_path,
+        result.validation_report_key,
     )
     return 0 if result.ready_for_layer2 else 1
 
@@ -1103,14 +1149,17 @@ def modal_main(
         min_sentence_chars=min_sentence_chars,
     )
     preprocessed_news_key = _require_result_key(news_result, "output_key")
-    topic_call = _modal_stage_remote(text_topics_module, "modal_run_text_topics").spawn(
+    # Keep stage dispatch synchronous here. In production readiness runs, `.spawn()`
+    # against imported stage apps can leave the daily manifest stuck in `running`
+    # without ever producing downstream stage manifests.
+    topic_result = _modal_stage_remote(text_topics_module, "modal_run_text_topics").remote(
         run_id=stage_run_id,
         as_of_date=as_of_date,
         preprocessed_news_key=preprocessed_news_key,
     )
-    sentiment_call = _modal_stage_remote(
+    sentiment_result = _modal_stage_remote(
         finbert_module, "modal_run_finbert_sentiment"
-    ).spawn(
+    ).remote(
         run_id=stage_run_id,
         as_of_date=as_of_date,
         preprocessed_news_key=preprocessed_news_key,
@@ -1119,13 +1168,11 @@ def modal_main(
         run_id=stage_run_id,
         train_start_date=hmm_train_start_date,
         train_end_date=_previous_business_day(as_of_date),
-        inference_dates=[as_of_date],
+        inference_dates=as_of_date,
         benchmark_ticker=benchmark_ticker.strip().upper(),
         max_iterations=hmm_max_iterations,
         min_training_rows=hmm_min_training_rows,
     )
-    topic_result = topic_call.get()
-    sentiment_result = sentiment_call.get()
     _modal_run_daily_layer1.remote(
         run_id=run_id,
         as_of_date=as_of_date,

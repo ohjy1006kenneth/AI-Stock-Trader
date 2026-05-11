@@ -45,6 +45,7 @@ from services.r2.writer import R2Writer  # noqa: E402
 
 MODAL_CONFIG_PATH = _REPO_ROOT / "config" / "modal.json"
 REGIME_STAGE = "layer1_5_regime"
+MODAL_REPO_ROOT = "/workspace/AI-Stock-Trader"
 
 
 class ObjectStore(Protocol):
@@ -318,11 +319,45 @@ def modal_main(
         run_id=run_id,
         train_start_date=train_start_date,
         train_end_date=train_end_date,
-        inference_dates=parsed_inference_dates,
+        inference_dates=",".join(parsed_inference_dates),
         benchmark_ticker=benchmark_ticker.strip().upper(),
         max_iterations=max_iterations,
         min_training_rows=min_training_rows,
     )
+
+
+def _modal_run_hmm_regime_detection_entry(
+    run_id: str,
+    train_end_date: str,
+    inference_dates: str = "",
+    train_start_date: str | None = None,
+    benchmark_ticker: str = "SPY",
+    max_iterations: int = 100,
+    min_training_rows: int = 30,
+) -> dict[str, object]:
+    """Run Layer 1.5 HMM regime detection on Modal."""
+    parsed_inference_dates = tuple(
+        item.strip() for item in inference_dates.split(",") if item.strip()
+    )
+    result = run_hmm_regime_detection(
+        HMMRegimePipelineConfig(
+            run_id=run_id,
+            train_start_date=train_start_date,
+            train_end_date=train_end_date,
+            inference_dates=parsed_inference_dates,
+            benchmark_ticker=benchmark_ticker.strip().upper(),
+            max_iterations=max_iterations,
+            min_training_rows=min_training_rows,
+        )
+    )
+    return {
+        "run_id": result.run_id,
+        "output_key": result.output_key,
+        "manifest_key": result.manifest_key,
+        "training_rows": result.training_rows,
+        "complete_training_rows": result.complete_training_rows,
+        "regime_rows": result.regime_rows,
+    }
 
 
 def _define_modal_app() -> object | None:
@@ -333,50 +368,45 @@ def _define_modal_app() -> object | None:
         return None
 
     runtime = load_modal_runtime_config()
-    image = modal.Image.debian_slim(
-        python_version=runtime.python_version
-    ).pip_install_from_requirements(runtime.requirements_path)
+    image = _build_modal_image(modal, runtime)
     app = modal.App(runtime.hmm_regime_app_name)
 
-    @app.function(
+    modal_run_hmm_regime_detection = app.function(
         image=image,
         secrets=[modal.Secret.from_name(runtime.r2_secret_name)],
         timeout=runtime.timeout_seconds,
-        serialized=True,
-    )
-    def modal_run_hmm_regime_detection(
-        run_id: str,
-        train_end_date: str,
-        inference_dates: list[str],
-        train_start_date: str | None = None,
-        benchmark_ticker: str = "SPY",
-        max_iterations: int = 100,
-        min_training_rows: int = 30,
-    ) -> dict[str, object]:
-        """Run Layer 1.5 HMM regime detection on Modal."""
-        result = run_hmm_regime_detection(
-            HMMRegimePipelineConfig(
-                run_id=run_id,
-                train_start_date=train_start_date,
-                train_end_date=train_end_date,
-                inference_dates=tuple(inference_dates),
-                benchmark_ticker=benchmark_ticker.strip().upper(),
-                max_iterations=max_iterations,
-                min_training_rows=min_training_rows,
-            )
-        )
-        return {
-            "run_id": result.run_id,
-            "output_key": result.output_key,
-            "manifest_key": result.manifest_key,
-            "training_rows": result.training_rows,
-            "complete_training_rows": result.complete_training_rows,
-            "regime_rows": result.regime_rows,
-        }
+    )(_modal_run_hmm_regime_detection_entry)
 
     app.local_entrypoint()(modal_main)
     globals()["modal_run_hmm_regime_detection"] = modal_run_hmm_regime_detection
     return app
+
+
+def _build_modal_image(modal_module: object, runtime: ModalRuntimeConfig):
+    """Build the Modal image while preserving local `-r base.txt` includes."""
+    requirements_path = Path(runtime.requirements_path)
+    requirements_dir = requirements_path.parent
+    remote_requirements_path = f"{MODAL_REPO_ROOT}/{requirements_path.as_posix()}"
+    return (
+        modal_module.Image.debian_slim(python_version=runtime.python_version)
+        .add_local_dir(_REPO_ROOT / "app", f"{MODAL_REPO_ROOT}/app", copy=True)
+        .add_local_dir(_REPO_ROOT / "core", f"{MODAL_REPO_ROOT}/core", copy=True)
+        .add_local_dir(_REPO_ROOT / "services", f"{MODAL_REPO_ROOT}/services", copy=True)
+        .add_local_dir(_REPO_ROOT / "config", f"{MODAL_REPO_ROOT}/config", copy=True)
+        .add_local_dir(
+            _REPO_ROOT / requirements_dir,
+            f"{MODAL_REPO_ROOT}/{requirements_dir.as_posix()}",
+            copy=True,
+        )
+        .env(
+            {
+                "AI_STOCK_TRADER_REPO_ROOT": MODAL_REPO_ROOT,
+                "PYTHONPATH": MODAL_REPO_ROOT,
+            }
+        )
+        .workdir(MODAL_REPO_ROOT)
+        .run_commands(f"python -m pip install -r {remote_requirements_path}")
+    )
 
 
 app = _define_modal_app()

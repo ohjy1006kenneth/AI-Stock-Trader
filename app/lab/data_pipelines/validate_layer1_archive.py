@@ -5,6 +5,8 @@ universe has a per-ticker feature history at `features/layer1/{ticker}.parquet`,
 then checks that each file contains the expected universe dates. It emits a
 JSON report under
 `artifacts/reports/integration/layer1_archive_validation_{from}_to_{to}.json`.
+Daily Layer 1 orchestration also uploads the rendered JSON to the durable R2 key
+`artifacts/reports/integration/layer1_archive_validation_{run_id}_{from}_to_{to}.json`.
 
 The validator does not re-run feature computation. It only checks history-file
 presence, row coverage, and basic schema integrity. `ready_for_layer2` flips to
@@ -71,12 +73,15 @@ class Layer1ValidationReport:
     run_id: str
     from_date: str
     to_date: str
+    validation_status: str
     expected_ticker_files: int
     present_ticker_files: int
     expected_rows: int
     present_rows: int
     schema_failures: int
     row_count_failures: int
+    manifest_key: str | None = None
+    report_key: str | None = None
     missing_ticker_files: list[str] = field(default_factory=list)
     schema_failure_keys: list[str] = field(default_factory=list)
     row_count_failure_keys: list[str] = field(default_factory=list)
@@ -249,6 +254,7 @@ def validate_layer1_archive(
         run_id=run_id,
         from_date=from_date,
         to_date=to_date,
+        validation_status="completed" if ready else "failed",
         expected_ticker_files=expected_files,
         present_ticker_files=present_files,
         expected_rows=expected_rows,
@@ -280,12 +286,20 @@ def write_validation_report(
     """Persist the validation report as deterministic JSON and return its path."""
     target_dir = output_dir if output_dir is not None else DEFAULT_REPORT_DIR
     target_dir.mkdir(parents=True, exist_ok=True)
-    filename = (
-        f"layer1_archive_validation_{report.from_date}_to_{report.to_date}.json"
-    )
+    filename = validation_report_filename(report)
     path = target_dir / filename
-    path.write_text(json.dumps(report.to_dict(), indent=2, sort_keys=True), encoding="utf-8")
+    path.write_text(render_validation_report(report), encoding="utf-8")
     return path
+
+
+def validation_report_filename(report: Layer1ValidationReport) -> str:
+    """Return the deterministic local filename for a Layer 1 validation report."""
+    return f"layer1_archive_validation_{report.from_date}_to_{report.to_date}.json"
+
+
+def render_validation_report(report: Layer1ValidationReport) -> str:
+    """Render one validation report to deterministic JSON text."""
+    return json.dumps(report.to_dict(), indent=2, sort_keys=True)
 
 
 def load_universe_mapping(path: Path) -> dict[str, list[str]]:
