@@ -7,6 +7,7 @@ their own point-in-time guards; this module only aligns them on date/ticker.
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 from core.contracts.schemas import FeatureRecord
@@ -30,6 +31,9 @@ def compute_context_features(
     ohlcv: pd.DataFrame,
     macro: pd.DataFrame,
     ticker: str,
+    *,
+    macro_features: pd.DataFrame | None = None,
+    target_dates: Sequence[str] | None = None,
 ) -> pd.DataFrame:
     """Return aligned fundamentals, earnings-calendar, macro, and rates features.
 
@@ -39,6 +43,12 @@ def compute_context_features(
             the emitted context feature dates.
         macro: Concatenated Layer 0 FRED macro/rates archive rows.
         ticker: Ticker symbol stamped on every output row.
+        macro_features: Optional precomputed market-wide macro frame for the
+            requested target dates. When provided, this function reuses it
+            instead of recomputing identical macro values per ticker.
+        target_dates: Optional subset of dates to emit from the ticker's
+            trading calendar. Defaults to every date produced by the
+            fundamentals feature computation.
 
     Returns:
         DataFrame with columns (`date`, `ticker`, *CONTEXT_FEATURE_COLUMNS*).
@@ -49,11 +59,24 @@ def compute_context_features(
         ohlcv=ohlcv,
         ticker=ticker,
     )
-    macro_features = compute_macro_features(macro, fundamental_features["date"].tolist())
+    if target_dates is not None:
+        requested_dates = {str(value) for value in target_dates}
+        fundamental_features = fundamental_features[
+            fundamental_features["date"].isin(requested_dates)
+        ].reset_index(drop=True)
+
+    active_macro_features = (
+        macro_features
+        if macro_features is not None
+        else compute_macro_features(
+            macro,
+            target_dates if target_dates is not None else fundamental_features["date"].tolist(),
+        )
+    )
     if len(fundamental_features) == 0:
         return _empty_context_frame(fundamental_features)
 
-    context = fundamental_features.merge(macro_features, on="date", how="left")
+    context = fundamental_features.merge(active_macro_features, on="date", how="left")
     return context[["date", "ticker", *CONTEXT_FEATURE_COLUMNS]]
 
 

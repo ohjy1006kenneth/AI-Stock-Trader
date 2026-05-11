@@ -9,8 +9,7 @@ import json
 import os
 import sys
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from datetime import date as Date
 from pathlib import Path, PurePosixPath
@@ -63,8 +62,8 @@ from app.lab.data_pipelines.run_text_topics import (  # noqa: E402
 from app.lab.data_pipelines.validate_layer1_archive import (  # noqa: E402
     DEFAULT_REPORT_DIR,
     Layer1ValidationReport,
-    validate_layer1_archive,
     render_validation_report,
+    validate_layer1_archive,
     write_validation_report,
 )
 from core.contracts.schemas import (  # noqa: E402
@@ -91,6 +90,7 @@ from core.features.loaders import (  # noqa: E402
     load_macro_frame,
     load_ohlcv_frame,
 )
+from core.features.macro_features import compute_macro_features  # noqa: E402
 from core.features.market_features import (  # noqa: E402
     compute_market_features,
     market_features_to_records,
@@ -587,6 +587,10 @@ def _assemble_and_write_histories(
     target_dates_by_ticker = _expected_dates_by_ticker(universe_by_date)
     benchmark_bars = load_ohlcv_frame(benchmark_ticker, writer=writer)  # type: ignore[arg-type]
     macro = load_macro_frame(writer=writer)  # type: ignore[arg-type]
+    shared_macro_features = compute_macro_features(
+        macro,
+        benchmark_bars["date"].tolist(),
+    )
     topic_records = _load_feature_records_by_key(
         writer,
         {date_text: result.topic_feature_key for date_text, result in topic_results.items()},
@@ -623,6 +627,8 @@ def _assemble_and_write_histories(
                     ohlcv=ohlcv,
                     macro=macro,
                     ticker=ticker,
+                    macro_features=shared_macro_features,
+                    target_dates=target_dates,
                 )
             ),
             target_dates,

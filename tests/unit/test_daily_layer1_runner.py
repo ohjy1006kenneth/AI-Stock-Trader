@@ -152,6 +152,56 @@ def test_run_daily_layer1_prefers_topic_sentence_count_when_sentiment_conflicts(
     assert history[0].features["nlp_sentiment_score"] == pytest.approx(0.25)
 
 
+def test_run_daily_layer1_computes_shared_macro_features_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Daily assembly reuses one market-wide macro frame across all tickers."""
+    writer = local_writer(tmp_path, monkeypatch)
+    seed_layer0_archives(
+        writer,
+        dates=["2024-01-01", "2024-01-02", "2024-01-03"],
+        tickers=["AAPL", "MSFT"],
+        layer0_run_ids=("layer1-shared-macro",),
+    )
+    original_compute_macro_features = daily_layer1_module.compute_macro_features
+    call_count = 0
+    target_dates_arg: list[str] = []
+
+    def counting_compute_macro_features(macro, target_dates):
+        nonlocal call_count
+        call_count += 1
+        target_dates_arg[:] = [str(value) for value in target_dates]
+        return original_compute_macro_features(macro, target_dates)
+
+    monkeypatch.setattr(
+        daily_layer1_module,
+        "compute_macro_features",
+        counting_compute_macro_features,
+    )
+
+    result = run_daily_layer1(
+        Layer1DailyConfig(
+            run_id="layer1-shared-macro",
+            from_date="2024-01-03",
+            to_date="2024-01-03",
+            allow_layer0_manifest_date_range=True,
+        ),
+        writer=writer,
+        news_runner=fake_news_runner(writer, ["AAPL", "MSFT"]),
+        text_topic_runner=fake_topic_runner(writer, ["AAPL", "MSFT"]),
+        finbert_runner=fake_sentiment_runner(writer, ["AAPL", "MSFT"]),
+        regime_runner=fake_regime_runner(writer),
+        validation_output_dir=tmp_path / "reports",
+        now=datetime(2024, 1, 4, 12, 0, tzinfo=UTC),
+    )
+
+    assert result.ready_for_layer2 is True
+    assert call_count == 1
+    assert "2024-01-03" in target_dates_arg
+    assert len(target_dates_arg) > 1
+
+
 def test_run_daily_layer1_single_date_manifest_contains_modal_wait_metadata(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
