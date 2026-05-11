@@ -591,12 +591,14 @@ def _assemble_and_write_histories(
         writer,
         {date_text: result.topic_feature_key for date_text, result in topic_results.items()},
     )
-    sentiment_records = _load_feature_records_by_key(
-        writer,
-        {
-            date_text: result.sentiment_feature_key
-            for date_text, result in sentiment_results.items()
-        },
+    sentiment_records = _assembly_safe_sentiment_records(
+        _load_feature_records_by_key(
+            writer,
+            {
+                date_text: result.sentiment_feature_key
+                for date_text, result in sentiment_results.items()
+            },
+        )
     )
     regime_records = _load_regime_records_by_key(
         writer,
@@ -691,6 +693,27 @@ def _load_feature_records_by_key(
         for record in parquet_bytes_to_feature_records(writer.get_object(key)):
             grouped.setdefault(record.ticker, []).append(record)
     return grouped
+
+
+def _assembly_safe_sentiment_records(
+    grouped_records: Mapping[str, Sequence[FeatureRecord]],
+) -> dict[str, list[FeatureRecord]]:
+    """Drop duplicate sentiment keys that are already owned by the topic branch."""
+    cleaned: dict[str, list[FeatureRecord]] = {}
+    for ticker, records in grouped_records.items():
+        cleaned[ticker] = [
+            FeatureRecord(
+                date=record.date,
+                ticker=record.ticker,
+                features={
+                    key: value
+                    for key, value in record.features.items()
+                    if key != "nlp_sentence_count"
+                },
+            )
+            for record in records
+        ]
+    return cleaned
 
 
 def _load_regime_records_by_key(
@@ -1120,14 +1143,17 @@ def modal_main(
         min_sentence_chars=min_sentence_chars,
     )
     preprocessed_news_key = _require_result_key(news_result, "output_key")
-    topic_call = _modal_stage_remote(text_topics_module, "modal_run_text_topics").spawn(
+    # Keep stage dispatch synchronous here. In production readiness runs, `.spawn()`
+    # against imported stage apps can leave the daily manifest stuck in `running`
+    # without ever producing downstream stage manifests.
+    topic_result = _modal_stage_remote(text_topics_module, "modal_run_text_topics").remote(
         run_id=stage_run_id,
         as_of_date=as_of_date,
         preprocessed_news_key=preprocessed_news_key,
     )
-    sentiment_call = _modal_stage_remote(
+    sentiment_result = _modal_stage_remote(
         finbert_module, "modal_run_finbert_sentiment"
-    ).spawn(
+    ).remote(
         run_id=stage_run_id,
         as_of_date=as_of_date,
         preprocessed_news_key=preprocessed_news_key,
@@ -1141,8 +1167,6 @@ def modal_main(
         max_iterations=hmm_max_iterations,
         min_training_rows=hmm_min_training_rows,
     )
-    topic_result = topic_call.get()
-    sentiment_result = sentiment_call.get()
     _modal_run_daily_layer1.remote(
         run_id=run_id,
         as_of_date=as_of_date,

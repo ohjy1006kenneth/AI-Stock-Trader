@@ -81,8 +81,17 @@ def fit_hmm_regime_model(
     np = _require_numpy()
     active_config = config or HMMRegimeConfig()
     _validate_training_frame(training_frame, feature_columns)
+    active_feature_columns = _active_feature_columns(
+        training_frame,
+        feature_columns=feature_columns,
+        train_start_date=train_start_date,
+        train_end_date=train_end_date,
+    )
+    if not active_feature_columns:
+        raise ValueError("HMM training window has no usable feature columns")
     train_rows = _bounded_complete_rows(
         training_frame,
+        feature_columns=active_feature_columns,
         train_start_date=train_start_date,
         train_end_date=train_end_date,
     )
@@ -92,12 +101,12 @@ def fit_hmm_regime_model(
             f"{len(train_rows)} < {active_config.min_training_rows}"
         )
 
-    raw_matrix = train_rows.loc[:, list(feature_columns)].astype(float).to_numpy()
+    raw_matrix = train_rows.loc[:, list(active_feature_columns)].astype(float).to_numpy()
     normalized_matrix, center, scale = _standardize(raw_matrix, np)
     parameters = _fit_gaussian_hmm(normalized_matrix, active_config, np)
-    labels = _semantic_labels(parameters["means"], feature_columns)
+    labels = _semantic_labels(parameters["means"], active_feature_columns)
     return HMMRegimeModel(
-        feature_columns=feature_columns,
+        feature_columns=active_feature_columns,
         train_start_date=str(train_rows.iloc[0]["date"]),
         train_end_date=train_end_date,
         center=center,
@@ -443,15 +452,50 @@ def _semantic_labels(means: np.ndarray, feature_columns: tuple[str, ...]) -> tup
 def _bounded_complete_rows(
     training_frame: pd.DataFrame,
     *,
+    feature_columns: tuple[str, ...],
     train_start_date: str | None,
     train_end_date: str,
 ) -> pd.DataFrame:
     """Return complete training rows inside an explicit date window."""
-    rows = training_frame[training_frame["is_complete"].astype(bool)].copy()
+    rows = training_frame.copy()
     if train_start_date is not None:
         rows = rows[rows["date"] >= train_start_date]
     rows = rows[rows["date"] < train_end_date]
+    rows = rows[_complete_row_mask(rows, feature_columns)]
     return rows.sort_values("date").reset_index(drop=True)
+
+
+def _active_feature_columns(
+    training_frame: pd.DataFrame,
+    *,
+    feature_columns: tuple[str, ...],
+    train_start_date: str | None,
+    train_end_date: str,
+) -> tuple[str, ...]:
+    """Return feature columns with at least one usable value inside the train window."""
+    rows = training_frame.copy()
+    if train_start_date is not None:
+        rows = rows[rows["date"] >= train_start_date]
+    rows = rows[rows["date"] < train_end_date]
+    active: list[str] = []
+    for column in feature_columns:
+        if column in rows and _series_has_finite_value(rows[column]):
+            active.append(column)
+    return tuple(active)
+
+
+def _complete_row_mask(frame: pd.DataFrame, feature_columns: tuple[str, ...]):
+    """Return True for rows where every requested feature is finite."""
+    pd = _require_pandas()
+    numeric = frame.loc[:, list(feature_columns)].apply(pd.to_numeric, errors="coerce")
+    return numeric.notna().all(axis=1)
+
+
+def _series_has_finite_value(series) -> bool:
+    """Return True when a feature column has at least one finite value."""
+    pd = _require_pandas()
+    numeric = pd.to_numeric(series, errors="coerce")
+    return bool(numeric.notna().any())
 
 
 def _inference_rows(

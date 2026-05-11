@@ -344,18 +344,10 @@ def test_daily_layer1_modal_main_orchestrates_stage_apps_before_final_assembly(
         def __init__(self, payload: dict[str, object]) -> None:
             self.payload = payload
             self.remote_calls: list[dict[str, object]] = []
-            self.spawn_calls: list[dict[str, object]] = []
-            self.spawn_handles: list[_FakeFunctionCall] = []
 
         def remote(self, **kwargs: object) -> dict[str, object]:
             self.remote_calls.append(kwargs)
             return dict(self.payload)
-
-        def spawn(self, **kwargs: object) -> _FakeFunctionCall:
-            self.spawn_calls.append(kwargs)
-            handle = _FakeFunctionCall(dict(self.payload))
-            self.spawn_handles.append(handle)
-            return handle
 
     final_remote = _FakeRegisteredFunction(name="modal_run_daily_layer1", options={})
     news_remote = _FakeStageRemote(
@@ -416,22 +408,20 @@ def test_daily_layer1_modal_main_orchestrates_stage_apps_before_final_assembly(
             "min_sentence_chars": 5,
         }
     ]
-    assert topics_remote.spawn_calls == [
+    assert topics_remote.remote_calls == [
         {
             "run_id": "smoke-daily-2024-01-02",
             "as_of_date": "2024-01-02",
             "preprocessed_news_key": "features/layer1/news_sentiment/2024-01-02/smoke.parquet",
         }
     ]
-    assert finbert_remote.spawn_calls == [
+    assert finbert_remote.remote_calls == [
         {
             "run_id": "smoke-daily-2024-01-02",
             "as_of_date": "2024-01-02",
             "preprocessed_news_key": "features/layer1/news_sentiment/2024-01-02/smoke.parquet",
         }
     ]
-    assert topics_remote.spawn_handles[0].get_calls == 1
-    assert finbert_remote.spawn_handles[0].get_calls == 1
     assert regime_remote.remote_calls == [
         {
             "run_id": "smoke-daily-2024-01-02",
