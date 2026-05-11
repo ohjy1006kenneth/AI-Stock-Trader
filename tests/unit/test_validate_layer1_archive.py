@@ -41,6 +41,24 @@ class _Reader:
         return sorted(key for key in self.objects if key.startswith(prefix))
 
 
+class _NoManifestInspectionReader(_Reader):
+    """Reader that fails if manifest listing is attempted unexpectedly."""
+
+    def list_keys(self, prefix: str) -> list[str]:
+        if prefix == "artifacts/manifests/layer1/":
+            raise AssertionError("manifest inspection should be opt-in")
+        return super().list_keys(prefix)
+
+
+class _ManifestRaceReader(_Reader):
+    """Reader that simulates a manifest disappearing after list_keys returns it."""
+
+    def get_object(self, key: str) -> bytes:
+        if key == pipeline_manifest_path("layer1", "layer1-readiness-2024-01-02-v9"):
+            raise FileNotFoundError(key)
+        return super().get_object(key)
+
+
 def _history_bytes(ticker: str, dates: list[str]) -> bytes:
     """Return a valid Layer 1 feature-history payload for one ticker."""
     records = [
@@ -112,6 +130,8 @@ def test_validate_layer1_archive_marks_ready_when_every_history_present() -> Non
     assert report.present_rows == 3
     assert report.missing_ticker_files == []
     assert report.schema_failures == 0
+    assert report.related_manifests == []
+    assert report.manifest_errors == []
 
 
 def test_validate_layer1_archive_reports_missing_histories() -> None:
@@ -241,6 +261,25 @@ def test_validate_layer1_archive_samples_daily_shards_deterministically() -> Non
     assert first_sample == second_sample
 
 
+def test_validate_layer1_archive_skips_manifest_inspection_by_default() -> None:
+    """Daily orchestration does not inspect sibling manifests unless opted in."""
+    reader = _NoManifestInspectionReader(
+        {layer1_ticker_history_path("AAPL"): _history_bytes("AAPL", ["2024-01-02"])}
+    )
+
+    report = validate_layer1_archive(
+        run_id="layer1-2024-01-02",
+        from_date="2024-01-02",
+        to_date="2024-01-02",
+        universe={"2024-01-02": ["AAPL"]},
+        reader=reader,
+    )
+
+    assert report.ready_for_layer2 is True
+    assert report.related_manifests == []
+    assert report.manifest_errors == []
+
+
 def test_validate_layer1_archive_requires_completed_manifest_when_requested() -> None:
     """Standalone readiness validation fails closed when the exact manifest is still running."""
     reader = _Reader(
@@ -284,6 +323,72 @@ def test_validate_layer1_archive_requires_completed_manifest_when_requested() ->
         },
     ]
     assert report.stale_manifest_keys == []
+
+
+def test_validate_layer1_archive_reports_missing_exact_manifest_when_absent() -> None:
+    """Required manifest validation fails closed when only sibling manifests exist."""
+    reader = _Reader(
+        {
+            layer1_ticker_history_path("AAPL"): _history_bytes("AAPL", ["2024-01-02"]),
+            pipeline_manifest_path("layer1", "layer1-readiness-2024-01-02-v2"): _manifest_bytes(
+                "layer1-readiness-2024-01-02-v2",
+                RunStatus.COMPLETED,
+            ),
+        }
+    )
+
+    report = validate_layer1_archive(
+        run_id="layer1-readiness-2024-01-02-v1",
+        from_date="2024-01-02",
+        to_date="2024-01-02",
+        universe={"2024-01-02": ["AAPL"]},
+        reader=reader,
+        require_completed_manifest=True,
+    )
+
+    assert report.ready_for_layer2 is False
+    assert report.manifest_status is None
+    assert report.manifest_errors == ["missing_exact_manifest"]
+    assert report.related_manifests == [
+        {
+            "key": pipeline_manifest_path("layer1", "layer1-readiness-2024-01-02-v2"),
+            "run_id": "layer1-readiness-2024-01-02-v2",
+            "status": "completed",
+            "finished_at": "2024-01-05T12:30:00Z",
+        }
+    ]
+
+
+def test_validate_layer1_archive_records_manifest_read_race_instead_of_crashing() -> None:
+    """Manifest read races are reported as validation errors instead of exceptions."""
+    key = pipeline_manifest_path("layer1", "layer1-readiness-2024-01-02-v9")
+    reader = _ManifestRaceReader(
+        {
+            layer1_ticker_history_path("AAPL"): _history_bytes("AAPL", ["2024-01-02"]),
+            key: _manifest_bytes("layer1-readiness-2024-01-02-v9", RunStatus.COMPLETED),
+        }
+    )
+
+    report = validate_layer1_archive(
+        run_id="layer1-readiness-2024-01-02-v9",
+        from_date="2024-01-02",
+        to_date="2024-01-02",
+        universe={"2024-01-02": ["AAPL"]},
+        reader=reader,
+        require_completed_manifest=True,
+    )
+
+    assert report.ready_for_layer2 is False
+    assert report.manifest_errors == ["exact_manifest_missing_during_read"]
+    assert report.related_manifests == [
+        {
+            "key": key,
+            "run_id": "layer1-readiness-2024-01-02-v9",
+            "status": "missing",
+            "finished_at": None,
+            "error": key,
+        }
+    ]
 
 
 def test_validate_layer1_archive_documents_sibling_running_manifests() -> None:

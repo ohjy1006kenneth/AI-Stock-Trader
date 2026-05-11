@@ -131,6 +131,7 @@ def validate_layer1_archive(
     reader: ArchiveReader,
     output_prefixes: Mapping[str, str] | None = None,
     require_completed_manifest: bool = False,
+    inspect_related_manifests: bool = False,
 ) -> Layer1ValidationReport:
     """Validate that every ticker in `universe` has a complete feature history.
 
@@ -141,6 +142,10 @@ def validate_layer1_archive(
         universe: Mapping of `date` (YYYY-MM-DD) to the list of tickers expected
             to have a Layer 1 shard on that date.
         reader: Object store providing `exists`/`get_object`/`list_keys`.
+        require_completed_manifest: Fail closed if the exact Layer 1 manifest is
+            absent or not completed.
+        inspect_related_manifests: Include exact/sibling manifest state in the
+            report without requiring a completed exact manifest.
 
     Returns:
         Layer1ValidationReport.
@@ -272,11 +277,13 @@ def validate_layer1_archive(
     )
     if any(check["status"] == "fail" for check in leakage_spot_checks):
         ready = False
-    manifest_state = _inspect_layer1_manifests(
-        reader=reader,
-        run_id=run_id,
-        require_completed_manifest=require_completed_manifest,
-    )
+    manifest_state = _empty_manifest_inspection()
+    if require_completed_manifest or inspect_related_manifests:
+        manifest_state = _inspect_layer1_manifests(
+            reader=reader,
+            run_id=run_id,
+            require_completed_manifest=require_completed_manifest,
+        )
     if manifest_state.manifest_errors:
         ready = False
     return Layer1ValidationReport(
@@ -324,6 +331,17 @@ class ManifestInspectionResult:
     manifest_errors: list[str]
     related_manifests: list[dict[str, object]]
     stale_manifest_keys: list[str]
+
+
+def _empty_manifest_inspection() -> ManifestInspectionResult:
+    """Return the default manifest summary for validations that skip inspection."""
+    return ManifestInspectionResult(
+        manifest_status=None,
+        manifest_finished_at=None,
+        manifest_errors=[],
+        related_manifests=[],
+        stale_manifest_keys=[],
+    )
 
 
 def build_layer1_output_prefixes(processed_dates: Sequence[str]) -> dict[str, str]:
@@ -573,12 +591,41 @@ def _inspect_layer1_manifests(
     manifest_finished_at: str | None = None
     manifest_errors: list[str] = []
     family = _manifest_family(run_id)
+    exact_manifest_found = False
+    exact_manifest_loaded = False
 
     for key in _sorted_manifest_keys(reader.list_keys(LAYER1_MANIFEST_PREFIX)):
         related_run_id = _manifest_run_id_from_key(key)
         if not _same_manifest_family(run_id, related_run_id, family):
             continue
-        payload = reader.get_object(key).decode("utf-8")
+        if key == exact_key:
+            exact_manifest_found = True
+        if not reader.exists(key):
+            entry = {
+                "key": key,
+                "run_id": related_run_id,
+                "status": "missing",
+                "finished_at": None,
+                "error": "object_missing",
+            }
+            related_manifests.append(entry)
+            if key == exact_key:
+                manifest_errors.append("exact_manifest_missing_during_read")
+            continue
+        try:
+            payload = reader.get_object(key).decode("utf-8")
+        except (FileNotFoundError, KeyError) as exc:
+            entry = {
+                "key": key,
+                "run_id": related_run_id,
+                "status": "missing",
+                "finished_at": None,
+                "error": str(exc),
+            }
+            related_manifests.append(entry)
+            if key == exact_key:
+                manifest_errors.append("exact_manifest_missing_during_read")
+            continue
         try:
             manifest = json.loads(payload)
         except json.JSONDecodeError as exc:
@@ -604,6 +651,7 @@ def _inspect_layer1_manifests(
         }
         related_manifests.append(entry)
         if key == exact_key:
+            exact_manifest_loaded = True
             manifest_status = entry["status"]
             manifest_finished_at = entry["finished_at"]
 
@@ -612,11 +660,10 @@ def _inspect_layer1_manifests(
         for entry in related_manifests
         if entry.get("status") == "running" and entry.get("key") != exact_key
     ]
-    exact_manifest_present = any(entry.get("key") == exact_key for entry in related_manifests)
     if require_completed_manifest:
-        if not exact_manifest_present:
+        if not exact_manifest_found:
             manifest_errors.append("missing_exact_manifest")
-        elif manifest_status != "completed":
+        elif exact_manifest_loaded and manifest_status != "completed":
             manifest_errors.append(
                 f"exact_manifest_not_completed:{manifest_status or 'unknown'}"
             )
