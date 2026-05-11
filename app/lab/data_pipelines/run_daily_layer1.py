@@ -21,6 +21,7 @@ import app.lab.data_pipelines.run_finbert_sentiment as finbert_module
 import app.lab.data_pipelines.run_hmm_regime_detection as regime_module
 import app.lab.data_pipelines.run_news_preprocessing as news_module
 import app.lab.data_pipelines.run_text_topics as text_topics_module
+from services.r2 import paths as r2_paths
 
 
 def _resolve_repo_root() -> Path:
@@ -98,7 +99,6 @@ from core.features.market_features import (  # noqa: E402
 )
 from core.features.regime_detection import regime_features_to_records  # noqa: E402
 from services.r2.paths import (  # noqa: E402
-    layer1_sentiment_feature_path,
     layer1_ticker_history_path,
     layer1_validation_report_path,
     pipeline_manifest_path,
@@ -118,6 +118,9 @@ MODAL_REPO_ROOT = "/workspace/AI-Stock-Trader"
 # safety is enforced by the Layer 0 archive/manifest checks rather than these branch timestamps.
 SENTINEL_ASSEMBLY_AS_OF = datetime(1900, 1, 1, tzinfo=UTC)
 _modal_run_daily_layer1: ModalRemoteFunction | None = None
+
+# Preserve the historical module-level path alias used by tests and runner stubs.
+layer1_sentiment_feature_path = r2_paths.layer1_sentiment_feature_path
 
 
 class ObjectStore(Protocol):
