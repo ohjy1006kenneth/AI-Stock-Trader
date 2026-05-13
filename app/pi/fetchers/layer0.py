@@ -37,6 +37,7 @@ def run_layer0_incremental(
     *,
     as_of_date: date,
     tickers: Sequence[str],
+    benchmark_ticker: str = "SPY",
     series_ids: Sequence[str] | None = None,
     overwrite: bool = False,
     run_id: str | None = None,
@@ -52,6 +53,7 @@ def run_layer0_incremental(
     config = DailyLayer0Config(
         as_of_date=as_of_date,
         tickers=tickers,
+        benchmark_ticker=benchmark_ticker,
         fred_series_ids=series_ids or archive_config.series_ids,
         overwrite=overwrite,
         news_limit=news_limit,
@@ -81,6 +83,7 @@ def main() -> int:
     result = run_layer0_incremental(
         as_of_date=as_of_date,
         tickers=args.tickers,
+        benchmark_ticker=args.benchmark_ticker,
         series_ids=args.series_ids,
         overwrite=args.overwrite,
         run_id=args.run_id,
@@ -99,6 +102,14 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--config", default=str(DEFAULT_FRED_CONFIG_PATH))
     parser.add_argument("--as-of-date", required=True, metavar="YYYY-MM-DD")
     parser.add_argument("--tickers", nargs="+", required=True)
+    parser.add_argument(
+        "--benchmark-ticker",
+        default="SPY",
+        help=(
+            "Benchmark ticker whose raw price archive must also be refreshed for Layer 1 "
+            "(default: SPY)."
+        ),
+    )
     parser.add_argument("--series-ids", nargs="*", default=None)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--run-id", default=None)

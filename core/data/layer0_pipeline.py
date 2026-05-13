@@ -187,6 +187,7 @@ class HistoricalLayer0Config:
     from_date: date
     to_date: date
     tickers: Sequence[str] | None = None
+    benchmark_ticker: str = "SPY"
     fred_series_ids: Sequence[str] = ()
     simfin_statements: Sequence[str] = ("pl", "bs", "cf", "derived")
     simfin_periods: Sequence[str] = ("q1", "q2", "q3", "q4", "fy")
@@ -204,12 +205,15 @@ class HistoricalLayer0Config:
         _validate_positive_limit(self.news_limit, "news_limit")
         _validate_positive_limit(self.simfin_limit, "simfin_limit")
         _validate_positive_limit(self.fred_limit, "fred_limit")
+        if not self.benchmark_ticker.strip():
+            raise ValueError("benchmark_ticker cannot be empty")
         if not self.fred_series_ids:
             raise ValueError("fred_series_ids must contain at least one series")
         if not self.simfin_statements:
             raise ValueError("simfin_statements must contain at least one statement")
         if not self.simfin_periods:
             raise ValueError("simfin_periods must contain at least one period")
+        object.__setattr__(self, "benchmark_ticker", _canonicalize_ticker(self.benchmark_ticker))
 
 
 @dataclass(frozen=True)
@@ -219,6 +223,7 @@ class DailyLayer0Config:
     as_of_date: date
     tickers: Sequence[str]
     fred_series_ids: Sequence[str]
+    benchmark_ticker: str = "SPY"
     simfin_statements: Sequence[str] = ("pl", "bs", "cf", "derived")
     simfin_periods: Sequence[str] = ("q1", "q2", "q3", "q4", "fy")
     overwrite: bool = False
@@ -233,6 +238,8 @@ class DailyLayer0Config:
         """Validate daily ticker and vendor-fetch settings."""
         if not _normalize_tickers(self.tickers):
             raise ValueError("tickers must contain at least one ticker")
+        if not self.benchmark_ticker.strip():
+            raise ValueError("benchmark_ticker cannot be empty")
         if not self.fred_series_ids:
             raise ValueError("fred_series_ids must contain at least one series")
         if not self.simfin_statements:
@@ -242,6 +249,7 @@ class DailyLayer0Config:
         _validate_positive_limit(self.news_limit, "news_limit")
         _validate_positive_limit(self.simfin_limit, "simfin_limit")
         _validate_positive_limit(self.fred_limit, "fred_limit")
+        object.__setattr__(self, "benchmark_ticker", _canonicalize_ticker(self.benchmark_ticker))
 
 
 @dataclass(frozen=True)
@@ -292,7 +300,15 @@ def run_historical_layer0_backfill(
             config.to_date.isoformat(),
         )
         tickers = _resolve_backfill_tickers(config=config, universe_provider=universe_provider)
-        logger.info("Resolved {} tickers for backfill", len(tickers))
+        price_tickers = _scope_with_benchmark(
+            tickers=tickers,
+            benchmark_ticker=config.benchmark_ticker,
+        )
+        logger.info(
+            "Resolved {} universe tickers and {} price tickers for backfill",
+            len(tickers),
+            len(price_tickers),
+        )
         quality_window = _copy_ohlcv_window(config.quality_ohlcv_window)
 
         logger.info("Caching existence keys across R2 raw/ prefixes")
@@ -309,7 +325,7 @@ def run_historical_layer0_backfill(
         logger.info("Phase: prices")
         price_result = _backfill_historical_prices(
             config=config,
-            tickers=tickers,
+            tickers=price_tickers,
             price_fetcher=price_fetcher,
             security_master=security_master,
             writer=cached_writer,
@@ -452,6 +468,10 @@ def run_daily_layer0_incremental(
     started_at = datetime.now(UTC)
     as_of_date = config.as_of_date
     tickers = _normalize_tickers(config.tickers)
+    price_tickers = _scope_with_benchmark(
+        tickers=tickers,
+        benchmark_ticker=config.benchmark_ticker,
+    )
     output_keys: list[str] = []
     metadata: dict[str, object] = _base_metadata(
         mode="daily_incremental",
@@ -463,7 +483,7 @@ def run_daily_layer0_incremental(
     try:
         daily_records = _canonicalize_ohlcv_records(
             live_price_fetcher.fetch_live_daily_bars(
-                tickers=tickers,
+                tickers=price_tickers,
                 as_of_date=as_of_date.isoformat(),
             )
         )
@@ -480,9 +500,15 @@ def run_daily_layer0_incremental(
         quality_window = _copy_ohlcv_window(config.quality_ohlcv_window)
         _extend_quality_window_from_price_archives(
             writer=writer,
-            tickers=tickers,
+            tickers=price_tickers,
             deserializer=price_deserializer or _parquet_bytes_to_records,
             quality_window=quality_window,
+        )
+        _require_target_date_price_coverage(
+            as_of_date=as_of_date,
+            tickers=(config.benchmark_ticker,),
+            ohlcv_window=quality_window,
+            reason="benchmark_ticker",
         )
         universe_records = build_universe_mask_records(
             as_of_date=as_of_date,
@@ -612,6 +638,11 @@ def _resolve_backfill_tickers(
     if not tickers:
         raise ValueError("historical backfill ticker universe is empty")
     return list(tickers)
+
+
+def _scope_with_benchmark(*, tickers: Sequence[str], benchmark_ticker: str) -> list[str]:
+    """Return the price-fetch scope with the required Layer 1 benchmark included."""
+    return list(_normalize_tickers([*tickers, benchmark_ticker]))
 
 
 def _backfill_historical_prices(
@@ -1240,6 +1271,31 @@ def _require_price_coverage_for_eligible_universe(
         raise RuntimeError(
             "Layer 0 cannot mark the universe ready without raw target-date price coverage for: "
             + ", ".join(sorted(set(missing)))
+        )
+
+
+def _require_target_date_price_coverage(
+    *,
+    as_of_date: date,
+    tickers: Sequence[str],
+    ohlcv_window: Mapping[str, Sequence[OHLCVRecord]],
+    reason: str,
+) -> None:
+    """Require target-date coverage for explicitly required non-universe tickers."""
+    target_date = as_of_date.isoformat()
+    indexed_dates = {
+        _canonicalize_ticker(ticker): {record.date for record in rows}
+        for ticker, rows in ohlcv_window.items()
+    }
+    missing = [
+        ticker
+        for ticker in _normalize_tickers(tickers)
+        if target_date not in indexed_dates.get(_canonicalize_ticker(ticker), set())
+    ]
+    if missing:
+        raise RuntimeError(
+            f"Layer 0 missing raw target-date price coverage for {reason}: "
+            + ", ".join(missing)
         )
 
 
