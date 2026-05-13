@@ -154,6 +154,21 @@ deterministic Layer 0/1 branches from existing archives, validates the feature
 catalog, and writes a local JSON report plus text summary. See
 `docs/layer1_feature_audit.md` for interpretation details.
 
+For the read-only dashboard backend payload used by the Layer 0/1 audit UI, run:
+
+```bash
+./.venv/bin/python app/lab/data_pipelines/build_layer1_feature_audit_dashboard.py \
+    --from-date 2026-04-08 \
+    --to-date 2026-04-10 \
+    --tickers AAPL,MSFT \
+    --output-dir artifacts/reports/diagnostics
+```
+
+This command reads stored `features/layer1/{TICKER}.parquet` histories and writes
+local JSON/text report artifacts only. It does not modify R2 objects. See
+`docs/layer1_feature_audit_dashboard.md` for the heatmap, family-status,
+null-rate, and outlier payload details.
+
 Operational notes for the readiness report:
 - The local validator writes
   `artifacts/reports/integration/layer1_archive_validation_{run_id}_{from}_to_{to}.json`.

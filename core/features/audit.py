@@ -13,15 +13,20 @@ from pathlib import Path
 from typing import Any, Literal, Protocol
 
 from core.contracts.schemas import FeatureRecord, PipelineManifestRecord, RunStatus
+from core.features.catalog import (
+    FeatureRule,
+    feature_catalog,
+    to_float_or_none,
+    validate_feature_value,
+)
 from core.features.context_features import (
     CONTEXT_FEATURE_COLUMNS,
     compute_context_features,
     context_features_to_records,
 )
-from core.features.fundamentals_features import FUNDAMENTAL_FEATURE_COLUMNS
 from core.features.io import parquet_bytes_to_feature_records
 from core.features.loaders import load_fundamentals_frame, load_macro_frame, load_ohlcv_frame
-from core.features.macro_features import MACRO_FEATURE_COLUMNS, compute_macro_features
+from core.features.macro_features import compute_macro_features
 from core.features.market_features import (
     MARKET_FEATURE_COLUMNS,
     compute_market_features,
@@ -67,19 +72,6 @@ class AuditReader(Protocol):
 
     def list_keys(self, prefix: str) -> list[str]:
         """List keys beneath `prefix`."""
-
-
-@dataclass(frozen=True)
-class FeatureRule:
-    """Catalog rule for one named feature."""
-
-    owner: str
-    kind: Literal["number", "string", "boolean"]
-    required: bool
-    nullable: bool = True
-    minimum: float | None = None
-    maximum: float | None = None
-    allowed_values: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -374,165 +366,6 @@ def audit_layer1_features(
         },
         findings=[item.to_dict() for item in all_findings],
     )
-
-
-def feature_catalog() -> dict[str, FeatureRule]:
-    """Return the canonical Layer 1 feature catalog used by the audit."""
-    rules: dict[str, FeatureRule] = {}
-    for name in MARKET_FEATURE_COLUMNS:
-        rules[name] = FeatureRule(owner="market", kind="number", required=True)
-    for name in (
-        "realized_vol_5d",
-        "realized_vol_21d",
-        "vol_ratio_5_21",
-        "atr_14",
-        "volume_ratio_20",
-    ):
-        rules[name] = FeatureRule(owner="market", kind="number", required=True, minimum=0.0)
-    rules["golden_cross_50_200"] = FeatureRule(
-        owner="market",
-        kind="number",
-        required=True,
-        minimum=0.0,
-        maximum=1.0,
-    )
-    rules["rsi_14"] = FeatureRule(
-        owner="market",
-        kind="number",
-        required=True,
-        minimum=0.0,
-        maximum=100.0,
-    )
-
-    for name in FUNDAMENTAL_FEATURE_COLUMNS:
-        rules[name] = FeatureRule(owner="fundamentals", kind="number", required=True)
-    rules["days_to_next_earnings"] = FeatureRule(
-        owner="fundamentals",
-        kind="number",
-        required=True,
-        minimum=0.0,
-    )
-    rules["pre_earnings_flag"] = FeatureRule(
-        owner="fundamentals",
-        kind="number",
-        required=True,
-        minimum=0.0,
-        maximum=1.0,
-    )
-    rules["post_earnings_flag"] = FeatureRule(
-        owner="fundamentals",
-        kind="number",
-        required=True,
-        minimum=0.0,
-        maximum=1.0,
-    )
-
-    for name in MACRO_FEATURE_COLUMNS:
-        rules[name] = FeatureRule(owner="macro", kind="number", required=True)
-    for name in (
-        "fed_funds_rate",
-        "treasury_3m",
-        "treasury_2y",
-        "treasury_10y",
-        "vix_level",
-        "dollar_index",
-        "cpi_level",
-        "high_yield_spread",
-    ):
-        rules[name] = FeatureRule(owner="macro", kind="number", required=True, minimum=0.0)
-
-    rules["nlp_sentence_count"] = FeatureRule(
-        owner="nlp",
-        kind="number",
-        required=False,
-        minimum=0.0,
-    )
-    rules["nlp_topic_count"] = FeatureRule(
-        owner="topics",
-        kind="number",
-        required=False,
-        minimum=0.0,
-    )
-    rules["nlp_dominant_topic_id"] = FeatureRule(owner="topics", kind="number", required=False)
-    rules["nlp_dominant_topic_probability"] = FeatureRule(
-        owner="topics",
-        kind="number",
-        required=False,
-        minimum=0.0,
-        maximum=1.0,
-    )
-    rules["nlp_mean_topic_probability"] = FeatureRule(
-        owner="topics",
-        kind="number",
-        required=False,
-        minimum=0.0,
-        maximum=1.0,
-    )
-
-    for name in (
-        "nlp_sentiment_positive",
-        "nlp_sentiment_negative",
-        "nlp_sentiment_neutral",
-        "nlp_sentiment_strength",
-    ):
-        rules[name] = FeatureRule(
-            owner="sentiment",
-            kind="number",
-            required=False,
-            minimum=0.0,
-            maximum=1.0,
-        )
-    rules["nlp_sentiment_score"] = FeatureRule(
-        owner="sentiment",
-        kind="number",
-        required=False,
-        minimum=-1.0,
-        maximum=1.0,
-    )
-    rules["nlp_sentiment_std"] = FeatureRule(
-        owner="sentiment",
-        kind="number",
-        required=False,
-        minimum=0.0,
-    )
-    rules["nlp_article_count"] = FeatureRule(
-        owner="sentiment",
-        kind="number",
-        required=False,
-        minimum=0.0,
-    )
-    rules["nlp_relevance_score"] = FeatureRule(
-        owner="sentiment",
-        kind="number",
-        required=False,
-        minimum=0.0,
-    )
-
-    rules["regime_label"] = FeatureRule(
-        owner="regime",
-        kind="string",
-        required=True,
-        nullable=False,
-        allowed_values=("bear", "sideways", "bull"),
-    )
-    rules["regime_confidence"] = FeatureRule(
-        owner="regime",
-        kind="number",
-        required=True,
-        minimum=0.0,
-        maximum=1.0,
-    )
-    for name in ("regime_prob_bear", "regime_prob_sideways", "regime_prob_bull"):
-        rules[name] = FeatureRule(
-            owner="regime",
-            kind="number",
-            required=True,
-            minimum=0.0,
-            maximum=1.0,
-        )
-    return rules
-
-
 def write_audit_report(
     report: Layer1FeatureAuditReport,
     *,
@@ -781,29 +614,7 @@ def _validate_feature_value(
     value: object,
     rule: FeatureRule,
 ) -> str | None:
-    if value is None:
-        if rule.nullable:
-            return None
-        return f"{feature_name}: null value is not allowed"
-    if rule.kind == "string":
-        if not isinstance(value, str):
-            return f"{feature_name}: expected string, got {type(value).__name__}"
-        if rule.allowed_values and value not in rule.allowed_values:
-            return f"{feature_name}: {value!r} not in {sorted(rule.allowed_values)}"
-        return None
-    if rule.kind == "boolean":
-        if not isinstance(value, bool):
-            return f"{feature_name}: expected boolean, got {type(value).__name__}"
-        return None
-
-    numeric = _to_float(value)
-    if numeric is None:
-        return f"{feature_name}: expected numeric value, got {value!r}"
-    if rule.minimum is not None and numeric < rule.minimum:
-        return f"{feature_name}: {numeric} < minimum {rule.minimum}"
-    if rule.maximum is not None and numeric > rule.maximum:
-        return f"{feature_name}: {numeric} > maximum {rule.maximum}"
-    return None
+    return validate_feature_value(feature_name, value, rule)
 
 
 def _audit_news_preprocessing(
@@ -1480,15 +1291,7 @@ def _truthy(value: object, *, default: bool = False) -> bool:
 
 
 def _to_float(value: object) -> float | None:
-    if value is None or isinstance(value, bool):
-        return None
-    try:
-        numeric = float(value)
-    except (TypeError, ValueError):
-        return None
-    if math.isnan(numeric) or math.isinf(numeric):
-        return None
-    return numeric
+    return to_float_or_none(value)
 
 
 def _values_match(left: object, right: object) -> bool:

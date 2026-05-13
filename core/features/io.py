@@ -117,6 +117,49 @@ def read_feature_records(
     return parquet_bytes_to_feature_records(active_writer.get_object(key))
 
 
+def read_feature_history_window(
+    ticker: str,
+    *,
+    start_date: str | Date | datetime | None = None,
+    end_date: str | Date | datetime | None = None,
+    writer: R2Writer | None = None,
+) -> list[FeatureRecord]:
+    """Read one ticker's Layer 1 history filtered to an inclusive date window."""
+    start_text, end_text = _normalize_date_bounds(start_date=start_date, end_date=end_date)
+    records = read_feature_records(ticker, writer=writer)
+    return [
+        record
+        for record in records
+        if (start_text is None or record.date >= start_text)
+        and (end_text is None or record.date <= end_text)
+    ]
+
+
+def read_feature_histories_window(
+    tickers: Sequence[str],
+    *,
+    start_date: str | Date | datetime | None = None,
+    end_date: str | Date | datetime | None = None,
+    writer: R2Writer | None = None,
+    skip_missing: bool = False,
+) -> dict[str, list[FeatureRecord]]:
+    """Read selected Layer 1 histories filtered to an inclusive date window."""
+    start_text, end_text = _normalize_date_bounds(start_date=start_date, end_date=end_date)
+    histories: dict[str, list[FeatureRecord]] = {}
+    for ticker in tickers:
+        try:
+            histories[ticker] = read_feature_history_window(
+                ticker,
+                start_date=start_text,
+                end_date=end_text,
+                writer=writer,
+            )
+        except FileNotFoundError:
+            if not skip_missing:
+                raise
+    return histories
+
+
 def _coerce_feature_record(record: FeatureRecord | Mapping[str, object]) -> FeatureRecord:
     """Normalize input into a validated FeatureRecord instance."""
     if isinstance(record, FeatureRecord):
@@ -170,3 +213,29 @@ def _feature_record_from_row(row: Mapping[str, object]) -> FeatureRecord:
         ticker=str(row["ticker"]),
         features=parsed_features,
     )
+
+
+def _normalize_date_bounds(
+    *,
+    start_date: str | Date | datetime | None,
+    end_date: str | Date | datetime | None,
+) -> tuple[str | None, str | None]:
+    """Normalize inclusive date bounds and validate the window ordering."""
+    start_text = None if start_date is None else _coerce_date_text(start_date)
+    end_text = None if end_date is None else _coerce_date_text(end_date)
+    if start_text is not None and end_text is not None and start_text > end_text:
+        raise ValueError("start_date must be less than or equal to end_date")
+    return start_text, end_text
+
+
+def _coerce_date_text(value: str | Date | datetime) -> str:
+    """Normalize a date-like value to YYYY-MM-DD."""
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, Date):
+        return value.isoformat()
+    stripped = value.strip()
+    try:
+        return Date.fromisoformat(stripped).isoformat()
+    except ValueError as exc:
+        raise ValueError(f"Date must be YYYY-MM-DD: {value}") from exc
