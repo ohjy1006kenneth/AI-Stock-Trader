@@ -491,6 +491,68 @@ def test_fetch_statement_rows_uses_simfin_share_class_symbols() -> None:
     assert [row["ticker"] for row in page.rows] == ["BRK-B", "BF-B"]
 
 
+def test_fetch_statement_rows_duplicates_company_fundamentals_for_requested_share_classes() -> None:
+    """One provider company-symbol response can populate multiple requested archive tickers."""
+    payload = [
+        {
+            "ticker": "GOOG",
+            "currency": "USD",
+            "statements": [
+                {
+                    "statement": "PL",
+                    "columns": ["Fiscal Period", "Fiscal Year", "Report Date", "Publish Date"],
+                    "data": [["Q1", 2024, "2024-03-31", "2024-05-03"]],
+                }
+            ],
+        }
+    ]
+    session = _FakeSession([_FakeResponse(payload)])
+    fetcher = SimFinFundamentalsFetcher(
+        SimFinClientConfig(api_key="test-key", retry_sleep_seconds=0),
+        session=session,  # type: ignore[arg-type]
+    )
+
+    page = fetcher.fetch_statement_rows(
+        tickers=["GOOG", "GOOGL"],
+        start_date="2024-01-01",
+        end_date="2024-12-31",
+    )
+
+    assert session.calls[0]["params"]["ticker"] == "GOOG"
+    assert [row["ticker"] for row in page.rows] == ["GOOG", "GOOGL"]
+
+
+def test_fetch_statement_rows_maps_provider_rename_aliases_back_to_canonical_ticker() -> None:
+    """Vendor rename aliases are rewritten to the canonical archive ticker."""
+    payload = [
+        {
+            "ticker": "FLT",
+            "currency": "USD",
+            "statements": [
+                {
+                    "statement": "PL",
+                    "columns": ["Fiscal Period", "Fiscal Year", "Report Date", "Publish Date"],
+                    "data": [["Q1", 2024, "2024-03-31", "2024-05-03"]],
+                }
+            ],
+        }
+    ]
+    session = _FakeSession([_FakeResponse(payload)])
+    fetcher = SimFinFundamentalsFetcher(
+        SimFinClientConfig(api_key="test-key", retry_sleep_seconds=0),
+        session=session,  # type: ignore[arg-type]
+    )
+
+    page = fetcher.fetch_statement_rows(
+        tickers=["CPAY"],
+        start_date="2024-01-01",
+        end_date="2024-12-31",
+    )
+
+    assert session.calls[0]["params"]["ticker"] == "FLT"
+    assert [row["ticker"] for row in page.rows] == ["CPAY"]
+
+
 def test_normalize_accepts_missing_optional_fields() -> None:
     """Optional earnings/currency metadata can be absent without losing raw data."""
     retrieved_at = datetime(2024, 5, 4, tzinfo=UTC)
@@ -595,6 +657,26 @@ def test_backfill_is_idempotent_for_existing_archive() -> None:
     assert result.written == 0
     assert result.skipped == 1
     assert fetcher.calls == []
+
+
+def test_backfill_skips_writing_new_empty_archives() -> None:
+    """A zero-row SimFin fetch does not create a brand-new empty parquet placeholder."""
+    writer = _FakeWriter()
+    fetcher = _FakeFetcher([])
+
+    result = backfill_simfin_archive(
+        from_date=date(2024, 1, 1),
+        to_date=date(2024, 12, 31),
+        fetcher=fetcher,
+        writer=writer,
+        tickers=["AAPL"],
+        serializer=_json_serializer,
+    )
+
+    assert result.written == 0
+    assert result.empty == 1
+    assert result.missing_tickers == ("AAPL",)
+    assert writer.objects == {}
 
 
 def test_diagnose_fundamentals_coverage_tags_active_and_delisted_gaps() -> None:

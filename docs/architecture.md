@@ -175,7 +175,7 @@ r2/
     prices/           # OHLCV Parquet, one file per ticker
     news/             # Raw news as JSON Lines (one article per line)
     universe/         # Daily eligibility masks as CSV
-    fundamentals/     # SimFin as-reported point-in-time fundamentals and earnings data
+    fundamentals/     # SimFin as-reported point-in-time fundamentals per ticker parquet
     macro/            # FRED macro/rate observations as available on the run date
     reference/        # Symbol/security-reference snapshots
   features/
@@ -218,7 +218,7 @@ Any artifact that must survive a Pi restart or be accessed by Modal must be writ
 | Feature tables | Parquet (per ticker history) | Keeps Layer 1 artifacts aligned to the FeatureRecord contract while reducing object count |
 | Model scores | Parquet | Small, fast to read |
 | News raw archive | JSON Lines | One article per line; easy to stream |
-| Fundamentals archive | Parquet | Point-in-time company fundamentals; efficient ticker/date joins |
+| Fundamentals archive | Parquet (per ticker history) | Point-in-time company fundamentals at `raw/fundamentals/{ticker}.parquet`; efficient ticker/date joins and targeted recovery |
 | Macro/rates archive | Parquet or CSV | Small daily series; preserve observations used by a run |
 | Sentiment scores | Parquet | Processed output from FinBERT pipeline |
 | Universe eligibility masks | CSV | Small; human-inspectable |

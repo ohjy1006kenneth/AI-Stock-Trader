@@ -23,6 +23,18 @@ DEFAULT_SIMFIN_TICKER_BATCH_SIZE = 50
 DEFAULT_SIMFIN_STATEMENTS = ("pl", "bs", "cf", "derived")
 DEFAULT_SIMFIN_PERIODS = ("q1", "q2", "q3", "q4", "fy")
 SIMFIN_ENV_FILE = Path(__file__).resolve().parents[2] / "config" / "simfin.env"
+_SIMFIN_REQUEST_TICKER_OVERRIDES: dict[str, str] = {
+    # Current S&P 500 ticker aliases that SimFin still serves under an older
+    # vendor symbol or the economic share-class peer with identical company fundamentals.
+    "CPAY": "FLT",
+    "FISV": "FI",
+    "FOXA": "FOX",
+    "GOOGL": "GOOG",
+    "MRSH": "MMC",
+    "NWSA": "NWS",
+    "RVTY": "PKI",
+    "XYZ": "SQ",
+}
 
 
 @dataclass(frozen=True)
@@ -87,6 +99,7 @@ class SimFinFundamentalsFetcher:
     ) -> SimFinPage:
         """Fetch one page of raw SimFin statement rows for a ticker/date range."""
         normalized_tickers = _normalize_tickers(tickers)
+        request_groups = _group_requested_tickers_by_vendor_symbol(normalized_tickers)
         normalized_statements = _normalize_tokens(statements, "statements")
         normalized_periods = _normalize_tokens(periods, "periods")
         start = _validate_date(start_date, "start_date")
@@ -100,7 +113,7 @@ class SimFinFundamentalsFetcher:
 
         payload = self._request_json(
             params={
-                "ticker": ",".join(_simfin_request_ticker(ticker) for ticker in normalized_tickers),
+                "ticker": ",".join(_simfin_request_ticker(ticker) for ticker in request_groups),
                 "statements": ",".join(normalized_statements),
                 "period": ",".join(normalized_periods),
                 "start": start,
@@ -111,7 +124,10 @@ class SimFinFundamentalsFetcher:
             }
         )
         raw_rows = _extract_payload_rows(payload)
-        rows = normalize_simfin_fundamental_rows(raw_rows, retrieved_at=retrieved_at)
+        rows = _expand_requested_ticker_aliases(
+            normalize_simfin_fundamental_rows(raw_rows, retrieved_at=retrieved_at),
+            request_groups=request_groups,
+        )
         return SimFinPage(rows=rows, offset=offset, limit=limit)
 
     def fetch_all_fundamentals(
@@ -552,6 +568,30 @@ def _ticker_batches(tickers: Sequence[str]) -> list[tuple[str, ...]]:
     ]
 
 
+def _group_requested_tickers_by_vendor_symbol(tickers: Sequence[str]) -> dict[str, tuple[str, ...]]:
+    """Group canonical archive tickers by the SimFin vendor symbol to request."""
+    groups: dict[str, list[str]] = {}
+    for ticker in tickers:
+        request_symbol = _simfin_vendor_ticker(ticker)
+        groups.setdefault(request_symbol, []).append(ticker)
+    return {ticker: tuple(canonicals) for ticker, canonicals in groups.items()}
+
+
+def _expand_requested_ticker_aliases(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    request_groups: Mapping[str, Sequence[str]],
+) -> list[dict[str, Any]]:
+    """Duplicate provider rows back onto every requested canonical ticker alias."""
+    expanded: list[dict[str, Any]] = []
+    for row in rows:
+        provider_ticker = _normalize_ticker(str(row.get("ticker") or ""))
+        target_tickers = tuple(request_groups.get(provider_ticker, (provider_ticker,)))
+        for target_ticker in target_tickers:
+            expanded.append({**row, "ticker": target_ticker})
+    return expanded
+
+
 def _normalize_ticker(ticker: str) -> str:
     """Normalize one ticker symbol."""
     if not isinstance(ticker, str):
@@ -564,7 +604,13 @@ def _normalize_ticker(ticker: str) -> str:
 
 def _simfin_request_ticker(ticker: str) -> str:
     """Translate canonical archive tickers to SimFin's request symbol convention."""
-    return ticker.replace("-", ".")
+    return _simfin_vendor_ticker(ticker).replace("-", ".")
+
+
+def _simfin_vendor_ticker(ticker: str) -> str:
+    """Return the normalized SimFin vendor symbol for one canonical archive ticker."""
+    normalized = _normalize_ticker(ticker)
+    return _SIMFIN_REQUEST_TICKER_OVERRIDES.get(normalized, normalized)
 
 
 def _normalize_tokens(values: Sequence[str], field_name: str) -> tuple[str, ...]:

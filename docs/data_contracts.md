@@ -122,8 +122,8 @@ Purpose:
 - prevent Layer 1 from calling SimFin directly or accidentally using future restatements
 
 Notes:
-- raw fundamentals are stored as archival Layer 0 data in R2, for example under
-  `raw/fundamentals/`
+- raw fundamentals are stored as archival Layer 0 data in R2 as per-ticker parquet
+  histories under `raw/fundamentals/{ticker}.parquet`
 - Layer 1 converts these raw records into context features such as valuation ratios,
   leverage, profitability, earnings proximity, and earnings surprises
 - this archive is not a replacement for `FeatureRecord`
