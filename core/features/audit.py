@@ -12,8 +12,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
-from loguru import logger
-
 from core.contracts.schemas import FeatureRecord, PipelineManifestRecord, RunStatus
 from core.features.context_features import (
     CONTEXT_FEATURE_COLUMNS,
@@ -46,7 +44,6 @@ from core.features.sentiment_features import (
 from core.features.text_topics import TOPIC_FEATURE_COLUMNS, topic_labels_to_feature_records
 from services.r2.paths import (
     layer1_ticker_history_path,
-    pipeline_manifest_path,
     raw_news_path,
     raw_universe_path,
 )
@@ -204,7 +201,7 @@ def audit_layer1_features(
     )
     macro_frame = load_macro_frame(writer=active_writer)  # type: ignore[arg-type]
 
-    preprocessed_records = _audit_news_preprocessing(
+    _audit_news_preprocessing(
         writer=active_writer,
         as_of_date=as_of_date,
         tickers=normalized_tickers,
