@@ -91,6 +91,11 @@ Execution chain:
      `run_news_preprocessing.py`, `run_text_topics.py`, `run_finbert_sentiment.py`, and
      `run_hmm_regime_detection.py`; the final Layer 1 app then only assembles histories,
      writes the `layer1` manifest, and runs archive validation
+   - Multi-date readiness or catch-up invocations from laptop/lab use
+     `python app/lab/data_pipelines/run_daily_layer1.py --from-date ... --to-date ...`;
+     when the Modal app is available, that command submits one batched remote Layer 1 job
+     so topic modeling and FinBERT stay in the Modal image and do not fan out through
+     separate per-date local heavy-ML runs
    - Pi records the expected Layer 1 manifest key and waits on R2 before moving on
    - Read today's OHLCV Parquet, news JSON Lines, and universe CSV from R2
    - Read point-in-time SimFin fundamentals and earnings dates from R2

@@ -17,11 +17,6 @@ from typing import Protocol
 
 from loguru import logger
 
-import app.lab.data_pipelines.run_finbert_sentiment as finbert_module
-import app.lab.data_pipelines.run_hmm_regime_detection as regime_module
-import app.lab.data_pipelines.run_news_preprocessing as news_module
-import app.lab.data_pipelines.run_text_topics as text_topics_module
-
 
 def _resolve_repo_root() -> Path:
     """Return the repository root for local runs and Modal-mounted runs."""
@@ -34,6 +29,11 @@ def _resolve_repo_root() -> Path:
 
 _REPO_ROOT = _resolve_repo_root()
 sys.path.insert(0, str(_REPO_ROOT))
+
+import app.lab.data_pipelines.run_finbert_sentiment as finbert_module  # noqa: E402
+import app.lab.data_pipelines.run_hmm_regime_detection as regime_module  # noqa: E402
+import app.lab.data_pipelines.run_news_preprocessing as news_module  # noqa: E402
+import app.lab.data_pipelines.run_text_topics as text_topics_module  # noqa: E402
 
 from app.lab.data_pipelines.run_finbert_sentiment import (  # noqa: E402
     FINBERT_SENTIMENT_STAGE,
@@ -116,6 +116,7 @@ MODAL_REPO_ROOT = "/workspace/AI-Stock-Trader"
 # safety is enforced by the Layer 0 archive/manifest checks rather than these branch timestamps.
 SENTINEL_ASSEMBLY_AS_OF = datetime(1900, 1, 1, tzinfo=UTC)
 _modal_run_daily_layer1: ModalRemoteFunction | None = None
+_modal_run_batched_layer1: ModalRangeRemoteFunction | None = None
 
 
 class ObjectStore(Protocol):
@@ -155,6 +156,26 @@ class ModalRemoteFunction(Protocol):
         regime_output_key: str | None = None,
     ) -> dict[str, object]:
         """Submit the configured Modal function asynchronously."""
+
+
+class ModalRangeRemoteFunction(Protocol):
+    """Minimal Modal remote-call surface used by batched readiness runs."""
+
+    def remote(
+        self,
+        *,
+        run_id: str,
+        from_date: str,
+        to_date: str,
+        layer0_run_id: str,
+        benchmark_ticker: str = "SPY",
+        allow_layer0_manifest_date_range: bool = False,
+        min_sentence_chars: int = 2,
+        hmm_train_start_date: str | None = None,
+        hmm_max_iterations: int = 100,
+        hmm_min_training_rows: int = 30,
+    ) -> dict[str, object]:
+        """Submit the configured batched Modal function asynchronously."""
 
 
 class StageModalFunctionCall(Protocol):
@@ -249,6 +270,16 @@ class ModalRuntimeConfig:
     timeout_seconds: int
     python_version: str
     requirements_path: str
+
+
+@dataclass(frozen=True)
+class ModalBatchedStageOutputs:
+    """Completed branch output keys for one batched remote Layer 1 run."""
+
+    news_output_keys_by_date: dict[str, str]
+    topic_output_keys_by_date: dict[str, str]
+    sentiment_output_keys_by_date: dict[str, str]
+    regime_output_keys_by_date: dict[str, str]
 
 
 class Layer1ValidationError(RuntimeError):
@@ -501,6 +532,100 @@ def load_modal_runtime_config(path: Path = MODAL_CONFIG_PATH) -> ModalRuntimeCon
         timeout_seconds=int(payload["timeout_seconds"]),
         python_version=str(payload.get("python_version", "3.11")),
         requirements_path=str(payload.get("requirements_path", "requirements/modal.txt")),
+    )
+
+
+def _run_modal_batched_stage_outputs(
+    *,
+    writer: ObjectStore,
+    config: Layer1DailyConfig,
+    news_runner: Callable[..., NewsPreprocessingPipelineResult] = run_news_preprocessing,
+    text_topic_runner: Callable[..., TextTopicPipelineResult] = run_text_topics,
+    finbert_runner: Callable[..., FinBERTPipelineResult] = run_finbert_sentiment,
+    regime_runner: Callable[..., HMMRegimePipelineResult] = run_hmm_regime_detection,
+    text_runtime_loader: Callable[[], text_topics_module.TextModelRuntimeConfig] = (
+        text_topics_module.load_text_model_runtime_config
+    ),
+    finbert_runtime_loader: Callable[[], finbert_module.FinBERTModelRuntimeConfig] = (
+        finbert_module.load_finbert_runtime_config
+    ),
+    embedder_factory: Callable[[object], object] = text_topics_module.SentenceTransformerEmbedder,
+    topic_labeler_factory: Callable[[object], object] = text_topics_module.BERTopicLabeler,
+    scorer_factory: Callable[[object], object] = finbert_module.FinBERTScorer,
+) -> ModalBatchedStageOutputs:
+    """Run per-date branches inside one Modal context for a multi-date readiness window."""
+    processed_dates = _business_dates(config.from_date, config.to_date)
+    news_output_keys_by_date: dict[str, str] = {}
+    topic_output_keys_by_date: dict[str, str] = {}
+    sentiment_output_keys_by_date: dict[str, str] = {}
+    regime_output_keys_by_date: dict[str, str] = {}
+
+    for date_text in processed_dates:
+        stage_run_id = _stage_run_id(config.run_id, date_text)
+        news_result = news_runner(
+            NewsPreprocessingPipelineConfig(
+                run_id=stage_run_id,
+                as_of_date=date_text,
+                min_sentence_chars=config.min_sentence_chars,
+            ),
+            writer=writer,
+        )
+        news_output_keys_by_date[date_text] = news_result.output_key
+
+    text_runtime = text_runtime_loader()
+    embedder = embedder_factory(text_runtime.embedding_config)
+    for date_text in processed_dates:
+        stage_run_id = _stage_run_id(config.run_id, date_text)
+        topic_result = text_topic_runner(
+            TextTopicPipelineConfig(
+                run_id=stage_run_id,
+                as_of_date=date_text,
+                preprocessed_news_key=news_output_keys_by_date[date_text],
+            ),
+            writer=writer,
+            embedder=embedder,
+            topic_labeler=topic_labeler_factory(text_runtime),
+            runtime_config=text_runtime,
+        )
+        topic_output_keys_by_date[date_text] = topic_result.topic_feature_key
+
+    finbert_runtime = finbert_runtime_loader()
+    scorer = scorer_factory(finbert_runtime)
+    for date_text in processed_dates:
+        stage_run_id = _stage_run_id(config.run_id, date_text)
+        sentiment_result = finbert_runner(
+            FinBERTPipelineConfig(
+                run_id=stage_run_id,
+                as_of_date=date_text,
+                preprocessed_news_key=news_output_keys_by_date[date_text],
+            ),
+            writer=writer,
+            scorer=scorer,
+            runtime_config=finbert_runtime,
+        )
+        sentiment_output_keys_by_date[date_text] = sentiment_result.sentiment_feature_key
+
+    for date_text in processed_dates:
+        stage_run_id = _stage_run_id(config.run_id, date_text)
+        regime_result = regime_runner(
+            HMMRegimePipelineConfig(
+                run_id=stage_run_id,
+                train_start_date=config.hmm_train_start_date,
+                train_end_date=_previous_business_day(date_text),
+                inference_dates=(date_text,),
+                benchmark_ticker=config.benchmark_ticker,
+                max_iterations=config.hmm_max_iterations,
+                min_training_rows=config.hmm_min_training_rows,
+            ),
+            writer=writer,
+        )
+        regime_output_keys_by_date[date_text] = regime_result.output_key
+
+    return ModalBatchedStageOutputs(
+        news_output_keys_by_date=news_output_keys_by_date,
+        topic_output_keys_by_date=topic_output_keys_by_date,
+        sentiment_output_keys_by_date=sentiment_output_keys_by_date,
+        regime_output_keys_by_date=regime_output_keys_by_date,
     )
 
 
@@ -1182,6 +1307,24 @@ def main(argv: Sequence[str] | None = None) -> int:
             logger.error("Layer 1 Modal orchestration failed: {}", exc)
             return 1
         return 0
+    if _single_as_of_date(config) is None and _modal_run_batched_layer1 is not None:
+        try:
+            modal_range_main(
+                run_id=config.run_id,
+                from_date=config.from_date,
+                to_date=config.to_date,
+                layer0_run_id=config.layer0_run_id or config.run_id,
+                benchmark_ticker=config.benchmark_ticker,
+                allow_layer0_manifest_date_range=config.allow_layer0_manifest_date_range,
+                min_sentence_chars=config.min_sentence_chars,
+                hmm_train_start_date=config.hmm_train_start_date,
+                hmm_max_iterations=config.hmm_max_iterations,
+                hmm_min_training_rows=config.hmm_min_training_rows,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Layer 1 batched Modal orchestration failed: {}", exc)
+            return 1
+        return 0
     try:
         result = run_daily_layer1(
             config,
@@ -1202,6 +1345,39 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0 if result.ready_for_layer2 else 1
 
 
+def modal_range_main(
+    run_id: str,
+    from_date: str,
+    to_date: str,
+    layer0_run_id: str,
+    benchmark_ticker: str = "SPY",
+    allow_layer0_manifest_date_range: bool = False,
+    min_sentence_chars: int = 2,
+    hmm_train_start_date: str | None = None,
+    hmm_max_iterations: int = 100,
+    hmm_min_training_rows: int = 30,
+) -> None:
+    """Submit one multi-date Layer 1 readiness run through the batched Modal path."""
+    if _modal_run_batched_layer1 is None:
+        raise RuntimeError(
+            "Batched Modal app is unavailable because the modal package is not installed"
+        )
+    _run_modal_remote_function(
+        _modal_run_batched_layer1,
+        owning_app=app,
+        run_id=run_id,
+        from_date=from_date,
+        to_date=to_date,
+        layer0_run_id=layer0_run_id,
+        benchmark_ticker=benchmark_ticker.strip().upper(),
+        allow_layer0_manifest_date_range=allow_layer0_manifest_date_range,
+        min_sentence_chars=min_sentence_chars,
+        hmm_train_start_date=hmm_train_start_date,
+        hmm_max_iterations=hmm_max_iterations,
+        hmm_min_training_rows=hmm_min_training_rows,
+    )
+
+
 def modal_main(
     run_id: str,
     as_of_date: str,
@@ -1215,14 +1391,18 @@ def modal_main(
 ) -> None:
     """Submit the single-date Layer 1 flow using stage-specific Modal runners."""
     if _modal_run_daily_layer1 is None:
-        raise RuntimeError("Modal app is unavailable because the modal package is not installed")
+        raise RuntimeError(
+            "Modal app is unavailable because the modal package is not installed"
+        )
     if allow_layer0_manifest_date_range:
         logger.warning(
             "allow_layer0_manifest_date_range=True is intended for historical readiness runs "
             "only and must not be used on the Pi daily path"
         )
     stage_run_id = _stage_run_id(run_id, as_of_date)
-    news_result = _modal_stage_remote(news_module, "modal_run_news_preprocessing").remote(
+    news_result = _run_module_modal_remote(
+        news_module,
+        "modal_run_news_preprocessing",
         run_id=stage_run_id,
         as_of_date=as_of_date,
         min_sentence_chars=min_sentence_chars,
@@ -1231,19 +1411,23 @@ def modal_main(
     # Keep stage dispatch synchronous here. In production readiness runs, `.spawn()`
     # against imported stage apps can leave the daily manifest stuck in `running`
     # without ever producing downstream stage manifests.
-    topic_result = _modal_stage_remote(text_topics_module, "modal_run_text_topics").remote(
+    topic_result = _run_module_modal_remote(
+        text_topics_module,
+        "modal_run_text_topics",
         run_id=stage_run_id,
         as_of_date=as_of_date,
         preprocessed_news_key=preprocessed_news_key,
     )
-    sentiment_result = _modal_stage_remote(
-        finbert_module, "modal_run_finbert_sentiment"
-    ).remote(
+    sentiment_result = _run_module_modal_remote(
+        finbert_module,
+        "modal_run_finbert_sentiment",
         run_id=stage_run_id,
         as_of_date=as_of_date,
         preprocessed_news_key=preprocessed_news_key,
     )
-    regime_result = _modal_stage_remote(regime_module, "modal_run_hmm_regime_detection").remote(
+    regime_result = _run_module_modal_remote(
+        regime_module,
+        "modal_run_hmm_regime_detection",
         run_id=stage_run_id,
         train_start_date=hmm_train_start_date,
         train_end_date=_previous_business_day(as_of_date),
@@ -1252,7 +1436,9 @@ def modal_main(
         max_iterations=hmm_max_iterations,
         min_training_rows=hmm_min_training_rows,
     )
-    _modal_run_daily_layer1.remote(
+    _run_modal_remote_function(
+        _modal_run_daily_layer1,
+        owning_app=app,
         run_id=run_id,
         as_of_date=as_of_date,
         layer0_run_id=layer0_run_id,
@@ -1267,6 +1453,66 @@ def modal_main(
         sentiment_feature_key=_require_result_key(sentiment_result, "sentiment_feature_key"),
         regime_output_key=_require_result_key(regime_result, "output_key"),
     )
+
+
+def _modal_run_batched_layer1_entry(
+    run_id: str,
+    from_date: str,
+    to_date: str,
+    layer0_run_id: str,
+    benchmark_ticker: str = "SPY",
+    allow_layer0_manifest_date_range: bool = False,
+    min_sentence_chars: int = 2,
+    hmm_train_start_date: str | None = None,
+    hmm_max_iterations: int = 100,
+    hmm_min_training_rows: int = 30,
+) -> dict[str, object]:
+    """Run multi-date Layer 1 readiness on Modal without local heavy-ML dependencies."""
+    writer = R2Writer()
+    config = Layer1DailyConfig(
+        run_id=run_id,
+        from_date=from_date,
+        to_date=to_date,
+        layer0_run_id=layer0_run_id,
+        benchmark_ticker=benchmark_ticker.strip().upper(),
+        allow_layer0_manifest_date_range=allow_layer0_manifest_date_range,
+        min_sentence_chars=min_sentence_chars,
+        hmm_train_start_date=hmm_train_start_date,
+        hmm_max_iterations=hmm_max_iterations,
+        hmm_min_training_rows=hmm_min_training_rows,
+    )
+    stage_outputs = _run_modal_batched_stage_outputs(writer=writer, config=config)
+    result = run_daily_layer1(
+        config,
+        writer=writer,
+        news_runner=_existing_news_runner(stage_outputs.news_output_keys_by_date),
+        text_topic_runner=_existing_text_topic_runner(stage_outputs.topic_output_keys_by_date),
+        finbert_runner=_existing_finbert_runner(stage_outputs.sentiment_output_keys_by_date),
+        regime_runner=_existing_regime_runner(stage_outputs.regime_output_keys_by_date),
+    )
+    return {
+        "run_id": result.run_id,
+        "manifest_key": result.manifest_key,
+        "validation_report_path": str(result.validation_report_path),
+        "validation_report_key": result.validation_report_key,
+        "processed_dates": list(result.processed_dates),
+        "tickers_processed": result.tickers_processed,
+        "history_files_written": result.history_files_written,
+        "feature_rows_written": result.feature_rows_written,
+        "ready_for_layer2": result.ready_for_layer2,
+        "from_date": from_date,
+        "to_date": to_date,
+        "layer0_run_id": layer0_run_id,
+        "allow_layer0_manifest_date_range": allow_layer0_manifest_date_range,
+        "min_sentence_chars": min_sentence_chars,
+        "hmm_train_start_date": hmm_train_start_date,
+        "hmm_max_iterations": hmm_max_iterations,
+        "hmm_min_training_rows": hmm_min_training_rows,
+        "news_output_keys": stage_outputs.news_output_keys_by_date,
+        "topic_output_keys": stage_outputs.topic_output_keys_by_date,
+        "sentiment_output_keys": stage_outputs.sentiment_output_keys_by_date,
+        "regime_output_keys": stage_outputs.regime_output_keys_by_date,
+    }
 
 
 def _modal_run_daily_layer1_entry(
@@ -1348,7 +1594,7 @@ def _modal_run_daily_layer1_entry(
 
 def _define_modal_app() -> object | None:
     """Create the Modal app when the modal package is installed."""
-    global _modal_run_daily_layer1
+    global _modal_run_batched_layer1, _modal_run_daily_layer1
 
     try:
         modal = importlib.import_module("modal")
@@ -1363,7 +1609,13 @@ def _define_modal_app() -> object | None:
         secrets=[modal.Secret.from_name(runtime.r2_secret_name)],
         timeout=runtime.timeout_seconds,
     )(_modal_run_daily_layer1_entry)
+    modal_run_batched_layer1 = app.function(
+        image=image,
+        secrets=[modal.Secret.from_name(runtime.r2_secret_name)],
+        timeout=runtime.timeout_seconds,
+    )(_modal_run_batched_layer1_entry)
     app.local_entrypoint()(modal_main)
+    _modal_run_batched_layer1 = modal_run_batched_layer1
     _modal_run_daily_layer1 = modal_run_daily_layer1
     return app
 
@@ -1404,6 +1656,43 @@ def _modal_stage_remote(module: object, attribute_name: str) -> StageModalRemote
             "is installed before invoking the Layer 1 daily entrypoint."
         )
     return remote_function
+
+
+def _run_module_modal_remote(
+    module: object,
+    attribute_name: str,
+    **kwargs: object,
+) -> dict[str, object]:
+    """Call one stage-specific Modal function with its owning app context when available."""
+    return _run_modal_remote_function(
+        _modal_stage_remote(module, attribute_name),
+        owning_app=getattr(module, "app", None),
+        **kwargs,
+    )
+
+
+def _run_modal_remote_function(
+    remote_function: object,
+    *,
+    owning_app: object | None,
+    **kwargs: object,
+) -> dict[str, object]:
+    """Hydrate a Modal function through its owning app when running from plain Python."""
+    try:
+        result = remote_function.remote(**kwargs)
+    except Exception as exc:  # noqa: BLE001
+        if "has not been hydrated" not in str(exc):
+            raise
+        app_run = getattr(owning_app, "run", None)
+        if not callable(app_run):
+            raise
+        with app_run():
+            result = remote_function.remote(**kwargs)
+    if result is None:
+        return {}
+    if not isinstance(result, dict):
+        raise RuntimeError(f"Modal remote call returned unexpected payload: {result!r}")
+    return result
 
 
 def _require_result_key(result: Mapping[str, object], field_name: str) -> str:
