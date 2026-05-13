@@ -36,6 +36,6 @@
   policy to reduce residual event-boundary violations.
 - [ ] SimFin still lacks direct coverage for several current S&P 500 symbols even after
   per-ticker recovery and safe alias rewrites (confirmed on 2026-05-13 for `BF-B`,
-  `BRK-B`, `GEV`, `SOLV`, `TKO`, `VLTO`). Decide whether to maintain explicit
+  `BRK-B`, `GEV`, `SOLV`, `SW`, `TKO`, `VLTO`). Decide whether to maintain explicit
   provider-gap exceptions, source a secondary fundamentals provider for those names, or
   relax readiness rules only with explicit human approval.
