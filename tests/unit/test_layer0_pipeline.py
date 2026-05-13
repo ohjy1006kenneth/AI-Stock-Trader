@@ -169,6 +169,7 @@ class _FundamentalsFetcher:
 class _MacroFetcher:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
+        self.snapshot_calls: list[dict[str, Any]] = []
 
     def fetch_all_macro_observations(
         self,
@@ -191,6 +192,34 @@ class _MacroFetcher:
             }
         )
         return [{"series_id": series_ids[0], "observation_date": start_date, "value": "1.0"}]
+
+    def fetch_latest_available_macro_observations(
+        self,
+        *,
+        series_ids: list[str] | tuple[str, ...],
+        as_of_date: str,
+        limit: int,
+    ) -> list[dict[str, object]]:
+        self.snapshot_calls.append(
+            {
+                "series_ids": tuple(series_ids),
+                "as_of_date": as_of_date,
+                "limit": limit,
+            }
+        )
+        previous_day = (date.fromisoformat(as_of_date) - date.resolution).isoformat()
+        return [
+            {
+                "series_id": series_ids[0],
+                "observation_date": previous_day,
+                "realtime_start": previous_day,
+                "realtime_end": as_of_date,
+                "retrieved_at": f"{as_of_date}T00:00:00+00:00",
+                "value": 1.0,
+                "is_missing": False,
+                "raw": {"series_id": series_ids[0]},
+            }
+        ]
 
 
 def _bar(*, date_value: str, ticker: str, dollar_volume: float = 2_000_000.0) -> OHLCVRecord:
@@ -410,6 +439,54 @@ def test_daily_layer0_incremental_uses_alpaca_shape_and_canonical_paths() -> Non
     price_payload = json.loads(writer.objects[raw_price_path("AAPL")])
     assert price_payload[0]["ticker"] == "AAPL"
     assert price_payload[0]["date"] == "2024-01-02"
+
+
+def test_daily_layer0_incremental_writes_run_date_macro_snapshot_from_latest_available_rows() -> None:
+    """Daily Layer 0 keys macro shards by run date even when FRED lags one day."""
+    writer = _Writer()
+    macro_fetcher = _MacroFetcher()
+
+    run_daily_layer0_incremental(
+        config=DailyLayer0Config(
+            as_of_date=date(2026, 5, 13),
+            tickers=("AAPL",),
+            fred_series_ids=("DGS10",),
+            run_id="test-daily-macro-snapshot",
+            quality_config=QualityFilterConfig(rolling_window_days=1),
+        ),
+        live_price_fetcher=_LivePriceFetcher(
+            records=[
+                _bar(date_value="2026-05-13", ticker="AAPL"),
+                _bar(date_value="2026-05-13", ticker="SPY"),
+            ]
+        ),
+        news_fetcher=_NewsFetcher(),
+        fundamentals_fetcher=_FundamentalsFetcher(),
+        macro_fetcher=macro_fetcher,
+        writer=writer,
+        price_serializer=_bytes_serializer,
+        price_deserializer=_bytes_deserializer,
+        news_serializer=_bytes_serializer,
+        fundamentals_serializer=_bytes_serializer,
+        macro_serializer=_bytes_serializer,
+    )
+
+    assert macro_fetcher.snapshot_calls == [
+        {"series_ids": ("DGS10",), "as_of_date": "2026-05-13", "limit": 1000}
+    ]
+    payload = json.loads(writer.objects[raw_macro_path("2026-05-13")])
+    assert payload == [
+        {
+            "is_missing": False,
+            "observation_date": "2026-05-12",
+            "raw": {"series_id": "DGS10"},
+            "realtime_end": "2026-05-13",
+            "realtime_start": "2026-05-12",
+            "retrieved_at": "2026-05-13T00:00:00+00:00",
+            "series_id": "DGS10",
+            "value": 1.0,
+        }
+    ]
 
 
 def test_daily_layer0_incremental_canonicalizes_dot_tickers_across_outputs() -> None:

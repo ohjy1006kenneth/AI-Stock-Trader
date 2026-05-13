@@ -269,6 +269,89 @@ class FredMacroFetcher:
             )
         return rows
 
+    def fetch_latest_available_macro_observations(
+        self,
+        *,
+        series_ids: Sequence[str],
+        as_of_date: str,
+        limit: int = DEFAULT_FRED_PAGE_LIMIT,
+    ) -> list[dict[str, Any]]:
+        """Fetch the latest point-in-time-safe observation per series as of one date."""
+        normalized_series_ids = _normalize_series_ids(series_ids)
+        snapshot_date = _validate_date(as_of_date, "as_of_date")
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        rows: list[dict[str, Any]] = []
+        for series_id in normalized_series_ids:
+            row = self._fetch_latest_available_observation(
+                series_id=series_id,
+                as_of_date=snapshot_date,
+                limit=limit,
+            )
+            if row is not None:
+                rows.append(row)
+        return rows
+
+    def _fetch_latest_available_observation(
+        self,
+        *,
+        series_id: str,
+        as_of_date: str,
+        limit: int,
+    ) -> dict[str, Any] | None:
+        """Fetch the latest available observation for one series as of one date."""
+        snapshot_rows = self._fetch_latest_available_snapshot_rows(
+            series_id=series_id,
+            as_of_date=as_of_date,
+        )
+        if not snapshot_rows:
+            return None
+
+        observation_date = str(snapshot_rows[0]["observation_date"])
+        vintage_rows = self.fetch_series_observations(
+            series_id=series_id,
+            start_date=observation_date,
+            end_date=observation_date,
+            realtime_start=observation_date,
+            realtime_end=as_of_date,
+            limit=limit,
+        )
+        if not vintage_rows:
+            return snapshot_rows[0]
+        return max(
+            vintage_rows,
+            key=lambda row: (
+                str(row.get("observation_date") or ""),
+                str(row.get("realtime_start") or ""),
+                str(row.get("realtime_end") or ""),
+            ),
+        )
+
+    def _fetch_latest_available_snapshot_rows(
+        self,
+        *,
+        series_id: str,
+        as_of_date: str,
+    ) -> list[dict[str, Any]]:
+        """Fetch a descending one-row snapshot to identify the latest observation date."""
+        normalized_series_id = _normalize_series_id(series_id)
+        payload = self._request_json(
+            params={
+                "series_id": normalized_series_id,
+                "realtime_start": as_of_date,
+                "realtime_end": as_of_date,
+                "observation_end": as_of_date,
+                "sort_order": "desc",
+                "file_type": "json",
+                "output_type": 1,
+                "limit": 1,
+                "offset": 0,
+                "api_key": self.config.api_key,
+            }
+        )
+        observations = _extract_observations(payload)
+        return normalize_fred_observations(observations, series_id=normalized_series_id)
+
     def _request_json(self, params: Mapping[str, Any]) -> Any:
         """Request one FRED payload with bounded retries for transient failures."""
         url = f"{self.config.base_url.rstrip('/')}{FRED_OBSERVATIONS_ENDPOINT}"
