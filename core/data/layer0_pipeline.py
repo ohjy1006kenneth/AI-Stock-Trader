@@ -323,13 +323,34 @@ def run_historical_layer0_backfill(
         logger.info("Phase prices done: {}", price_result.metadata)
 
         logger.info("Phase: universe masks")
-        universe_result = _write_historical_universe_masks(
-            config=config,
-            universe_provider=universe_provider,
-            writer=cached_writer,
-            ohlcv_window=quality_window,
-            serializer=universe_serializer or _universe_to_csv_bytes,
-        )
+        business_days = _business_days(config.from_date, config.to_date)
+        if masks_complete and int(price_result.metadata["written"]) == 0:
+            universe_result = _WriteResult(
+                output_keys=[],
+                metadata={
+                    "requested_days": len(business_days),
+                    "written": 0,
+                    "skipped": len(business_days),
+                    "total_records": 0,
+                    "output_keys": [],
+                    "short_circuited": True,
+                },
+            )
+        else:
+            if masks_complete and not quality_window:
+                _extend_quality_window_from_price_prefix(
+                    writer=cached_writer,
+                    prefix="raw/prices/",
+                    deserializer=price_deserializer or _parquet_bytes_to_records,
+                    quality_window=quality_window,
+                )
+            universe_result = _write_historical_universe_masks(
+                config=config,
+                universe_provider=universe_provider,
+                writer=cached_writer,
+                ohlcv_window=quality_window,
+                serializer=universe_serializer or _universe_to_csv_bytes,
+            )
         output_keys.extend(universe_result.output_keys)
         metadata["universe"] = universe_result.metadata
         logger.info("Phase universe done: {}", universe_result.metadata)
@@ -420,6 +441,7 @@ def run_daily_layer0_incremental(
     macro_fetcher: MacroFetcher,
     writer: ObjectWriter,
     price_serializer: RecordSerializer | None = None,
+    price_deserializer: RecordDeserializer | None = None,
     news_serializer: NewsSerializer | None = None,
     fundamentals_serializer: RawRowSerializer | None = None,
     macro_serializer: RawRowSerializer | None = None,
@@ -450,18 +472,27 @@ def run_daily_layer0_incremental(
             overwrite=config.overwrite,
             writer=writer,
             serializer=price_serializer or _records_to_parquet_bytes,
+            deserializer=price_deserializer or _parquet_bytes_to_records,
         )
         output_keys.extend(price_result.output_keys)
         metadata["prices"] = price_result.metadata
 
         quality_window = _copy_ohlcv_window(config.quality_ohlcv_window)
-        for record in daily_records:
-            quality_window.setdefault(_canonicalize_ticker(record.ticker), []).append(record)
+        _extend_quality_window_from_price_archives(
+            writer=writer,
+            tickers=tickers,
+            deserializer=price_deserializer or _parquet_bytes_to_records,
+            quality_window=quality_window,
+        )
         universe_records = build_universe_mask_records(
             as_of_date=as_of_date,
             tickers=tickers,
             ohlcv_window=quality_window,
             quality_config=config.quality_config,
+        )
+        _require_price_coverage_for_eligible_universe(
+            records=universe_records,
+            ohlcv_window=quality_window,
         )
         universe_result = _write_universe_mask(
             as_of_date=as_of_date,
@@ -624,38 +655,49 @@ def _backfill_historical_prices(
 
     for security_id, security_rows in grouped.items():
         key = raw_price_path(security_id)
-        should_write = config.overwrite or not writer.exists(key)
-        if not should_write:
-            skipped += 1
-            if not skip_quality_reads:
-                existing = _read_existing_records(writer, key, deserializer)
-                for record in _canonicalize_ohlcv_records(existing):
-                    quality_window.setdefault(
-                        _canonicalize_ticker(record.ticker), []
-                    ).append(record)
-            continue
-
-        records: list[OHLCVRecord] = []
+        existing_records = (
+            _canonicalize_ohlcv_records(_read_existing_records(writer, key, deserializer))
+            if writer.exists(key)
+            else []
+        )
+        records = list(existing_records)
+        history_changed = config.overwrite or not writer.exists(key)
         for security in security_rows:
             fetch_from, fetch_to = _security_fetch_range(security, config.from_date, config.to_date)
-            fetched = _canonicalize_ohlcv_records(
-                price_fetcher.fetch_security_records(
-                    security=security,
-                    from_date=fetch_from.isoformat(),
-                    to_date=fetch_to.isoformat(),
+            fetch_ranges = (
+                [(fetch_from, fetch_to)]
+                if config.overwrite or not existing_records
+                else _missing_boundary_ranges(
+                    existing_records,
+                    from_date=fetch_from,
+                    to_date=fetch_to,
                 )
             )
-            records.extend(fetched)
-            for record in fetched:
-                quality_window.setdefault(_canonicalize_ticker(record.ticker), []).append(record)
+            for range_from, range_to in fetch_ranges:
+                fetched = _canonicalize_ohlcv_records(
+                    price_fetcher.fetch_security_records(
+                        security=security,
+                        from_date=range_from.isoformat(),
+                        to_date=range_to.isoformat(),
+                    )
+                )
+                if not fetched:
+                    continue
+                records = _merge_ohlcv_histories(records, fetched)
+                history_changed = True
 
         if not records:
             empty += 1
             continue
 
-        writer.put_object(key, serializer(_sort_ohlcv_records(records)))
-        output_keys.append(key)
-        written += 1
+        if history_changed:
+            writer.put_object(key, serializer(_sort_ohlcv_records(records)))
+            output_keys.append(key)
+            written += 1
+        else:
+            skipped += 1
+        if not skip_quality_reads:
+            _extend_quality_window_with_records(quality_window, records)
 
     return _WriteResult(
         output_keys=output_keys,
@@ -688,9 +730,6 @@ def _write_historical_universe_masks(
     quality_windows = prepare_quality_windows(ohlcv_window)
 
     for current_date in days:
-        if writer.exists(raw_universe_path(current_date)) and not config.overwrite:
-            skipped += 1
-            continue
         tickers = universe_provider.get_constituents(current_date.isoformat())
         records = apply_prepared_quality_filters(
             [
@@ -736,6 +775,7 @@ def _write_daily_prices(
     overwrite: bool,
     writer: ObjectWriter,
     serializer: RecordSerializer,
+    deserializer: RecordDeserializer,
 ) -> _WriteResult:
     grouped: dict[str, list[OHLCVRecord]] = {}
     for record in records:
@@ -746,10 +786,21 @@ def _write_daily_prices(
     skipped = 0
     for ticker, ticker_records in sorted(grouped.items()):
         key = raw_price_path(ticker)
-        if writer.exists(key) and not overwrite:
+        if not writer.exists(key):
+            writer.put_object(key, serializer(_sort_ohlcv_records(ticker_records)))
+            output_keys.append(key)
+            written += 1
+            continue
+
+        existing_records = _canonicalize_ohlcv_records(_read_existing_records(writer, key, deserializer))
+        merged_records = _merge_ohlcv_histories(
+            [] if overwrite else existing_records,
+            ticker_records,
+        )
+        if _ohlcv_histories_equal(existing_records, merged_records):
             skipped += 1
             continue
-        writer.put_object(key, serializer(_sort_ohlcv_records(ticker_records)))
+        writer.put_object(key, serializer(_sort_ohlcv_records(merged_records)))
         output_keys.append(key)
         written += 1
 
@@ -774,9 +825,12 @@ def _write_universe_mask(
     serializer: UniverseSerializer,
 ) -> _WriteResult:
     key = raw_universe_path(as_of_date)
+    payload = serializer(_sort_universe_records(records))
     if writer.exists(key) and not overwrite:
-        return _WriteResult(output_keys=[], metadata={"written": 0, "skipped": 1, "key": key})
-    writer.put_object(key, serializer(_sort_universe_records(records)))
+        existing_payload = writer.get_object(key)
+        if existing_payload == payload:
+            return _WriteResult(output_keys=[], metadata={"written": 0, "skipped": 1, "key": key})
+    writer.put_object(key, payload)
     return _WriteResult(
         output_keys=[key],
         metadata={"written": 1, "skipped": 0, "rows": len(records), "key": key},
@@ -1161,6 +1215,117 @@ def _copy_ohlcv_window(
     return {_canonicalize_ticker(ticker): list(records) for ticker, records in window.items()}
 
 
+def _require_price_coverage_for_eligible_universe(
+    *,
+    records: Sequence[UniverseRecord],
+    ohlcv_window: Mapping[str, Sequence[OHLCVRecord]],
+) -> None:
+    missing: list[str] = []
+    indexed_dates = {
+        _canonicalize_ticker(ticker): {record.date for record in rows}
+        for ticker, rows in ohlcv_window.items()
+    }
+    for record in records:
+        if not (
+            record.in_universe
+            and record.tradable
+            and record.liquid
+            and record.data_quality_ok
+            and not record.halted
+        ):
+            continue
+        if record.date not in indexed_dates.get(_canonicalize_ticker(record.ticker), set()):
+            missing.append(record.ticker)
+    if missing:
+        raise RuntimeError(
+            "Layer 0 cannot mark the universe ready without raw target-date price coverage for: "
+            + ", ".join(sorted(set(missing)))
+        )
+
+
+def _extend_quality_window_from_price_archives(
+    *,
+    writer: ObjectWriter,
+    tickers: Sequence[str],
+    deserializer: RecordDeserializer,
+    quality_window: dict[str, list[OHLCVRecord]],
+) -> None:
+    for ticker in tickers:
+        key = raw_price_path(ticker)
+        if not writer.exists(key):
+            continue
+        records = _canonicalize_ohlcv_records(_read_existing_records(writer, key, deserializer))
+        _extend_quality_window_with_records(quality_window, records)
+
+
+def _extend_quality_window_from_price_prefix(
+    *,
+    writer: ObjectWriter,
+    prefix: str,
+    deserializer: RecordDeserializer,
+    quality_window: dict[str, list[OHLCVRecord]],
+) -> None:
+    for key in writer.list_keys(prefix):
+        records = _canonicalize_ohlcv_records(_read_existing_records(writer, key, deserializer))
+        _extend_quality_window_with_records(quality_window, records)
+
+
+def _extend_quality_window_with_records(
+    quality_window: dict[str, list[OHLCVRecord]],
+    records: Sequence[OHLCVRecord],
+) -> None:
+    for record in records:
+        quality_window.setdefault(_canonicalize_ticker(record.ticker), []).append(record)
+
+
+def _merge_ohlcv_histories(
+    existing_records: Sequence[OHLCVRecord],
+    new_records: Sequence[OHLCVRecord],
+) -> list[OHLCVRecord]:
+    merged = {record.date: record for record in existing_records}
+    for record in new_records:
+        merged[record.date] = record
+    return _sort_ohlcv_records(list(merged.values()))
+
+
+def _ohlcv_histories_equal(
+    left: Sequence[OHLCVRecord],
+    right: Sequence[OHLCVRecord],
+) -> bool:
+    return [record.model_dump() for record in _sort_ohlcv_records(left)] == [
+        record.model_dump() for record in _sort_ohlcv_records(right)
+    ]
+
+
+def _missing_boundary_ranges(
+    existing_records: Sequence[OHLCVRecord],
+    *,
+    from_date: date,
+    to_date: date,
+) -> list[tuple[date, date]]:
+    existing_dates = sorted(
+        date.fromisoformat(record.date)
+        for record in existing_records
+        if from_date <= date.fromisoformat(record.date) <= to_date
+    )
+    if not existing_dates:
+        return [(from_date, to_date)]
+
+    ranges: list[tuple[date, date]] = []
+    first_present = existing_dates[0]
+    if first_present > from_date:
+        prefix_end = _previous_business_day(first_present)
+        if prefix_end >= from_date:
+            ranges.append((from_date, prefix_end))
+
+    last_present = existing_dates[-1]
+    if last_present < to_date:
+        suffix_start = _next_business_day(last_present)
+        if suffix_start <= to_date:
+            ranges.append((suffix_start, to_date))
+    return ranges
+
+
 def _resolve_securities(
     *,
     security_master: SecurityMaster,
@@ -1331,6 +1496,20 @@ def _date_range(start: date, end: date) -> list[date]:
 
 def _business_days(start: date, end: date) -> list[date]:
     return [day for day in _date_range(start, end) if day.weekday() < 5]
+
+
+def _previous_business_day(value: date) -> date:
+    current = value - timedelta(days=1)
+    while current.weekday() >= 5:
+        current -= timedelta(days=1)
+    return current
+
+
+def _next_business_day(value: date) -> date:
+    current = value + timedelta(days=1)
+    while current.weekday() >= 5:
+        current += timedelta(days=1)
+    return current
 
 
 def _macro_archive_covers_range(writer: ObjectWriter, from_date: date, to_date: date) -> bool:
