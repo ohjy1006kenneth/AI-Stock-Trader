@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import io
 import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 from app.lab.data_pipelines import run_daily_layer1 as daily_layer1_module
@@ -30,6 +32,7 @@ from services.r2.paths import (
     layer1_sentiment_feature_path,
     layer1_validation_report_path,
     pipeline_manifest_path,
+    raw_price_path,
 )
 from services.r2.writer import R2Writer
 from tests.fixtures.layer1_support import (
@@ -284,6 +287,46 @@ def test_run_daily_layer1_fails_closed_when_layer0_manifest_is_missing(
         writer.get_object(pipeline_manifest_path(LAYER1_DAILY_STAGE, "layer1-missing-manifest"))
     )
     assert manifest.status is RunStatus.FAILED
+
+
+def test_run_daily_layer1_fails_closed_when_raw_price_history_misses_target_date(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Existing raw price files must contain the target date for every expected ticker."""
+    writer = local_writer(tmp_path, monkeypatch)
+    seed_layer0_archives(
+        writer,
+        dates=["2024-01-03"],
+        tickers=["AAPL"],
+        layer0_run_ids=("layer1-missing-price",),
+    )
+    frame = pd.read_parquet(io.BytesIO(writer.get_object(raw_price_path("AAPL"))))
+    repaired = frame.loc[frame["date"] != "2024-01-03"].reset_index(drop=True)
+    buffer = io.BytesIO()
+    repaired.to_parquet(buffer, index=False)
+    writer.put_object(raw_price_path("AAPL"), buffer.getvalue())
+
+    with pytest.raises(RuntimeError, match=r"missing target-date coverage.*AAPL=\[2024-01-03\]"):
+        run_daily_layer1(
+            Layer1DailyConfig(
+                run_id="layer1-missing-price",
+                from_date="2024-01-03",
+                to_date="2024-01-03",
+            ),
+            writer=writer,
+            news_runner=fake_news_runner(writer, ["AAPL"]),
+            text_topic_runner=fake_topic_runner(writer, ["AAPL"]),
+            finbert_runner=fake_sentiment_runner(writer, ["AAPL"]),
+            regime_runner=fake_regime_runner(writer),
+            validation_output_dir=tmp_path / "reports",
+        )
+
+    manifest = PipelineManifestRecord.model_validate_json(
+        writer.get_object(pipeline_manifest_path(LAYER1_DAILY_STAGE, "layer1-missing-price"))
+    )
+    assert manifest.status is RunStatus.FAILED
+    assert "missing target-date coverage" in str(manifest.metadata["error"]["message"])
 
 
 def test_run_daily_layer1_writes_failed_manifest_on_branch_error(

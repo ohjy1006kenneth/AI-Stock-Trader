@@ -212,6 +212,28 @@ def _bytes_deserializer(data: bytes) -> list[OHLCVRecord]:
     return [OHLCVRecord(**row) for row in json.loads(data)]
 
 
+def _universe_serializer(rows: list[Any]) -> bytes:
+    buffer = io.StringIO()
+    writer = csv.DictWriter(
+        buffer,
+        fieldnames=[
+            "date",
+            "ticker",
+            "in_universe",
+            "tradable",
+            "liquid",
+            "halted",
+            "data_quality_ok",
+            "reason",
+        ],
+        lineterminator="\n",
+    )
+    writer.writeheader()
+    for row in rows:
+        writer.writerow(row.model_dump() if hasattr(row, "model_dump") else row)
+    return buffer.getvalue().encode("utf-8")
+
+
 def _manifest(writer: _Writer, run_id: str) -> dict[str, Any]:
     key = pipeline_manifest_path("layer0", run_id)
     return json.loads(writer.objects[key])
@@ -356,6 +378,7 @@ def test_daily_layer0_incremental_uses_alpaca_shape_and_canonical_paths() -> Non
         macro_fetcher=_MacroFetcher(),
         writer=writer,
         price_serializer=_bytes_serializer,
+        price_deserializer=_bytes_deserializer,
         news_serializer=_bytes_serializer,
         fundamentals_serializer=_bytes_serializer,
         macro_serializer=_bytes_serializer,
@@ -393,6 +416,7 @@ def test_daily_layer0_incremental_canonicalizes_dot_tickers_across_outputs() -> 
         macro_fetcher=_MacroFetcher(),
         writer=writer,
         price_serializer=_bytes_serializer,
+        price_deserializer=_bytes_deserializer,
         news_serializer=_bytes_serializer,
         fundamentals_serializer=_bytes_serializer,
         macro_serializer=_bytes_serializer,
@@ -412,15 +436,25 @@ def test_daily_layer0_incremental_canonicalizes_dot_tickers_across_outputs() -> 
 
 def test_daily_layer0_incremental_is_idempotent_for_existing_raw_outputs() -> None:
     writer = _Writer()
-    keys = [
-        raw_price_path("AAPL"),
-        raw_news_path("2024-01-02"),
-        raw_fundamentals_path("AAPL"),
-        raw_macro_path("2024-01-02"),
-        raw_universe_path("2024-01-02"),
-    ]
+    price_key = raw_price_path("AAPL")
+    universe_key = raw_universe_path("2024-01-02")
+    keys = [price_key, raw_news_path("2024-01-02"), raw_fundamentals_path("AAPL"), raw_macro_path("2024-01-02"), universe_key]
+    writer.put_object(price_key, _bytes_serializer([_bar(date_value="2024-01-02", ticker="AAPL")]))
+    writer.put_object(raw_news_path("2024-01-02"), b"existing")
+    writer.put_object(raw_fundamentals_path("AAPL"), b"existing")
+    writer.put_object(raw_macro_path("2024-01-02"), b"existing")
+    writer.put_object(
+        universe_key,
+        _universe_serializer(
+            build_universe_mask_records(
+                as_of_date=date(2024, 1, 2),
+                tickers=("AAPL",),
+                ohlcv_window={"AAPL": [_bar(date_value="2024-01-02", ticker="AAPL")]},
+                quality_config=QualityFilterConfig(rolling_window_days=1),
+            )
+        ),
+    )
     for key in keys:
-        writer.put_object(key, b"existing")
         writer.put_counts[key] = 0
 
     run_daily_layer0_incremental(
@@ -437,13 +471,69 @@ def test_daily_layer0_incremental_is_idempotent_for_existing_raw_outputs() -> No
         macro_fetcher=_MacroFetcher(),
         writer=writer,
         price_serializer=_bytes_serializer,
+        price_deserializer=_bytes_deserializer,
         news_serializer=_bytes_serializer,
         fundamentals_serializer=_bytes_serializer,
         macro_serializer=_bytes_serializer,
+        universe_serializer=_universe_serializer,
     )
 
     assert {key: writer.put_counts[key] for key in keys} == {key: 0 for key in keys}
     assert writer.objects[pipeline_manifest_path("layer0", "test-idempotent")]
+
+
+def test_daily_layer0_incremental_repairs_missing_target_date_and_rewrites_universe_mask() -> None:
+    writer = _Writer()
+    price_key = raw_price_path("AAPL")
+    universe_key = raw_universe_path("2024-01-03")
+    writer.put_object(price_key, _bytes_serializer([_bar(date_value="2024-01-02", ticker="AAPL")]))
+    writer.put_object(
+        universe_key,
+        _universe_serializer(
+            [
+                {
+                    "date": "2024-01-03",
+                    "ticker": "AAPL",
+                    "in_universe": True,
+                    "tradable": True,
+                    "liquid": False,
+                    "halted": False,
+                    "data_quality_ok": False,
+                    "reason": "missing_ohlcv_window",
+                }
+            ]
+        ),
+    )
+    writer.put_counts[price_key] = 0
+    writer.put_counts[universe_key] = 0
+
+    run_daily_layer0_incremental(
+        config=DailyLayer0Config(
+            as_of_date=date(2024, 1, 3),
+            tickers=("AAPL",),
+            fred_series_ids=("DGS10",),
+            run_id="test-repair-daily",
+            quality_config=QualityFilterConfig(rolling_window_days=2),
+        ),
+        live_price_fetcher=_LivePriceFetcher(records=[_bar(date_value="2024-01-03", ticker="AAPL")]),
+        news_fetcher=_NewsFetcher(),
+        fundamentals_fetcher=_FundamentalsFetcher(),
+        macro_fetcher=_MacroFetcher(),
+        writer=writer,
+        price_serializer=_bytes_serializer,
+        price_deserializer=_bytes_deserializer,
+        news_serializer=_bytes_serializer,
+        fundamentals_serializer=_bytes_serializer,
+        macro_serializer=_bytes_serializer,
+        universe_serializer=_universe_serializer,
+    )
+
+    price_payload = json.loads(writer.objects[price_key])
+    assert [row["date"] for row in price_payload] == ["2024-01-02", "2024-01-03"]
+    assert writer.put_counts[price_key] == 1
+    assert writer.put_counts[universe_key] == 1
+    universe_rows = list(csv.DictReader(io.StringIO(writer.objects[universe_key].decode("utf-8"))))
+    assert universe_rows[0]["data_quality_ok"] == "True"
 
 
 def test_layer0_pipeline_writes_failure_manifest_before_reraising() -> None:
@@ -465,6 +555,7 @@ def test_layer0_pipeline_writes_failure_manifest_before_reraising() -> None:
             macro_fetcher=_MacroFetcher(),
             writer=writer,
             price_serializer=_bytes_serializer,
+            price_deserializer=_bytes_deserializer,
             news_serializer=_bytes_serializer,
             fundamentals_serializer=_bytes_serializer,
             macro_serializer=_bytes_serializer,
@@ -482,7 +573,7 @@ def test_layer0_pipeline_writes_failure_manifest_before_reraising() -> None:
 
 
 def test_historical_backfill_skips_quality_reads_when_universe_masks_exist() -> None:
-    """When all universe masks already exist, skip R2 reads for quality_window."""
+    """When prices already cover the window, existing universe masks short-circuit recomputation."""
     writer = _Writer()
     aapl_key = raw_price_path("perm-aapl")
     msft_key = raw_price_path("perm-msft")
@@ -527,10 +618,79 @@ def test_historical_backfill_skips_quality_reads_when_universe_masks_exist() -> 
         macro_serializer=_bytes_serializer,
     )
 
-    # No Alpaca fetches and no R2 reads for price parquets
     assert price_fetcher.calls == []
-    price_get_calls = [c for c in get_calls if c.startswith("raw/prices/")]
-    assert price_get_calls == []
+    assert raw_universe_path("2024-01-02") not in writer.put_counts
+    assert any(call.startswith("raw/prices/") for call in get_calls)
+
+
+def test_historical_backfill_repairs_existing_price_history_for_one_day_catch_up() -> None:
+    writer = _Writer()
+    stale_price_key = raw_price_path("perm-aapl")
+    universe_key = raw_universe_path("2024-01-03")
+    writer.put_object(
+        stale_price_key,
+        _bytes_serializer([_bar(date_value="2024-01-02", ticker="AAPL")]),
+    )
+    writer.put_object(
+        universe_key,
+        _universe_serializer(
+            [
+                {
+                    "date": "2024-01-03",
+                    "ticker": "AAPL",
+                    "in_universe": True,
+                    "tradable": True,
+                    "liquid": False,
+                    "halted": False,
+                    "data_quality_ok": False,
+                    "reason": "missing_ohlcv_window",
+                }
+            ]
+        ),
+    )
+    writer.put_counts[stale_price_key] = 0
+    writer.put_counts[universe_key] = 0
+
+    class _SingleTickerUniverseProvider:
+        def get_constituents(self, as_of_date: str) -> list[str]:
+            return ["AAPL"]
+
+        def get_historical_tickers(self, from_date: str, to_date: str) -> set[str]:
+            return {"AAPL"}
+
+    price_fetcher = _HistoricalPriceFetcher()
+
+    run_historical_layer0_backfill(
+        config=HistoricalLayer0Config(
+            from_date=date(2024, 1, 3),
+            to_date=date(2024, 1, 3),
+            tickers=("AAPL",),
+            fred_series_ids=("DGS10",),
+            run_id="test-historical-repair",
+            quality_config=QualityFilterConfig(rolling_window_days=2),
+        ),
+        universe_provider=_SingleTickerUniverseProvider(),
+        price_fetcher=price_fetcher,
+        security_master=_SecurityMaster(),
+        news_fetcher=_NewsFetcher(),
+        fundamentals_fetcher=_FundamentalsFetcher(),
+        macro_fetcher=_MacroFetcher(),
+        writer=writer,
+        price_serializer=_bytes_serializer,
+        price_deserializer=_bytes_deserializer,
+        news_serializer=_bytes_serializer,
+        fundamentals_serializer=_bytes_serializer,
+        macro_serializer=_bytes_serializer,
+        universe_serializer=_universe_serializer,
+    )
+
+    assert price_fetcher.calls == [{"ticker": "AAPL", "from_date": "2024-01-03", "to_date": "2024-01-03"}]
+    price_payload = json.loads(writer.objects[stale_price_key])
+    assert [row["date"] for row in price_payload] == ["2024-01-02", "2024-01-03"]
+    assert writer.put_counts[stale_price_key] == 1
+    assert writer.put_counts[universe_key] == 1
+    universe_rows = list(csv.DictReader(io.StringIO(writer.objects[universe_key].decode("utf-8"))))
+    assert universe_rows[0]["data_quality_ok"] == "True"
 
 
 def test_layer0_config_rejects_empty_inputs() -> None:

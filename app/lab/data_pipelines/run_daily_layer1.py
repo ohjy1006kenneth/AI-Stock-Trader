@@ -256,9 +256,9 @@ class Layer1ValidationError(RuntimeError):
 
     def __init__(self, report: Layer1ValidationReport, report_path: Path) -> None:
         """Capture the failing validation report."""
+        summary = _validation_failure_summary(report)
         super().__init__(
-            "Layer 1 validation failed: ready_for_layer2 is false "
-            f"(report={report_path})"
+            f"Layer 1 validation failed: {summary} (report={report_path})"
         )
         self.report = report
         self.report_path = report_path
@@ -335,6 +335,7 @@ def run_daily_layer1(
             processed_dates=processed_dates,
             scope_tickers=scope_tickers,
             benchmark_ticker=config.benchmark_ticker,
+            universe_by_date=universe_by_date,
         )
 
         news_results = _run_news_stage(
@@ -854,6 +855,7 @@ def _require_upstream_archives(
     processed_dates: Sequence[str],
     scope_tickers: Sequence[str],
     benchmark_ticker: str,
+    universe_by_date: Mapping[str, Sequence[str]],
 ) -> None:
     """Require the Layer 0 archives needed by the daily Layer 1 run."""
     required_keys = [raw_price_path(benchmark_ticker)]
@@ -869,6 +871,39 @@ def _require_upstream_archives(
         raise FileNotFoundError(
             "Missing required Layer 0 archives for Layer 1 run: "
             + ", ".join(missing)
+        )
+    _require_target_date_price_coverage(
+        writer,
+        processed_dates=processed_dates,
+        benchmark_ticker=benchmark_ticker,
+        universe_by_date=universe_by_date,
+    )
+
+
+def _require_target_date_price_coverage(
+    writer: ObjectStore,
+    *,
+    processed_dates: Sequence[str],
+    benchmark_ticker: str,
+    universe_by_date: Mapping[str, Sequence[str]],
+) -> None:
+    """Fail closed when raw price archives exist but miss expected target dates."""
+    expected_dates_by_ticker = _expected_dates_by_ticker(universe_by_date)
+    expected_dates_by_ticker[benchmark_ticker] = sorted(set(processed_dates))
+    missing_coverage: dict[str, list[str]] = {}
+    for ticker, expected_dates in sorted(expected_dates_by_ticker.items()):
+        frame = load_ohlcv_frame(ticker, writer=writer)  # type: ignore[arg-type]
+        present_dates = {
+            str(value)[:10]
+            for value in frame["date"].tolist()
+        }
+        missing_dates = [date_text for date_text in expected_dates if date_text not in present_dates]
+        if missing_dates:
+            missing_coverage[ticker] = missing_dates
+    if missing_coverage:
+        raise RuntimeError(
+            "Layer 0 raw price archives missing target-date coverage for Layer 1 run: "
+            + _format_ticker_dates(missing_coverage)
         )
 
 
@@ -947,6 +982,43 @@ def _expected_dates_by_ticker(
         for ticker in tickers:
             by_ticker.setdefault(ticker, []).append(date_text)
     return by_ticker
+
+
+def _validation_failure_summary(report: Layer1ValidationReport) -> str:
+    """Return a compact operator-facing summary for one failed validation report."""
+    if report.missing_ticker_files:
+        return (
+            f"{len(report.missing_ticker_files)} ticker histories missing; "
+            f"sample={', '.join(report.missing_ticker_files[:3])}"
+        )
+    if report.missing_ticker_dates:
+        return (
+            f"{len(report.missing_ticker_dates)} ticker histories missing expected dates; "
+            f"sample={_format_ticker_dates(report.missing_ticker_dates)}"
+        )
+    if report.schema_failure_keys:
+        return (
+            f"{len(report.schema_failure_keys)} ticker histories failed schema validation; "
+            f"sample={', '.join(report.schema_failure_keys[:3])}"
+        )
+    if report.manifest_errors:
+        return f"manifest check failed: {', '.join(report.manifest_errors)}"
+    return "ready_for_layer2 is false"
+
+
+def _format_ticker_dates(
+    ticker_dates: Mapping[str, Sequence[str]],
+    *,
+    limit: int = 3,
+) -> str:
+    """Format a small ticker/date mapping for logs and exceptions."""
+    pairs = [
+        f"{ticker}=[{','.join(sorted(dict.fromkeys(dates))[:3])}]"
+        for ticker, dates in sorted(ticker_dates.items())[:limit]
+    ]
+    if len(ticker_dates) > limit:
+        pairs.append(f"...+{len(ticker_dates) - limit} more")
+    return "; ".join(pairs)
 
 
 def _write_manifest(
