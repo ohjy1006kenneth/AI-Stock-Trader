@@ -34,7 +34,6 @@ import app.lab.data_pipelines.run_finbert_sentiment as finbert_module  # noqa: E
 import app.lab.data_pipelines.run_hmm_regime_detection as regime_module  # noqa: E402
 import app.lab.data_pipelines.run_news_preprocessing as news_module  # noqa: E402
 import app.lab.data_pipelines.run_text_topics as text_topics_module  # noqa: E402
-
 from app.lab.data_pipelines.run_finbert_sentiment import (  # noqa: E402
     FINBERT_SENTIMENT_STAGE,
     FinBERTPipelineConfig,
