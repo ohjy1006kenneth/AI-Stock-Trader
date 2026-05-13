@@ -58,7 +58,10 @@ Expected execution chain:
    - The single-date CLI path submits the heavy NLP/HMM stages through their dedicated
      Modal apps first, then invokes the final daily Layer 1 app only for history assembly
      and validation
-   - Lab/backfill runs can supply a shared `run_id` plus `--from-date` / `--to-date`
+   - Multi-date lab/readiness runs invoke the same module with `--from-date` /
+     `--to-date`; when the Modal app is available, that path submits one batched remote
+     Layer 1 job so topic modeling and FinBERT stay on the declared Modal dependency stack
+     instead of falling back to local heavy-ML execution
    - The command derives ticker scope from Layer 0 universe masks and fails closed on
      missing upstream manifests or archives
 5. Deploy cloud oracle with fixed contracts
@@ -89,7 +92,10 @@ Runtime expectations:
 - `run_daily_layer1.py`: orchestration entrypoint for Pi-triggered single-date jobs plus
   local/lab date-range orchestration from existing Layer 0 archives. The single-date
   `--as-of-date` path delegates heavy NLP/HMM work to the stage-specific Modal apps before
-  running the final daily Layer 1 assembly/validation app.
+  running the final daily Layer 1 assembly/validation app. The multi-date
+  `--from-date` / `--to-date` path submits one batched remote Modal job that runs the
+  readiness window inside the same declared Modal image, reusing the loaded text and
+  FinBERT runtimes across dates before final assembly/validation.
 - `run_news_preprocessing.py`: CPU only; contract normalization and sentence splitting.
 - `run_text_topics.py`: cloud-only embeddings/topic modeling; CPU smoke path, GPU optional
   when backfilling larger historical corpora.
@@ -117,6 +123,18 @@ Production readiness command and inspection:
     --run-id layer1-readiness-2026-04-10-v7 \
     --as-of-date 2026-04-10 \
     --layer0-run-id layer0-historical-2017-01-01_to_2026-04-10 \
+    --allow-layer0-manifest-date-range
+```
+
+For a multi-date readiness window from a local shell, use the Python entrypoint so the
+lightweight local process can submit the batched remote Modal run:
+
+```bash
+HOME=/home/juyoungoh ./.venv/bin/python app/lab/data_pipelines/run_daily_layer1.py \
+    --run-id layer1-readiness-2026-04-14-to-2026-05-12-batch-v5 \
+    --from-date 2026-04-14 \
+    --to-date 2026-05-12 \
+    --layer0-run-id layer0-readiness-2026-04-14-to-2026-05-12-batch-v1 \
     --allow-layer0-manifest-date-range
 ```
 

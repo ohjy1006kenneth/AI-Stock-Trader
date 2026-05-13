@@ -17,6 +17,7 @@ from app.lab.data_pipelines.run_daily_layer1 import (
     _existing_news_runner,
     _existing_regime_runner,
     _existing_text_topic_runner,
+    _run_modal_batched_stage_outputs,
     load_modal_runtime_config,
     main,
     run_daily_layer1,
@@ -562,6 +563,79 @@ def test_run_daily_layer1_marks_stale_sibling_manifests_in_report_and_metadata(
     assert report_payload["ready_for_layer2"] is True
 
 
+def test_run_modal_batched_stage_outputs_reuses_heavy_runtimes_across_dates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Batched remote readiness runs instantiate the heavy topic and FinBERT models once."""
+    writer = local_writer(tmp_path, monkeypatch)
+    config = Layer1DailyConfig(
+        run_id="layer1-batch-remote",
+        from_date="2024-01-03",
+        to_date="2024-01-04",
+    )
+    news_delegate = fake_news_runner(writer, ["AAPL"])
+    topic_delegate = fake_topic_runner(writer, ["AAPL"])
+    sentiment_delegate = fake_sentiment_runner(writer, ["AAPL"])
+    regime_delegate = fake_regime_runner(writer)
+
+    class _FakeTextRuntime:
+        def __init__(self) -> None:
+            self.embedding_config = object()
+
+    text_runtime = _FakeTextRuntime()
+    finbert_runtime = object()
+    shared_embedder = object()
+    shared_scorer = object()
+    embedder_inputs: list[object] = []
+    scorer_inputs: list[object] = []
+    topic_labeler_inputs: list[object] = []
+    seen_embedders: list[object] = []
+    seen_scorers: list[object] = []
+
+    def news_runner(config, *, writer: R2Writer):
+        return news_delegate(config, writer=writer)
+
+    def topic_runner(config, *, writer: R2Writer, embedder, topic_labeler, runtime_config):
+        seen_embedders.append(embedder)
+        topic_labeler_inputs.append(topic_labeler)
+        assert runtime_config is text_runtime
+        return topic_delegate(config, writer=writer)
+
+    def finbert_runner(config, *, writer: R2Writer, scorer, runtime_config):
+        seen_scorers.append(scorer)
+        assert runtime_config is finbert_runtime
+        return sentiment_delegate(config, writer=writer)
+
+    def regime_runner(config, *, writer: R2Writer):
+        return regime_delegate(config, writer=writer)
+
+    outputs = _run_modal_batched_stage_outputs(
+        writer=writer,
+        config=config,
+        news_runner=news_runner,
+        text_topic_runner=topic_runner,
+        finbert_runner=finbert_runner,
+        regime_runner=regime_runner,
+        text_runtime_loader=lambda: text_runtime,
+        finbert_runtime_loader=lambda: finbert_runtime,
+        embedder_factory=lambda embedding_config: embedder_inputs.append(embedding_config)
+        or shared_embedder,
+        topic_labeler_factory=lambda runtime: f"topic-labeler-{len(topic_labeler_inputs)}-{id(runtime)}",
+        scorer_factory=lambda runtime: scorer_inputs.append(runtime) or shared_scorer,
+    )
+
+    assert embedder_inputs == [text_runtime.embedding_config]
+    assert scorer_inputs == [finbert_runtime]
+    assert seen_embedders == [shared_embedder, shared_embedder]
+    assert seen_scorers == [shared_scorer, shared_scorer]
+    assert len(topic_labeler_inputs) == 2
+    assert set(outputs.news_output_keys_by_date) == {"2024-01-03", "2024-01-04"}
+    assert set(outputs.topic_output_keys_by_date) == {"2024-01-03", "2024-01-04"}
+    assert set(outputs.sentiment_output_keys_by_date) == {"2024-01-03", "2024-01-04"}
+    assert set(outputs.regime_output_keys_by_date) == {"2024-01-03", "2024-01-04"}
+
+
 def test_main_returns_nonzero_when_validation_is_not_ready(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -661,6 +735,65 @@ def test_main_single_date_delegates_to_modal_orchestration_when_available(
             "hmm_train_start_date": "2023-11-01",
             "hmm_max_iterations": 44,
             "hmm_min_training_rows": 9,
+        }
+    ]
+
+
+def test_main_multi_date_delegates_to_batched_modal_orchestration_when_available(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Multi-date CLI runs stay remote instead of importing local heavy NLP dependencies."""
+    recorded: list[dict[str, object]] = []
+
+    monkeypatch.setattr(daily_layer1_module, "_modal_run_batched_layer1", object())
+    monkeypatch.setattr(
+        daily_layer1_module,
+        "modal_range_main",
+        lambda **kwargs: recorded.append(kwargs),
+    )
+    monkeypatch.setattr(
+        daily_layer1_module,
+        "run_daily_layer1",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected local run")),
+    )
+
+    exit_code = main(
+        [
+            "--run-id",
+            "layer1-range",
+            "--from-date",
+            "2024-01-03",
+            "--to-date",
+            "2024-01-05",
+            "--layer0-run-id",
+            "layer0-range",
+            "--benchmark-ticker",
+            " spy ",
+            "--min-sentence-chars",
+            "6",
+            "--hmm-train-start-date",
+            "2023-10-01",
+            "--hmm-max-iterations",
+            "41",
+            "--hmm-min-training-rows",
+            "13",
+            "--allow-layer0-manifest-date-range",
+        ]
+    )
+
+    assert exit_code == 0
+    assert recorded == [
+        {
+            "run_id": "layer1-range",
+            "from_date": "2024-01-03",
+            "to_date": "2024-01-05",
+            "layer0_run_id": "layer0-range",
+            "benchmark_ticker": "SPY",
+            "allow_layer0_manifest_date_range": True,
+            "min_sentence_chars": 6,
+            "hmm_train_start_date": "2023-10-01",
+            "hmm_max_iterations": 41,
+            "hmm_min_training_rows": 13,
         }
     ]
 

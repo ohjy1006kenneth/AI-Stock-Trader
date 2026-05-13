@@ -317,6 +317,7 @@ def test_daily_layer1_modal_app_builds_workspace_image(
     app = run_daily_layer1._define_modal_app()
     runtime = run_daily_layer1.load_modal_runtime_config()
     registered = app.functions["_modal_run_daily_layer1_entry"]
+    batched_registered = app.functions["_modal_run_batched_layer1_entry"]
     image = registered.options["image"]
 
     assert app.name == runtime.app_name
@@ -333,6 +334,9 @@ def test_daily_layer1_modal_app_builds_workspace_image(
     ]
     assert registered.options["timeout"] == runtime.timeout_seconds
     assert registered.options["secrets"][0].name == runtime.r2_secret_name
+    assert batched_registered.options["image"] is image
+    assert batched_registered.options["timeout"] == runtime.timeout_seconds
+    assert batched_registered.options["secrets"][0].name == runtime.r2_secret_name
 
 
 def test_daily_layer1_modal_main_orchestrates_stage_apps_before_final_assembly(
@@ -448,5 +452,42 @@ def test_daily_layer1_modal_main_orchestrates_stage_apps_before_final_assembly(
             "topic_feature_key": "features/layer1/topic_features/2024-01-02/smoke.parquet",
             "sentiment_feature_key": "features/layer1/sentiment_features/2024-01-02/smoke.parquet",
             "regime_output_key": "features/layer1_5/regime/smoke-daily-2024-01-02.parquet",
+        }
+    ]
+
+
+def test_daily_layer1_modal_range_main_dispatches_batched_remote_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The range entrypoint submits one batched Modal job for a multi-date window."""
+    final_remote = _FakeRegisteredFunction(name="modal_run_batched_layer1", options={})
+
+    monkeypatch.setattr(run_daily_layer1, "_modal_run_batched_layer1", final_remote)
+
+    run_daily_layer1.modal_range_main(
+        run_id="smoke-range",
+        from_date="2024-01-03",
+        to_date="2024-01-05",
+        layer0_run_id="layer0-range",
+        benchmark_ticker=" spy ",
+        allow_layer0_manifest_date_range=True,
+        min_sentence_chars=4,
+        hmm_train_start_date="2023-10-01",
+        hmm_max_iterations=61,
+        hmm_min_training_rows=12,
+    )
+
+    assert final_remote.remote_calls == [
+        {
+            "run_id": "smoke-range",
+            "from_date": "2024-01-03",
+            "to_date": "2024-01-05",
+            "layer0_run_id": "layer0-range",
+            "benchmark_ticker": "SPY",
+            "allow_layer0_manifest_date_range": True,
+            "min_sentence_chars": 4,
+            "hmm_train_start_date": "2023-10-01",
+            "hmm_max_iterations": 61,
+            "hmm_min_training_rows": 12,
         }
     ]
