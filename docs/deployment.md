@@ -113,8 +113,8 @@ Config ownership:
 - `config/finbert_sentiment.json` owns the FinBERT app name, R2 secret, timeout, and
   Modal image settings.
 - `config/modal.json` owns the Pi-triggered daily Layer 1 app name and poll settings, the
-  Layer 1 backfill and HMM regime app names, their timeouts, and shared Modal image
-  settings.
+  single-date Layer 1 timeout, dedicated batched Layer 1 timeout, Layer 1 backfill and
+  HMM regime app names, their timeouts, and shared Modal image settings.
 
 Production readiness command and inspection:
 

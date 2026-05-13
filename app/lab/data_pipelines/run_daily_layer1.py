@@ -267,6 +267,7 @@ class ModalRuntimeConfig:
     app_name: str
     r2_secret_name: str
     timeout_seconds: int
+    batch_timeout_seconds: int
     python_version: str
     requirements_path: str
 
@@ -525,10 +526,14 @@ def run_daily_layer1(
 def load_modal_runtime_config(path: Path = MODAL_CONFIG_PATH) -> ModalRuntimeConfig:
     """Load Modal app and image settings from repository config."""
     payload = json.loads(path.read_text(encoding="utf-8"))
+    timeout_seconds = int(payload["timeout_seconds"])
     return ModalRuntimeConfig(
         app_name=str(payload["layer1_daily_app_name"]),
         r2_secret_name=str(payload["r2_secret_name"]),
-        timeout_seconds=int(payload["timeout_seconds"]),
+        timeout_seconds=timeout_seconds,
+        batch_timeout_seconds=int(
+            payload.get("layer1_batch_timeout_seconds", timeout_seconds)
+        ),
         python_version=str(payload.get("python_version", "3.11")),
         requirements_path=str(payload.get("requirements_path", "requirements/modal.txt")),
     )
@@ -1356,12 +1361,12 @@ def modal_range_main(
     hmm_max_iterations: int = 100,
     hmm_min_training_rows: int = 30,
 ) -> None:
-    """Submit one multi-date Layer 1 readiness run through the batched Modal path."""
+    """Submit one multi-date Layer 1 readiness run via the Python entrypoint only."""
     if _modal_run_batched_layer1 is None:
         raise RuntimeError(
             "Batched Modal app is unavailable because the modal package is not installed"
         )
-    _run_modal_remote_function(
+    result = _run_modal_remote_function(
         _modal_run_batched_layer1,
         owning_app=app,
         run_id=run_id,
@@ -1375,6 +1380,14 @@ def modal_range_main(
         hmm_max_iterations=hmm_max_iterations,
         hmm_min_training_rows=hmm_min_training_rows,
     )
+    manifest_key = result.get("manifest_key")
+    ready_for_layer2 = result.get("ready_for_layer2")
+    if isinstance(manifest_key, str) and isinstance(ready_for_layer2, bool):
+        logger.info(
+            "Layer 1 batched Modal run complete manifest={} ready_for_layer2={}",
+            manifest_key,
+            ready_for_layer2,
+        )
 
 
 def modal_main(
@@ -1611,7 +1624,7 @@ def _define_modal_app() -> object | None:
     modal_run_batched_layer1 = app.function(
         image=image,
         secrets=[modal.Secret.from_name(runtime.r2_secret_name)],
-        timeout=runtime.timeout_seconds,
+        timeout=runtime.batch_timeout_seconds,
     )(_modal_run_batched_layer1_entry)
     app.local_entrypoint()(modal_main)
     _modal_run_batched_layer1 = modal_run_batched_layer1

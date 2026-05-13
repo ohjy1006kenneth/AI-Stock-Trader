@@ -335,7 +335,7 @@ def test_daily_layer1_modal_app_builds_workspace_image(
     assert registered.options["timeout"] == runtime.timeout_seconds
     assert registered.options["secrets"][0].name == runtime.r2_secret_name
     assert batched_registered.options["image"] is image
-    assert batched_registered.options["timeout"] == runtime.timeout_seconds
+    assert batched_registered.options["timeout"] == runtime.batch_timeout_seconds
     assert batched_registered.options["secrets"][0].name == runtime.r2_secret_name
 
 
@@ -461,8 +461,25 @@ def test_daily_layer1_modal_range_main_dispatches_batched_remote_call(
 ) -> None:
     """The range entrypoint submits one batched Modal job for a multi-date window."""
     final_remote = _FakeRegisteredFunction(name="modal_run_batched_layer1", options={})
+    logged_messages: list[tuple[str, bool]] = []
 
     monkeypatch.setattr(run_daily_layer1, "_modal_run_batched_layer1", final_remote)
+    monkeypatch.setattr(
+        run_daily_layer1.logger,
+        "info",
+        lambda message, manifest_key, ready_for_layer2: logged_messages.append(
+            (manifest_key, ready_for_layer2)
+        )
+        if message == "Layer 1 batched Modal run complete manifest={} ready_for_layer2={}"
+        else None,
+    )
+    final_remote.remote = lambda **kwargs: (
+        final_remote.remote_calls.append(kwargs)
+        or {
+            "manifest_key": "artifacts/manifests/layer1/smoke-range.json",
+            "ready_for_layer2": True,
+        }
+    )
 
     run_daily_layer1.modal_range_main(
         run_id="smoke-range",
@@ -490,4 +507,7 @@ def test_daily_layer1_modal_range_main_dispatches_batched_remote_call(
             "hmm_max_iterations": 61,
             "hmm_min_training_rows": 12,
         }
+    ]
+    assert logged_messages == [
+        ("artifacts/manifests/layer1/smoke-range.json", True)
     ]
