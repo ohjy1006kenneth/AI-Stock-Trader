@@ -11,9 +11,12 @@ This document describes deployment surfaces and responsibilities.
 ## External dependency roles
 
 - Wikipedia revision history: point-in-time S&P 500 membership source
-- Alpaca delayed SIP market data: canonical historical adjusted OHLCV archives from 2017-01-01 onward
+- Alpaca delayed SIP market data:
+  canonical historical adjusted OHLCV archives from 2017-01-01 onward
 - Alpaca News: Layer 0 raw Benzinga-sourced news archive used by Layer 1 text features
-- SimFin: Layer 0 as-reported fundamentals and earnings-date archive used by Layer 1 context features
+- SimFin:
+  Layer 0 as-reported fundamentals and earnings-date archive used by Layer 1
+  context features
 - FRED: Layer 0 macro and rates archive used by Layer 1 context and regime features
 - Alpaca Trading API: broker reconciliation and execution
 
@@ -42,7 +45,8 @@ Expected execution chain:
 ## Baseline rollout order
 
 1. Build and validate the complete Layer 0 historical backfill in R2:
-   Wikipedia universe, Alpaca delayed SIP OHLCV, Alpaca news, SimFin fundamentals/earnings, and FRED macro/rates
+   Wikipedia universe, Alpaca delayed SIP OHLCV, Alpaca news,
+   SimFin fundamentals/earnings, and FRED macro/rates
 2. Validate the Layer 0 daily incremental path:
    Alpaca live bars/news, SimFin refreshes, FRED refreshes, universe masks, and manifests
 3. Validate the Pi -> Modal Layer 1 handoff:
@@ -109,7 +113,7 @@ Config ownership:
 Production readiness command and inspection:
 
 ```bash
-HOME=/home/juyoungoh ./.venv/bin/modal run app/lab/data_pipelines/run_daily_layer1.py \
+./.venv/bin/modal run app/lab/data_pipelines/run_daily_layer1.py \
     --run-id layer1-readiness-2026-04-10-v7 \
     --as-of-date 2026-04-10 \
     --layer0-run-id layer0-historical-2017-01-01_to_2026-04-10 \
@@ -119,7 +123,7 @@ HOME=/home/juyoungoh ./.venv/bin/modal run app/lab/data_pipelines/run_daily_laye
 Generate the final operator-facing readiness report for the same run/window:
 
 ```bash
-HOME=/home/juyoungoh ./.venv/bin/python app/lab/data_pipelines/validate_layer1_archive.py \
+./.venv/bin/python app/lab/data_pipelines/validate_layer1_archive.py \
     --run-id layer1-readiness-2026-04-10-v7 \
     --from-date 2026-04-10 \
     --to-date 2026-04-10 \
@@ -135,6 +139,20 @@ Inspect R2 outputs via:
 - `artifacts/reports/integration/layer1_archive_validation_{run_id}_{from}_to_{to}.json`
 - `features/layer1/`, `features/layer1/news_sentiment/`, `features/layer1/topic_features/`,
   `features/layer1/sentiment_features/`, and `features/layer1_5/regime/`
+
+For a targeted correctness audit on a sample of stored Layer 1 histories, run:
+
+```bash
+./.venv/bin/python app/lab/data_pipelines/audit_layer1_features.py \
+    --as-of-date 2026-04-10 \
+    --tickers AAPL,MSFT \
+    --output-dir artifacts/reports/diagnostics
+```
+
+This audit is read-only with respect to production feature artifacts. It recomputes
+deterministic Layer 0/1 branches from existing archives, validates the feature
+catalog, and writes a local JSON report plus text summary. See
+`docs/layer1_feature_audit.md` for interpretation details.
 
 Operational notes for the readiness report:
 - The local validator writes

@@ -35,6 +35,14 @@ TOPIC_LABEL_COLUMNS: tuple[str, ...] = (
     "topic_probability",
 )
 
+TOPIC_FEATURE_COLUMNS: tuple[str, ...] = (
+    "nlp_sentence_count",
+    "nlp_topic_count",
+    "nlp_dominant_topic_id",
+    "nlp_dominant_topic_probability",
+    "nlp_mean_topic_probability",
+)
+
 
 class SentenceEmbedder(Protocol):
     """Sentence embedding provider used by Layer 1 topic features."""

@@ -46,6 +46,18 @@ REQUIRED_SENTIMENT_COLUMNS: frozenset[str] = frozenset(
     }
 )
 
+SENTIMENT_FEATURE_COLUMNS: tuple[str, ...] = (
+    "nlp_sentiment_positive",
+    "nlp_sentiment_negative",
+    "nlp_sentiment_neutral",
+    "nlp_sentiment_score",
+    "nlp_sentiment_strength",
+    "nlp_sentiment_std",
+    "nlp_article_count",
+    "nlp_sentence_count",
+    "nlp_relevance_score",
+)
+
 
 @dataclass(frozen=True)
 class SourceCredibilityConfig:
