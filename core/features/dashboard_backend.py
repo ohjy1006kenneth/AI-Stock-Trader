@@ -20,6 +20,11 @@ from core.features.catalog import (
     validate_feature_value,
 )
 from core.features.io import read_feature_history_window
+from core.features.market_spotchecks import (
+    MarketFeatureSpotCheckRecord,
+    build_market_feature_spot_checks,
+    summarize_market_feature_spot_checks,
+)
 from services.r2.paths import layer1_ticker_history_path
 from services.r2.writer import R2Writer
 
@@ -171,6 +176,8 @@ class Layer1AuditDashboardReport:
     feature_null_summaries: list[dict[str, object]]
     family_status_summaries: list[dict[str, object]]
     outlier_records: list[dict[str, object]]
+    spot_check_records: list[dict[str, object]]
+    formula_audit_cards: list[dict[str, object]]
     summary: dict[str, int]
 
     def to_dict(self) -> dict[str, object]:
@@ -274,11 +281,16 @@ def build_layer1_audit_dashboard_report(
         feature_summaries=feature_null_summaries,
         outlier_records=outlier_records,
     )
+    spot_check_records, formula_audit_cards = build_market_feature_spot_checks(
+        records=sorted_rows,
+        writer=active_writer,
+    )
     summary = _build_dashboard_summary(
         selection_rows=selection_rows,
         load_warnings=load_warnings,
         family_status_summaries=family_status_summaries,
         outlier_records=outlier_records,
+        spot_check_records=spot_check_records,
     )
 
     return Layer1AuditDashboardReport(
@@ -304,6 +316,8 @@ def build_layer1_audit_dashboard_report(
         feature_null_summaries=[summary_item.to_dict() for summary_item in feature_null_summaries],
         family_status_summaries=[summary_item.to_dict() for summary_item in family_status_summaries],
         outlier_records=[record.to_dict() for record in outlier_records],
+        spot_check_records=[record.to_dict() for record in spot_check_records],
+        formula_audit_cards=[card.to_dict() for card in formula_audit_cards],
         summary=summary,
     )
 
@@ -355,6 +369,12 @@ def render_layer1_audit_dashboard_summary(report: Layer1AuditDashboardReport) ->
             f"FAIL={report.summary.get('family_fail_count', 0)}"
         ),
         f"Outlier records: {report.summary.get('outlier_count', 0)}",
+        (
+            "Market spot checks: "
+            f"PASS={report.summary.get('spot_check_pass_count', 0)} "
+            f"WARN={report.summary.get('spot_check_warn_count', 0)} "
+            f"FAIL={report.summary.get('spot_check_fail_count', 0)}"
+        ),
         "",
         "Family Status:",
     ]
@@ -378,6 +398,15 @@ def render_layer1_audit_dashboard_summary(report: Layer1AuditDashboardReport) ->
                 "  "
                 f"{item['ticker']} {item['date']} {item['feature_name']} "
                 f"{item['rule_type']} value={item['value']}"
+            )
+    if report.spot_check_records:
+        lines.extend(["", "Market Spot Check Samples:"])
+        for item in report.spot_check_records[:10]:
+            lines.append(
+                "  "
+                f"{item['ticker']} {item['date']} {item['feature_name']} "
+                f"{str(item['status']).upper()} stored={item['stored_value']} "
+                f"expected={item['expected_value']}"
             )
     return "\n".join(lines) + "\n"
 
@@ -703,10 +732,12 @@ def _build_dashboard_summary(
     load_warnings: Sequence[DashboardLoadWarning],
     family_status_summaries: Sequence[FeatureFamilyStatus],
     outlier_records: Sequence[OutlierRecord],
+    spot_check_records: Sequence[MarketFeatureSpotCheckRecord],
 ) -> dict[str, int]:
     counts = {"pass": 0, "warn": 0, "fail": 0}
     for item in family_status_summaries:
         counts[item.status] += 1
+    spot_check_counts = summarize_market_feature_spot_checks(spot_check_records)
     return {
         "rows_loaded": len(selection_rows),
         "load_warning_count": len(load_warnings),
@@ -714,6 +745,9 @@ def _build_dashboard_summary(
         "family_warn_count": counts["warn"],
         "family_fail_count": counts["fail"],
         "outlier_count": len(outlier_records),
+        "spot_check_pass_count": spot_check_counts["pass"],
+        "spot_check_warn_count": spot_check_counts["warn"],
+        "spot_check_fail_count": spot_check_counts["fail"],
     }
 
 

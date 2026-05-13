@@ -11,6 +11,8 @@ writes local report artifacts under `artifacts/reports/diagnostics/` by default.
 This backend is intentionally scoped to Layer 0/1 audit visibility only:
 - feature completeness heatmap cells
 - feature-family status cards
+- raw-vs-computed market feature spot checks from Layer 0 OHLCV
+- formula audit cards for selected deterministic market features
 - null-rate summaries by feature and family
 - numeric outlier and range-violation records
 
@@ -59,8 +61,19 @@ text file is a compact operator summary.
   - `distribution_outlier`: the value fell outside the dashboard's
     `Q1 - 3*IQR` / `Q3 + 3*IQR` fence, computed only when at least four valid
     observations exist for that feature in the selected window
+- `spot_check_records`: point-in-time-safe raw-vs-stored comparisons for
+  deterministic market features currently including `returns_1d`,
+  `returns_5d`, `realized_vol_21d`, `volume_ratio_20`, and `rsi_14`. Each
+  record includes the raw OHLCV inputs used, recomputed value, stored Layer 1
+  value, absolute/relative difference, tolerance, status, and explicit missing
+  reason when the feature could not be recomputed.
+- `formula_audit_cards`: human-readable calculation payloads for the same
+  deterministic market features. These cards show the exact formula text, the
+  concrete numbers substituted for the selected `(date, ticker)`, and the
+  point-in-time note describing the latest source bar used.
 
 ## Exit Code
 
-- `0` when no family status resolved to `fail`
-- `1` when at least one family status resolved to `fail`
+- `0` when no family status resolved to `fail` and no market spot check
+  resolved to `fail`
+- `1` when at least one family status or market spot check resolved to `fail`

@@ -80,7 +80,9 @@ def main(argv: list[str] | None = None) -> int:
     logger.info("Layer 1 audit dashboard JSON written: {}", output_paths.json_path)
     logger.info("Layer 1 audit dashboard summary written: {}", output_paths.summary_path)
     logger.info("\n{}", render_layer1_audit_dashboard_summary(report))
-    return 1 if report.summary.get("family_fail_count", 0) > 0 else 0
+    if report.summary.get("family_fail_count", 0) > 0:
+        return 1
+    return 1 if report.summary.get("spot_check_fail_count", 0) > 0 else 0
 
 
 if __name__ == "__main__":
