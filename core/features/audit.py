@@ -1,0 +1,1466 @@
+"""Layer 1 feature correctness audit helpers."""
+from __future__ import annotations
+
+import csv
+import importlib
+import io
+import json
+import math
+from collections.abc import Mapping, Sequence
+from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any, Literal, Protocol
+
+from loguru import logger
+
+from core.contracts.schemas import FeatureRecord, PipelineManifestRecord, RunStatus
+from core.features.context_features import (
+    CONTEXT_FEATURE_COLUMNS,
+    compute_context_features,
+    context_features_to_records,
+)
+from core.features.fundamentals_features import FUNDAMENTAL_FEATURE_COLUMNS
+from core.features.io import parquet_bytes_to_feature_records
+from core.features.loaders import load_fundamentals_frame, load_macro_frame, load_ohlcv_frame
+from core.features.macro_features import MACRO_FEATURE_COLUMNS, compute_macro_features
+from core.features.market_features import (
+    MARKET_FEATURE_COLUMNS,
+    compute_market_features,
+    market_features_to_records,
+)
+from core.features.news_preprocessing import (
+    news_sentiment_frame_to_records,
+    preprocess_news_articles,
+)
+from core.features.regime_detection import (
+    HMM_REGIME_COLUMNS,
+    HMM_REGIME_FEATURE_COLUMNS,
+    regime_features_to_records,
+)
+from core.features.sentiment_features import (
+    SENTIMENT_FEATURE_COLUMNS,
+    load_source_credibility_config,
+    sentiment_feature_records_from_scored_news,
+)
+from core.features.text_topics import TOPIC_FEATURE_COLUMNS, topic_labels_to_feature_records
+from services.r2.paths import (
+    layer1_ticker_history_path,
+    pipeline_manifest_path,
+    raw_news_path,
+    raw_universe_path,
+)
+from services.r2.writer import R2Writer
+
+AuditStatus = Literal["pass", "warn", "fail"]
+DEFAULT_AUDIT_OUTPUT_DIR = Path("artifacts/reports/diagnostics")
+FLOAT_REL_TOL = 1e-7
+FLOAT_ABS_TOL = 1e-9
+_SENTIMENT_BUCKET_TIMEZONE = "America/New_York"
+
+
+class AuditReader(Protocol):
+    """Object-store operations required by the Layer 1 audit harness."""
+
+    def exists(self, key: str) -> bool:
+        """Return True when `key` exists."""
+
+    def get_object(self, key: str) -> bytes:
+        """Return object bytes stored at `key`."""
+
+    def list_keys(self, prefix: str) -> list[str]:
+        """List keys beneath `prefix`."""
+
+
+@dataclass(frozen=True)
+class FeatureRule:
+    """Catalog rule for one named feature."""
+
+    owner: str
+    kind: Literal["number", "string", "boolean"]
+    required: bool
+    nullable: bool = True
+    minimum: float | None = None
+    maximum: float | None = None
+    allowed_values: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class AuditFinding:
+    """One operator-facing audit result."""
+
+    status: AuditStatus
+    category: str
+    subject: str
+    message: str
+    details: dict[str, object] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, object]:
+        """Return a JSON-serializable representation."""
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class BranchAuditResult:
+    """Comparison result for one branch/ticker/date audit."""
+
+    branch: str
+    ticker: str
+    as_of_date: str
+    status: AuditStatus
+    compared_features: int
+    mismatches: list[str] = field(default_factory=list)
+    missing_expected_features: list[str] = field(default_factory=list)
+    unexpected_actual_features: list[str] = field(default_factory=list)
+    artifact_key: str | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        """Return a JSON-serializable representation."""
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class Layer1FeatureAuditReport:
+    """Durable Layer 1 audit report for one date/ticker sample."""
+
+    run_id: str
+    as_of_date: str
+    benchmark_ticker: str
+    tickers: tuple[str, ...]
+    generated_at: str
+    summary: dict[str, int]
+    catalog_summary: dict[str, object]
+    branch_results: list[dict[str, object]]
+    leakage_checks: list[dict[str, object]]
+    history_rows: dict[str, dict[str, object]]
+    findings: list[dict[str, object]]
+
+    def to_dict(self) -> dict[str, object]:
+        """Return a JSON-serializable representation."""
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class AuditOutputPaths:
+    """Filesystem targets written for one completed audit."""
+
+    json_path: Path
+    summary_path: Path
+
+
+def audit_layer1_features(
+    *,
+    run_id: str,
+    as_of_date: str,
+    tickers: Sequence[str],
+    benchmark_ticker: str = "SPY",
+    writer: AuditReader | None = None,
+) -> Layer1FeatureAuditReport:
+    """Audit stored Layer 1 histories against deterministic recomputation."""
+    _validate_iso_date(as_of_date, label="as_of_date")
+    normalized_tickers = _normalize_tickers(tickers)
+    if not normalized_tickers:
+        raise ValueError("tickers must contain at least one non-empty ticker")
+
+    active_writer = writer or R2Writer()
+    findings: list[AuditFinding] = []
+    branch_results: list[BranchAuditResult] = []
+    leakage_checks: list[AuditFinding] = []
+    catalog = feature_catalog()
+    history_rows = _load_history_rows(
+        writer=active_writer,
+        as_of_date=as_of_date,
+        tickers=normalized_tickers,
+        findings=findings,
+    )
+
+    universe_scope = _load_universe_scope(active_writer, as_of_date, findings)
+    news_artifact = _load_daily_branch_manifest(
+        writer=active_writer,
+        stage="layer1_news_preprocessing",
+        as_of_date=as_of_date,
+    )
+    topic_artifact = _load_daily_branch_manifest(
+        writer=active_writer,
+        stage="layer1_text_topics",
+        as_of_date=as_of_date,
+    )
+    sentiment_artifact = _load_daily_branch_manifest(
+        writer=active_writer,
+        stage="layer1_finbert_sentiment",
+        as_of_date=as_of_date,
+    )
+    regime_artifact = _load_regime_manifest(writer=active_writer, as_of_date=as_of_date)
+
+    catalog_summary = _validate_catalog(
+        history_rows=history_rows,
+        catalog=catalog,
+        findings=findings,
+    )
+
+    benchmark_bars = load_ohlcv_frame(  # type: ignore[arg-type]
+        benchmark_ticker,
+        writer=active_writer,
+    )
+    macro_frame = load_macro_frame(writer=active_writer)  # type: ignore[arg-type]
+
+    preprocessed_records = _audit_news_preprocessing(
+        writer=active_writer,
+        as_of_date=as_of_date,
+        tickers=normalized_tickers,
+        allowed_universe=universe_scope,
+        artifact=news_artifact,
+        findings=findings,
+        leakage_checks=leakage_checks,
+    )
+    topic_expected = _audit_topic_branch(
+        writer=active_writer,
+        artifact=topic_artifact,
+        as_of_date=as_of_date,
+        tickers=normalized_tickers,
+        findings=findings,
+    )
+    sentiment_expected = _audit_sentiment_branch(
+        writer=active_writer,
+        artifact=sentiment_artifact,
+        as_of_date=as_of_date,
+        tickers=normalized_tickers,
+        findings=findings,
+        leakage_checks=leakage_checks,
+    )
+    regime_expected = _audit_regime_branch(
+        writer=active_writer,
+        artifact=regime_artifact,
+        as_of_date=as_of_date,
+        tickers=normalized_tickers,
+        findings=findings,
+        leakage_checks=leakage_checks,
+    )
+
+    for ticker in normalized_tickers:
+        history = history_rows.get(ticker)
+        if history is None:
+            continue
+        ohlcv = load_ohlcv_frame(ticker, writer=active_writer)  # type: ignore[arg-type]
+        try:
+            fundamentals = load_fundamentals_frame(  # type: ignore[arg-type]
+                ticker,
+                writer=active_writer,
+            )
+        except FileNotFoundError:
+            fundamentals = _empty_fundamentals_frame()
+            findings.append(
+                AuditFinding(
+                    status="warn",
+                    category="layer0",
+                    subject=f"{ticker} fundamentals archive",
+                    message="Fundamentals archive missing; audit used an empty archive.",
+                )
+            )
+
+        market_record = _record_for_date(
+            market_features_to_records(
+                compute_market_features(ohlcv, ticker, benchmark_bars=benchmark_bars)
+            ),
+            as_of_date,
+        )
+        context_record = _record_for_date(
+            context_features_to_records(
+                compute_context_features(
+                    fundamentals=fundamentals,
+                    ohlcv=ohlcv,
+                    macro=macro_frame,
+                    ticker=ticker,
+                    macro_features=compute_macro_features(macro_frame, ohlcv["date"].tolist()),
+                    target_dates=(as_of_date,),
+                )
+            ),
+            as_of_date,
+        )
+
+        branch_results.append(
+            _compare_branch(
+                branch="market",
+                ticker=ticker,
+                as_of_date=as_of_date,
+                actual=history.features,
+                expected=market_record.features if market_record is not None else {},
+                feature_names=MARKET_FEATURE_COLUMNS,
+                artifact_key=None,
+                findings=findings,
+            )
+        )
+        branch_results.append(
+            _compare_branch(
+                branch="context",
+                ticker=ticker,
+                as_of_date=as_of_date,
+                actual=history.features,
+                expected=context_record.features if context_record is not None else {},
+                feature_names=CONTEXT_FEATURE_COLUMNS,
+                artifact_key=None,
+                findings=findings,
+            )
+        )
+        branch_results.append(
+            _compare_branch(
+                branch="topics",
+                ticker=ticker,
+                as_of_date=as_of_date,
+                actual=history.features,
+                expected=topic_expected.get(ticker, {}),
+                feature_names=TOPIC_FEATURE_COLUMNS,
+                artifact_key=topic_artifact.output_path if topic_artifact is not None else None,
+                findings=findings,
+            )
+        )
+        branch_results.append(
+            _compare_branch(
+                branch="sentiment",
+                ticker=ticker,
+                as_of_date=as_of_date,
+                actual=history.features,
+                expected=sentiment_expected.get(ticker, {}),
+                feature_names=SENTIMENT_FEATURE_COLUMNS,
+                artifact_key=(
+                    _manifest_metadata_str(sentiment_artifact, "sentiment_feature_key")
+                    if sentiment_artifact is not None
+                    else None
+                ),
+                findings=findings,
+            )
+        )
+        branch_results.append(
+            _compare_branch(
+                branch="regime",
+                ticker=ticker,
+                as_of_date=as_of_date,
+                actual=history.features,
+                expected=regime_expected.get(ticker, {}),
+                feature_names=HMM_REGIME_FEATURE_COLUMNS,
+                artifact_key=regime_artifact.output_path if regime_artifact is not None else None,
+                findings=findings,
+            )
+        )
+        leakage_checks.extend(
+            _fundamentals_leakage_checks(
+                ticker=ticker,
+                as_of_date=as_of_date,
+                fundamentals=fundamentals,
+            )
+        )
+        leakage_checks.extend(
+            _macro_leakage_checks(
+                as_of_date=as_of_date,
+                macro_frame=macro_frame,
+            )
+        )
+
+    all_findings = findings + leakage_checks
+    summary = _summarize_findings(all_findings)
+    return Layer1FeatureAuditReport(
+        run_id=run_id,
+        as_of_date=as_of_date,
+        benchmark_ticker=benchmark_ticker,
+        tickers=normalized_tickers,
+        generated_at=datetime.now(UTC).replace(microsecond=0).isoformat(),
+        summary=summary,
+        catalog_summary=catalog_summary,
+        branch_results=[result.to_dict() for result in branch_results],
+        leakage_checks=[item.to_dict() for item in leakage_checks],
+        history_rows={
+            ticker: {
+                "history_key": layer1_ticker_history_path(ticker),
+                "feature_count": len(record.features),
+            }
+            for ticker, record in history_rows.items()
+        },
+        findings=[item.to_dict() for item in all_findings],
+    )
+
+
+def feature_catalog() -> dict[str, FeatureRule]:
+    """Return the canonical Layer 1 feature catalog used by the audit."""
+    rules: dict[str, FeatureRule] = {}
+    for name in MARKET_FEATURE_COLUMNS:
+        rules[name] = FeatureRule(owner="market", kind="number", required=True)
+    for name in (
+        "realized_vol_5d",
+        "realized_vol_21d",
+        "vol_ratio_5_21",
+        "atr_14",
+        "volume_ratio_20",
+    ):
+        rules[name] = FeatureRule(owner="market", kind="number", required=True, minimum=0.0)
+    rules["golden_cross_50_200"] = FeatureRule(
+        owner="market",
+        kind="number",
+        required=True,
+        minimum=0.0,
+        maximum=1.0,
+    )
+    rules["rsi_14"] = FeatureRule(
+        owner="market",
+        kind="number",
+        required=True,
+        minimum=0.0,
+        maximum=100.0,
+    )
+
+    for name in FUNDAMENTAL_FEATURE_COLUMNS:
+        rules[name] = FeatureRule(owner="fundamentals", kind="number", required=True)
+    rules["days_to_next_earnings"] = FeatureRule(
+        owner="fundamentals",
+        kind="number",
+        required=True,
+        minimum=0.0,
+    )
+    rules["pre_earnings_flag"] = FeatureRule(
+        owner="fundamentals",
+        kind="number",
+        required=True,
+        minimum=0.0,
+        maximum=1.0,
+    )
+    rules["post_earnings_flag"] = FeatureRule(
+        owner="fundamentals",
+        kind="number",
+        required=True,
+        minimum=0.0,
+        maximum=1.0,
+    )
+
+    for name in MACRO_FEATURE_COLUMNS:
+        rules[name] = FeatureRule(owner="macro", kind="number", required=True)
+    for name in (
+        "fed_funds_rate",
+        "treasury_3m",
+        "treasury_2y",
+        "treasury_10y",
+        "vix_level",
+        "dollar_index",
+        "cpi_level",
+        "high_yield_spread",
+    ):
+        rules[name] = FeatureRule(owner="macro", kind="number", required=True, minimum=0.0)
+
+    rules["nlp_sentence_count"] = FeatureRule(
+        owner="nlp",
+        kind="number",
+        required=False,
+        minimum=0.0,
+    )
+    rules["nlp_topic_count"] = FeatureRule(
+        owner="topics",
+        kind="number",
+        required=False,
+        minimum=0.0,
+    )
+    rules["nlp_dominant_topic_id"] = FeatureRule(owner="topics", kind="number", required=False)
+    rules["nlp_dominant_topic_probability"] = FeatureRule(
+        owner="topics",
+        kind="number",
+        required=False,
+        minimum=0.0,
+        maximum=1.0,
+    )
+    rules["nlp_mean_topic_probability"] = FeatureRule(
+        owner="topics",
+        kind="number",
+        required=False,
+        minimum=0.0,
+        maximum=1.0,
+    )
+
+    for name in (
+        "nlp_sentiment_positive",
+        "nlp_sentiment_negative",
+        "nlp_sentiment_neutral",
+        "nlp_sentiment_strength",
+    ):
+        rules[name] = FeatureRule(
+            owner="sentiment",
+            kind="number",
+            required=False,
+            minimum=0.0,
+            maximum=1.0,
+        )
+    rules["nlp_sentiment_score"] = FeatureRule(
+        owner="sentiment",
+        kind="number",
+        required=False,
+        minimum=-1.0,
+        maximum=1.0,
+    )
+    rules["nlp_sentiment_std"] = FeatureRule(
+        owner="sentiment",
+        kind="number",
+        required=False,
+        minimum=0.0,
+    )
+    rules["nlp_article_count"] = FeatureRule(
+        owner="sentiment",
+        kind="number",
+        required=False,
+        minimum=0.0,
+    )
+    rules["nlp_relevance_score"] = FeatureRule(
+        owner="sentiment",
+        kind="number",
+        required=False,
+        minimum=0.0,
+    )
+
+    rules["regime_label"] = FeatureRule(
+        owner="regime",
+        kind="string",
+        required=True,
+        nullable=False,
+        allowed_values=("bear", "sideways", "bull"),
+    )
+    rules["regime_confidence"] = FeatureRule(
+        owner="regime",
+        kind="number",
+        required=True,
+        minimum=0.0,
+        maximum=1.0,
+    )
+    for name in ("regime_prob_bear", "regime_prob_sideways", "regime_prob_bull"):
+        rules[name] = FeatureRule(
+            owner="regime",
+            kind="number",
+            required=True,
+            minimum=0.0,
+            maximum=1.0,
+        )
+    return rules
+
+
+def write_audit_report(
+    report: Layer1FeatureAuditReport,
+    *,
+    output_dir: Path | None = None,
+) -> AuditOutputPaths:
+    """Write the durable JSON report and a human-readable summary file."""
+    target_dir = output_dir or DEFAULT_AUDIT_OUTPUT_DIR
+    target_dir.mkdir(parents=True, exist_ok=True)
+    json_path = target_dir / audit_report_json_filename(report)
+    summary_path = target_dir / audit_report_summary_filename(report)
+    json_path.write_text(json.dumps(report.to_dict(), indent=2, sort_keys=True), encoding="utf-8")
+    summary_path.write_text(render_audit_summary(report), encoding="utf-8")
+    return AuditOutputPaths(json_path=json_path, summary_path=summary_path)
+
+
+def audit_report_json_filename(report: Layer1FeatureAuditReport) -> str:
+    """Return the deterministic JSON filename for one Layer 1 audit."""
+    return f"layer1_feature_audit_{report.run_id}_{report.as_of_date}.json"
+
+
+def audit_report_summary_filename(report: Layer1FeatureAuditReport) -> str:
+    """Return the deterministic text-summary filename for one Layer 1 audit."""
+    return f"layer1_feature_audit_{report.run_id}_{report.as_of_date}.txt"
+
+
+def render_audit_summary(report: Layer1FeatureAuditReport) -> str:
+    """Render a concise operator summary for one completed audit."""
+    lines = [
+        "Layer 1 Feature Audit",
+        f"Run ID: {report.run_id}",
+        f"As-of date: {report.as_of_date}",
+        f"Tickers: {', '.join(report.tickers)}",
+        f"Benchmark: {report.benchmark_ticker}",
+        (
+            "Summary: "
+            f"PASS={report.summary.get('pass', 0)} "
+            f"WARN={report.summary.get('warn', 0)} "
+            f"FAIL={report.summary.get('fail', 0)}"
+        ),
+        "",
+        "Catalog:",
+        (
+            f"  features_checked={report.catalog_summary.get('features_checked', 0)} "
+            f"unknown={report.catalog_summary.get('unknown_features', 0)} "
+            f"missing_required={report.catalog_summary.get('missing_required', 0)} "
+            f"type_or_range_failures={report.catalog_summary.get('value_failures', 0)}"
+        ),
+        "",
+        "Branch Results:",
+    ]
+    for branch_result in report.branch_results:
+        lines.append(
+            "  "
+            f"{branch_result['branch']}:{branch_result['ticker']} "
+            f"{str(branch_result['status']).upper()} "
+            f"compared={branch_result['compared_features']} "
+            f"mismatches={len(branch_result['mismatches'])}"
+        )
+    lines.extend(["", "Key Findings:"])
+    for finding in report.findings:
+        if finding["status"] == "pass":
+            continue
+        lines.append(
+            f"  {str(finding['status']).upper()} "
+            f"[{finding['category']}] {finding['subject']}: {finding['message']}"
+        )
+    if all(item["status"] == "pass" for item in report.findings):
+        lines.append("  PASS [audit] No warnings or failures.")
+    return "\n".join(lines) + "\n"
+
+
+def _load_history_rows(
+    *,
+    writer: AuditReader,
+    as_of_date: str,
+    tickers: Sequence[str],
+    findings: list[AuditFinding],
+) -> dict[str, FeatureRecord]:
+    rows: dict[str, FeatureRecord] = {}
+    for ticker in tickers:
+        key = layer1_ticker_history_path(ticker)
+        if not writer.exists(key):
+            findings.append(
+                AuditFinding(
+                    status="fail",
+                    category="history",
+                    subject=ticker,
+                    message="Missing per-ticker Layer 1 history file.",
+                    details={"history_key": key},
+                )
+            )
+            continue
+        records = parquet_bytes_to_feature_records(writer.get_object(key))
+        matches = [record for record in records if record.date == as_of_date]
+        if len(matches) != 1:
+            findings.append(
+                AuditFinding(
+                    status="fail",
+                    category="history",
+                    subject=ticker,
+                    message="Expected exactly one history row for the audited date.",
+                    details={
+                        "history_key": key,
+                        "matching_rows": len(matches),
+                        "as_of_date": as_of_date,
+                    },
+                )
+            )
+            continue
+        rows[ticker] = matches[0]
+        findings.append(
+            AuditFinding(
+                status="pass",
+                category="history",
+                subject=ticker,
+                message="Loaded Layer 1 history row for the audited date.",
+                details={"history_key": key, "feature_count": len(matches[0].features)},
+            )
+        )
+    return rows
+
+
+def _load_universe_scope(
+    writer: AuditReader,
+    as_of_date: str,
+    findings: list[AuditFinding],
+) -> set[str] | None:
+    key = raw_universe_path(as_of_date)
+    if not writer.exists(key):
+        findings.append(
+            AuditFinding(
+                status="warn",
+                category="layer0",
+                subject=as_of_date,
+                message="Universe mask missing; news preprocessing audit used no ticker filter.",
+                details={"universe_key": key},
+            )
+        )
+        return None
+    payload = writer.get_object(key).decode("utf-8")
+    eligible: set[str] = set()
+    for row in csv.DictReader(io.StringIO(payload)):
+        ticker = _normalize_ticker(row.get("ticker"))
+        if ticker is None:
+            continue
+        if (
+            _truthy(row.get("in_universe"))
+            and _truthy(row.get("tradable"), default=True)
+            and _truthy(row.get("liquid"), default=True)
+            and _truthy(row.get("data_quality_ok"), default=True)
+            and not _truthy(row.get("halted"))
+        ):
+            eligible.add(ticker)
+    findings.append(
+        AuditFinding(
+            status="pass",
+            category="layer0",
+            subject=as_of_date,
+            message="Loaded Layer 0 eligible universe mask for the audited date.",
+            details={"universe_key": key, "eligible_ticker_count": len(eligible)},
+        )
+    )
+    return eligible
+
+
+def _validate_catalog(
+    *,
+    history_rows: Mapping[str, FeatureRecord],
+    catalog: Mapping[str, FeatureRule],
+    findings: list[AuditFinding],
+) -> dict[str, object]:
+    features_checked = 0
+    unknown_features = 0
+    missing_required = 0
+    value_failures = 0
+
+    for ticker, record in sorted(history_rows.items()):
+        row_unknown = sorted(set(record.features) - set(catalog))
+        row_missing = sorted(
+            name for name, rule in catalog.items() if rule.required and name not in record.features
+        )
+        row_failures: list[str] = []
+        for feature_name, feature_value in sorted(record.features.items()):
+            rule = catalog.get(feature_name)
+            if rule is None:
+                continue
+            features_checked += 1
+            message = _validate_feature_value(feature_name, feature_value, rule)
+            if message is not None:
+                row_failures.append(message)
+        unknown_features += len(row_unknown)
+        missing_required += len(row_missing)
+        value_failures += len(row_failures)
+
+        if row_unknown:
+            findings.append(
+                AuditFinding(
+                    status="warn",
+                    category="catalog",
+                    subject=ticker,
+                    message="History row contains uncataloged feature names.",
+                    details={"unknown_features": row_unknown},
+                )
+            )
+        if row_missing:
+            findings.append(
+                AuditFinding(
+                    status="fail",
+                    category="catalog",
+                    subject=ticker,
+                    message="History row is missing required catalog features.",
+                    details={"missing_required_features": row_missing},
+                )
+            )
+        if row_failures:
+            findings.append(
+                AuditFinding(
+                    status="fail",
+                    category="catalog",
+                    subject=ticker,
+                    message="History row violates feature type/range expectations.",
+                    details={"violations": row_failures},
+                )
+            )
+        if not row_unknown and not row_missing and not row_failures:
+            findings.append(
+                AuditFinding(
+                    status="pass",
+                    category="catalog",
+                    subject=ticker,
+                    message="Feature catalog validation passed.",
+                    details={"feature_count": len(record.features)},
+                )
+            )
+
+    return {
+        "features_checked": features_checked,
+        "unknown_features": unknown_features,
+        "missing_required": missing_required,
+        "value_failures": value_failures,
+    }
+
+
+def _validate_feature_value(
+    feature_name: str,
+    value: object,
+    rule: FeatureRule,
+) -> str | None:
+    if value is None:
+        if rule.nullable:
+            return None
+        return f"{feature_name}: null value is not allowed"
+    if rule.kind == "string":
+        if not isinstance(value, str):
+            return f"{feature_name}: expected string, got {type(value).__name__}"
+        if rule.allowed_values and value not in rule.allowed_values:
+            return f"{feature_name}: {value!r} not in {sorted(rule.allowed_values)}"
+        return None
+    if rule.kind == "boolean":
+        if not isinstance(value, bool):
+            return f"{feature_name}: expected boolean, got {type(value).__name__}"
+        return None
+
+    numeric = _to_float(value)
+    if numeric is None:
+        return f"{feature_name}: expected numeric value, got {value!r}"
+    if rule.minimum is not None and numeric < rule.minimum:
+        return f"{feature_name}: {numeric} < minimum {rule.minimum}"
+    if rule.maximum is not None and numeric > rule.maximum:
+        return f"{feature_name}: {numeric} > maximum {rule.maximum}"
+    return None
+
+
+def _audit_news_preprocessing(
+    *,
+    writer: AuditReader,
+    as_of_date: str,
+    tickers: Sequence[str],
+    allowed_universe: set[str] | None,
+    artifact: PipelineManifestRecord | None,
+    findings: list[AuditFinding],
+    leakage_checks: list[AuditFinding],
+) -> list[FeatureRecord]:
+    key = raw_news_path(as_of_date)
+    if not writer.exists(key):
+        findings.append(
+            AuditFinding(
+                status="warn",
+                category="news",
+                subject=as_of_date,
+                message="Raw Layer 0 news archive missing; skipped preprocessing audit.",
+                details={"raw_news_key": key},
+            )
+        )
+        return []
+    raw_articles = _load_json_lines(writer.get_object(key))
+    preprocessed = preprocess_news_articles(
+        raw_articles,
+        as_of_date=as_of_date,
+        point_in_time_tickers=allowed_universe,
+    )
+    leakage_checks.append(
+        AuditFinding(
+            status="pass",
+            category="leakage",
+            subject="news timestamps",
+            message="Recomputed news preprocessing from Layer 0 raw articles.",
+            details={
+                "raw_news_key": key,
+                "recomputed_sentence_rows": len(preprocessed),
+                "tickers_requested": list(tickers),
+            },
+        )
+    )
+
+    if artifact is None:
+        findings.append(
+            AuditFinding(
+                status="warn",
+                category="news",
+                subject=as_of_date,
+                message="No completed news preprocessing manifest found for the audited date.",
+            )
+        )
+        return []
+
+    stored_records = news_sentiment_frame_to_records(
+        _read_parquet_frame(writer, artifact.output_path or "")
+    )
+    expected_index = {
+        _news_identity(record): record
+        for record in preprocessed
+        if record.ticker in tickers
+    }
+    stored_index = {
+        _news_identity(record): record
+        for record in stored_records
+        if record.ticker in tickers
+    }
+    missing = sorted(set(expected_index) - set(stored_index))
+    unexpected = sorted(set(stored_index) - set(expected_index))
+    timestamp_mismatches = []
+    for identity in sorted(set(expected_index) & set(stored_index)):
+        if expected_index[identity].published_at != stored_index[identity].published_at:
+            timestamp_mismatches.append(identity)
+    if missing or unexpected or timestamp_mismatches:
+        findings.append(
+            AuditFinding(
+                status="fail",
+                category="news",
+                subject=as_of_date,
+                message="Stored news preprocessing artifact does not match raw Layer 0 inputs.",
+                details={
+                    "artifact_key": artifact.output_path,
+                    "missing_rows": missing,
+                    "unexpected_rows": unexpected,
+                    "timestamp_mismatches": timestamp_mismatches,
+                },
+            )
+        )
+    else:
+        findings.append(
+            AuditFinding(
+                status="pass",
+                category="news",
+                subject=as_of_date,
+                message="Stored news preprocessing artifact matches raw Layer 0 inputs.",
+                details={"artifact_key": artifact.output_path, "rows_compared": len(stored_index)},
+            )
+        )
+    return []
+
+
+def _audit_topic_branch(
+    *,
+    writer: AuditReader,
+    artifact: PipelineManifestRecord | None,
+    as_of_date: str,
+    tickers: Sequence[str],
+    findings: list[AuditFinding],
+) -> dict[str, dict[str, object]]:
+    if artifact is None:
+        findings.append(
+            AuditFinding(
+                status="warn",
+                category="topics",
+                subject=as_of_date,
+                message="No completed text-topic manifest found for the audited date.",
+            )
+        )
+        return {}
+    topic_label_key = _manifest_metadata_str(artifact, "topic_label_key")
+    if topic_label_key is None:
+        findings.append(
+            AuditFinding(
+                status="warn",
+                category="topics",
+                subject=artifact.run_id,
+                message="Text-topic manifest is missing topic_label_key metadata.",
+                details={"artifact_key": artifact.output_path},
+            )
+        )
+        return {}
+    records = topic_labels_to_feature_records(_read_parquet_frame(writer, topic_label_key))
+    expected = {
+        record.ticker: dict(record.features)
+        for record in records
+        if record.date == as_of_date and record.ticker in tickers
+    }
+    findings.append(
+        AuditFinding(
+            status="pass",
+            category="topics",
+            subject=as_of_date,
+            message="Recomputed topic feature rows from stored topic labels.",
+            details={"topic_label_key": topic_label_key, "records": len(expected)},
+        )
+    )
+    return expected
+
+
+def _audit_sentiment_branch(
+    *,
+    writer: AuditReader,
+    artifact: PipelineManifestRecord | None,
+    as_of_date: str,
+    tickers: Sequence[str],
+    findings: list[AuditFinding],
+    leakage_checks: list[AuditFinding],
+) -> dict[str, dict[str, object]]:
+    if artifact is None:
+        findings.append(
+            AuditFinding(
+                status="warn",
+                category="sentiment",
+                subject=as_of_date,
+                message="No completed FinBERT sentiment manifest found for the audited date.",
+            )
+        )
+        return {}
+    scored_news_key = _manifest_metadata_str(artifact, "scored_news_key")
+    if scored_news_key is None:
+        findings.append(
+            AuditFinding(
+                status="warn",
+                category="sentiment",
+                subject=artifact.run_id,
+                message="FinBERT manifest is missing scored_news_key metadata.",
+                details={"artifact_key": artifact.output_path},
+            )
+        )
+        return {}
+    scored_news = _read_parquet_frame(writer, scored_news_key)
+    records = sentiment_feature_records_from_scored_news(
+        scored_news,
+        credibility_config=load_source_credibility_config(),
+        bucket_timezone=_SENTIMENT_BUCKET_TIMEZONE,
+    )
+    expected = {
+        record.ticker: dict(record.features)
+        for record in records
+        if record.date == as_of_date and record.ticker in tickers
+    }
+    findings.append(
+        AuditFinding(
+            status="pass",
+            category="sentiment",
+            subject=as_of_date,
+            message="Recomputed sentiment feature rows from stored scored-news artifacts.",
+            details={"scored_news_key": scored_news_key, "records": len(expected)},
+        )
+    )
+    leakage_checks.append(
+        AuditFinding(
+            status="pass",
+            category="leakage",
+            subject="news sentiment bucketing",
+            message="Sentiment features were recomputed using published_at bucket dates.",
+            details={"scored_news_key": scored_news_key},
+        )
+    )
+    return expected
+
+
+def _audit_regime_branch(
+    *,
+    writer: AuditReader,
+    artifact: PipelineManifestRecord | None,
+    as_of_date: str,
+    tickers: Sequence[str],
+    findings: list[AuditFinding],
+    leakage_checks: list[AuditFinding],
+) -> dict[str, dict[str, object]]:
+    if artifact is None:
+        findings.append(
+            AuditFinding(
+                status="warn",
+                category="regime",
+                subject=as_of_date,
+                message="No completed regime manifest found for the audited date.",
+            )
+        )
+        return {}
+    frame = _read_parquet_frame(writer, artifact.output_path or "")
+    _require_columns(frame, HMM_REGIME_COLUMNS, label="regime output")
+    records = regime_features_to_records(frame)
+    expected_record = _record_for_date(records, as_of_date)
+    if expected_record is None:
+        findings.append(
+            AuditFinding(
+                status="warn",
+                category="regime",
+                subject=artifact.run_id,
+                message="Regime output does not contain the audited inference date.",
+                details={"artifact_key": artifact.output_path, "as_of_date": as_of_date},
+            )
+        )
+        return {}
+    train_end_date = _manifest_metadata_str(artifact, "train_end_date")
+    if train_end_date is not None and train_end_date >= as_of_date:
+        leakage_checks.append(
+            AuditFinding(
+                status="fail",
+                category="leakage",
+                subject="regime training window",
+                message="Regime manifest train_end_date is not strictly before the audited date.",
+                details={"train_end_date": train_end_date, "as_of_date": as_of_date},
+            )
+        )
+    else:
+        leakage_checks.append(
+            AuditFinding(
+                status="pass",
+                category="leakage",
+                subject="regime training window",
+                message="Regime manifest train_end_date is strictly before the audited date.",
+                details={"train_end_date": train_end_date, "as_of_date": as_of_date},
+            )
+        )
+    findings.append(
+        AuditFinding(
+            status="pass",
+            category="regime",
+            subject=as_of_date,
+            message="Loaded broadcast regime features for the audited date.",
+            details={"artifact_key": artifact.output_path},
+        )
+    )
+    return {ticker: dict(expected_record.features) for ticker in tickers}
+
+
+def _compare_branch(
+    *,
+    branch: str,
+    ticker: str,
+    as_of_date: str,
+    actual: Mapping[str, object],
+    expected: Mapping[str, object],
+    feature_names: Sequence[str],
+    artifact_key: str | None,
+    findings: list[AuditFinding],
+) -> BranchAuditResult:
+    mismatches: list[str] = []
+    missing_expected: list[str] = []
+    unexpected_actual: list[str] = []
+    compared_features = 0
+
+    for feature_name in feature_names:
+        in_actual = feature_name in actual
+        in_expected = feature_name in expected
+        if in_actual and not in_expected:
+            unexpected_actual.append(feature_name)
+            continue
+        if in_expected and not in_actual:
+            missing_expected.append(feature_name)
+            continue
+        if not in_expected and not in_actual:
+            continue
+        compared_features += 1
+        if not _values_match(actual.get(feature_name), expected.get(feature_name)):
+            mismatches.append(
+                f"{feature_name}: actual={actual.get(feature_name)!r} "
+                f"expected={expected.get(feature_name)!r}"
+            )
+
+    status: AuditStatus
+    if mismatches or missing_expected or unexpected_actual:
+        status = "fail"
+        findings.append(
+            AuditFinding(
+                status="fail",
+                category=branch,
+                subject=f"{ticker}/{as_of_date}",
+                message="Branch recomputation does not match the stored Layer 1 history row.",
+                details={
+                    "artifact_key": artifact_key,
+                    "mismatches": mismatches,
+                    "missing_expected_features": missing_expected,
+                    "unexpected_actual_features": unexpected_actual,
+                },
+            )
+        )
+    elif compared_features == 0:
+        status = "warn"
+        findings.append(
+            AuditFinding(
+                status="warn",
+                category=branch,
+                subject=f"{ticker}/{as_of_date}",
+                message="No branch features were available to compare for this ticker/date.",
+                details={"artifact_key": artifact_key},
+            )
+        )
+    else:
+        status = "pass"
+        findings.append(
+            AuditFinding(
+                status="pass",
+                category=branch,
+                subject=f"{ticker}/{as_of_date}",
+                message="Stored Layer 1 history row matches deterministic branch recomputation.",
+                details={"artifact_key": artifact_key, "compared_features": compared_features},
+            )
+        )
+
+    return BranchAuditResult(
+        branch=branch,
+        ticker=ticker,
+        as_of_date=as_of_date,
+        status=status,
+        compared_features=compared_features,
+        mismatches=mismatches,
+        missing_expected_features=missing_expected,
+        unexpected_actual_features=unexpected_actual,
+        artifact_key=artifact_key,
+    )
+
+
+def _fundamentals_leakage_checks(
+    *,
+    ticker: str,
+    as_of_date: str,
+    fundamentals: Any,
+) -> list[AuditFinding]:
+    if len(fundamentals) == 0 or "availability_date" not in fundamentals.columns:
+        return [
+            AuditFinding(
+                status="warn",
+                category="leakage",
+                subject=f"{ticker} fundamentals",
+                message="No fundamentals availability rows were present for leakage inspection.",
+            )
+        ]
+    prior_rows = fundamentals[fundamentals["availability_date"] < as_of_date]
+    future_rows = fundamentals[fundamentals["availability_date"] >= as_of_date]
+    latest_prior = (
+        None if len(prior_rows) == 0 else str(prior_rows.iloc[-1]["availability_date"])
+    )
+    earliest_future = (
+        None
+        if len(future_rows) == 0
+        else str(future_rows.sort_values("availability_date").iloc[0]["availability_date"])
+    )
+    return [
+        AuditFinding(
+            status="pass",
+            category="leakage",
+            subject=f"{ticker} fundamentals",
+            message="Fundamentals leakage guard inspected availability_date boundaries.",
+            details={
+                "latest_prior_availability_date": latest_prior,
+                "earliest_non_prior_availability_date": earliest_future,
+                "as_of_date": as_of_date,
+            },
+        )
+    ]
+
+
+def _macro_leakage_checks(
+    *,
+    as_of_date: str,
+    macro_frame: Any,
+) -> list[AuditFinding]:
+    if len(macro_frame) == 0:
+        return [
+            AuditFinding(
+                status="warn",
+                category="leakage",
+                subject="macro vintages",
+                message="Macro archive is empty; skipped realtime_start leakage inspection.",
+            )
+        ]
+    violating = macro_frame[macro_frame["realtime_start"].astype(str) >= as_of_date]
+    if len(violating) == len(macro_frame):
+        return [
+            AuditFinding(
+                status="warn",
+                category="leakage",
+                subject="macro vintages",
+                message="No macro vintages were strictly prior to the audited date.",
+                details={"as_of_date": as_of_date},
+            )
+        ]
+    return [
+        AuditFinding(
+            status="pass",
+            category="leakage",
+            subject="macro vintages",
+            message="Macro realtime_start values were inspected for strictly-prior availability.",
+            details={
+                "rows_total": int(len(macro_frame)),
+                "rows_on_or_after_audit_date": int(len(violating)),
+                "as_of_date": as_of_date,
+            },
+        )
+    ]
+
+
+def _load_daily_branch_manifest(
+    *,
+    writer: AuditReader,
+    stage: str,
+    as_of_date: str,
+) -> PipelineManifestRecord | None:
+    selected: PipelineManifestRecord | None = None
+    for manifest in _completed_manifests(writer=writer, stage=stage):
+        manifest_date = _manifest_metadata_str(manifest, "as_of_date")
+        if manifest_date != as_of_date:
+            continue
+        if selected is None or _manifest_rank(manifest) >= _manifest_rank(selected):
+            selected = manifest
+    return selected
+
+
+def _load_regime_manifest(
+    *,
+    writer: AuditReader,
+    as_of_date: str,
+) -> PipelineManifestRecord | None:
+    selected: PipelineManifestRecord | None = None
+    for manifest in _completed_manifests(writer=writer, stage="layer1_5_regime"):
+        inference_dates = manifest.metadata.get("inference_dates")
+        if not isinstance(inference_dates, list) or as_of_date not in inference_dates:
+            continue
+        if selected is None or _manifest_rank(manifest) >= _manifest_rank(selected):
+            selected = manifest
+    return selected
+
+
+def _completed_manifests(
+    *,
+    writer: AuditReader,
+    stage: str,
+) -> list[PipelineManifestRecord]:
+    prefix = f"artifacts/manifests/{stage}/"
+    manifests: list[PipelineManifestRecord] = []
+    for key in writer.list_keys(prefix):
+        if not key.endswith(".json"):
+            continue
+        manifest = PipelineManifestRecord.model_validate_json(writer.get_object(key))
+        if manifest.status is RunStatus.COMPLETED:
+            manifests.append(manifest)
+    return manifests
+
+
+def _manifest_rank(manifest: PipelineManifestRecord) -> datetime:
+    return manifest.finished_at or manifest.started_at
+
+
+def _manifest_metadata_str(
+    manifest: PipelineManifestRecord | None,
+    field_name: str,
+) -> str | None:
+    if manifest is None:
+        return None
+    raw_value = manifest.metadata.get(field_name)
+    if raw_value is None:
+        return None
+    if not isinstance(raw_value, str):
+        raise ValueError(f"manifest {manifest.run_id} metadata[{field_name!r}] must be a string")
+    return raw_value
+
+
+def _record_for_date(
+    records: Sequence[FeatureRecord],
+    as_of_date: str,
+) -> FeatureRecord | None:
+    matches = [record for record in records if record.date == as_of_date]
+    if not matches:
+        return None
+    if len(matches) > 1:
+        raise ValueError(f"Multiple FeatureRecords found for {as_of_date}")
+    return matches[0]
+
+
+def _load_json_lines(payload: bytes) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for line in payload.decode("utf-8").splitlines():
+        text = line.strip()
+        if not text:
+            continue
+        row = json.loads(text)
+        if not isinstance(row, dict):
+            raise ValueError("JSON Lines payload must contain one object per line")
+        rows.append(row)
+    return rows
+
+
+def _news_identity(record: Any) -> str:
+    published = record.published_at.isoformat() if getattr(record, "published_at", None) else ""
+    return "|".join(
+        [
+            str(record.date),
+            str(record.ticker),
+            str(record.article_id or ""),
+            str(record.sentence_index if record.sentence_index is not None else ""),
+            str(record.text or ""),
+            published,
+        ]
+    )
+
+
+def _read_parquet_frame(writer: AuditReader, key: str) -> Any:
+    if not key:
+        raise ValueError("artifact key cannot be empty")
+    pd = _require_pandas()
+    return pd.read_parquet(io.BytesIO(writer.get_object(key)))
+
+
+def _require_columns(frame: Any, columns: Sequence[str], *, label: str) -> None:
+    missing = sorted(set(columns) - set(frame.columns))
+    if missing:
+        raise ValueError(f"{label} missing required columns: {missing}")
+
+
+def _require_pandas() -> Any:
+    try:
+        import pandas as pd
+
+        importlib.import_module("pyarrow")
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            "pandas and pyarrow are required to run the Layer 1 feature audit."
+        ) from exc
+    return pd
+
+
+def _empty_fundamentals_frame() -> Any:
+    pd = _require_pandas()
+    return pd.DataFrame(
+        columns=[
+            "source",
+            "ticker",
+            "report_date",
+            "availability_date",
+            "retrieved_at",
+            "fiscal_year",
+            "fiscal_period",
+            "statement",
+            "earnings_date",
+            "raw_json",
+        ]
+    )
+
+
+def _normalize_tickers(tickers: Sequence[str]) -> tuple[str, ...]:
+    unique = []
+    seen: set[str] = set()
+    for ticker in tickers:
+        normalized = _normalize_ticker(ticker)
+        if normalized is None or normalized in seen:
+            continue
+        seen.add(normalized)
+        unique.append(normalized)
+    return tuple(sorted(unique))
+
+
+def _normalize_ticker(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip().upper()
+    return text or None
+
+
+def _truthy(value: object, *, default: bool = False) -> bool:
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "t", "yes", "y"}
+
+
+def _to_float(value: object) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(numeric) or math.isinf(numeric):
+        return None
+    return numeric
+
+
+def _values_match(left: object, right: object) -> bool:
+    if left is None or right is None:
+        return left is None and right is None
+    if isinstance(left, str) or isinstance(right, str):
+        return left == right
+    left_float = _to_float(left)
+    right_float = _to_float(right)
+    if left_float is None or right_float is None:
+        return left == right
+    return math.isclose(left_float, right_float, rel_tol=FLOAT_REL_TOL, abs_tol=FLOAT_ABS_TOL)
+
+
+def _validate_iso_date(value: str, *, label: str) -> None:
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError(f"{label} must be YYYY-MM-DD") from exc
+    if parsed.date().isoformat() != value:
+        raise ValueError(f"{label} must be YYYY-MM-DD")
+
+
+def _summarize_findings(findings: Sequence[AuditFinding]) -> dict[str, int]:
+    summary = {"pass": 0, "warn": 0, "fail": 0}
+    for finding in findings:
+        summary[finding.status] += 1
+    return summary
