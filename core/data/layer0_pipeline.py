@@ -168,6 +168,15 @@ class MacroFetcher(Protocol):
     ) -> list[dict[str, object]]:
         """Fetch raw macro observations for configured series/date ranges."""
 
+    def fetch_latest_available_macro_observations(
+        self,
+        *,
+        series_ids: Sequence[str],
+        as_of_date: str,
+        limit: int,
+    ) -> list[dict[str, object]]:
+        """Fetch the latest raw macro observation per series available as of one date."""
+
 
 RecordSerializer = Callable[[list[OHLCVRecord]], bytes]
 RecordDeserializer = Callable[[bytes], list[OHLCVRecord]]
@@ -558,9 +567,8 @@ def run_daily_layer0_incremental(
         output_keys.extend(fundamentals_result.output_keys)
         metadata["fundamentals"] = fundamentals_result.metadata
 
-        macro_result = _write_macro_archive(
-            from_date=as_of_date,
-            to_date=as_of_date,
+        macro_result = _write_daily_macro_snapshot(
+            as_of_date=as_of_date,
             series_ids=config.fred_series_ids,
             limit=config.fred_limit,
             overwrite=config.overwrite,
@@ -1079,6 +1087,74 @@ def _write_macro_archive(
             "empty": empty,
             "total_rows": total_rows,
             "output_keys": output_keys,
+        },
+    )
+
+
+def _write_daily_macro_snapshot(
+    *,
+    as_of_date: date,
+    series_ids: Sequence[str],
+    limit: int,
+    overwrite: bool,
+    fetcher: MacroFetcher,
+    writer: ObjectWriter,
+    serializer: RawRowSerializer,
+) -> _WriteResult:
+    """Fetch and persist one run-date macro snapshot using latest available observations."""
+    normalized_series = _normalize_tokens(series_ids)
+    key = raw_macro_path(as_of_date)
+    if not overwrite and writer.exists(key):
+        logger.info(
+            "Daily macro snapshot already exists for {}; skipping FRED fetch",
+            as_of_date.isoformat(),
+        )
+        return _WriteResult(
+            output_keys=[],
+            metadata={
+                "requested_series": len(normalized_series),
+                "written": 0,
+                "skipped": 1,
+                "empty": 0,
+                "total_rows": 0,
+                "output_keys": [],
+                "snapshot_date": as_of_date.isoformat(),
+            },
+        )
+
+    rows = _sort_raw_rows(
+        fetcher.fetch_latest_available_macro_observations(
+            series_ids=normalized_series,
+            as_of_date=as_of_date.isoformat(),
+            limit=limit,
+        ),
+        ("series_id", "observation_date", "realtime_start", "realtime_end"),
+    )
+    if not rows:
+        return _WriteResult(
+            output_keys=[],
+            metadata={
+                "requested_series": len(normalized_series),
+                "written": 0,
+                "skipped": 0,
+                "empty": 1,
+                "total_rows": 0,
+                "output_keys": [],
+                "snapshot_date": as_of_date.isoformat(),
+            },
+        )
+
+    writer.put_object(key, serializer(rows))
+    return _WriteResult(
+        output_keys=[key],
+        metadata={
+            "requested_series": len(normalized_series),
+            "written": 1,
+            "skipped": 0,
+            "empty": 0,
+            "total_rows": len(rows),
+            "output_keys": [key],
+            "snapshot_date": as_of_date.isoformat(),
         },
     )
 

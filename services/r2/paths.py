@@ -61,9 +61,9 @@ def raw_fundamentals_path(ticker: str) -> str:
     return build_r2_key("raw", "fundamentals", f"{safe_ticker}.parquet")
 
 
-def raw_macro_path(observation_date: str | Date | datetime) -> str:
-    """Return the canonical raw macro/rates Parquet path for one observation date."""
-    return build_r2_key("raw", "macro", f"{_format_date(observation_date)}.parquet")
+def raw_macro_path(archive_date: str | Date | datetime) -> str:
+    """Return the canonical raw macro/rates Parquet path for one archive date."""
+    return build_r2_key("raw", "macro", f"{_format_date(archive_date)}.parquet")
 
 
 def raw_reference_path(name: str, extension: str = "json") -> str:

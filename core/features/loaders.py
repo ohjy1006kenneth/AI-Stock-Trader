@@ -85,13 +85,22 @@ def load_macro_frame(
         payload = active_writer.get_object(key)
         frames.append(pd.read_parquet(io.BytesIO(payload)))
     frame = pd.concat(frames, ignore_index=True)
-    sort_columns = [
+    identity_columns = [
         column
         for column in ("series_id", "observation_date", "realtime_start", "realtime_end")
         if column in frame.columns
     ]
-    if sort_columns:
-        return frame.sort_values(sort_columns).reset_index(drop=True)
+    if identity_columns:
+        dedupe_order = identity_columns + [
+            column for column in ("retrieved_at",) if column in frame.columns
+        ]
+        frame = (
+            frame.sort_values(dedupe_order)
+            .drop_duplicates(subset=identity_columns, keep="last")
+            .sort_values(identity_columns)
+            .reset_index(drop=True)
+        )
+        return frame
     return frame.reset_index(drop=True)
 
 

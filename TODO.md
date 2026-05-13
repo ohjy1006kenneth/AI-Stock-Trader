@@ -31,11 +31,10 @@
   persisted, failures recover batch-by-batch, and incremental updates don't require
   refetching the full range. Requires updating `raw_fundamentals_path`,
   `_write_fundamentals_archive`, `validate_layer0_archive.py`, and Layer 1 consumers.
-- [ ] Macro archive is written as a single `raw/macro/{from}_to_{to}.parquet` file. Shard
-  to per-day (`raw/macro/{YYYY-MM-DD}.parquet`) so FRED backfills match the per-day
-  cadence used by news/universe and partial progress is persisted. Requires updating
-  `raw_macro_path`, `_write_macro_archive`, `validate_layer0_archive.py`, and Layer 1
-  consumers.
+- [ ] Macro archive layout still mixes legacy observation-date shards with run-date
+  readiness snapshots under `raw/macro/{YYYY-MM-DD}.parquet`. Issue `#148` should
+  consolidate the convention and document/migrate any backward-compatibility cleanup
+  needed across backfill, validation, and Layer 1 consumers.
 
 ## Discovered during development
 <!-- Codex adds here when it notices something out of scope for the current task -->

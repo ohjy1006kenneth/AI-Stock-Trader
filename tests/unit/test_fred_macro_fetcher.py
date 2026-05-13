@@ -289,6 +289,100 @@ def test_fetch_series_page_accepts_empty_response() -> None:
     assert page.rows == []
 
 
+def test_fetch_latest_available_macro_observations_uses_as_of_snapshot_params() -> None:
+    """Daily latest-available pulls ask FRED for one descending as-of snapshot per series."""
+    session = _FakeSession(
+        [
+            _FakeResponse(
+                {
+                    "observations": [
+                        {
+                            "realtime_start": "2026-05-13",
+                            "realtime_end": "2026-05-13",
+                            "date": "2026-05-12",
+                            "value": "4.42",
+                        }
+                    ]
+                }
+            ),
+            _FakeResponse(
+                {
+                    "observations": [
+                        {
+                            "realtime_start": "2026-05-12",
+                            "realtime_end": "2026-05-12",
+                            "date": "2026-05-12",
+                            "value": "4.42",
+                        }
+                    ]
+                }
+            ),
+        ]
+    )
+    fetcher = FredMacroFetcher(
+        FredClientConfig(api_key="test-key", retry_sleep_seconds=0),
+        session=session,  # type: ignore[arg-type]
+    )
+
+    rows = fetcher.fetch_latest_available_macro_observations(
+        series_ids=["DGS10"],
+        as_of_date="2026-05-13",
+        limit=17,
+    )
+
+    assert rows == [
+        {
+            "source": "fred",
+            "series_id": "DGS10",
+            "observation_date": "2026-05-12",
+            "realtime_start": "2026-05-12",
+            "realtime_end": "2026-05-12",
+            "retrieved_at": rows[0]["retrieved_at"],  # generated at runtime
+            "value": 4.42,
+            "is_missing": False,
+            "raw": {
+                "realtime_start": "2026-05-12",
+                "realtime_end": "2026-05-12",
+                "date": "2026-05-12",
+                "value": "4.42",
+            },
+        }
+    ]
+    assert session.calls[0] == {
+        "url": "https://api.stlouisfed.org/fred/series/observations",
+        "params": {
+            "series_id": "DGS10",
+            "realtime_start": "2026-05-13",
+            "realtime_end": "2026-05-13",
+            "observation_end": "2026-05-13",
+            "sort_order": "desc",
+            "file_type": "json",
+            "output_type": 1,
+            "limit": 1,
+            "offset": 0,
+            "api_key": "test-key",
+        },
+        "timeout": 30,
+    }
+    assert session.calls[1] == {
+        "url": "https://api.stlouisfed.org/fred/series/observations",
+        "params": {
+            "series_id": "DGS10",
+            "observation_start": "2026-05-12",
+            "observation_end": "2026-05-12",
+            "realtime_start": "2026-05-12",
+            "realtime_end": "2026-05-13",
+            "sort_order": "asc",
+            "file_type": "json",
+            "output_type": 1,
+            "limit": 17,
+            "offset": 0,
+            "api_key": "test-key",
+        },
+        "timeout": 30,
+    }
+
+
 def test_fetch_series_page_rejects_malformed_required_fields() -> None:
     """Malformed FRED observations fail with actionable diagnostics."""
     fixture = _fixture_payload()
