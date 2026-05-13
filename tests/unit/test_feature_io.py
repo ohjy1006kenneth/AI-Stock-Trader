@@ -52,6 +52,48 @@ def test_write_feature_records_round_trips_per_ticker_history(tmp_path: Path) ->
     assert loaded_records[0].features == {"returns_1d": 0.01}
 
 
+def test_read_feature_history_window_filters_to_inclusive_dates(tmp_path: Path) -> None:
+    """Feature history windows should return only rows inside the requested bounds."""
+    writer = R2Writer(local_root=tmp_path)
+    records = [
+        FeatureRecord(date="2026-04-20", ticker="AAPL", features={"returns_1d": 0.00}),
+        FeatureRecord(date="2026-04-21", ticker="AAPL", features={"returns_1d": 0.01}),
+        FeatureRecord(date="2026-04-22", ticker="AAPL", features={"returns_1d": 0.02}),
+    ]
+    feature_io.write_feature_records(records, writer=writer)
+
+    loaded_records = feature_io.read_feature_history_window(
+        "AAPL",
+        start_date="2026-04-21",
+        end_date="2026-04-22",
+        writer=writer,
+    )
+
+    assert [record.date for record in loaded_records] == ["2026-04-21", "2026-04-22"]
+
+
+def test_read_feature_histories_window_can_skip_missing_histories(tmp_path: Path) -> None:
+    """Bulk feature history reads can skip tickers whose history file is absent."""
+    writer = R2Writer(local_root=tmp_path)
+    feature_io.write_feature_records(
+        [
+            FeatureRecord(date="2026-04-21", ticker="AAPL", features={"returns_1d": 0.01}),
+        ],
+        writer=writer,
+    )
+
+    histories = feature_io.read_feature_histories_window(
+        ["AAPL", "MSFT"],
+        start_date="2026-04-21",
+        end_date="2026-04-21",
+        writer=writer,
+        skip_missing=True,
+    )
+
+    assert set(histories) == {"AAPL"}
+    assert histories["AAPL"][0].date == "2026-04-21"
+
+
 def test_write_feature_record_rejects_non_conforming_rows(tmp_path: Path) -> None:
     """Feature shard writes should fail fast on invalid FeatureRecord payloads."""
     writer = R2Writer(local_root=tmp_path)
@@ -85,6 +127,19 @@ def test_write_feature_records_rejects_duplicate_ticker_dates(tmp_path: Path) ->
 
     with pytest.raises(ValueError, match="Duplicate Layer 1 feature dates"):
         feature_io.write_feature_records(records, writer=writer)
+
+
+def test_read_feature_history_window_rejects_inverted_date_bounds(tmp_path: Path) -> None:
+    """Feature history windows must validate inclusive bound ordering."""
+    writer = R2Writer(local_root=tmp_path)
+
+    with pytest.raises(ValueError, match="start_date must be less than or equal to end_date"):
+        feature_io.read_feature_history_window(
+            "AAPL",
+            start_date="2026-04-22",
+            end_date="2026-04-21",
+            writer=writer,
+        )
 
 
 def test_parquet_bytes_to_feature_record_rejects_multi_row_archives() -> None:
