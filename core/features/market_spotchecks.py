@@ -152,7 +152,7 @@ def build_market_feature_spot_checks(
     return checks, cards
 
 
-def summarize_market_feature_spot_checks(
+def _summarize_market_feature_spot_checks(
     checks: Sequence[MarketFeatureSpotCheckRecord],
 ) -> dict[str, int]:
     """Return PASS/WARN/FAIL counts for the supplied spot-check records."""
