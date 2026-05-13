@@ -26,7 +26,7 @@ artifacts.
 Launch the local dashboard from the repo root:
 
 ```bash
-HOME=/home/juyoungoh ./.venv/bin/python -m app.lab.feature_audit_dashboard \
+./.venv/bin/python -m app.lab.feature_audit_dashboard \
     --from-date 2024-05-06 \
     --to-date 2024-05-08 \
     --tickers AAPL,MSFT \

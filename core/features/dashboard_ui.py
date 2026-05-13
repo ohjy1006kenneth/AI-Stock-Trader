@@ -1,8 +1,9 @@
 """UI-oriented payload builder for the Layer 0/1 feature audit dashboard."""
 from __future__ import annotations
 
+import math
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 
 
 def build_layer1_audit_dashboard_ui_payload(report: object) -> dict[str, object]:
@@ -341,7 +342,6 @@ def build_layer1_audit_dashboard_ui_payload(report: object) -> dict[str, object]
         "formula_cards": normalized_formula_cards,
         "outliers": {
             "points": outlier_points,
-            "table_rows": outlier_points,
         },
     }
 
@@ -367,7 +367,7 @@ def _list_of_dicts(value: object) -> list[dict[str, object]]:
     return items
 
 
-def _sorted_unique(values: Sequence[str]) -> list[str]:
+def _sorted_unique(values: Iterable[str]) -> list[str]:
     return sorted({value for value in values if value})
 
 
@@ -434,9 +434,10 @@ def _optional_float(value: object) -> float | None:
     if value is None or isinstance(value, bool):
         return None
     try:
-        return float(value)
+        numeric = float(value)
     except (TypeError, ValueError):
         return None
+    return numeric if math.isfinite(numeric) else None
 
 
 def _optional_text(value: object) -> str | None:

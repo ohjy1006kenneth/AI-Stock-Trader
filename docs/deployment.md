@@ -173,7 +173,7 @@ details.
 For the live local Layer 0/1 QA dashboard UI itself, run:
 
 ```bash
-HOME=/home/juyoungoh ./.venv/bin/python -m app.lab.feature_audit_dashboard \
+./.venv/bin/python -m app.lab.feature_audit_dashboard \
     --from-date 2026-04-08 \
     --to-date 2026-04-10 \
     --tickers AAPL,MSFT \

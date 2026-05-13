@@ -774,13 +774,30 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
 
     const statusClass = (value) => `status-${{value || "warn"}}`;
     const upper = (value) => String(value || "").toUpperCase();
+    const escapeHtml = (value) => String(value ?? "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#39;");
+    const escapeAttr = (value) => escapeHtml(value);
+    const toFiniteNumber = (value) => {{
+      if (value === null || value === undefined || value === "") {{
+        return null;
+      }}
+      const numeric = Number(value);
+      return Number.isFinite(numeric) ? numeric : null;
+    }};
     const formatNumber = (value) => {{
-      if (value === null || value === undefined || Number.isNaN(Number(value))) {{
+      const numeric = toFiniteNumber(value);
+      if (numeric === null) {{
         return "n/a";
       }}
-      return Number(value).toFixed(6);
+      return numeric.toFixed(6);
     }};
     const clampPercent = (value) => Math.max(0, Math.min(100, Number(value || 0) * 100));
+    const optionMarkup = (value, label) =>
+      `<option value="${{escapeAttr(value)}}">${{escapeHtml(label)}}</option>`;
 
     function showError(message) {{
       const box = document.getElementById("errorBox");
@@ -850,7 +867,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
 
       const focusDate = document.getElementById("focusDate");
       focusDate.innerHTML = `<option value="">All dates in window</option>` + controls.available_dates
-        .map((date) => `<option value="${{date}}">${{date}}</option>`)
+        .map((date) => optionMarkup(date, date))
         .join("");
       if (!focusDate.value || !controls.available_dates.includes(focusDate.value)) {{
         focusDate.value = controls.default_focus_date || "";
@@ -858,7 +875,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
 
       const spotFeature = document.getElementById("spotFeature");
       spotFeature.innerHTML = controls.available_spot_check_features
-        .map((feature) => `<option value="${{feature}}">${{feature}}</option>`)
+        .map((feature) => optionMarkup(feature, feature))
         .join("");
       if (!spotFeature.value || !controls.available_spot_check_features.includes(spotFeature.value)) {{
         spotFeature.value = controls.default_spot_check_feature || controls.available_spot_check_features[0] || "";
@@ -867,12 +884,12 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       const tickers = controls.available_tickers;
       const spotTicker = document.getElementById("spotTicker");
       spotTicker.innerHTML = `<option value="">All selected tickers</option>` + tickers
-        .map((ticker) => `<option value="${{ticker}}">${{ticker}}</option>`)
+        .map((ticker) => optionMarkup(ticker, ticker))
         .join("");
 
       const outlierFeature = document.getElementById("outlierFeature");
       outlierFeature.innerHTML = `<option value="">All outlier features</option>` + controls.available_outlier_features
-        .map((feature) => `<option value="${{feature}}">${{feature}}</option>`)
+        .map((feature) => optionMarkup(feature, feature))
         .join("");
       if (!outlierFeature.value || (
           outlierFeature.value && !controls.available_outlier_features.includes(outlierFeature.value)
@@ -912,9 +929,9 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       document.getElementById("readOnlyNotice").textContent = meta.read_only_notice;
       document.getElementById("statusHelp").innerHTML = meta.status_help.map((item) => `
         <div class="status-help">
-          <span class="badge ${{statusClass(item.status)}}">${{item.label}}</span>
-          <strong>${{item.description}}</strong>
-          <span class="mono">${{meta.qa_scope}}</span>
+          <span class="badge ${{statusClass(item.status)}}">${{escapeHtml(item.label)}}</span>
+          <strong>${{escapeHtml(item.description)}}</strong>
+          <span class="mono">${{escapeHtml(meta.qa_scope)}}</span>
         </div>
       `).join("");
     }}
@@ -926,7 +943,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       document.getElementById("summaryGrid").innerHTML = `
         <article class="stat-card">
           <small>Run ID</small>
-          <strong class="mono">${{report.run_id}}</strong>
+          <strong class="mono">${{escapeHtml(report.run_id)}}</strong>
         </article>
         <article class="stat-card">
           <small>Rows Loaded</small>
@@ -956,7 +973,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       document.getElementById("familyGrid").innerHTML = families.map((item) => `
         <article class="family-card">
           <span class="badge ${{statusClass(item.status)}}">${{upper(item.status)}}</span>
-          <h3>${{item.family_label}}</h3>
+          <h3>${{escapeHtml(item.family_label)}}</h3>
           <div class="key-metrics">
             <span>Features: <strong>${{item.feature_count}}</strong></span>
             <span>Missing rate: <strong>${{(item.missing_rate * 100).toFixed(1)}}%</strong></span>
@@ -987,7 +1004,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
             <th>Feature</th>
             <th>Family</th>
             <th>Status</th>
-            ${{columns.map((column) => `<th class="mono">${{column.date}}<br>${{column.ticker}}</th>`).join("")}}
+            ${{columns.map((column) => `<th class="mono">${{escapeHtml(column.date)}}<br>${{escapeHtml(column.ticker)}}</th>`).join("")}}
           </tr>
         </thead>
       `;
@@ -995,11 +1012,11 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
         <tbody>
           ${{rows.map((row) => `
             <tr>
-              <td class="mono">${{row.feature_name}}</td>
-              <td>${{row.family_label}}</td>
+              <td class="mono">${{escapeHtml(row.feature_name)}}</td>
+              <td>${{escapeHtml(row.family_label)}}</td>
               <td><span class="badge ${{statusClass(row.status)}}">${{upper(row.status)}}</span></td>
               ${{row.cells.map((cell) => `
-                <td class="heat-cell ${{statusClass(cell.status)}}" title="${{cell.message || ""}} | ${{cell.value_label}}">
+                <td class="heat-cell ${{statusClass(cell.status)}}" title="${{escapeAttr(cell.message || "")}} | ${{escapeAttr(cell.value_label)}}">
                   ${{upper(cell.status).charAt(0)}}
                 </td>
               `).join("")}}
@@ -1014,16 +1031,27 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       return rows.map((row) => `
         <div class="rate-row">
           <div class="rate-meta">
-            <strong class="mono">${{row[labelKey]}}</strong>
+            <strong class="mono">${{escapeHtml(row[labelKey])}}</strong>
             <span><span class="badge ${{statusClass(row.status)}}">${{upper(row.status)}}</span></span>
           </div>
-          <div class="stack" title="Missing ${{(row.missing_rate * 100).toFixed(1)}}%, Null ${{(row.null_rate * 100).toFixed(1)}}%, Invalid ${{(row.invalid_rate * 100).toFixed(1)}}%">
+          <div class="stack" title="${{escapeAttr(`Missing ${{(row.missing_rate * 100).toFixed(1)}}%, Null ${{(row.null_rate * 100).toFixed(1)}}%, Invalid ${{(row.invalid_rate * 100).toFixed(1)}}%`)}}">
             <span class="missing" style="width:${{clampPercent(row.missing_rate)}}%"></span>
             <span class="null" style="width:${{clampPercent(row.null_rate)}}%"></span>
             <span class="invalid" style="width:${{clampPercent(row.invalid_rate)}}%"></span>
           </div>
         </div>
       `).join("");
+    }}
+
+    function linePath(points, valueKey, x, y) {{
+      return points
+        .map((point, index) => {{
+          const numeric = toFiniteNumber(point[valueKey]);
+          return numeric === null ? null : `${{x(index)}} ${{y(numeric)}}`;
+        }})
+        .filter((segment) => segment !== null)
+        .map((segment, index) => `${{index === 0 ? "M" : "L"}} ${{segment}}`)
+        .join(" ");
     }}
 
     function renderNullRates() {{
@@ -1037,7 +1065,9 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       if (!points.length) {{
         return `<div class="loading">No spot-check rows for the selected filters.</div>`;
       }}
-      const values = points.flatMap((point) => [point.stored_value, point.expected_value]).filter((value) => value !== null && value !== undefined);
+      const values = points
+        .flatMap((point) => [toFiniteNumber(point.stored_value), toFiniteNumber(point.expected_value)])
+        .filter((value) => value !== null);
       if (!values.length) {{
         return `<div class="loading">Selected rows contain WARN-only spot checks without numeric stored/expected values.</div>`;
       }}
@@ -1046,22 +1076,16 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       const spread = Math.max(max - min, 1e-9);
       const x = (index) => 40 + (index / Math.max(points.length - 1, 1)) * 720;
       const y = (value) => 230 - ((value - min) / spread) * 180;
-      const storedPath = points
-        .filter((point) => point.stored_value !== null)
-        .map((point, index) => `${{index === 0 ? "M" : "L"}} ${{x(index)}} ${{y(point.stored_value)}}`)
-        .join(" ");
-      const expectedPath = points
-        .filter((point) => point.expected_value !== null)
-        .map((point, index) => `${{index === 0 ? "M" : "L"}} ${{x(index)}} ${{y(point.expected_value)}}`)
-        .join(" ");
+      const storedPath = linePath(points, "stored_value", x, y);
+      const expectedPath = linePath(points, "expected_value", x, y);
       const dots = points.map((point, index) => `
         <g>
-          ${{point.stored_value !== null ? `<circle cx="${{x(index)}}" cy="${{y(point.stored_value)}}" r="5" fill="#bc3f2f"><title>${{point.date}} stored=${{formatNumber(point.stored_value)}}</title></circle>` : ""}}
-          ${{point.expected_value !== null ? `<circle cx="${{x(index)}}" cy="${{y(point.expected_value)}}" r="5" fill="#0f766e"><title>${{point.date}} expected=${{formatNumber(point.expected_value)}}</title></circle>` : ""}}
+          ${{toFiniteNumber(point.stored_value) !== null ? `<circle cx="${{x(index)}}" cy="${{y(toFiniteNumber(point.stored_value))}}" r="5" fill="#bc3f2f"><title>${{escapeHtml(point.date)}} stored=${{formatNumber(point.stored_value)}}</title></circle>` : ""}}
+          ${{toFiniteNumber(point.expected_value) !== null ? `<circle cx="${{x(index)}}" cy="${{y(toFiniteNumber(point.expected_value))}}" r="5" fill="#0f766e"><title>${{escapeHtml(point.date)}} expected=${{formatNumber(point.expected_value)}}</title></circle>` : ""}}
         </g>
       `).join("");
       const labels = points.map((point, index) => `
-        <text x="${{x(index)}}" y="252" text-anchor="middle" font-size="11" fill="#556867">${{point.date.slice(5)}}</text>
+        <text x="${{x(index)}}" y="252" text-anchor="middle" font-size="11" fill="#556867">${{escapeHtml(point.date.slice(5))}}</text>
       `).join("");
       return `
         <svg viewBox="0 0 800 260" role="img" aria-label="Stored versus recomputed feature values">
@@ -1118,15 +1142,15 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
         <article class="formula-card">
           <div class="panel-head" style="margin-bottom:10px;">
             <div>
-              <h3 style="margin:0;">${{item.title}}</h3>
+              <h3 style="margin:0;">${{escapeHtml(item.title)}}</h3>
               <p style="margin-top:4px;">Stored ${{formatNumber(item.stored_value)}} vs recomputed ${{formatNumber(item.expected_value)}}</p>
             </div>
             <span class="badge ${{statusClass(item.status)}}">${{upper(item.status)}}</span>
           </div>
-          <div class="mono">Formula: ${{item.formula}}</div>
-          <pre>${{item.calculation}}</pre>
-          <pre>${{item.point_in_time_note}}</pre>
-          ${{item.message ? `<pre>${{item.message}}</pre>` : ""}}
+          <div class="mono">Formula: ${{escapeHtml(item.formula)}}</div>
+          <pre>${{escapeHtml(item.calculation)}}</pre>
+          <pre>${{escapeHtml(item.point_in_time_note)}}</pre>
+          ${{item.message ? `<pre>${{escapeHtml(item.message)}}</pre>` : ""}}
         </article>
       `).join("");
     }}
@@ -1135,7 +1159,12 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       if (!points.length) {{
         return `<div class="loading">No outlier records for the selected filters.</div>`;
       }}
-      const values = points.map((point) => point.value);
+      const values = points
+        .map((point) => toFiniteNumber(point.value))
+        .filter((value) => value !== null);
+      if (!values.length) {{
+        return `<div class="loading">Selected outlier rows do not contain numeric values.</div>`;
+      }}
       const min = Math.min(...values);
       const max = Math.max(...values);
       const spread = Math.max(max - min, 1e-9);
@@ -1147,10 +1176,10 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
           <line x1="40" y1="36" x2="40" y2="230" stroke="rgba(36,62,56,0.18)" />
           ${{points.map((point, index) => `
             <g>
-              <circle cx="${{x(index)}}" cy="${{y(point.value)}}" r="7" class="${{statusClass(point.status)}}" fill="${{point.rule_type === "range_violation" ? "#bc3f2f" : "#c67b17"}}">
-                <title>${{point.date}} ${{point.ticker}} ${{point.feature_name}} ${{formatNumber(point.value)}}</title>
+              <circle cx="${{x(index)}}" cy="${{y(toFiniteNumber(point.value) ?? min)}}" r="7" class="${{statusClass(point.status)}}" fill="${{point.rule_type === "range_violation" ? "#bc3f2f" : "#c67b17"}}">
+                <title>${{escapeHtml(point.date)}} ${{escapeHtml(point.ticker)}} ${{escapeHtml(point.feature_name)}} ${{formatNumber(point.value)}}</title>
               </circle>
-              <text x="${{x(index)}}" y="250" text-anchor="middle" font-size="11" fill="#556867">${{point.date.slice(5)}}</text>
+              <text x="${{x(index)}}" y="250" text-anchor="middle" font-size="11" fill="#556867">${{escapeHtml(point.date.slice(5))}}</text>
             </g>
           `).join("")}}
           <text x="40" y="24" font-size="12" fill="#556867">max ${{formatNumber(max)}}</text>
@@ -1190,9 +1219,9 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
           <tbody>
             ${{points.map((item) => `
               <tr>
-                <td class="mono">${{item.date}}</td>
-                <td class="mono">${{item.ticker}}</td>
-                <td class="mono">${{item.feature_name}}</td>
+                <td class="mono">${{escapeHtml(item.date)}}</td>
+                <td class="mono">${{escapeHtml(item.ticker)}}</td>
+                <td class="mono">${{escapeHtml(item.feature_name)}}</td>
                 <td><span class="badge ${{statusClass(item.status)}}">${{item.rule_type === "range_violation" ? "INVALID RANGE" : "EXTREME VALUE"}}</span></td>
                 <td>${{formatNumber(item.value)}}</td>
                 <td class="mono">${{formatNumber(item.lower_bound)}} → ${{formatNumber(item.upper_bound)}}</td>
