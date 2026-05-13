@@ -73,6 +73,7 @@ def test_run_layer0_incremental_builds_daily_config_and_forwards_dependencies(
     result = run_layer0_incremental(
         as_of_date=date(2026, 4, 6),
         tickers=("AAPL", "MSFT"),
+        benchmark_ticker="QQQ",
         overwrite=True,
         run_id="layer0-daily-2026-04-06",
         news_limit=25,
@@ -86,6 +87,7 @@ def test_run_layer0_incremental_builds_daily_config_and_forwards_dependencies(
     config = captured["config"]
     assert config.as_of_date == date(2026, 4, 6)
     assert tuple(config.tickers) == ("AAPL", "MSFT")
+    assert config.benchmark_ticker == "QQQ"
     assert tuple(config.fred_series_ids) == ("FEDFUNDS", "DGS10")
     assert config.overwrite is True
     assert config.run_id == "layer0-daily-2026-04-06"

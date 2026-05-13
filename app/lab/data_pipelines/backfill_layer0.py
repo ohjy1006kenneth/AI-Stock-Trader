@@ -105,6 +105,7 @@ def main() -> int:
         from_date=from_date,
         to_date=to_date,
         tickers=args.tickers,
+        benchmark_ticker=args.benchmark_ticker,
         fred_series_ids=args.series_ids or archive_config.series_ids,
         overwrite=args.overwrite,
         news_limit=args.news_limit,
@@ -138,6 +139,14 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--to-date", metavar="YYYY-MM-DD")
     parser.add_argument("--tickers", nargs="*", default=None)
+    parser.add_argument(
+        "--benchmark-ticker",
+        default="SPY",
+        help=(
+            "Benchmark ticker whose raw price archive must also be refreshed for Layer 1 "
+            "(default: SPY)."
+        ),
+    )
     parser.add_argument("--series-ids", nargs="*", default=None)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--run-id", default=None)

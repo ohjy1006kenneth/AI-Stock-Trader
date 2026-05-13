@@ -83,6 +83,8 @@ class _SecurityMaster:
             return [_Security(ticker="AAPL", security_id="perm-aapl", start_date="2020-01-01")]
         if ticker == "MSFT":
             return [_Security(ticker="MSFT", security_id="perm-msft", start_date="2020-01-01")]
+        if ticker == "SPY":
+            return [_Security(ticker="SPY", security_id="perm-spy", start_date="2020-01-01")]
         raise KeyError(ticker)
 
 
@@ -102,14 +104,16 @@ class _HistoricalPriceFetcher:
 
 class _LivePriceFetcher:
     def __init__(self, records: list[OHLCVRecord] | None = None) -> None:
-        self.records = records or [_bar(date_value="2024-01-02", ticker="AAPL")]
+        self.records = records
         self.calls: list[dict[str, Any]] = []
 
     def fetch_live_daily_bars(
         self, *, tickers: list[str] | tuple[str, ...], as_of_date: str
     ) -> list[OHLCVRecord]:
         self.calls.append({"tickers": tuple(tickers), "as_of_date": as_of_date})
-        return self.records
+        if self.records is not None:
+            return self.records
+        return [_bar(date_value=as_of_date, ticker=ticker) for ticker in tickers]
 
 
 class _NewsFetcher:
@@ -284,6 +288,7 @@ def test_historical_layer0_backfill_writes_all_raw_archives_and_manifest() -> No
         raw_security_master_path(date(2024, 1, 3)),
         raw_price_path("perm-aapl"),
         raw_price_path("perm-msft"),
+        raw_price_path("perm-spy"),
         raw_universe_path("2024-01-02"),
         raw_universe_path("2024-01-03"),
         raw_news_path("2024-01-02"),
@@ -316,10 +321,13 @@ def test_historical_backfill_reads_existing_prices_from_store_for_quality_masks(
     writer = _Writer()
     aapl_key = raw_price_path("perm-aapl")
     msft_key = raw_price_path("perm-msft")
+    spy_key = raw_price_path("perm-spy")
     writer.put_object(aapl_key, _bytes_serializer([_bar(date_value="2024-01-02", ticker="AAPL")]))
     writer.put_object(msft_key, _bytes_serializer([_bar(date_value="2024-01-02", ticker="MSFT")]))
+    writer.put_object(spy_key, _bytes_serializer([_bar(date_value="2024-01-02", ticker="SPY")]))
     writer.put_counts[aapl_key] = 0
     writer.put_counts[msft_key] = 0
+    writer.put_counts[spy_key] = 0
     price_fetcher = _HistoricalPriceFetcher()
 
     run_historical_layer0_backfill(
@@ -344,9 +352,14 @@ def test_historical_backfill_reads_existing_prices_from_store_for_quality_masks(
         macro_serializer=_bytes_serializer,
     )
 
-    assert {aapl_key: writer.put_counts[aapl_key], msft_key: writer.put_counts[msft_key]} == {
+    assert {
+        aapl_key: writer.put_counts[aapl_key],
+        msft_key: writer.put_counts[msft_key],
+        spy_key: writer.put_counts[spy_key],
+    } == {
         aapl_key: 0,
         msft_key: 0,
+        spy_key: 0,
     }
     assert price_fetcher.calls == []
     universe_rows = list(
@@ -384,8 +397,9 @@ def test_daily_layer0_incremental_uses_alpaca_shape_and_canonical_paths() -> Non
         macro_serializer=_bytes_serializer,
     )
 
-    assert live_fetcher.calls == [{"tickers": ("AAPL",), "as_of_date": "2024-01-02"}]
+    assert live_fetcher.calls == [{"tickers": ("AAPL", "SPY"), "as_of_date": "2024-01-02"}]
     assert raw_price_path("AAPL") in writer.objects
+    assert raw_price_path("SPY") in writer.objects
     assert raw_news_path("2024-01-02") in writer.objects
     assert raw_fundamentals_path("AAPL") in writer.objects
     assert raw_macro_path("2024-01-02") in writer.objects
@@ -400,7 +414,12 @@ def test_daily_layer0_incremental_uses_alpaca_shape_and_canonical_paths() -> Non
 
 def test_daily_layer0_incremental_canonicalizes_dot_tickers_across_outputs() -> None:
     writer = _Writer()
-    live_fetcher = _LivePriceFetcher(records=[_bar(date_value="2024-01-02", ticker="BRK.B")])
+    live_fetcher = _LivePriceFetcher(
+        records=[
+            _bar(date_value="2024-01-02", ticker="BRK.B"),
+            _bar(date_value="2024-01-02", ticker="SPY"),
+        ]
+    )
 
     run_daily_layer0_incremental(
         config=DailyLayer0Config(
@@ -422,8 +441,9 @@ def test_daily_layer0_incremental_canonicalizes_dot_tickers_across_outputs() -> 
         macro_serializer=_bytes_serializer,
     )
 
-    assert live_fetcher.calls == [{"tickers": ("BRK-B",), "as_of_date": "2024-01-02"}]
+    assert live_fetcher.calls == [{"tickers": ("BRK-B", "SPY"), "as_of_date": "2024-01-02"}]
     assert raw_price_path("BRK-B") in writer.objects
+    assert raw_price_path("SPY") in writer.objects
     price_payload = json.loads(writer.objects[raw_price_path("BRK-B")])
     assert price_payload[0]["ticker"] == "BRK-B"
 
@@ -437,9 +457,21 @@ def test_daily_layer0_incremental_canonicalizes_dot_tickers_across_outputs() -> 
 def test_daily_layer0_incremental_is_idempotent_for_existing_raw_outputs() -> None:
     writer = _Writer()
     price_key = raw_price_path("AAPL")
+    benchmark_key = raw_price_path("SPY")
     universe_key = raw_universe_path("2024-01-02")
-    keys = [price_key, raw_news_path("2024-01-02"), raw_fundamentals_path("AAPL"), raw_macro_path("2024-01-02"), universe_key]
+    keys = [
+        price_key,
+        benchmark_key,
+        raw_news_path("2024-01-02"),
+        raw_fundamentals_path("AAPL"),
+        raw_macro_path("2024-01-02"),
+        universe_key,
+    ]
     writer.put_object(price_key, _bytes_serializer([_bar(date_value="2024-01-02", ticker="AAPL")]))
+    writer.put_object(
+        benchmark_key,
+        _bytes_serializer([_bar(date_value="2024-01-02", ticker="SPY")]),
+    )
     writer.put_object(raw_news_path("2024-01-02"), b"existing")
     writer.put_object(raw_fundamentals_path("AAPL"), b"existing")
     writer.put_object(raw_macro_path("2024-01-02"), b"existing")
@@ -485,8 +517,13 @@ def test_daily_layer0_incremental_is_idempotent_for_existing_raw_outputs() -> No
 def test_daily_layer0_incremental_repairs_missing_target_date_and_rewrites_universe_mask() -> None:
     writer = _Writer()
     price_key = raw_price_path("AAPL")
+    benchmark_key = raw_price_path("SPY")
     universe_key = raw_universe_path("2024-01-03")
     writer.put_object(price_key, _bytes_serializer([_bar(date_value="2024-01-02", ticker="AAPL")]))
+    writer.put_object(
+        benchmark_key,
+        _bytes_serializer([_bar(date_value="2024-01-02", ticker="SPY")]),
+    )
     writer.put_object(
         universe_key,
         _universe_serializer(
@@ -505,6 +542,7 @@ def test_daily_layer0_incremental_repairs_missing_target_date_and_rewrites_unive
         ),
     )
     writer.put_counts[price_key] = 0
+    writer.put_counts[benchmark_key] = 0
     writer.put_counts[universe_key] = 0
 
     run_daily_layer0_incremental(
@@ -515,7 +553,12 @@ def test_daily_layer0_incremental_repairs_missing_target_date_and_rewrites_unive
             run_id="test-repair-daily",
             quality_config=QualityFilterConfig(rolling_window_days=2),
         ),
-        live_price_fetcher=_LivePriceFetcher(records=[_bar(date_value="2024-01-03", ticker="AAPL")]),
+        live_price_fetcher=_LivePriceFetcher(
+            records=[
+                _bar(date_value="2024-01-03", ticker="AAPL"),
+                _bar(date_value="2024-01-03", ticker="SPY"),
+            ]
+        ),
         news_fetcher=_NewsFetcher(),
         fundamentals_fetcher=_FundamentalsFetcher(),
         macro_fetcher=_MacroFetcher(),
@@ -530,7 +573,10 @@ def test_daily_layer0_incremental_repairs_missing_target_date_and_rewrites_unive
 
     price_payload = json.loads(writer.objects[price_key])
     assert [row["date"] for row in price_payload] == ["2024-01-02", "2024-01-03"]
+    benchmark_payload = json.loads(writer.objects[benchmark_key])
+    assert [row["date"] for row in benchmark_payload] == ["2024-01-02", "2024-01-03"]
     assert writer.put_counts[price_key] == 1
+    assert writer.put_counts[benchmark_key] == 1
     assert writer.put_counts[universe_key] == 1
     universe_rows = list(csv.DictReader(io.StringIO(writer.objects[universe_key].decode("utf-8"))))
     assert universe_rows[0]["data_quality_ok"] == "True"
@@ -577,8 +623,10 @@ def test_historical_backfill_skips_quality_reads_when_universe_masks_exist() -> 
     writer = _Writer()
     aapl_key = raw_price_path("perm-aapl")
     msft_key = raw_price_path("perm-msft")
+    spy_key = raw_price_path("perm-spy")
     writer.put_object(aapl_key, _bytes_serializer([_bar(date_value="2024-01-02", ticker="AAPL")]))
     writer.put_object(msft_key, _bytes_serializer([_bar(date_value="2024-01-02", ticker="MSFT")]))
+    writer.put_object(spy_key, _bytes_serializer([_bar(date_value="2024-01-02", ticker="SPY")]))
     # Pre-populate universe mask so _all_universe_masks_exist returns True
     writer.put_object(raw_universe_path("2024-01-02"), b"placeholder")
     # Pre-populate security master
@@ -684,13 +732,98 @@ def test_historical_backfill_repairs_existing_price_history_for_one_day_catch_up
         universe_serializer=_universe_serializer,
     )
 
-    assert price_fetcher.calls == [{"ticker": "AAPL", "from_date": "2024-01-03", "to_date": "2024-01-03"}]
+    assert price_fetcher.calls == [
+        {"ticker": "AAPL", "from_date": "2024-01-03", "to_date": "2024-01-03"},
+        {"ticker": "SPY", "from_date": "2024-01-03", "to_date": "2024-01-03"},
+    ]
     price_payload = json.loads(writer.objects[stale_price_key])
     assert [row["date"] for row in price_payload] == ["2024-01-02", "2024-01-03"]
     assert writer.put_counts[stale_price_key] == 1
     assert writer.put_counts[universe_key] == 1
     universe_rows = list(csv.DictReader(io.StringIO(writer.objects[universe_key].decode("utf-8"))))
     assert universe_rows[0]["data_quality_ok"] == "True"
+
+
+def test_historical_backfill_fetches_benchmark_prices_without_adding_benchmark_to_universe() -> None:
+    writer = _Writer()
+    price_fetcher = _HistoricalPriceFetcher()
+
+    run_historical_layer0_backfill(
+        config=HistoricalLayer0Config(
+            from_date=date(2024, 1, 2),
+            to_date=date(2024, 1, 2),
+            fred_series_ids=("DGS10",),
+            run_id="test-benchmark-historical",
+            quality_config=QualityFilterConfig(rolling_window_days=1),
+        ),
+        universe_provider=_UniverseProvider(),
+        price_fetcher=price_fetcher,
+        security_master=_SecurityMaster(),
+        news_fetcher=_NewsFetcher(),
+        fundamentals_fetcher=_FundamentalsFetcher(),
+        macro_fetcher=_MacroFetcher(),
+        writer=writer,
+        price_serializer=_bytes_serializer,
+        price_deserializer=_bytes_deserializer,
+        news_serializer=_bytes_serializer,
+        fundamentals_serializer=_bytes_serializer,
+        macro_serializer=_bytes_serializer,
+        universe_serializer=_universe_serializer,
+    )
+
+    assert raw_price_path("perm-spy") in writer.objects
+    assert {call["ticker"] for call in price_fetcher.calls} == {"AAPL", "MSFT", "SPY"}
+    universe_rows = list(
+        csv.DictReader(io.StringIO(writer.objects[raw_universe_path("2024-01-02")].decode()))
+    )
+    assert [row["ticker"] for row in universe_rows] == ["AAPL", "MSFT"]
+
+
+def test_historical_backfill_repairs_stale_benchmark_archive_missing_target_date() -> None:
+    writer = _Writer()
+    benchmark_key = raw_price_path("perm-spy")
+    writer.put_object(
+        benchmark_key,
+        _bytes_serializer([_bar(date_value="2024-01-02", ticker="SPY")]),
+    )
+    writer.put_counts[benchmark_key] = 0
+
+    class _SpyOnlyUniverseProvider:
+        def get_constituents(self, as_of_date: str) -> list[str]:
+            return ["AAPL", "MSFT"]
+
+        def get_historical_tickers(self, from_date: str, to_date: str) -> set[str]:
+            return {"AAPL", "MSFT"}
+
+    price_fetcher = _HistoricalPriceFetcher()
+
+    run_historical_layer0_backfill(
+        config=HistoricalLayer0Config(
+            from_date=date(2024, 1, 3),
+            to_date=date(2024, 1, 3),
+            fred_series_ids=("DGS10",),
+            run_id="test-benchmark-top-up",
+            quality_config=QualityFilterConfig(rolling_window_days=2),
+        ),
+        universe_provider=_SpyOnlyUniverseProvider(),
+        price_fetcher=price_fetcher,
+        security_master=_SecurityMaster(),
+        news_fetcher=_NewsFetcher(),
+        fundamentals_fetcher=_FundamentalsFetcher(),
+        macro_fetcher=_MacroFetcher(),
+        writer=writer,
+        price_serializer=_bytes_serializer,
+        price_deserializer=_bytes_deserializer,
+        news_serializer=_bytes_serializer,
+        fundamentals_serializer=_bytes_serializer,
+        macro_serializer=_bytes_serializer,
+        universe_serializer=_universe_serializer,
+    )
+
+    assert {"ticker": "SPY", "from_date": "2024-01-03", "to_date": "2024-01-03"} in price_fetcher.calls
+    benchmark_payload = json.loads(writer.objects[benchmark_key])
+    assert [row["date"] for row in benchmark_payload] == ["2024-01-02", "2024-01-03"]
+    assert writer.put_counts[benchmark_key] == 1
 
 
 def test_layer0_config_rejects_empty_inputs() -> None:

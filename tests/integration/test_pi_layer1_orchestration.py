@@ -39,8 +39,9 @@ def test_pi_runtime_waits_for_layer1_manifest_with_mocked_modal_trigger() -> Non
             "account": {"equity": 100_000.0, "cash": 25_000.0},
         }
 
-    def _layer0_runner(as_of_date: date, tickers) -> Layer0RunSummary:
+    def _layer0_runner(as_of_date: date, tickers, benchmark_ticker: str) -> Layer0RunSummary:
         _ = tickers
+        assert benchmark_ticker == "QQQ"
         run_id = f"layer0-daily-{as_of_date.isoformat()}"
         return Layer0RunSummary(
             run_id=run_id,
@@ -48,6 +49,7 @@ def test_pi_runtime_waits_for_layer1_manifest_with_mocked_modal_trigger() -> Non
         )
 
     def _layer1_trigger(config: Layer1TriggerConfig) -> Layer1DispatchResult:
+        assert config.benchmark_ticker == "QQQ"
         manifest = PipelineManifestRecord(
             run_id=config.run_id,
             stage="layer1",
@@ -100,7 +102,12 @@ def test_pi_runtime_waits_for_layer1_manifest_with_mocked_modal_trigger() -> Non
         },
     )
 
-    manifests = run_daily("2026-04-06", dependencies=dependencies, runtime_run_id="itest-run")
+    manifests = run_daily(
+        "2026-04-06",
+        dependencies=dependencies,
+        benchmark_ticker="QQQ",
+        runtime_run_id="itest-run",
+    )
 
     assert [row["stage"] for row in manifests][:4] == [
         "collect_market_context",

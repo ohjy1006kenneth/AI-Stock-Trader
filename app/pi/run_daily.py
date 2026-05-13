@@ -42,7 +42,7 @@ class DailyRunDependencies:
     """Injected runtime surfaces for live or dry-run orchestration."""
 
     market_context_collector: Callable[[str], dict[str, object]]
-    layer0_runner: Callable[[date, Sequence[str]], Layer0RunSummary]
+    layer0_runner: Callable[[date, Sequence[str], str], Layer0RunSummary]
     modal_runtime_loader: Callable[[], PiModalRuntimeConfig]
     layer1_trigger: Callable[[Layer1TriggerConfig], Layer1DispatchResult]
     layer1_waiter: Callable[[Layer1WaitConfig], PipelineManifestRecord]
@@ -87,7 +87,7 @@ def run_daily(
     tickers = _context_tickers(context)
     manifests.append(_manifest(run_id, "collect_market_context", 0, {"tickers": len(tickers)}))
 
-    layer0_result = dependencies.layer0_runner(parsed_date, tickers)
+    layer0_result = dependencies.layer0_runner(parsed_date, tickers, benchmark_ticker)
     manifests.append(
         _manifest(
             run_id,
@@ -248,15 +248,28 @@ def _dry_run_dependencies() -> DailyRunDependencies:
     )
 
 
-def _run_live_layer0(as_of_date: date, tickers: Sequence[str]) -> Layer0RunSummary:
+def _run_live_layer0(
+    as_of_date: date,
+    tickers: Sequence[str],
+    benchmark_ticker: str,
+) -> Layer0RunSummary:
     """Run the production Layer 0 incremental pipeline and return its manifest identity."""
-    result = run_live_layer0_incremental(as_of_date=as_of_date, tickers=tickers)
+    result = run_live_layer0_incremental(
+        as_of_date=as_of_date,
+        tickers=tickers,
+        benchmark_ticker=benchmark_ticker,
+    )
     return Layer0RunSummary(run_id=result.run_id, manifest_key=result.manifest_key)
 
 
-def _run_dry_layer0(as_of_date: date, tickers: Sequence[str]) -> Layer0RunSummary:
+def _run_dry_layer0(
+    as_of_date: date,
+    tickers: Sequence[str],
+    benchmark_ticker: str,
+) -> Layer0RunSummary:
     """Return a deterministic Layer 0 completion record for dry-run orchestration."""
     _ = tickers
+    _ = benchmark_ticker
     run_id = f"layer0-daily-{as_of_date.isoformat()}"
     return Layer0RunSummary(
         run_id=run_id,
