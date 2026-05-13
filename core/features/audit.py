@@ -815,7 +815,7 @@ def _audit_news_preprocessing(
     artifact: PipelineManifestRecord | None,
     findings: list[AuditFinding],
     leakage_checks: list[AuditFinding],
-) -> list[FeatureRecord]:
+) -> None:
     key = raw_news_path(as_of_date)
     if not writer.exists(key):
         findings.append(
@@ -827,8 +827,12 @@ def _audit_news_preprocessing(
                 details={"raw_news_key": key},
             )
         )
-        return []
-    raw_articles = _load_json_lines(writer.get_object(key))
+        return
+    raw_articles = _load_json_lines(
+        writer.get_object(key),
+        findings=findings,
+        subject=as_of_date,
+    )
     preprocessed = preprocess_news_articles(
         raw_articles,
         as_of_date=as_of_date,
@@ -857,7 +861,7 @@ def _audit_news_preprocessing(
                 message="No completed news preprocessing manifest found for the audited date.",
             )
         )
-        return []
+        return
 
     stored_records = news_sentiment_frame_to_records(
         _read_parquet_frame(writer, artifact.output_path or "")
@@ -903,7 +907,7 @@ def _audit_news_preprocessing(
                 details={"artifact_key": artifact.output_path, "rows_compared": len(stored_index)},
             )
         )
-    return []
+    return None
 
 
 def _audit_topic_branch(
@@ -1196,6 +1200,24 @@ def _fundamentals_leakage_checks(
         if len(future_rows) == 0
         else str(future_rows.sort_values("availability_date").iloc[0]["availability_date"])
     )
+    if len(future_rows) > 0:
+        return [
+            AuditFinding(
+                status="warn",
+                category="leakage",
+                subject=f"{ticker} fundamentals",
+                message=(
+                    "Fundamentals archive contains rows on or after the audited date; "
+                    "verify the feature path used only prior availability_date values."
+                ),
+                details={
+                    "latest_prior_availability_date": latest_prior,
+                    "earliest_non_prior_availability_date": earliest_future,
+                    "rows_on_or_after_audit_date": int(len(future_rows)),
+                    "as_of_date": as_of_date,
+                },
+            )
+        ]
     return [
         AuditFinding(
             status="pass",
@@ -1205,6 +1227,7 @@ def _fundamentals_leakage_checks(
             details={
                 "latest_prior_availability_date": latest_prior,
                 "earliest_non_prior_availability_date": earliest_future,
+                "rows_on_or_after_audit_date": 0,
                 "as_of_date": as_of_date,
             },
         )
@@ -1226,14 +1249,21 @@ def _macro_leakage_checks(
             )
         ]
     violating = macro_frame[macro_frame["realtime_start"].astype(str) >= as_of_date]
-    if len(violating) == len(macro_frame):
+    if len(violating) > 0:
         return [
             AuditFinding(
                 status="warn",
                 category="leakage",
                 subject="macro vintages",
-                message="No macro vintages were strictly prior to the audited date.",
-                details={"as_of_date": as_of_date},
+                message=(
+                    "Macro archive contains rows on or after the audited date; "
+                    "verify the feature path used only strictly prior realtime_start values."
+                ),
+                details={
+                    "rows_total": int(len(macro_frame)),
+                    "rows_on_or_after_audit_date": int(len(violating)),
+                    "as_of_date": as_of_date,
+                },
             )
         ]
     return [
@@ -1244,7 +1274,7 @@ def _macro_leakage_checks(
             message="Macro realtime_start values were inspected for strictly-prior availability.",
             details={
                 "rows_total": int(len(macro_frame)),
-                "rows_on_or_after_audit_date": int(len(violating)),
+                "rows_on_or_after_audit_date": 0,
                 "as_of_date": as_of_date,
             },
         )
@@ -1328,16 +1358,42 @@ def _record_for_date(
     return matches[0]
 
 
-def _load_json_lines(payload: bytes) -> list[dict[str, object]]:
+def _load_json_lines(
+    payload: bytes,
+    *,
+    findings: list[AuditFinding] | None = None,
+    subject: str = "jsonl payload",
+) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
-    for line in payload.decode("utf-8").splitlines():
+    malformed_line_numbers: list[int] = []
+    non_object_line_numbers: list[int] = []
+    for line_number, line in enumerate(payload.decode("utf-8").splitlines(), start=1):
         text = line.strip()
         if not text:
             continue
-        row = json.loads(text)
+        try:
+            row = json.loads(text)
+        except json.JSONDecodeError:
+            malformed_line_numbers.append(line_number)
+            continue
         if not isinstance(row, dict):
-            raise ValueError("JSON Lines payload must contain one object per line")
+            non_object_line_numbers.append(line_number)
+            continue
         rows.append(row)
+    if findings is not None and (malformed_line_numbers or non_object_line_numbers):
+        findings.append(
+            AuditFinding(
+                status="warn",
+                category="news",
+                subject=subject,
+                message="Skipped malformed JSON Lines rows while reading the raw news archive.",
+                details={
+                    "rows_loaded": len(rows),
+                    "malformed_line_numbers": malformed_line_numbers,
+                    "non_object_line_numbers": non_object_line_numbers,
+                },
+            )
+        )
     return rows
 
 

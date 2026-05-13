@@ -15,6 +15,7 @@ from core.features.context_features import (
     context_features_to_records,
 )
 from core.features.io import feature_records_to_parquet_bytes
+from core.features.macro_features import compute_macro_features
 from core.features.market_features import compute_market_features, market_features_to_records
 from core.features.news_preprocessing import (
     preprocess_news_articles,
@@ -194,14 +195,16 @@ def seed_layer1_audit_fixture(
         ),
         as_of_date,
     )
+    macro_frame = pd.concat(list(macro_by_key.values()), ignore_index=True)
     context_record = _single_record(
         context_features_to_records(
             compute_context_features(
                 fundamentals=fundamentals,
                 ohlcv=ohlcv,
-                macro=pd.concat(list(macro_by_key.values()), ignore_index=True),
+                macro=macro_frame,
                 ticker=ticker,
-                target_dates=[as_of_date],
+                macro_features=compute_macro_features(macro_frame, ohlcv["date"].tolist()),
+                target_dates=(as_of_date,),
             )
         ),
         as_of_date,

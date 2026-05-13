@@ -21,7 +21,7 @@ The audit focuses on Layer 0/1 correctness only:
 ## Command
 
 ```bash
-HOME=/home/juyoungoh ./.venv/bin/python app/lab/data_pipelines/audit_layer1_features.py \
+./.venv/bin/python app/lab/data_pipelines/audit_layer1_features.py \
     --as-of-date 2026-04-10 \
     --tickers AAPL,MSFT \
     --output-dir artifacts/reports/diagnostics

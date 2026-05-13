@@ -113,7 +113,7 @@ Config ownership:
 Production readiness command and inspection:
 
 ```bash
-HOME=/home/juyoungoh ./.venv/bin/modal run app/lab/data_pipelines/run_daily_layer1.py \
+./.venv/bin/modal run app/lab/data_pipelines/run_daily_layer1.py \
     --run-id layer1-readiness-2026-04-10-v7 \
     --as-of-date 2026-04-10 \
     --layer0-run-id layer0-historical-2017-01-01_to_2026-04-10 \
@@ -123,7 +123,7 @@ HOME=/home/juyoungoh ./.venv/bin/modal run app/lab/data_pipelines/run_daily_laye
 Generate the final operator-facing readiness report for the same run/window:
 
 ```bash
-HOME=/home/juyoungoh ./.venv/bin/python app/lab/data_pipelines/validate_layer1_archive.py \
+./.venv/bin/python app/lab/data_pipelines/validate_layer1_archive.py \
     --run-id layer1-readiness-2026-04-10-v7 \
     --from-date 2026-04-10 \
     --to-date 2026-04-10 \
@@ -143,7 +143,7 @@ Inspect R2 outputs via:
 For a targeted correctness audit on a sample of stored Layer 1 histories, run:
 
 ```bash
-HOME=/home/juyoungoh ./.venv/bin/python app/lab/data_pipelines/audit_layer1_features.py \
+./.venv/bin/python app/lab/data_pipelines/audit_layer1_features.py \
     --as-of-date 2026-04-10 \
     --tickers AAPL,MSFT \
     --output-dir artifacts/reports/diagnostics

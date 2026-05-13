@@ -123,7 +123,7 @@ Execution chain:
    - Example readiness rerun command used during Issue `#126`:
 
 ```bash
-HOME=/home/juyoungoh ./.venv/bin/modal run app/lab/data_pipelines/run_daily_layer1.py \
+./.venv/bin/modal run app/lab/data_pipelines/run_daily_layer1.py \
     --run-id layer1-readiness-2026-04-10-v7 \
     --as-of-date 2026-04-10 \
     --layer0-run-id layer0-historical-2017-01-01_to_2026-04-10 \
