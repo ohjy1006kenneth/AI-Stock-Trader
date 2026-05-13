@@ -944,6 +944,7 @@ def _write_fundamentals_archive(
     skipped = 0
     empty = 0
     total_rows = 0
+    missing_tickers: list[str] = []
     retrieved_at = datetime.now(UTC)
     batch_size = 50
     batches = [
@@ -990,13 +991,22 @@ def _write_fundamentals_archive(
         skipped += len(batch) - len(remaining)
         for ticker in remaining:
             ticker_rows = _sort_raw_rows(rows_by_ticker.get(ticker, []), ("report_date",))
+            if not ticker_rows:
+                empty += 1
+                missing_tickers.append(ticker)
+                logger.warning(
+                    "SimFin returned no fundamentals rows for ticker {} in {}..{}; "
+                    "skipping archive write",
+                    ticker,
+                    from_date.isoformat(),
+                    to_date.isoformat(),
+                )
+                continue
             key = raw_fundamentals_path(ticker)
             writer.put_object(key, serializer(ticker_rows))
             output_keys.append(key)
             written += 1
             total_rows += len(ticker_rows)
-            if not ticker_rows:
-                empty += 1
 
     return _WriteResult(
         output_keys=output_keys,
@@ -1005,6 +1015,7 @@ def _write_fundamentals_archive(
             "written": written,
             "skipped": skipped,
             "empty": empty,
+            "missing_tickers": missing_tickers,
             "total_rows": total_rows,
             "output_keys": output_keys,
         },

@@ -68,6 +68,7 @@ class BackfillResult:
     skipped: int
     empty: int
     total_rows: int
+    missing_tickers: tuple[str, ...]
     output_keys: tuple[str, ...]
 
 
@@ -112,6 +113,7 @@ def backfill_simfin_archive(
             skipped=len(ticker_source),
             empty=0,
             total_rows=0,
+            missing_tickers=(),
             output_keys=(),
         )
 
@@ -135,14 +137,24 @@ def backfill_simfin_archive(
     output_keys: list[str] = []
     empty = 0
     total_rows = 0
+    missing_tickers: list[str] = []
     for ticker in remaining:
         ticker_rows = _sort_fundamentals(rows_by_ticker.get(ticker, []))
+        if not ticker_rows:
+            empty += 1
+            missing_tickers.append(ticker)
+            logger.warning(
+                "SimFin returned no fundamentals rows for ticker {} in {}..{}; "
+                "skipping archive write",
+                ticker,
+                from_date.isoformat(),
+                to_date.isoformat(),
+            )
+            continue
         key = raw_fundamentals_path(ticker)
         writer.put_object(key, payload_serializer(ticker_rows))
         output_keys.append(key)
         total_rows += len(ticker_rows)
-        if not ticker_rows:
-            empty += 1
 
     logger.info(
         "Wrote {} SimFin fundamentals files ({} rows) for {} tickers",
@@ -156,6 +168,7 @@ def backfill_simfin_archive(
         skipped=len(ticker_source) - len(remaining),
         empty=empty,
         total_rows=total_rows,
+        missing_tickers=tuple(missing_tickers),
         output_keys=tuple(output_keys),
     )
 

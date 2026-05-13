@@ -163,7 +163,22 @@ class _FundamentalsFetcher:
                 "limit": limit,
             }
         )
-        return [{"ticker": tickers[0], "report_date": start_date, "raw": {"x": 1}}]
+        return [{"ticker": ticker, "report_date": start_date, "raw": {"x": 1}} for ticker in tickers]
+
+
+class _EmptyFundamentalsFetcher:
+    def fetch_all_fundamentals(
+        self,
+        *,
+        tickers: list[str] | tuple[str, ...],
+        start_date: str,
+        end_date: str,
+        statements: list[str] | tuple[str, ...],
+        periods: list[str] | tuple[str, ...],
+        retrieved_at: datetime | None,
+        limit: int,
+    ) -> list[dict[str, object]]:
+        return []
 
 
 class _MacroFetcher:
@@ -589,6 +604,37 @@ def test_daily_layer0_incremental_is_idempotent_for_existing_raw_outputs() -> No
 
     assert {key: writer.put_counts[key] for key in keys} == {key: 0 for key in keys}
     assert writer.objects[pipeline_manifest_path("layer0", "test-idempotent")]
+
+
+def test_daily_layer0_incremental_skips_new_empty_fundamentals_archives() -> None:
+    """Missing fundamentals history is surfaced without creating a zero-row archive placeholder."""
+    writer = _Writer()
+
+    run_daily_layer0_incremental(
+        config=DailyLayer0Config(
+            as_of_date=date(2024, 1, 2),
+            tickers=("AAPL",),
+            fred_series_ids=("DGS10",),
+            run_id="test-empty-fundamentals",
+            quality_config=QualityFilterConfig(rolling_window_days=1),
+        ),
+        live_price_fetcher=_LivePriceFetcher(),
+        news_fetcher=_NewsFetcher(),
+        fundamentals_fetcher=_EmptyFundamentalsFetcher(),
+        macro_fetcher=_MacroFetcher(),
+        writer=writer,
+        price_serializer=_bytes_serializer,
+        price_deserializer=_bytes_deserializer,
+        news_serializer=_bytes_serializer,
+        fundamentals_serializer=_bytes_serializer,
+        macro_serializer=_bytes_serializer,
+        universe_serializer=_universe_serializer,
+    )
+
+    assert raw_fundamentals_path("AAPL") not in writer.objects
+    manifest = _manifest(writer, "test-empty-fundamentals")
+    assert manifest["metadata"]["fundamentals"]["empty"] == 1
+    assert manifest["metadata"]["fundamentals"]["missing_tickers"] == ["AAPL"]
 
 
 def test_daily_layer0_incremental_repairs_missing_target_date_and_rewrites_universe_mask() -> None:

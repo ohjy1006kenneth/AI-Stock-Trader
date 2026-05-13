@@ -24,13 +24,6 @@
   `list_keys()` (paginated ListObjectsV2) for every existence check. Should add a
   `head_object`-based `exists()` to `CloudflareR2Client`. Affects all data families
   (prices, universe, news, fundamentals, macro) — thousands of slow calls per backfill run.
-- [ ] Fundamentals archive is written as a single `raw/fundamentals/{from}_to_{to}.parquet`
-  file, unlike prices (per-ticker) and news/universe (per-day). Shard per-ticker with
-  per-filing-date history (e.g. `raw/fundamentals/{TICKER}/{report_date}.parquet`, or
-  per-ticker historical files analogous to price parquets) so partial SimFin progress is
-  persisted, failures recover batch-by-batch, and incremental updates don't require
-  refetching the full range. Requires updating `raw_fundamentals_path`,
-  `_write_fundamentals_archive`, `validate_layer0_archive.py`, and Layer 1 consumers.
 - [ ] Macro archive layout still mixes legacy observation-date shards with run-date
   readiness snapshots under `raw/macro/{YYYY-MM-DD}.parquet`. Issue `#148` should
   consolidate the convention and document/migrate any backward-compatibility cleanup
@@ -41,3 +34,8 @@
 - [ ] Universe validation still reports a few historical symbol-identity mismatches
   (e.g., UAA, AGN, IQV transition events); evaluate date-bounded symbol mapping
   policy to reduce residual event-boundary violations.
+- [ ] SimFin still lacks direct coverage for several current S&P 500 symbols even after
+  per-ticker recovery and safe alias rewrites (confirmed on 2026-05-13 for `BF-B`,
+  `BRK-B`, `GEV`, `SOLV`, `SW`, `TKO`, `VLTO`). Decide whether to maintain explicit
+  provider-gap exceptions, source a secondary fundamentals provider for those names, or
+  relax readiness rules only with explicit human approval.
