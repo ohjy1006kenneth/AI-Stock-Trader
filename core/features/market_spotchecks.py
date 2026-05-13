@@ -132,6 +132,20 @@ def build_market_feature_spot_checks(
                     checks.append(check)
                     cards.append(card)
             continue
+        except ValueError as exc:
+            reason = f"Raw Layer 0 OHLCV archive is invalid for this ticker: {exc}"
+            for record in ticker_records:
+                for feature_name in supported_features:
+                    check, card = _missing_source_artifact(
+                        record=record,
+                        feature_name=feature_name,
+                        absolute_tolerance=absolute_tolerance,
+                        relative_tolerance=relative_tolerance,
+                        reason=reason,
+                    )
+                    checks.append(check)
+                    cards.append(card)
+            continue
 
         for record in ticker_records:
             for feature_name in supported_features:
@@ -152,7 +166,7 @@ def build_market_feature_spot_checks(
     return checks, cards
 
 
-def _summarize_market_feature_spot_checks(
+def summarize_market_feature_spot_checks(
     checks: Sequence[MarketFeatureSpotCheckRecord],
 ) -> dict[str, int]:
     """Return PASS/WARN/FAIL counts for the supplied spot-check records."""
@@ -175,6 +189,8 @@ def _normalize_feature_names(feature_names: Sequence[str]) -> list[str]:
 
 
 def _prepare_bars(bars: pd.DataFrame) -> pd.DataFrame:
+    if "date" not in bars.columns:
+        raise ValueError("missing required columns: date")
     frame = bars.copy()
     frame["date"] = frame["date"].astype(str)
     return frame.sort_values("date").drop_duplicates("date").reset_index(drop=True)
@@ -319,6 +335,22 @@ def _recompute_feature(
     feature_date: str,
     feature_name: str,
 ) -> _RecomputedFeature:
+    formula = _formula_template(feature_name)
+    missing_columns = sorted(_required_columns_for_feature(feature_name) - set(bars.columns))
+    if missing_columns:
+        return _missing_recompute(
+            feature_name=feature_name,
+            feature_date=feature_date,
+            formula=formula,
+            reason=(
+                "Raw Layer 0 OHLCV archive is missing required columns for "
+                f"{feature_name}: {', '.join(missing_columns)}."
+            ),
+            raw_inputs={
+                "feature_date": feature_date,
+                "available_columns": [str(column) for column in bars.columns],
+            },
+        )
     if feature_name == "returns_1d":
         return _recompute_returns(bars=bars, feature_date=feature_date, periods=1)
     if feature_name == "returns_5d":
@@ -359,8 +391,19 @@ def _recompute_returns(
         )
 
     source_rows = bars.iloc[row_index - (periods + 1) : row_index]
-    start_close = float(source_rows.iloc[0]["adj_close"])
-    end_close = float(source_rows.iloc[-1]["adj_close"])
+    adj_close_values, invalid_recompute = _coerce_finite_values(
+        source_rows,
+        column="adj_close",
+        feature_name=feature_name,
+        feature_date=feature_date,
+        formula=_formula_template(feature_name),
+    )
+    if invalid_recompute is not None:
+        return invalid_recompute
+    if adj_close_values is None:
+        raise ValueError("adj_close_values must be set when invalid_recompute is absent")
+    start_close = adj_close_values[0]
+    end_close = adj_close_values[-1]
     expected_value = end_close / start_close - 1.0
     source_dates = source_rows["date"].tolist()
     raw_inputs = {
@@ -410,7 +453,17 @@ def _recompute_realized_vol_21d(
         )
 
     source_rows = bars.iloc[row_index - 22 : row_index]
-    adj_close = [float(value) for value in source_rows["adj_close"].tolist()]
+    adj_close, invalid_recompute = _coerce_finite_values(
+        source_rows,
+        column="adj_close",
+        feature_name=feature_name,
+        feature_date=feature_date,
+        formula=_formula_template(feature_name),
+    )
+    if invalid_recompute is not None:
+        return invalid_recompute
+    if adj_close is None:
+        raise ValueError("adj_close must be set when invalid_recompute is absent")
     daily_returns = [
         adj_close[index] / adj_close[index - 1] - 1.0 for index in range(1, len(adj_close))
     ]
@@ -464,10 +517,19 @@ def _recompute_volume_ratio_20(
         )
 
     source_rows = bars.iloc[row_index - 20 : row_index]
-    volumes = [float(value) for value in source_rows["volume"].tolist()]
+    volumes, invalid_recompute = _coerce_finite_values(
+        source_rows,
+        column="volume",
+        feature_name=feature_name,
+        feature_date=feature_date,
+        formula=_formula_template(feature_name),
+    )
+    if invalid_recompute is not None:
+        return invalid_recompute
+    if volumes is None:
+        raise ValueError("volumes must be set when invalid_recompute is absent")
     current_volume = volumes[-1]
     mean_volume = statistics.fmean(volumes)
-    expected_value = current_volume / mean_volume if mean_volume != 0.0 else math.nan
     source_dates = source_rows["date"].tolist()
     raw_inputs = {
         "feature_date": feature_date,
@@ -475,6 +537,15 @@ def _recompute_volume_ratio_20(
         "window_rows": _rows_to_dicts(source_rows, columns=("date", "volume")),
         "mean_volume_20": _round_float(mean_volume),
     }
+    if mean_volume == 0.0:
+        return _missing_recompute(
+            feature_name=feature_name,
+            feature_date=feature_date,
+            formula=_formula_template(feature_name),
+            reason="Volume ratio is undefined because the 20-bar mean volume is zero.",
+            raw_inputs=raw_inputs,
+        )
+    expected_value = current_volume / mean_volume
     calculation = (
         f"{feature_name}({feature_date}) = volume({source_dates[-1]}) / "
         f"mean(volume[{source_dates[0]}..{source_dates[-1]}]) = "
@@ -517,7 +588,17 @@ def _recompute_rsi_14(
         )
 
     source_rows = bars.iloc[row_index - 15 : row_index]
-    closes = [float(value) for value in source_rows["adj_close"].tolist()]
+    closes, invalid_recompute = _coerce_finite_values(
+        source_rows,
+        column="adj_close",
+        feature_name=feature_name,
+        feature_date=feature_date,
+        formula=_formula_template(feature_name),
+    )
+    if invalid_recompute is not None:
+        return invalid_recompute
+    if closes is None:
+        raise ValueError("closes must be set when invalid_recompute is absent")
     deltas = [closes[index] - closes[index - 1] for index in range(1, len(closes))]
     gains = [max(delta, 0.0) for delta in deltas]
     losses = [max(-delta, 0.0) for delta in deltas]
@@ -578,6 +659,56 @@ def _feature_row_index(*, bars: pd.DataFrame, feature_date: str) -> int | None:
     if not matches:
         return None
     return int(matches[0])
+
+
+def _required_columns_for_feature(feature_name: str) -> frozenset[str]:
+    columns_by_feature: Mapping[str, frozenset[str]] = {
+        "returns_1d": frozenset({"adj_close"}),
+        "returns_5d": frozenset({"adj_close"}),
+        "realized_vol_21d": frozenset({"adj_close"}),
+        "volume_ratio_20": frozenset({"volume"}),
+        "rsi_14": frozenset({"adj_close"}),
+    }
+    return columns_by_feature.get(feature_name, frozenset())
+
+
+def _coerce_finite_values(
+    source_rows: pd.DataFrame,
+    *,
+    column: str,
+    feature_name: str,
+    feature_date: str,
+    formula: str,
+) -> tuple[list[float] | None, _RecomputedFeature | None]:
+    values: list[float] = []
+    invalid_rows: list[dict[str, object]] = []
+    for row in source_rows.loc[:, ["date", column]].to_dict(orient="records"):
+        try:
+            numeric_value = float(row[column])
+        except (TypeError, ValueError):
+            invalid_rows.append({"date": str(row["date"]), column: row[column]})
+            continue
+        if math.isnan(numeric_value) or math.isinf(numeric_value):
+            invalid_rows.append({"date": str(row["date"]), column: row[column]})
+            continue
+        values.append(numeric_value)
+    if invalid_rows:
+        return None, _missing_recompute(
+            feature_name=feature_name,
+            feature_date=feature_date,
+            formula=formula,
+            reason=(
+                f"Raw Layer 0 OHLCV archive has non-finite {column} values inside the "
+                "source window."
+            ),
+            raw_inputs={
+                "feature_date": feature_date,
+                "window_dates": [str(value) for value in source_rows["date"].tolist()],
+                "window_rows": _rows_to_dicts(source_rows, columns=("date", column)),
+                "invalid_rows": invalid_rows,
+            },
+        )
+    return values, None
 
 
 def _missing_recompute(
@@ -674,12 +805,22 @@ def _rows_to_dicts(frame: pd.DataFrame, *, columns: Sequence[str]) -> list[dict[
         for key, value in row.items():
             if key == "date":
                 normalized[key] = str(value)
+            elif value is None:
+                normalized[key] = None
             elif isinstance(value, bool):
                 normalized[key] = value
             elif isinstance(value, int):
                 normalized[key] = value
             else:
-                normalized[key] = _round_float(float(value))
+                try:
+                    numeric_value = float(value)
+                except (TypeError, ValueError):
+                    normalized[key] = value
+                    continue
+                if math.isnan(numeric_value) or math.isinf(numeric_value):
+                    normalized[key] = None
+                    continue
+                normalized[key] = _round_float(numeric_value)
         rows.append(normalized)
     return rows
 

@@ -14,6 +14,19 @@ from services.r2.paths import raw_price_path
 from tests.fixtures.layer1_audit_support import local_writer
 
 
+def test_build_market_feature_spot_checks_returns_empty_payloads_for_empty_records(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Empty input should produce empty comparison and formula-card payloads."""
+    writer = local_writer(tmp_path, monkeypatch)
+
+    checks, cards = build_market_feature_spot_checks(records=[], writer=writer)
+
+    assert checks == []
+    assert cards == []
+
+
 def test_build_market_feature_spot_checks_recomputes_with_prior_bars_only(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -83,6 +96,35 @@ def test_build_market_feature_spot_checks_warns_on_missing_raw_archive(
     assert cards[0].calculation == "Raw Layer 0 OHLCV archive is missing for this ticker."
 
 
+def test_build_market_feature_spot_checks_warns_on_insufficient_history(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Too little prior OHLCV history should yield an explicit WARN record."""
+    writer = local_writer(tmp_path, monkeypatch)
+    bars = _hand_computable_bars().iloc[:5].copy()
+    writer.put_object(raw_price_path("AAPL"), _parquet_bytes(bars))
+
+    record = FeatureRecord(
+        date=str(bars.iloc[2]["date"]),
+        ticker="AAPL",
+        features={"returns_5d": 0.0},
+    )
+
+    checks, cards = build_market_feature_spot_checks(
+        records=[record],
+        writer=writer,
+        feature_names=("returns_5d",),
+    )
+
+    assert checks[0].status == "warn"
+    assert checks[0].missing_reason == (
+        "Insufficient prior OHLCV history for deterministic recomputation: "
+        "requires 6 prior bars, found 2."
+    )
+    assert cards[0].status == "warn"
+
+
 def test_build_market_feature_spot_checks_fails_on_stored_mismatch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -111,6 +153,97 @@ def test_build_market_feature_spot_checks_fails_on_stored_mismatch(
     assert checks[0].absolute_difference > 0.1
     assert cards[0].status == "fail"
     assert "differs from recomputation" in cards[0].message
+
+
+def test_build_market_feature_spot_checks_warns_on_nan_adj_close(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """NaN source OHLCV values should surface as explicit WARN records."""
+    writer = local_writer(tmp_path, monkeypatch)
+    bars = _hand_computable_bars()
+    feature_date = str(bars.iloc[27]["date"])
+    bars.loc[26, "adj_close"] = math.nan
+    writer.put_object(raw_price_path("AAPL"), _parquet_bytes(bars))
+
+    record = FeatureRecord(
+        date=feature_date,
+        ticker="AAPL",
+        features={"returns_1d": 0.0},
+    )
+
+    checks, cards = build_market_feature_spot_checks(
+        records=[record],
+        writer=writer,
+        feature_names=("returns_1d",),
+    )
+
+    assert checks[0].status == "warn"
+    assert checks[0].missing_reason == (
+        "Raw Layer 0 OHLCV archive has non-finite adj_close values inside the source window."
+    )
+    assert cards[0].status == "warn"
+
+
+def test_build_market_feature_spot_checks_warns_on_missing_required_column(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Missing OHLCV columns should produce explicit WARN records instead of exceptions."""
+    writer = local_writer(tmp_path, monkeypatch)
+    bars = _hand_computable_bars().drop(columns=["adj_close"])
+    feature_date = str(bars.iloc[27]["date"])
+    writer.put_object(raw_price_path("AAPL"), _parquet_bytes(bars))
+
+    record = FeatureRecord(
+        date=feature_date,
+        ticker="AAPL",
+        features={"returns_1d": 0.0},
+    )
+
+    checks, cards = build_market_feature_spot_checks(
+        records=[record],
+        writer=writer,
+        feature_names=("returns_1d",),
+    )
+
+    assert checks[0].status == "warn"
+    assert checks[0].missing_reason == (
+        "Raw Layer 0 OHLCV archive is missing required columns for returns_1d: adj_close."
+    )
+    assert cards[0].status == "warn"
+
+
+def test_build_market_feature_spot_checks_warns_on_zero_mean_volume(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Zero mean volume should be classified as a missing-data WARN, not a FAIL."""
+    writer = local_writer(tmp_path, monkeypatch)
+    bars = _hand_computable_bars()
+    bars.loc[:19, "volume"] = 0
+    bars.loc[:19, "dollar_volume"] = 0.0
+    feature_date = str(bars.iloc[20]["date"])
+    writer.put_object(raw_price_path("AAPL"), _parquet_bytes(bars))
+
+    record = FeatureRecord(
+        date=feature_date,
+        ticker="AAPL",
+        features={"volume_ratio_20": 0.0},
+    )
+
+    checks, cards = build_market_feature_spot_checks(
+        records=[record],
+        writer=writer,
+        feature_names=("volume_ratio_20",),
+    )
+
+    assert checks[0].status == "warn"
+    assert checks[0].expected_value is None
+    assert checks[0].missing_reason == (
+        "Volume ratio is undefined because the 20-bar mean volume is zero."
+    )
+    assert cards[0].status == "warn"
 
 
 def _hand_computable_bars() -> pd.DataFrame:

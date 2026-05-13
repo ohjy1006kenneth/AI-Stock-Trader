@@ -21,8 +21,9 @@ from core.features.catalog import (
 )
 from core.features.io import read_feature_history_window
 from core.features.market_spotchecks import (
-    _summarize_market_feature_spot_checks,
+    MarketFeatureSpotCheckRecord,
     build_market_feature_spot_checks,
+    summarize_market_feature_spot_checks,
 )
 from services.r2.paths import layer1_ticker_history_path
 from services.r2.writer import R2Writer
@@ -731,12 +732,12 @@ def _build_dashboard_summary(
     load_warnings: Sequence[DashboardLoadWarning],
     family_status_summaries: Sequence[FeatureFamilyStatus],
     outlier_records: Sequence[OutlierRecord],
-    spot_check_records: Sequence[object],
+    spot_check_records: Sequence[MarketFeatureSpotCheckRecord],
 ) -> dict[str, int]:
     counts = {"pass": 0, "warn": 0, "fail": 0}
     for item in family_status_summaries:
         counts[item.status] += 1
-    spot_check_counts = _summarize_market_feature_spot_checks(spot_check_records)
+    spot_check_counts = summarize_market_feature_spot_checks(spot_check_records)
     return {
         "rows_loaded": len(selection_rows),
         "load_warning_count": len(load_warnings),
