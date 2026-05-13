@@ -167,7 +167,8 @@ For the read-only dashboard backend payload used by the Layer 0/1 audit UI, run:
 This command reads stored `features/layer1/{TICKER}.parquet` histories and writes
 local JSON/text report artifacts only. It does not modify R2 objects. See
 `docs/layer1_feature_audit_dashboard.md` for the heatmap, family-status,
-null-rate, and outlier payload details.
+raw-vs-computed spot-check, formula-card, null-rate, and outlier payload
+details.
 
 Operational notes for the readiness report:
 - The local validator writes
