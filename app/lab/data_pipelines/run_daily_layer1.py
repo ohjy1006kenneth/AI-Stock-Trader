@@ -101,7 +101,6 @@ from services.r2.paths import (  # noqa: E402
     layer1_ticker_history_path,
     pipeline_manifest_path,
     raw_fundamentals_path,
-    raw_macro_path,
     raw_news_path,
     raw_price_path,
     raw_universe_path,
