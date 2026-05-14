@@ -13,12 +13,14 @@ from app.lab.data_pipelines import (
     run_news_preprocessing,
     run_text_topics,
 )
+from app.lab.training import run_finbert_finetuning
 
 _WORKSPACE_IMAGE_MODULES = {
     run_news_preprocessing,
     run_text_topics,
     run_finbert_sentiment,
     run_hmm_regime_detection,
+    run_finbert_finetuning,
 }
 
 
@@ -242,6 +244,29 @@ def _install_fake_modal(monkeypatch: pytest.MonkeyPatch) -> _FakeModal:
             },
         ),
         (
+            run_finbert_finetuning,
+            "_define_modal_app",
+            "load_finbert_finetuning_runtime_config",
+            "app_name",
+            "modal_run_finbert_finetuning",
+            (
+                "smoke-finetune",
+                "2024-01-02",
+                "2024-01-05",
+                "news-run",
+                True,
+                "spy, aapl",
+            ),
+            {
+                "run_id": "smoke-finetune",
+                "from_date": "2024-01-02",
+                "to_date": "2024-01-05",
+                "news_run_id": "news-run",
+                "fine_tune": True,
+                "tickers": "spy, aapl",
+            },
+        ),
+        (
             backfill_layer1,
             "_define_modal_app",
             "load_modal_runtime_config",
@@ -302,6 +327,8 @@ def test_modal_runner_entrypoints_build_apps_and_dispatch_remote_calls(
     else:
         assert registered.options["serialized"] is True
     assert registered.options["secrets"][0].name == runtime.r2_secret_name
+    if getattr(runtime, "gpu_type", None):
+        assert registered.options["gpu"] == runtime.gpu_type
 
     getattr(module, "modal_main")(*modal_args)
 

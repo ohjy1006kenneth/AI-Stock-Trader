@@ -115,6 +115,11 @@ Runtime expectations:
 - `run_hmm_regime_detection.py`: CPU only; keep regime fitting off the Pi.
 - `backfill_layer1.py`: CPU only; historical Layer 1 feature assembly runs on Modal/lab,
   not on the Pi runtime container.
+- `app/lab/training/run_finbert_finetuning.py`: offline only; evaluates the pinned baseline
+  FinBERT model against archived return-derived labels and can optionally fine-tune a lab
+  artifact from the same archives. If GPU is used for this job, cap it at `gpu="T4"`.
+  The job writes local `artifacts/` bundle/report/manifest outputs and must not update
+  `config/finbert_sentiment.json` or silently replace production inference.
 
 Config ownership:
 - `config/news_preprocessing.json` owns the news preprocessing app name, R2 secret, and
@@ -123,9 +128,31 @@ Config ownership:
   image settings.
 - `config/finbert_sentiment.json` owns the FinBERT app name, R2 secret, timeout, and
   Modal image settings.
+- `config/finbert_finetuning.json` owns the offline FinBERT evaluation/fine-tuning app
+  name, R2 secret, training hyperparameters, and the T4-only GPU cap for optional
+  fine-tuning runs.
 - `config/modal.json` owns the Pi-triggered daily Layer 1 app name and poll settings, the
   single-date Layer 1 timeout, dedicated batched Layer 1 timeout, Layer 1 backfill and
   HMM regime app names, their timeouts, and shared Modal image settings.
+
+Offline FinBERT evaluation/fine-tuning command:
+
+```bash
+HOME=/home/juyoungoh ./.venv/bin/python app/lab/training/run_finbert_finetuning.py \
+    --run-id finbert-offline-2026-05-14 \
+    --from-date 2026-03-01 \
+    --to-date 2026-04-10 \
+    --news-run-id layer1-readiness-2026-04-10-v7 \
+    --fine-tune
+```
+
+Promotion rule:
+- the offline artifact manifest at
+  `artifacts/manifests/lab_finbert_finetuning_artifact/{run_id}.json` is emitted with
+  `approved: false`
+- production FinBERT continues to use `config/finbert_sentiment.json`
+- switching production to a fine-tuned artifact requires explicit human approval plus a
+  separate code/config change that updates the production model pin
 
 Production readiness command and inspection:
 

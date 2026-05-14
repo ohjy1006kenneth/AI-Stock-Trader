@@ -21,6 +21,8 @@ The system is designed around four deployment surfaces:
    Used for:
    - daily Layer 1 feature generation after the Pi finishes Layer 0
    - FinBERT inference on news text
+   - offline FinBERT evaluation and optional fine-tuning from archived news plus
+     return-derived labels
    - XGBoost inference and retraining
    - larger offline backtests and packaging jobs
 
@@ -28,6 +30,8 @@ The system is designed around four deployment surfaces:
    `app/lab/data_pipelines/run_daily_layer1.py`. The Pi image carries that lightweight
    script so it can invoke `modal run`, but the heavy Layer 1 compute and dependencies still
    execute only inside Modal.
+   Offline FinBERT fine-tuning artifacts stay lab-only until a human approves them; they do
+   not replace the production FinBERT model pin automatically.
 
 3. **Raspberry Pi 5 (edge runtime / orchestration)**
    Used for:
