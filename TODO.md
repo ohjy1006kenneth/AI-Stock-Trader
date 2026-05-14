@@ -34,9 +34,10 @@
 
 ## Discovered during development
 <!-- Codex adds here when it notices something out of scope for the current task -->
-- [ ] Universe validation still reports a few historical symbol-identity mismatches
-  (e.g., UAA, AGN, IQV transition events); evaluate date-bounded symbol mapping
-  policy to reduce residual event-boundary violations.
+- [ ] Date-bounded Wikipedia identity resolution now covers the known `UA`/`UAA`
+  and `Q`/`IQV` transition boundaries, but residual non-aliased delisting or
+  archive-gap mismatches (for example stale `AGN` boundary holes in old
+  membership exports) still need data cleanup or an explicit exception policy.
 - [ ] SimFin still lacks direct coverage for several current S&P 500 symbols even after
   per-ticker recovery and safe alias rewrites (confirmed on 2026-05-13 for `BF-B`,
   `BRK-B`, `GEV`, `SOLV`, `SW`, `TKO`, `VLTO`). Decide whether to maintain explicit

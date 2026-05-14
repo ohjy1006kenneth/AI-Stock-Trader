@@ -20,19 +20,29 @@ WIKIPEDIA_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 DEFAULT_CACHE_PATH = Path("data/cache/sp500_wikipedia.html")
 CACHE_MAX_AGE_HOURS = 24
 
-# Historical/alternate symbols mapped to canonical symbols used by downstream
-# fetch pipelines. Keep this focused on observed S&P 500 history edge cases.
+# Conflict-free historical/current symbol aliases. Ambiguous symbols that map to
+# different securities across time are handled separately with date-bounded
+# resolution rules.
 _TICKER_CANONICAL_MAP: dict[str, str] = {
     "BRK.B": "BRK-B",
     "BF.B": "BF-B",
     "FB": "META",
-    "UA": "UAA",
     "WLTW": "WTW",
     "RE": "EG",
-    "Q": "IQV",
     "FLT": "CPAY",
     "CDAY": "DAY",
 }
+_UNDER_ARMOUR_CLASS_C_SPLIT_DATE = "2016-04-08"
+_IQVIA_SNP_ENTRY_DATE = "2017-08-29"
+
+
+@dataclass(frozen=True)
+class SymbolIdentityResolution:
+    """Resolved security identity for one raw Wikipedia ticker symbol."""
+
+    raw_ticker: str
+    resolved_ticker: str
+    reason_code: str
 
 
 @dataclass(frozen=True)
@@ -42,6 +52,8 @@ class ChangeEvent:
     date: str          # YYYY-MM-DD
     added: frozenset[str]
     removed: frozenset[str]
+    added_details: tuple[SymbolIdentityResolution, ...] = ()
+    removed_details: tuple[SymbolIdentityResolution, ...] = ()
 
 
 def validate_supported_start_date(query_date: str, earliest_event_date: str, label: str) -> None:
@@ -59,9 +71,49 @@ def canonicalize_ticker(ticker: str) -> str:
 
 
 def _canonicalize_ticker(ticker: str) -> str:
-    """Normalize ticker formatting and map historical aliases to canonical symbols."""
-    normalized = ticker.strip().upper().replace(".", "-")
+    """Normalize ticker formatting and conflict-free historical aliases."""
+    normalized = _normalize_ticker(ticker)
     return _TICKER_CANONICAL_MAP.get(normalized, normalized)
+
+
+def _normalize_ticker(ticker: str) -> str:
+    """Normalize ticker formatting without applying identity-alias logic."""
+    return ticker.strip().upper().replace(".", "-")
+
+
+def _resolve_change_event_ticker(
+    ticker: str,
+    *,
+    event_date: str,
+) -> SymbolIdentityResolution | None:
+    """Resolve one raw change-log symbol to the Layer 0 security identity."""
+    normalized = _normalize_ticker(ticker)
+    if not normalized:
+        return None
+    if normalized == "UA" and event_date < _UNDER_ARMOUR_CLASS_C_SPLIT_DATE:
+        return SymbolIdentityResolution(
+            raw_ticker=normalized,
+            resolved_ticker="UAA",
+            reason_code="pre_2016_under_armour_class_a_alias",
+        )
+    if normalized == "Q" and event_date >= _IQVIA_SNP_ENTRY_DATE:
+        return SymbolIdentityResolution(
+            raw_ticker=normalized,
+            resolved_ticker="IQV",
+            reason_code="post_2017_iqvia_alias",
+        )
+    resolved = _canonicalize_ticker(normalized)
+    if resolved != normalized:
+        return SymbolIdentityResolution(
+            raw_ticker=normalized,
+            resolved_ticker=resolved,
+            reason_code="conflict_free_current_symbol_alias",
+        )
+    return SymbolIdentityResolution(
+        raw_ticker=normalized,
+        resolved_ticker=normalized,
+        reason_code="identity_preserved",
+    )
 
 
 def fetch_html(cache_path: Path = DEFAULT_CACHE_PATH) -> str:
@@ -116,7 +168,7 @@ def parse_change_log(html: str) -> list[ChangeEvent]:
     if table is None:
         raise ValueError("Could not find 'changes' table on Wikipedia S&P 500 page")
 
-    raw_events: dict[str, dict[str, set[str]]] = {}
+    raw_events: dict[str, dict[str, dict[str, SymbolIdentityResolution]]] = {}
 
     for row in table.find_all("tr")[1:]:
         cells = row.find_all("td")
@@ -124,8 +176,8 @@ def parse_change_log(html: str) -> list[ChangeEvent]:
             continue
 
         raw_date = cells[0].get_text(strip=True)
-        added_ticker = _canonicalize_ticker(cells[1].get_text(strip=True))
-        removed_ticker = _canonicalize_ticker(cells[3].get_text(strip=True))
+        added_ticker = _normalize_ticker(cells[1].get_text(strip=True))
+        removed_ticker = _normalize_ticker(cells[3].get_text(strip=True))
 
         # Normalize date to YYYY-MM-DD
         date = _normalize_date(raw_date)
@@ -134,18 +186,26 @@ def parse_change_log(html: str) -> list[ChangeEvent]:
             continue
 
         if date not in raw_events:
-            raw_events[date] = {"added": set(), "removed": set()}
+            raw_events[date] = {"added": {}, "removed": {}}
 
-        if added_ticker:
-            raw_events[date]["added"].add(added_ticker)
-        if removed_ticker:
-            raw_events[date]["removed"].add(removed_ticker)
+        added_resolution = _resolve_change_event_ticker(added_ticker, event_date=date)
+        removed_resolution = _resolve_change_event_ticker(removed_ticker, event_date=date)
+        if added_resolution is not None:
+            raw_events[date]["added"][added_resolution.resolved_ticker] = added_resolution
+        if removed_resolution is not None:
+            raw_events[date]["removed"][removed_resolution.resolved_ticker] = removed_resolution
 
     events = [
         ChangeEvent(
             date=date,
             added=frozenset(v["added"]),
             removed=frozenset(v["removed"]),
+            added_details=tuple(
+                sorted(v["added"].values(), key=lambda detail: detail.resolved_ticker)
+            ),
+            removed_details=tuple(
+                sorted(v["removed"].values(), key=lambda detail: detail.resolved_ticker)
+            ),
         )
         for date, v in sorted(raw_events.items())
     ]
