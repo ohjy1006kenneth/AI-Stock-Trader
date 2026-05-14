@@ -21,6 +21,7 @@ import argparse
 import csv
 import io
 import json
+import math
 import os
 import random
 import re
@@ -316,9 +317,18 @@ def validate_layer1_archive(
         )
     if manifest_state.manifest_errors:
         ready = False
-    validation_status = "completed" if ready else "failed"
-    if not ready and not missing and not schema_failures and not row_count_failures and not manifest_state.manifest_errors and not any(check["status"] == "fail" for check in leakage_spot_checks) and regime_warnings and not regime_failures:
-        validation_status = "warning"
+    has_leakage_failures = any(check["status"] == "fail" for check in leakage_spot_checks)
+    only_regime_warnings = (
+        not ready
+        and not missing
+        and not schema_failures
+        and not row_count_failures
+        and not manifest_state.manifest_errors
+        and not has_leakage_failures
+        and bool(regime_warnings)
+        and not regime_failures
+    )
+    validation_status = "completed" if ready else ("warning" if only_regime_warnings else "failed")
     return Layer1ValidationReport(
         run_id=run_id,
         from_date=from_date,
@@ -815,13 +825,12 @@ def _load_regime_diagnostic(
     if "regime_required_for_layer2" not in row:
         required_for_layer2 = _row_has_populated_regime_values(row)
     missing_features = _split_csv_values(row.get("regime_missing_features"))
+    default_status = "ready" if required_for_layer2 else "warning"
+    default_reason = "ready" if required_for_layer2 else "legacy_missing_diagnostics"
     diagnostic.update(
         {
-            "status": str(row.get("regime_readiness_status") or ("ready" if required_for_layer2 else "warning")),
-            "reason": str(
-                row.get("regime_readiness_reason")
-                or ("ready" if required_for_layer2 else "legacy_missing_diagnostics")
-            ),
+            "status": str(row.get("regime_readiness_status") or default_status),
+            "reason": str(row.get("regime_readiness_reason") or default_reason),
             "required_for_layer2": required_for_layer2,
             "missing_features": missing_features,
             "complete_training_rows": _safe_int(row.get("complete_training_rows")),
@@ -913,10 +922,12 @@ def _row_has_populated_regime_values(row: Mapping[str, object]) -> bool:
 
 def _normalize_optional_value(value: object) -> object | None:
     """Normalize common null-like feature values to None."""
+    if value is None:
+        return None
     numeric = _safe_float(value)
     if numeric is not None:
-        return numeric
-    if value is None:
+        return numeric if math.isfinite(numeric) else None
+    if isinstance(value, float) and not math.isfinite(value):
         return None
     normalized = str(value).strip()
     return normalized or None

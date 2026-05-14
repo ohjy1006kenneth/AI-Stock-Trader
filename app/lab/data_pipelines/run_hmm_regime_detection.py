@@ -17,9 +17,12 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from loguru import logger
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 
 def _resolve_repo_root() -> Path:
@@ -39,6 +42,7 @@ from core.features.loaders import load_macro_frame, load_ohlcv_frame  # noqa: E4
 from core.features.regime_detection import (  # noqa: E402
     HMM_REGIME_COLUMNS,
     HMMRegimeConfig,
+    HMMRegimeReadiness,
     fit_and_emit_hmm_regime_features,
     inspect_hmm_regime_readiness,
     validate_hmm_regime_probabilities,
@@ -260,7 +264,7 @@ def load_modal_runtime_config(path: Path = MODAL_CONFIG_PATH) -> ModalRuntimeCon
     )
 
 
-def _empty_regime_frame(inference_dates: Sequence[str]):
+def _empty_regime_frame(inference_dates: Sequence[str]) -> pd.DataFrame:
     """Return one explicit null regime row for each requested inference date."""
     try:
         import pandas as pd
@@ -283,7 +287,11 @@ def _empty_regime_frame(inference_dates: Sequence[str]):
     return pd.DataFrame(rows, columns=list(HMM_REGIME_COLUMNS))
 
 
-def _with_regime_readiness_columns(frame, *, readiness) -> object:
+def _with_regime_readiness_columns(
+    frame: pd.DataFrame,
+    *,
+    readiness: HMMRegimeReadiness,
+) -> pd.DataFrame:
     """Annotate the regime artifact with per-date readiness diagnostics."""
     try:
         import pandas as pd

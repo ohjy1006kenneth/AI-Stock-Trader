@@ -324,6 +324,79 @@ def test_validate_layer1_archive_fails_when_required_regime_fields_are_missing()
     assert report.regime_failures[0]["reason"] == "required_regime_fields_missing"
 
 
+def test_validate_layer1_archive_fails_when_required_regime_output_uses_nan() -> None:
+    """Required Layer 1.5 rows with NaN regime values fail readiness as missing output."""
+    reader = _Reader(
+        {
+            layer1_ticker_history_path("AAPL"): _history_bytes_with_features(
+                "AAPL",
+                [
+                    (
+                        "2024-01-03",
+                        {
+                            "returns_1d": 0.01,
+                            "regime_label": "bull",
+                            "regime_confidence": 0.8,
+                            "regime_prob_bear": 0.1,
+                            "regime_prob_sideways": 0.1,
+                            "regime_prob_bull": 0.8,
+                        },
+                    )
+                ],
+            ),
+            layer1_regime_path("layer1-required-regime-nan-2024-01-03"): _regime_artifact_bytes(
+                [
+                    {
+                        "date": "2024-01-03",
+                        "regime_label": "bull",
+                        "regime_confidence": float("nan"),
+                        "regime_prob_bear": float("nan"),
+                        "regime_prob_sideways": float("nan"),
+                        "regime_prob_bull": float("nan"),
+                        "regime_required_for_layer2": True,
+                        "regime_readiness_status": "ready",
+                        "regime_readiness_reason": "ready",
+                        "regime_missing_features": "",
+                        "regime_probability_sum": float("nan"),
+                        "training_rows": 40,
+                        "complete_training_rows": 40,
+                        "min_training_rows": 30,
+                    }
+                ]
+            ),
+        }
+    )
+
+    report = validate_layer1_archive(
+        run_id="layer1-required-regime-nan",
+        from_date="2024-01-03",
+        to_date="2024-01-03",
+        universe={"2024-01-03": ["AAPL"]},
+        reader=reader,
+    )
+
+    assert report.ready_for_layer2 is False
+    assert report.validation_status == "failed"
+    assert report.layer2_regime_required_dates == ["2024-01-03"]
+    assert report.regime_failures == [
+        {
+            "date": "2024-01-03",
+            "status": "failure",
+            "reason": "required_regime_output_is_null",
+            "required_for_layer2": True,
+            "output_key": layer1_regime_path("layer1-required-regime-nan-2024-01-03"),
+            "manifest_key": pipeline_manifest_path(
+                "layer1_5_regime",
+                "layer1-required-regime-nan-2024-01-03",
+            ),
+            "missing_features": [],
+            "complete_training_rows": 40,
+            "min_training_rows": 30,
+            "probability_sum": None,
+        }
+    ]
+
+
 def test_validate_layer1_archive_rejects_non_iso_dates() -> None:
     """Non-canonical YYYY-MM-DD inputs raise immediately."""
     reader = _Reader({})
