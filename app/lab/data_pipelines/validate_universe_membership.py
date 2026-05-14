@@ -34,11 +34,28 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(_REPO_ROOT))
 
 from services.wikipedia.sp500_universe import (  # noqa: E402
+    SymbolIdentityResolution,
     fetch_html,
     parse_change_log,
 )
 
 MEMBERSHIP_DIR = _REPO_ROOT / "data" / "processed" / "universe" / "membership"
+
+
+@dataclass(frozen=True)
+class SymbolAuditFinding:
+    """One symbol-level event-boundary audit outcome."""
+
+    date: str
+    action: str
+    raw_ticker: str
+    resolved_ticker: str
+    status: str
+    reason_code: str
+    before_contains_raw: bool | None = None
+    on_contains_raw: bool | None = None
+    before_contains_resolved: bool | None = None
+    on_contains_resolved: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -50,6 +67,9 @@ class AuditResult:
     additions_checked: int
     removals_checked: int
     violations: int
+    resolved_symbols: int = 0
+    skipped_symbols: int = 0
+    findings: tuple[SymbolAuditFinding, ...] = ()
 
     @property
     def checks_total(self) -> int:
@@ -60,6 +80,11 @@ class AuditResult:
         if self.checks_total == 0:
             return 0.0
         return self.violations / self.checks_total
+
+    @property
+    def mismatched_symbols(self) -> int:
+        """Return the number of symbol checks that still violate the boundary rules."""
+        return self.violations
 
 
 def _read_membership_set(file_path: Path) -> set[str]:
@@ -121,6 +146,160 @@ def _audit_structure(files: dict[date, Path]) -> int:
     return issues
 
 
+def _event_details(
+    raw_symbols: frozenset[str],
+    details: tuple[SymbolIdentityResolution, ...],
+) -> tuple[SymbolIdentityResolution, ...]:
+    """Return detailed symbol resolutions, synthesizing identity-preserved rows when absent."""
+    if details:
+        by_resolved = {detail.resolved_ticker: detail for detail in details}
+        return tuple(
+            by_resolved.get(
+                symbol,
+                SymbolIdentityResolution(
+                    raw_ticker=symbol,
+                    resolved_ticker=symbol,
+                    reason_code="identity_preserved",
+                ),
+            )
+            for symbol in sorted(raw_symbols)
+        )
+    return tuple(
+        SymbolIdentityResolution(
+            raw_ticker=symbol,
+            resolved_ticker=symbol,
+            reason_code="identity_preserved",
+        )
+        for symbol in sorted(raw_symbols)
+    )
+
+
+def _skip_finding(
+    *,
+    event_date: str,
+    action: str,
+    detail: SymbolIdentityResolution,
+    reason_code: str,
+) -> SymbolAuditFinding:
+    """Build one skipped audit finding."""
+    return SymbolAuditFinding(
+        date=event_date,
+        action=action,
+        raw_ticker=detail.raw_ticker,
+        resolved_ticker=detail.resolved_ticker,
+        status="skipped",
+        reason_code=reason_code,
+    )
+
+
+def _evaluate_addition(
+    *,
+    event_date: str,
+    detail: SymbolIdentityResolution,
+    previous_membership: set[str],
+    on_membership: set[str],
+) -> SymbolAuditFinding | None:
+    """Evaluate one addition event against the previous-day and event-day memberships."""
+    before_contains_raw = detail.raw_ticker in previous_membership
+    on_contains_raw = detail.raw_ticker in on_membership
+    before_contains_resolved = detail.resolved_ticker in previous_membership
+    on_contains_resolved = detail.resolved_ticker in on_membership
+    if not before_contains_resolved and on_contains_resolved:
+        if detail.raw_ticker != detail.resolved_ticker:
+            return SymbolAuditFinding(
+                date=event_date,
+                action="add",
+                raw_ticker=detail.raw_ticker,
+                resolved_ticker=detail.resolved_ticker,
+                status="resolved",
+                reason_code=detail.reason_code,
+                before_contains_raw=before_contains_raw,
+                on_contains_raw=on_contains_raw,
+                before_contains_resolved=before_contains_resolved,
+                on_contains_resolved=on_contains_resolved,
+            )
+        return None
+
+    if detail.raw_ticker != detail.resolved_ticker and on_contains_raw and not on_contains_resolved:
+        reason_code = "raw_symbol_present_without_resolved_identity_on_event_date"
+    elif detail.raw_ticker != detail.resolved_ticker and before_contains_raw and not before_contains_resolved:
+        reason_code = "raw_symbol_present_without_resolved_identity_before_event"
+    elif before_contains_resolved and on_contains_resolved:
+        reason_code = "addition_already_present_before_event"
+    elif not before_contains_resolved and not on_contains_resolved:
+        reason_code = "addition_missing_on_event_date"
+    elif before_contains_resolved and not on_contains_resolved:
+        reason_code = "addition_present_before_event_but_missing_on_event_date"
+    else:
+        reason_code = "addition_membership_state_mismatch"
+    return SymbolAuditFinding(
+        date=event_date,
+        action="add",
+        raw_ticker=detail.raw_ticker,
+        resolved_ticker=detail.resolved_ticker,
+        status="mismatched",
+        reason_code=reason_code,
+        before_contains_raw=before_contains_raw,
+        on_contains_raw=on_contains_raw,
+        before_contains_resolved=before_contains_resolved,
+        on_contains_resolved=on_contains_resolved,
+    )
+
+
+def _evaluate_removal(
+    *,
+    event_date: str,
+    detail: SymbolIdentityResolution,
+    previous_membership: set[str],
+    on_membership: set[str],
+) -> SymbolAuditFinding | None:
+    """Evaluate one removal event against the previous-day and event-day memberships."""
+    before_contains_raw = detail.raw_ticker in previous_membership
+    on_contains_raw = detail.raw_ticker in on_membership
+    before_contains_resolved = detail.resolved_ticker in previous_membership
+    on_contains_resolved = detail.resolved_ticker in on_membership
+    if before_contains_resolved and not on_contains_resolved:
+        if detail.raw_ticker != detail.resolved_ticker:
+            return SymbolAuditFinding(
+                date=event_date,
+                action="remove",
+                raw_ticker=detail.raw_ticker,
+                resolved_ticker=detail.resolved_ticker,
+                status="resolved",
+                reason_code=detail.reason_code,
+                before_contains_raw=before_contains_raw,
+                on_contains_raw=on_contains_raw,
+                before_contains_resolved=before_contains_resolved,
+                on_contains_resolved=on_contains_resolved,
+            )
+        return None
+
+    if detail.raw_ticker != detail.resolved_ticker and before_contains_raw and not before_contains_resolved:
+        reason_code = "raw_symbol_present_without_resolved_identity_before_event"
+    elif detail.raw_ticker != detail.resolved_ticker and on_contains_raw and not on_contains_resolved:
+        reason_code = "raw_symbol_present_without_resolved_identity_on_event_date"
+    elif not before_contains_resolved and on_contains_resolved:
+        reason_code = "removal_present_only_on_event_date"
+    elif not before_contains_resolved and not on_contains_resolved:
+        reason_code = "removal_missing_before_event"
+    elif before_contains_resolved and on_contains_resolved:
+        reason_code = "removal_still_present_on_event_date"
+    else:
+        reason_code = "removal_membership_state_mismatch"
+    return SymbolAuditFinding(
+        date=event_date,
+        action="remove",
+        raw_ticker=detail.raw_ticker,
+        resolved_ticker=detail.resolved_ticker,
+        status="mismatched",
+        reason_code=reason_code,
+        before_contains_raw=before_contains_raw,
+        on_contains_raw=on_contains_raw,
+        before_contains_resolved=before_contains_resolved,
+        on_contains_resolved=on_contains_resolved,
+    )
+
+
 def audit_membership(
     membership_dir: Path,
     from_date: date | None,
@@ -140,6 +319,9 @@ def audit_membership(
     additions_checked = 0
     removals_checked = 0
     violations = 0
+    resolved_symbols = 0
+    skipped_symbols = 0
+    findings: list[SymbolAuditFinding] = []
 
     for event in events:
         event_date = date.fromisoformat(event.date)
@@ -150,7 +332,29 @@ def audit_membership(
 
         on_path = files.get(event_date)
         prev_path = files.get(_previous_business_day(event_date))
+        added_details = _event_details(event.added, event.added_details)
+        removed_details = _event_details(event.removed, event.removed_details)
         if on_path is None or prev_path is None:
+            for detail in added_details:
+                findings.append(
+                    _skip_finding(
+                        event_date=event.date,
+                        action="add",
+                        detail=detail,
+                        reason_code="missing_boundary_membership_file",
+                    )
+                )
+                skipped_symbols += 1
+            for detail in removed_details:
+                findings.append(
+                    _skip_finding(
+                        event_date=event.date,
+                        action="remove",
+                        detail=detail,
+                        reason_code="missing_boundary_membership_file",
+                    )
+                )
+                skipped_symbols += 1
             continue
 
         events_checked += 1
@@ -165,33 +369,91 @@ def audit_membership(
                 sorted(self_canceling),
             )
 
-        for ticker in event.added:
-            if ticker in self_canceling:
+        for detail in added_details:
+            if detail.resolved_ticker in self_canceling:
+                findings.append(
+                    _skip_finding(
+                        event_date=event.date,
+                        action="add",
+                        detail=detail,
+                        reason_code="self_canceling_event",
+                    )
+                )
+                skipped_symbols += 1
                 continue
             additions_checked += 1
-            if ticker in prev or ticker not in on:
-                violations += 1
-                logger.warning(
-                    "Add violation on {} ticker={} before_in={} on_in={}",
-                    event.date,
-                    ticker,
-                    ticker in prev,
-                    ticker in on,
+            finding = _evaluate_addition(
+                event_date=event.date,
+                detail=detail,
+                previous_membership=prev,
+                on_membership=on,
+            )
+            if finding is None:
+                continue
+            findings.append(finding)
+            if finding.status == "resolved":
+                resolved_symbols += 1
+                logger.info(
+                    "Resolved add identity on {} raw={} resolved={} reason={}",
+                    finding.date,
+                    finding.raw_ticker,
+                    finding.resolved_ticker,
+                    finding.reason_code,
                 )
+                continue
+            violations += 1
+            logger.warning(
+                "Add violation on {} raw={} resolved={} reason={} before_resolved={} on_resolved={}",
+                finding.date,
+                finding.raw_ticker,
+                finding.resolved_ticker,
+                finding.reason_code,
+                finding.before_contains_resolved,
+                finding.on_contains_resolved,
+            )
 
-        for ticker in event.removed:
-            if ticker in self_canceling:
+        for detail in removed_details:
+            if detail.resolved_ticker in self_canceling:
+                findings.append(
+                    _skip_finding(
+                        event_date=event.date,
+                        action="remove",
+                        detail=detail,
+                        reason_code="self_canceling_event",
+                    )
+                )
+                skipped_symbols += 1
                 continue
             removals_checked += 1
-            if ticker not in prev or ticker in on:
-                violations += 1
-                logger.warning(
-                    "Remove violation on {} ticker={} before_in={} on_in={}",
-                    event.date,
-                    ticker,
-                    ticker in prev,
-                    ticker in on,
+            finding = _evaluate_removal(
+                event_date=event.date,
+                detail=detail,
+                previous_membership=prev,
+                on_membership=on,
+            )
+            if finding is None:
+                continue
+            findings.append(finding)
+            if finding.status == "resolved":
+                resolved_symbols += 1
+                logger.info(
+                    "Resolved remove identity on {} raw={} resolved={} reason={}",
+                    finding.date,
+                    finding.raw_ticker,
+                    finding.resolved_ticker,
+                    finding.reason_code,
                 )
+                continue
+            violations += 1
+            logger.warning(
+                "Remove violation on {} raw={} resolved={} reason={} before_resolved={} on_resolved={}",
+                finding.date,
+                finding.raw_ticker,
+                finding.resolved_ticker,
+                finding.reason_code,
+                finding.before_contains_resolved,
+                finding.on_contains_resolved,
+            )
 
     return AuditResult(
         structural_issues=structural_issues,
@@ -199,6 +461,9 @@ def audit_membership(
         additions_checked=additions_checked,
         removals_checked=removals_checked,
         violations=violations,
+        resolved_symbols=resolved_symbols,
+        skipped_symbols=skipped_symbols,
+        findings=tuple(findings),
     )
 
 
@@ -259,11 +524,13 @@ def main() -> int:
 
     logger.info(
         "Audit summary: structural_issues={} events_checked={} checks_total={} "
-        "violations={} violation_rate={:.4%}",
+        "violations={} resolved_symbols={} skipped_symbols={} violation_rate={:.4%}",
         result.structural_issues,
         result.events_checked,
         result.checks_total,
         result.violations,
+        result.resolved_symbols,
+        result.skipped_symbols,
         result.violation_rate,
     )
 

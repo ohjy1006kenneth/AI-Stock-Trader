@@ -10,7 +10,11 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app.lab.data_pipelines import validate_universe_membership as validator
-from services.wikipedia.sp500_universe import ChangeEvent, get_constituents
+from services.wikipedia.sp500_universe import (
+    ChangeEvent,
+    SymbolIdentityResolution,
+    get_constituents,
+)
 
 FIXTURE_PATH = Path("data/sample/sp500_changes_fixture.json")
 
@@ -63,6 +67,34 @@ def _business_days(start: date, end: date) -> list[date]:
             days.append(current)
         current += timedelta(days=1)
     return days
+
+
+def _identity_event(
+    *,
+    event_date: str,
+    action: str,
+    raw_ticker: str,
+    resolved_ticker: str,
+    reason_code: str,
+) -> ChangeEvent:
+    detail = SymbolIdentityResolution(
+        raw_ticker=raw_ticker,
+        resolved_ticker=resolved_ticker,
+        reason_code=reason_code,
+    )
+    if action == "add":
+        return ChangeEvent(
+            date=event_date,
+            added=frozenset([resolved_ticker]),
+            removed=frozenset(),
+            added_details=(detail,),
+        )
+    return ChangeEvent(
+        date=event_date,
+        added=frozenset(),
+        removed=frozenset([resolved_ticker]),
+        removed_details=(detail,),
+    )
 
 
 def _build_consistent_membership(output_dir: Path, html: str, start: date, end: date) -> None:
@@ -163,3 +195,100 @@ def test_audit_ignores_self_canceling_event_symbols(tmp_path: Path) -> None:
     assert result.events_checked == 1
     assert result.checks_total == 0
     assert result.violations == 0
+    assert result.skipped_symbols == 4
+    assert {finding.reason_code for finding in result.findings} == {"self_canceling_event"}
+
+
+def test_audit_reports_resolved_alias_match_for_iqv_transition(tmp_path: Path) -> None:
+    _write_membership_csv(tmp_path, date(2017, 8, 28), ["AAPL"])
+    _write_membership_csv(tmp_path, date(2017, 8, 29), ["AAPL", "IQV"])
+    event = _identity_event(
+        event_date="2017-08-29",
+        action="add",
+        raw_ticker="Q",
+        resolved_ticker="IQV",
+        reason_code="post_2017_iqvia_alias",
+    )
+
+    with (
+        patch("app.lab.data_pipelines.validate_universe_membership.fetch_html", return_value=""),
+        patch("app.lab.data_pipelines.validate_universe_membership.parse_change_log", return_value=[event]),
+    ):
+        result = validator.audit_membership(
+            membership_dir=tmp_path,
+            from_date=date(2017, 8, 1),
+            to_date=date(2017, 8, 31),
+        )
+
+    assert result.violations == 0
+    assert result.resolved_symbols == 1
+    assert result.findings == (
+        validator.SymbolAuditFinding(
+            date="2017-08-29",
+            action="add",
+            raw_ticker="Q",
+            resolved_ticker="IQV",
+            status="resolved",
+            reason_code="post_2017_iqvia_alias",
+            before_contains_raw=False,
+            on_contains_raw=False,
+            before_contains_resolved=False,
+            on_contains_resolved=True,
+        ),
+    )
+
+
+def test_audit_reports_raw_symbol_without_resolved_identity_for_under_armour(tmp_path: Path) -> None:
+    _write_membership_csv(tmp_path, date(2014, 4, 30), ["AAPL"])
+    _write_membership_csv(tmp_path, date(2014, 5, 1), ["AAPL", "UA"])
+    event = _identity_event(
+        event_date="2014-05-01",
+        action="add",
+        raw_ticker="UA",
+        resolved_ticker="UAA",
+        reason_code="pre_2016_under_armour_class_a_alias",
+    )
+
+    with (
+        patch("app.lab.data_pipelines.validate_universe_membership.fetch_html", return_value=""),
+        patch("app.lab.data_pipelines.validate_universe_membership.parse_change_log", return_value=[event]),
+    ):
+        result = validator.audit_membership(
+            membership_dir=tmp_path,
+            from_date=date(2014, 4, 30),
+            to_date=date(2014, 5, 1),
+        )
+
+    assert result.violations == 1
+    assert result.resolved_symbols == 0
+    assert result.findings[0].status == "mismatched"
+    assert result.findings[0].reason_code == (
+        "raw_symbol_present_without_resolved_identity_on_event_date"
+    )
+
+
+def test_audit_reports_still_mismatched_symbol_for_agn_transition(tmp_path: Path) -> None:
+    _write_membership_csv(tmp_path, date(2020, 5, 11), ["AAPL"])
+    _write_membership_csv(tmp_path, date(2020, 5, 12), ["AAPL"])
+    event = _identity_event(
+        event_date="2020-05-12",
+        action="remove",
+        raw_ticker="AGN",
+        resolved_ticker="AGN",
+        reason_code="identity_preserved",
+    )
+
+    with (
+        patch("app.lab.data_pipelines.validate_universe_membership.fetch_html", return_value=""),
+        patch("app.lab.data_pipelines.validate_universe_membership.parse_change_log", return_value=[event]),
+    ):
+        result = validator.audit_membership(
+            membership_dir=tmp_path,
+            from_date=date(2020, 5, 1),
+            to_date=date(2020, 5, 31),
+        )
+
+    assert result.violations == 1
+    assert result.mismatched_symbols == 1
+    assert result.findings[0].status == "mismatched"
+    assert result.findings[0].reason_code == "removal_missing_before_event"

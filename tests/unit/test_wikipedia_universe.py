@@ -77,6 +77,21 @@ def _build_html(fixture: dict) -> str:
     return f"<html><body>{constituents_table}{changes_table}</body></html>"
 
 
+def _build_identity_transition_html() -> str:
+    """Build minimal HTML covering ambiguous symbol transition cases."""
+    fixture = {
+        "current_tickers": ["AAPL", "META", "IQV"],
+        "changes": [
+            {"date": "2011-03-31", "added": ["EW"], "removed": ["Q"]},
+            {"date": "2014-05-01", "added": ["UA"], "removed": ["BEAM"]},
+            {"date": "2016-04-08", "added": ["UA"], "removed": []},
+            {"date": "2017-08-29", "added": ["Q"], "removed": ["WFM"]},
+            {"date": "2022-06-21", "added": [], "removed": ["UA", "UAA"]},
+        ],
+    }
+    return _build_html(fixture)
+
+
 @pytest.fixture()
 def fixture() -> dict:
     return _load_fixture()
@@ -121,6 +136,12 @@ class TestCanonicalizeTicker:
 
     def test_legacy_alias_maps_to_canonical(self) -> None:
         assert _canonicalize_ticker("wltw") == "WTW"
+
+    def test_ambiguous_q_is_not_globally_mapped(self) -> None:
+        assert _canonicalize_ticker("q") == "Q"
+
+    def test_ambiguous_ua_is_not_globally_mapped(self) -> None:
+        assert _canonicalize_ticker("ua") == "UA"
 
     def test_identity_when_no_mapping(self) -> None:
         assert _canonicalize_ticker("AAPL") == "AAPL"
@@ -176,6 +197,18 @@ class TestParseChangeLog:
     def test_missing_table_raises(self) -> None:
         with pytest.raises(ValueError, match="changes"):
             parse_change_log("<html><body></body></html>")
+
+    def test_date_bounded_identity_resolution_for_ambiguous_symbols(self) -> None:
+        html = _build_identity_transition_html()
+
+        events = parse_change_log(html)
+        event_map = {event.date: event for event in events}
+
+        assert event_map["2011-03-31"].removed == frozenset(["Q"])
+        assert event_map["2014-05-01"].added == frozenset(["UAA"])
+        assert event_map["2016-04-08"].added == frozenset(["UA"])
+        assert event_map["2017-08-29"].added == frozenset(["IQV"])
+        assert event_map["2022-06-21"].removed == frozenset(["UA", "UAA"])
 
 
 # ---------------------------------------------------------------------------
@@ -279,6 +312,27 @@ class TestGetConstituents:
         result = get_constituents("2020-09-20", _html=html)
         assert "ETSY" not in result
         assert "FOX" in result
+
+    def test_iqv_identity_only_appears_on_or_after_2017_entry(self) -> None:
+        html = _build_identity_transition_html()
+
+        before_iqvia_entry = get_constituents("2017-08-28", _html=html)
+        on_iqvia_entry = get_constituents("2017-08-29", _html=html)
+
+        assert "IQV" not in before_iqvia_entry
+        assert "IQV" in on_iqvia_entry
+        assert "Q" not in on_iqvia_entry
+
+    def test_under_armour_identity_is_date_bounded_around_2016_split(self) -> None:
+        html = _build_identity_transition_html()
+
+        before_class_c_split = get_constituents("2014-05-01", _html=html)
+        on_class_c_split = get_constituents("2016-04-08", _html=html)
+
+        assert "UAA" in before_class_c_split
+        assert "UA" not in before_class_c_split
+        assert "UAA" in on_class_c_split
+        assert "UA" in on_class_c_split
 
 
 # ---------------------------------------------------------------------------
