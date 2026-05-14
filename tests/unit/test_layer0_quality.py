@@ -5,7 +5,11 @@ from datetime import date, timedelta
 import pytest
 
 from core.contracts.schemas import OHLCVRecord, UniverseRecord
-from core.data.quality import QualityFilterConfig, apply_quality_filters
+from core.data.quality import (
+    QualityFilterConfig,
+    SharesOutstandingSnapshot,
+    apply_quality_filters,
+)
 
 
 def test_passing_ticker_keeps_default_flags() -> None:
@@ -42,6 +46,61 @@ def test_close_below_minimum_sets_liquid_false() -> None:
     assert result[0].liquid is False
     assert result[0].data_quality_ok is True
     assert result[0].reason == "close_price_below_minimum"
+
+
+def test_market_cap_below_minimum_sets_liquid_false() -> None:
+    """A ticker below the configured market-cap floor fails the liquidity filter."""
+    result = apply_quality_filters(
+        [_universe("SMALL")],
+        {"SMALL": _bars("SMALL", close=10.0, dollar_volume=2_000_000.0)},
+        _config(min_market_cap=1_500_000_000.0),
+        {
+            "SMALL": [
+                SharesOutstandingSnapshot(
+                    availability_date="2025-01-09",
+                    shares_outstanding=100_000_000.0,
+                )
+            ]
+        },
+    )
+
+    assert result[0].liquid is False
+    assert result[0].data_quality_ok is True
+    assert result[0].reason == "market_cap_below_minimum"
+
+
+def test_missing_market_cap_when_enabled_sets_liquid_false() -> None:
+    """A missing market-cap input fails closed when the threshold is enabled."""
+    result = apply_quality_filters(
+        [_universe("NOCAP")],
+        {"NOCAP": _bars("NOCAP", close=10.0, dollar_volume=2_000_000.0)},
+        _config(min_market_cap=1_000_000_000.0),
+    )
+
+    assert result[0].liquid is False
+    assert result[0].data_quality_ok is True
+    assert result[0].reason == "market_cap_unavailable"
+
+
+def test_same_day_shares_snapshot_counts_for_market_cap_filter() -> None:
+    """The eligibility mask can use a shares snapshot available on the mask date itself."""
+    result = apply_quality_filters(
+        [_universe("SAME")],
+        {"SAME": _bars("SAME", close=10.0, dollar_volume=2_000_000.0)},
+        _config(min_market_cap=1_000_000_000.0),
+        {
+            "SAME": [
+                SharesOutstandingSnapshot(
+                    availability_date="2025-01-10",
+                    shares_outstanding=150_000_000.0,
+                )
+            ]
+        },
+    )
+
+    assert result[0].liquid is True
+    assert result[0].data_quality_ok is True
+    assert result[0].reason is None
 
 
 def test_zero_volume_sets_data_quality_false() -> None:
@@ -141,6 +200,7 @@ def test_existing_reason_is_preserved_and_deduplicated() -> None:
         {"rolling_window_days": 0},
         {"min_average_dollar_volume": -1.0},
         {"min_close_price": -1.0},
+        {"min_market_cap": -1.0},
         {"max_single_day_move": -0.01},
         {"max_consecutive_missing_bars": -1},
     ],
@@ -157,6 +217,7 @@ def _config(**updates: float | int) -> QualityFilterConfig:
         "rolling_window_days": 5,
         "min_average_dollar_volume": 1_000_000.0,
         "min_close_price": 5.0,
+        "min_market_cap": 0.0,
         "max_single_day_move": 0.40,
         "max_consecutive_missing_bars": 3,
     }

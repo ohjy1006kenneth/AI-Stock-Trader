@@ -16,6 +16,7 @@ class QualityFilterConfig:
     rolling_window_days: int = 20
     min_average_dollar_volume: float = 1_000_000.0
     min_close_price: float = 5.0
+    min_market_cap: float = 0.0
     max_single_day_move: float = 0.40
     max_consecutive_missing_bars: int = 3
 
@@ -27,29 +28,45 @@ class QualityFilterConfig:
             raise ValueError("min_average_dollar_volume must be non-negative")
         if self.min_close_price < 0.0:
             raise ValueError("min_close_price must be non-negative")
+        if self.min_market_cap < 0.0:
+            raise ValueError("min_market_cap must be non-negative")
         if self.max_single_day_move < 0.0:
             raise ValueError("max_single_day_move must be non-negative")
         if self.max_consecutive_missing_bars < 0:
             raise ValueError("max_consecutive_missing_bars must be non-negative")
 
 
+@dataclass(frozen=True)
+class SharesOutstandingSnapshot:
+    """Point-in-time shares-outstanding input used for market-cap screening."""
+
+    availability_date: str
+    shares_outstanding: float
+
+
 def apply_quality_filters(
     universe: list[UniverseRecord],
     ohlcv_window: Mapping[str, Sequence[OHLCVRecord]],
     config: QualityFilterConfig,
+    shares_outstanding_window: Mapping[str, Sequence[SharesOutstandingSnapshot]] | None = None,
 ) -> list[UniverseRecord]:
     """Apply Layer 0 liquidity and data quality filters to universe records."""
     quality_windows = prepare_quality_windows(ohlcv_window)
-    return apply_prepared_quality_filters(universe, quality_windows, config)
+    shares_windows = _prepare_shares_outstanding_windows(shares_outstanding_window or {})
+    return apply_prepared_quality_filters(universe, quality_windows, config, shares_windows)
 
 
 def apply_prepared_quality_filters(
     universe: list[UniverseRecord],
     quality_windows: Mapping[str, _TickerQualityWindow],
     config: QualityFilterConfig,
+    shares_outstanding_window: Mapping[str, _TickerSharesWindow] | None = None,
 ) -> list[UniverseRecord]:
     """Apply quality filters using pre-indexed OHLCV bars."""
-    return [_filter_record(record, quality_windows, config) for record in universe]
+    return [
+        _filter_record(record, quality_windows, config, shares_outstanding_window or {})
+        for record in universe
+    ]
 
 
 @dataclass(frozen=True)
@@ -61,14 +78,24 @@ class _TickerQualityWindow:
     date_set: frozenset[str]
 
 
+@dataclass(frozen=True)
+class _TickerSharesWindow:
+    """Pre-indexed shares-outstanding snapshots for one ticker."""
+
+    snapshots: tuple[SharesOutstandingSnapshot, ...]
+    dates: tuple[str, ...]
+
+
 def _filter_record(
     record: UniverseRecord,
     ohlcv_window: Mapping[str, _TickerQualityWindow],
     config: QualityFilterConfig,
+    shares_outstanding_window: Mapping[str, _TickerSharesWindow],
 ) -> UniverseRecord:
     """Return one universe record with quality flags updated."""
     ticker = record.ticker.upper()
     quality_window = ohlcv_window.get(ticker)
+    shares_window = shares_outstanding_window.get(ticker)
     cutoff = _bar_cutoff(quality_window, record.date)
     latest_bar = (
         quality_window.bars[cutoff - 1]
@@ -101,6 +128,15 @@ def _filter_record(
     if latest_bar is not None and latest_bar.close < config.min_close_price:
         liquid = False
         reasons.append("close_price_below_minimum")
+
+    if config.min_market_cap > 0.0 and latest_bar is not None:
+        shares_outstanding = _latest_shares_outstanding(shares_window, record.date)
+        if shares_outstanding is None:
+            liquid = False
+            reasons.append("market_cap_unavailable")
+        elif latest_bar.close * shares_outstanding < config.min_market_cap:
+            liquid = False
+            reasons.append("market_cap_below_minimum")
 
     latest_has_zero_volume = latest_bar is not None and latest_bar.volume == 0
     if latest_has_zero_volume:
@@ -156,6 +192,23 @@ def prepare_quality_windows(
     return quality_windows
 
 
+def _prepare_shares_outstanding_windows(
+    shares_outstanding_window: Mapping[str, Sequence[SharesOutstandingSnapshot]],
+) -> dict[str, _TickerSharesWindow]:
+    prepared: dict[str, _TickerSharesWindow] = {}
+    for raw_ticker, snapshots in shares_outstanding_window.items():
+        ticker = raw_ticker.upper()
+        by_date: dict[str, SharesOutstandingSnapshot] = {}
+        for snapshot in snapshots:
+            by_date[snapshot.availability_date] = snapshot
+        sorted_snapshots = tuple(by_date[as_of_date] for as_of_date in sorted(by_date))
+        prepared[ticker] = _TickerSharesWindow(
+            snapshots=sorted_snapshots,
+            dates=tuple(snapshot.availability_date for snapshot in sorted_snapshots),
+        )
+    return prepared
+
+
 def _bar_cutoff(
     quality_window: _TickerQualityWindow | None,
     as_of_date: str,
@@ -164,6 +217,19 @@ def _bar_cutoff(
     if quality_window is None:
         return 0
     return bisect_right(quality_window.dates, as_of_date)
+
+
+def _latest_shares_outstanding(
+    shares_window: _TickerSharesWindow | None,
+    as_of_date: str,
+) -> float | None:
+    """Return the latest shares-outstanding snapshot known on or before one date."""
+    if shares_window is None:
+        return None
+    cutoff = bisect_right(shares_window.dates, as_of_date)
+    if cutoff == 0:
+        return None
+    return shares_window.snapshots[cutoff - 1].shares_outstanding
 
 
 def _sorted_ticker_bars(ticker: str, bars: Sequence[OHLCVRecord]) -> list[OHLCVRecord]:

@@ -277,13 +277,21 @@ Appends today's data to the existing R2 database. Assumes the backfill has alrea
 **Liquidity filters (applied daily using rolling 20-day window):**
 - minimum average daily volume (ADV): $1M/day (lower bound for personal system)
 - minimum price: $5 (exclude penny stocks)
-- minimum market cap: configurable
+- minimum market cap: configurable; computed as latest close on the mask date times the
+  latest SimFin shares-outstanding value available on or before that mask date, or a
+  raw-share-count equivalent conservatively derived from same-period SimFin per-share metrics
 
 **Data quality checks (run on every data pull):**
 - flag any bar where volume is zero
 - flag any single-day price move > 40% (likely data error unless known event)
 - flag any ticker with more than N consecutive missing bars
 - suppress trading that ticker for the day if quality checks fail
+
+Market-cap policy:
+- the market-cap filter is optional and activates only when `QualityFilterConfig.min_market_cap`
+  is set above zero
+- when active, a ticker with no point-in-time shares-outstanding input fails closed as
+  illiquid and carries the universe reason `market_cap_unavailable`
 
 **Outputs:**
 - point-in-time universe membership per date (CSV eligibility mask)

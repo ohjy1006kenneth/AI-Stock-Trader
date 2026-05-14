@@ -15,6 +15,7 @@ from loguru import logger
 from core.contracts.schemas import OHLCVRecord, PipelineManifestRecord, RunStatus, UniverseRecord
 from core.data.quality import (
     QualityFilterConfig,
+    SharesOutstandingSnapshot,
     apply_prepared_quality_filters,
     apply_quality_filters,
     prepare_quality_windows,
@@ -182,11 +183,37 @@ RecordSerializer = Callable[[list[OHLCVRecord]], bytes]
 RecordDeserializer = Callable[[bytes], list[OHLCVRecord]]
 NewsSerializer = Callable[[list[dict[str, object]]], bytes]
 RawRowSerializer = Callable[[list[dict[str, object]]], bytes]
+RawRowsDeserializer = Callable[[bytes], list[dict[str, object]]]
 UniverseSerializer = Callable[[list[UniverseRecord]], bytes]
 SENSITIVE_ERROR_PATTERN = re.compile(
     r"(?P<prefix>[?&](?:token|api-key|api_key|apikey|apiKey)=)(?P<secret>[^&\s]+)",
     flags=re.IGNORECASE,
 )
+
+_SHARES_OUTSTANDING_KEYS = (
+    "sharesBasic",
+    "sharesDiluted",
+    "commonSharesOutstanding",
+    "Common Shares Outstanding",
+    "shares_outstanding",
+)
+_NET_INCOME_TO_COMMON_KEYS = (
+    "Net Income Available to Common Shareholders",
+    "netIncomeAvailableToCommonShareholders",
+)
+_BASIC_EPS_KEYS = ("Earnings Per Share, Basic", "earningsPerShareBasic", "epsBasic")
+_REVENUE_KEYS = ("Revenue", "revenue")
+_SALES_PER_SHARE_KEYS = ("Sales Per Share", "salesPerShare")
+_FREE_CASH_FLOW_KEYS = ("Free Cash Flow", "freeCashFlow")
+_FREE_CASH_FLOW_PER_SHARE_KEYS = ("Free Cash Flow Per Share", "freeCashFlowPerShare")
+_EQUITY_KEYS = (
+    "Equity Before Minority Interest",
+    "Total Equity",
+    "totalEquity",
+    "shareholdersEquity",
+    "stockholdersEquity",
+)
+_EQUITY_PER_SHARE_KEYS = ("Equity Per Share", "equityPerShare", "bookValuePerShare")
 
 
 @dataclass(frozen=True)
@@ -286,6 +313,7 @@ def run_historical_layer0_backfill(
     price_deserializer: RecordDeserializer | None = None,
     news_serializer: NewsSerializer | None = None,
     fundamentals_serializer: RawRowSerializer | None = None,
+    fundamentals_deserializer: RawRowsDeserializer | None = None,
     macro_serializer: RawRowSerializer | None = None,
     universe_serializer: UniverseSerializer | None = None,
 ) -> Layer0PipelineResult:
@@ -323,7 +351,15 @@ def run_historical_layer0_backfill(
         logger.info("Caching existence keys across R2 raw/ prefixes")
         cached_writer = _CachedExistenceWriter(
             writer,
-            prefixes=["raw/prices/", "raw/universe/", "raw/news/", "raw/fundamentals/", "raw/macro/", "raw/reference/", "artifacts/manifests/"],
+            prefixes=[
+                "raw/prices/",
+                "raw/universe/",
+                "raw/news/",
+                "raw/fundamentals/",
+                "raw/macro/",
+                "raw/reference/",
+                "artifacts/manifests/",
+            ],
         )
         masks_complete = not config.overwrite and all(
             cached_writer.exists(raw_universe_path(day))
@@ -347,6 +383,23 @@ def run_historical_layer0_backfill(
         metadata["prices"] = price_result.metadata
         logger.info("Phase prices done: {}", price_result.metadata)
 
+        logger.info("Phase: fundamentals (SimFin)")
+        fundamentals_result = _write_fundamentals_archive(
+            from_date=config.from_date,
+            to_date=config.to_date,
+            tickers=tickers,
+            statements=config.simfin_statements,
+            periods=config.simfin_periods,
+            limit=config.simfin_limit,
+            overwrite=config.overwrite,
+            fetcher=fundamentals_fetcher,
+            writer=cached_writer,
+            serializer=fundamentals_serializer or _raw_rows_to_parquet_bytes,
+        )
+        output_keys.extend(fundamentals_result.output_keys)
+        metadata["fundamentals"] = fundamentals_result.metadata
+        logger.info("Phase fundamentals done: {}", fundamentals_result.metadata)
+
         logger.info("Phase: universe masks")
         business_days = _business_days(config.from_date, config.to_date)
         if masks_complete and int(price_result.metadata["written"]) == 0:
@@ -369,11 +422,18 @@ def run_historical_layer0_backfill(
                     deserializer=price_deserializer or _parquet_bytes_to_records,
                     quality_window=quality_window,
                 )
+            shares_outstanding_window = _load_shares_outstanding_window(
+                writer=cached_writer,
+                tickers=tickers,
+                deserializer=fundamentals_deserializer or _parquet_bytes_to_raw_rows,
+                min_market_cap=config.quality_config.min_market_cap,
+            )
             universe_result = _write_historical_universe_masks(
                 config=config,
                 universe_provider=universe_provider,
                 writer=cached_writer,
                 ohlcv_window=quality_window,
+                shares_outstanding_window=shares_outstanding_window,
                 serializer=universe_serializer or _universe_to_csv_bytes,
             )
         output_keys.extend(universe_result.output_keys)
@@ -394,23 +454,6 @@ def run_historical_layer0_backfill(
         output_keys.extend(news_result.output_keys)
         metadata["news"] = news_result.metadata
         logger.info("Phase news done: {}", news_result.metadata)
-
-        logger.info("Phase: fundamentals (SimFin)")
-        fundamentals_result = _write_fundamentals_archive(
-            from_date=config.from_date,
-            to_date=config.to_date,
-            tickers=tickers,
-            statements=config.simfin_statements,
-            periods=config.simfin_periods,
-            limit=config.simfin_limit,
-            overwrite=config.overwrite,
-            fetcher=fundamentals_fetcher,
-            writer=cached_writer,
-            serializer=fundamentals_serializer or _raw_rows_to_parquet_bytes,
-        )
-        output_keys.extend(fundamentals_result.output_keys)
-        metadata["fundamentals"] = fundamentals_result.metadata
-        logger.info("Phase fundamentals done: {}", fundamentals_result.metadata)
 
         logger.info("Phase: macro (FRED)")
         macro_result = _write_macro_archive(
@@ -469,6 +512,7 @@ def run_daily_layer0_incremental(
     price_deserializer: RecordDeserializer | None = None,
     news_serializer: NewsSerializer | None = None,
     fundamentals_serializer: RawRowSerializer | None = None,
+    fundamentals_deserializer: RawRowsDeserializer | None = None,
     macro_serializer: RawRowSerializer | None = None,
     universe_serializer: UniverseSerializer | None = None,
 ) -> Layer0PipelineResult:
@@ -519,11 +563,34 @@ def run_daily_layer0_incremental(
             ohlcv_window=quality_window,
             reason="benchmark_ticker",
         )
+
+        fundamentals_result = _write_fundamentals_archive(
+            from_date=as_of_date,
+            to_date=as_of_date,
+            tickers=list(tickers),
+            statements=config.simfin_statements,
+            periods=config.simfin_periods,
+            limit=config.simfin_limit,
+            overwrite=config.overwrite,
+            fetcher=fundamentals_fetcher,
+            writer=writer,
+            serializer=fundamentals_serializer or _raw_rows_to_parquet_bytes,
+        )
+        output_keys.extend(fundamentals_result.output_keys)
+        metadata["fundamentals"] = fundamentals_result.metadata
+
+        shares_outstanding_window = _load_shares_outstanding_window(
+            writer=writer,
+            tickers=tickers,
+            deserializer=fundamentals_deserializer or _parquet_bytes_to_raw_rows,
+            min_market_cap=config.quality_config.min_market_cap,
+        )
         universe_records = build_universe_mask_records(
             as_of_date=as_of_date,
             tickers=tickers,
             ohlcv_window=quality_window,
             quality_config=config.quality_config,
+            shares_outstanding_window=shares_outstanding_window,
         )
         _require_price_coverage_for_eligible_universe(
             records=universe_records,
@@ -551,21 +618,6 @@ def run_daily_layer0_incremental(
         )
         output_keys.extend(news_result.output_keys)
         metadata["news"] = news_result.metadata
-
-        fundamentals_result = _write_fundamentals_archive(
-            from_date=as_of_date,
-            to_date=as_of_date,
-            tickers=list(tickers),
-            statements=config.simfin_statements,
-            periods=config.simfin_periods,
-            limit=config.simfin_limit,
-            overwrite=config.overwrite,
-            fetcher=fundamentals_fetcher,
-            writer=writer,
-            serializer=fundamentals_serializer or _raw_rows_to_parquet_bytes,
-        )
-        output_keys.extend(fundamentals_result.output_keys)
-        metadata["fundamentals"] = fundamentals_result.metadata
 
         macro_result = _write_daily_macro_snapshot(
             as_of_date=as_of_date,
@@ -612,6 +664,9 @@ def build_universe_mask_records(
     tickers: Sequence[str],
     ohlcv_window: Mapping[str, Sequence[OHLCVRecord]],
     quality_config: QualityFilterConfig,
+    shares_outstanding_window: (
+        Mapping[str, Sequence[SharesOutstandingSnapshot]] | None
+    ) = None,
 ) -> list[UniverseRecord]:
     """Build schema-valid point-in-time universe rows with quality flags applied."""
     records = [
@@ -620,7 +675,12 @@ def build_universe_mask_records(
         )
         for ticker in _normalize_tickers(tickers)
     ]
-    return apply_quality_filters(records, ohlcv_window, quality_config)
+    return apply_quality_filters(
+        records,
+        ohlcv_window,
+        quality_config,
+        shares_outstanding_window,
+    )
 
 
 @dataclass(frozen=True)
@@ -759,6 +819,7 @@ def _write_historical_universe_masks(
     universe_provider: HistoricalUniverseProvider,
     writer: ObjectWriter,
     ohlcv_window: Mapping[str, Sequence[OHLCVRecord]],
+    shares_outstanding_window: Mapping[str, Sequence[SharesOutstandingSnapshot]] | None,
     serializer: UniverseSerializer,
 ) -> _WriteResult:
     output_keys: list[str] = []
@@ -783,6 +844,7 @@ def _write_historical_universe_masks(
             ],
             quality_windows,
             config.quality_config,
+            shares_outstanding_window,
         )
         result = _write_universe_mask(
             as_of_date=current_date,
@@ -831,7 +893,9 @@ def _write_daily_prices(
             written += 1
             continue
 
-        existing_records = _canonicalize_ohlcv_records(_read_existing_records(writer, key, deserializer))
+        existing_records = _canonicalize_ohlcv_records(
+            _read_existing_records(writer, key, deserializer)
+        )
         merged_records = _merge_ohlcv_histories(
             [] if overwrite else existing_records,
             ticker_records,
@@ -1275,6 +1339,21 @@ def _parquet_bytes_to_records(data: bytes) -> list[OHLCVRecord]:
     return [OHLCVRecord(**row) for row in frame.to_dict("records")]
 
 
+def _parquet_bytes_to_raw_rows(data: bytes) -> list[dict[str, object]]:
+    """Deserialize a parquet raw-archive payload back into row dictionaries."""
+    try:
+        import pandas as pd
+
+        importlib.import_module("pyarrow")
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            "pandas and pyarrow are required to deserialize raw Layer 0 rows from Parquet."
+        ) from exc
+
+    frame = pd.read_parquet(io.BytesIO(data))
+    return [dict(row) for row in frame.to_dict("records")]
+
+
 def _raw_rows_to_parquet_bytes(rows: list[dict[str, object]]) -> bytes:
     try:
         import pandas as pd
@@ -1331,6 +1410,103 @@ def _copy_ohlcv_window(
     if window is None:
         return {}
     return {_canonicalize_ticker(ticker): list(records) for ticker, records in window.items()}
+
+
+def _load_shares_outstanding_window(
+    *,
+    writer: ObjectWriter,
+    tickers: Sequence[str],
+    deserializer: RawRowsDeserializer,
+    min_market_cap: float,
+) -> dict[str, list[SharesOutstandingSnapshot]]:
+    """Load point-in-time shares-outstanding snapshots when market-cap screening is enabled."""
+    if min_market_cap <= 0.0:
+        return {}
+
+    shares_outstanding_window: dict[str, list[SharesOutstandingSnapshot]] = {}
+    for ticker in _normalize_tickers(tickers):
+        key = raw_fundamentals_path(ticker)
+        if not writer.exists(key):
+            continue
+        rows = _read_existing_rows(writer, key, deserializer)
+        snapshots = _extract_shares_outstanding_snapshots(rows)
+        if snapshots:
+            shares_outstanding_window[ticker] = snapshots
+    return shares_outstanding_window
+
+
+def _extract_shares_outstanding_snapshots(
+    rows: Sequence[Mapping[str, object]],
+) -> list[SharesOutstandingSnapshot]:
+    """Return sorted point-in-time shares-outstanding snapshots from raw fundamentals rows."""
+    # SimFin share-count inputs are treated as raw shares, not thousands. Verified on
+    # 2026-05-14 against the live AAPL 2024-03-31 / 2024-05-03 compact snapshot:
+    # Revenue 90,753,000,000 divided by Sales Per Share 5.89081 implies
+    # ~15.406B shares, so the resulting market cap stays in plain USD.
+    #
+    # Do not accept a bare "shares" key here. The compact API exposes many share-related
+    # metrics, and Layer 0 market-cap screening must only use explicitly named
+    # shares-outstanding fields or a ratio derived from official SimFin per-share metrics.
+    by_date: dict[str, tuple[str, SharesOutstandingSnapshot]] = {}
+    grouped_rows: dict[tuple[str, str, str], list[tuple[str, Mapping[str, object]]]] = {}
+    for row in rows:
+        availability_date = str(row.get("availability_date") or "").strip()
+        if not availability_date:
+            continue
+        raw = _decode_raw_row_payload(row.get("raw_json") or row.get("raw"))
+        if not raw:
+            continue
+        report_date = str(row.get("report_date") or raw.get("Report Date") or "").strip()
+        fiscal_year = str(
+            row.get("fiscal_year") or raw.get("Fiscal Year") or raw.get("fiscalYear") or ""
+        ).strip()
+        fiscal_period = str(
+            row.get("fiscal_period")
+            or raw.get("Fiscal Period")
+            or raw.get("fiscalPeriod")
+            or ""
+        ).strip()
+        group_key = (report_date or availability_date, fiscal_year, fiscal_period)
+        grouped_rows.setdefault(group_key, []).append((availability_date, raw))
+
+    for (report_date, _, _), period_rows in grouped_rows.items():
+        merged_payload: dict[str, object] = {}
+        availability_date = ""
+        for row_availability_date, raw in period_rows:
+            merged_payload.update(raw)
+            availability_date = max(availability_date, row_availability_date)
+        shares_outstanding = _read_numeric(merged_payload, _SHARES_OUTSTANDING_KEYS)
+        if shares_outstanding is None or shares_outstanding <= 0.0:
+            shares_outstanding = _derive_shares_outstanding_from_simfin_metrics(merged_payload)
+        if shares_outstanding is None or shares_outstanding <= 0.0:
+            continue
+        current = by_date.get(availability_date)
+        snapshot = SharesOutstandingSnapshot(
+            availability_date=availability_date,
+            shares_outstanding=shares_outstanding,
+        )
+        if current is None or report_date >= current[0]:
+            by_date[availability_date] = (report_date, snapshot)
+    return [snapshot for _, snapshot in (by_date[as_of_date] for as_of_date in sorted(by_date))]
+
+
+def _derive_shares_outstanding_from_simfin_metrics(
+    raw: Mapping[str, object],
+) -> float | None:
+    """Infer a raw share count from SimFin numerator/per-share metric pairs."""
+    ratio_pairs = (
+        (_NET_INCOME_TO_COMMON_KEYS, _BASIC_EPS_KEYS),
+        (_REVENUE_KEYS, _SALES_PER_SHARE_KEYS),
+        (_FREE_CASH_FLOW_KEYS, _FREE_CASH_FLOW_PER_SHARE_KEYS),
+        (_EQUITY_KEYS, _EQUITY_PER_SHARE_KEYS),
+    )
+    for numerator_keys, per_share_keys in ratio_pairs:
+        numerator = _read_numeric(raw, numerator_keys)
+        per_share_value = _read_numeric(raw, per_share_keys)
+        shares_outstanding = _positive_finite_ratio(numerator, per_share_value)
+        if shares_outstanding is not None:
+            return shares_outstanding
+    return None
 
 
 def _require_price_coverage_for_eligible_universe(
@@ -1616,6 +1792,86 @@ def _read_existing_records(
             if attempt < max_retries - 1:
                 _time.sleep(2 ** attempt)
     raise last_error  # type: ignore[misc]
+
+
+def _read_existing_rows(
+    writer: ObjectWriter,
+    key: str,
+    deserializer: RawRowsDeserializer,
+    max_retries: int = 3,
+) -> list[dict[str, object]]:
+    """Read and deserialize raw archive rows from storage with transient-error retries."""
+    import time as _time
+
+    last_error: Exception | None = None
+    for attempt in range(max_retries):
+        try:
+            return deserializer(writer.get_object(key))
+        except Exception as exc:
+            last_error = exc
+            if attempt < max_retries - 1:
+                _time.sleep(2 ** attempt)
+    raise last_error  # type: ignore[misc]
+
+
+def _decode_raw_row_payload(raw_payload: object) -> dict[str, object] | None:
+    """Return the archived vendor payload as a dictionary when available."""
+    if raw_payload is None:
+        return None
+    if isinstance(raw_payload, Mapping):
+        return dict(raw_payload)
+    if not isinstance(raw_payload, str):
+        return None
+    stripped = raw_payload.strip()
+    if not stripped:
+        return None
+    try:
+        parsed = json.loads(stripped)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, Mapping):
+        return None
+    return dict(parsed)
+
+
+def _read_numeric(row: Mapping[str, object], keys: Sequence[str]) -> float | None:
+    """Return the first finite numeric value found under any of the supplied keys."""
+    for key in keys:
+        if key not in row:
+            continue
+        value = row[key]
+        if value is None or isinstance(value, bool):
+            continue
+        if isinstance(value, (int, float)):
+            candidate = float(value)
+        elif isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                continue
+            try:
+                candidate = float(stripped.replace(",", ""))
+            except ValueError:
+                continue
+        else:
+            continue
+        if candidate == candidate and candidate not in {float("inf"), float("-inf")}:
+            return candidate
+    return None
+
+
+def _positive_finite_ratio(
+    numerator: float | None,
+    denominator: float | None,
+) -> float | None:
+    """Return a positive finite ratio when both inputs define one."""
+    if numerator is None or denominator in (None, 0.0):
+        return None
+    candidate = numerator / denominator
+    if candidate <= 0.0:
+        return None
+    if candidate != candidate or candidate in {float("inf"), float("-inf")}:
+        return None
+    return candidate
 
 
 def _validate_date_window(from_date: date, to_date: date) -> None:

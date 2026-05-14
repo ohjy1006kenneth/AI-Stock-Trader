@@ -28,6 +28,9 @@
   readiness snapshots under `raw/macro/{YYYY-MM-DD}.parquet`. Issue `#148` should
   consolidate the convention and document/migrate any backward-compatibility cleanup
   needed across backfill, validation, and Layer 1 consumers.
+- [ ] `_SHARES_OUTSTANDING_KEYS` in `core/data/layer0_pipeline.py` duplicates `_SHARES_KEYS`
+  in `core/features/fundamentals_features.py`; consolidate SimFin share-key ownership before
+  the next fundamentals or market-cap filter change.
 
 ## Discovered during development
 <!-- Codex adds here when it notices something out of scope for the current task -->
