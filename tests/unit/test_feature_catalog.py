@@ -36,6 +36,15 @@ def test_feature_catalog_registers_optional_order_book_features() -> None:
         assert catalog[feature_name].owner == "order_book"
         assert catalog[feature_name].required is False
 
-    assert validate_feature_value("l2_bid_ask_spread", -0.01, catalog["l2_bid_ask_spread"]) is not None
-    assert validate_feature_value("l2_book_imbalance", 1.1, catalog["l2_book_imbalance"]) is not None
-    assert validate_feature_value("l2_book_imbalance", 0.2, catalog["l2_book_imbalance"]) is None
+    assert (
+        validate_feature_value("l2_bid_ask_spread", -0.01, catalog["l2_bid_ask_spread"])
+        is not None
+    )
+    assert (
+        validate_feature_value("l2_book_imbalance", 1.1, catalog["l2_book_imbalance"])
+        is not None
+    )
+    assert (
+        validate_feature_value("l2_book_imbalance", 0.2, catalog["l2_book_imbalance"])
+        is None
+    )

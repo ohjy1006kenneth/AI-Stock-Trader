@@ -147,7 +147,7 @@ class OptionalOrderBookBranch:
     provider: str | None
     records_by_ticker: dict[str, tuple[FeatureRecord, ...]]
     covered_dates: frozenset[str]
-    artifact_keys: tuple[str, ...]
+    archive_keys: tuple[str, ...]
     missing_dates: tuple[str, ...]
 
 
@@ -228,7 +228,7 @@ def backfill_layer1(
         provider=None,
         records_by_ticker={},
         covered_dates=frozenset(),
-        artifact_keys=(),
+        archive_keys=(),
         missing_dates=(),
     )
     try:
@@ -387,7 +387,7 @@ def backfill_layer1(
                 "topic_artifacts_loaded": len(topic_branch.artifact_keys),
                 "order_book_enabled": order_book_branch.enabled,
                 "order_book_provider": order_book_branch.provider,
-                "order_book_artifacts_loaded": len(order_book_branch.artifact_keys),
+                "order_book_artifacts_loaded": len(order_book_branch.archive_keys),
                 "missing_order_book_dates": len(order_book_branch.missing_dates),
                 "regime_artifacts_loaded": len(regime_branch.artifact_keys),
                 "missing_sentiment_dates": len(missing_sentiment_dates),
@@ -427,7 +427,7 @@ def backfill_layer1(
                 "topic_artifacts_loaded": len(topic_branch.artifact_keys),
                 "order_book_enabled": order_book_branch.enabled,
                 "order_book_provider": order_book_branch.provider,
-                "order_book_artifacts_loaded": len(order_book_branch.artifact_keys),
+                "order_book_artifacts_loaded": len(order_book_branch.archive_keys),
                 "regime_artifacts_loaded": len(regime_branch.artifact_keys),
             },
         )
@@ -790,13 +790,13 @@ def _load_optional_order_book_branch(
             provider=config.provider,
             records_by_ticker={},
             covered_dates=frozenset(),
-            artifact_keys=(),
+            archive_keys=(),
             missing_dates=(),
         )
 
     records_by_ticker: dict[str, list[FeatureRecord]] = {}
     covered_dates: set[str] = set()
-    artifact_keys: list[str] = []
+    archive_keys: list[str] = []
     missing_dates: set[str] = set()
     date_tickers_map: dict[str, set[str]] = {}
     for ticker, ohlcv in ohlcv_by_ticker.items():
@@ -808,7 +808,7 @@ def _load_optional_order_book_branch(
         if writer.exists(key):
             frame = load_order_book_frame(config.provider, date_text, writer=writer)
             covered_dates.add(date_text)
-            artifact_keys.append(key)
+            archive_keys.append(key)
         else:
             frame = _empty_order_book_source_frame()
             missing_dates.add(date_text)
@@ -831,7 +831,7 @@ def _load_optional_order_book_branch(
             for ticker, records in sorted(records_by_ticker.items())
         },
         covered_dates=frozenset(covered_dates),
-        artifact_keys=tuple(artifact_keys),
+        archive_keys=tuple(archive_keys),
         missing_dates=tuple(sorted(missing_dates)),
     )
 
@@ -877,8 +877,12 @@ def _empty_fundamentals_frame(ohlcv):
 
 def _empty_order_book_source_frame():
     """Return an empty provider-normalized order-book frame."""
-    import pandas as pd
-
+    try:
+        import pandas as pd
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            "pandas and pyarrow are required to build empty order-book frames."
+        ) from exc
     return pd.DataFrame(
         columns=[
             "date",

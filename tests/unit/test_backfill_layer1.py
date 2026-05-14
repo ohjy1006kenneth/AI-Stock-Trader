@@ -348,12 +348,17 @@ def test_backfill_layer1_adds_optional_order_book_features_with_null_fallbacks(
         lambda: OrderBookFeatureConfig(enabled=True, provider="alpaca"),
     )
 
-    backfill_layer1(Layer1BackfillConfig(run_id="layer1-order-book", tickers=("AAPL",)), writer=writer)
+    backfill_layer1(
+        Layer1BackfillConfig(run_id="layer1-order-book", tickers=("AAPL",)),
+        writer=writer,
+    )
 
     records = read_feature_records("AAPL", writer=writer)
     by_date = {record.date: record.features for record in records}
     manifest = PipelineManifestRecord.model_validate_json(
-        writer.get_object(pipeline_manifest_path(LAYER1_BACKFILL_STAGE, "layer1-order-book"))
+        writer.get_object(
+            pipeline_manifest_path(LAYER1_BACKFILL_STAGE, "layer1-order-book")
+        )
     )
 
     assert by_date["2024-01-02"]["l2_bid_ask_spread"] == pytest.approx(0.05)

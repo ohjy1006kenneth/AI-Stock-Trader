@@ -68,7 +68,15 @@ def test_compute_order_book_features_aggregates_latest_pre_open_snapshot() -> No
 def test_compute_order_book_features_empty_frame_returns_null_rows() -> None:
     """Missing archives produce explicit null feature rows without failing assembly."""
     empty = pd.DataFrame(
-        columns=["date", "ticker", "captured_at", "bid_price", "ask_price", "bid_size", "ask_size"]
+        columns=[
+            "date",
+            "ticker",
+            "captured_at",
+            "bid_price",
+            "ask_price",
+            "bid_size",
+            "ask_size",
+        ]
     )
 
     features = compute_order_book_features(
@@ -168,3 +176,33 @@ def test_load_order_book_feature_config_reads_repo_owned_gate(tmp_path: Path) ->
 
     assert config == OrderBookFeatureConfig(enabled=True, provider="alpaca")
     assert config.is_active is True
+
+
+def test_load_order_book_feature_config_rejects_non_string_provider(tmp_path: Path) -> None:
+    """Provider must be a string or null in repository-owned config."""
+    path = tmp_path / "order_book_features.json"
+    path.write_text(
+        json.dumps({"enabled": True, "provider": 123}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="order_book_features.provider must be a string or null",
+    ):
+        load_order_book_feature_config(path)
+
+
+def test_load_order_book_feature_config_rejects_invalid_provider_name(tmp_path: Path) -> None:
+    """Provider names must match the path-safe repository validation rule."""
+    path = tmp_path / "order_book_features.json"
+    path.write_text(
+        json.dumps({"enabled": True, "provider": "alpaca!"}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="order_book_features.provider must contain only letters, digits, '-' or '_'",
+    ):
+        load_order_book_feature_config(path)
