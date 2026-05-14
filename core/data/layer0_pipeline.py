@@ -393,13 +393,14 @@ def run_historical_layer0_backfill(
         )
         output_keys.extend(price_result.output_keys)
         metadata["prices"] = dict(price_result.metadata)
-        provenance_report_key = _write_ohlcv_provenance_report(
+        provenance_report_key, adjustment_provenance = _write_ohlcv_provenance_report(
             writer=cached_writer,
             run_id=run_id,
             mode="historical_backfill",
             price_metadata=metadata["prices"],
             fetcher=price_fetcher,
         )
+        metadata["prices"]["adjustment_provenance"] = adjustment_provenance
         metadata["prices"]["provenance_report_key"] = provenance_report_key
         output_keys.append(provenance_report_key)
         logger.info("Phase prices done: {}", price_result.metadata)
@@ -570,13 +571,14 @@ def run_daily_layer0_incremental(
         )
         output_keys.extend(price_result.output_keys)
         metadata["prices"] = dict(price_result.metadata)
-        provenance_report_key = _write_ohlcv_provenance_report(
+        provenance_report_key, adjustment_provenance = _write_ohlcv_provenance_report(
             writer=writer,
             run_id=run_id,
             mode="daily_incremental",
             price_metadata=metadata["prices"],
             fetcher=live_price_fetcher,
         )
+        metadata["prices"]["adjustment_provenance"] = adjustment_provenance
         metadata["prices"]["provenance_report_key"] = provenance_report_key
         output_keys.append(provenance_report_key)
 
@@ -1329,8 +1331,8 @@ def _write_ohlcv_provenance_report(
     mode: str,
     price_metadata: dict[str, object],
     fetcher: HistoricalPriceFetcher | LivePriceFetcher,
-) -> str:
-    """Persist an auditable Layer 0 OHLCV adjustment-provenance report for one run."""
+) -> tuple[str, dict[str, object]]:
+    """Persist one provenance report and return its key plus the manifest summary."""
     provenance = _price_adjustment_provenance(fetcher)
     report_key = layer0_ohlcv_provenance_report_path(run_id)
     archive_keys = list(_string_list(price_metadata.get("archive_keys")))
@@ -1361,7 +1363,7 @@ def _write_ohlcv_provenance_report(
         },
     }
     writer.put_object(report_key, json.dumps(report, indent=2, sort_keys=True))
-    price_metadata["adjustment_provenance"] = {
+    adjustment_provenance = {
         "policy_id": provenance["policy_id"],
         "provider": provenance["provider"],
         "feed": provenance["feed"],
@@ -1369,7 +1371,7 @@ def _write_ohlcv_provenance_report(
         "stored_ohlc_basis": provenance["stored_ohlc_basis"],
         "normalized_adj_close_policy": provenance["normalized_adj_close_policy"],
     }
-    return report_key
+    return report_key, adjustment_provenance
 
 
 def _write_pipeline_manifest(

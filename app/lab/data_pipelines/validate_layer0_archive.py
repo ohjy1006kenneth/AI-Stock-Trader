@@ -60,6 +60,8 @@ _EXPECTED_OHLCV_POLICIES = {
         "normalized_adj_close_policy": "copy_close_to_adj_close",
         "feed": "sip",
     },
+    # Deliberately omit `feed` here: daily runs may use IEX or SIP depending on deployment
+    # configuration, so validation only enforces the raw-bar policy that must hold everywhere.
     "daily_incremental": {
         "policy_id": "alpaca_live_1day_adjustment_raw",
         "provider": "alpaca",

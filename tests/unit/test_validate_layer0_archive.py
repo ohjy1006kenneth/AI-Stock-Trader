@@ -74,6 +74,41 @@ def _historical_manifest_objects(run_id: str) -> dict[str, bytes]:
     }
 
 
+def _daily_manifest_objects(run_id: str, *, feed: str) -> dict[str, bytes]:
+    report_key = layer0_ohlcv_provenance_report_path(run_id)
+    return {
+        pipeline_manifest_path("layer0", run_id): json.dumps(
+            {
+                "run_id": run_id,
+                "stage": "layer0",
+                "status": "completed",
+                "metadata": {
+                    "mode": "daily_incremental",
+                    "prices": {
+                        "adjustment_provenance": {
+                            "policy_id": "alpaca_live_1day_adjustment_raw",
+                            "provider": "alpaca",
+                            "request_adjustment": "raw",
+                            "stored_ohlc_basis": "raw",
+                            "normalized_adj_close_policy": "copy_close_to_adj_close",
+                            "feed": feed,
+                        },
+                        "provenance_report_key": report_key,
+                    },
+                },
+            }
+        ).encode("utf-8"),
+        report_key: json.dumps(
+            build_provenance_report(
+                run_id=run_id,
+                mode="daily_incremental",
+                provenance=daily_raw_provenance(feed=feed),
+                observed_rows=2,
+            )
+        ).encode("utf-8"),
+    }
+
+
 def test_validate_layer0_archive_reports_ready_when_required_keys_exist() -> None:
     """Validation is ready when all required archive families and manifest exist."""
     from_date = date(2024, 1, 1)
@@ -266,6 +301,33 @@ def test_validate_layer0_archive_blocks_missing_or_mismatched_ohlcv_provenance()
         report.ohlcv_provenance_validation_errors
     )
     assert "report_request_adjustment_expected_all" in report.ohlcv_provenance_validation_errors
+
+
+def test_validate_layer0_archive_accepts_valid_daily_incremental_manifest() -> None:
+    """Validation accepts daily incremental provenance without enforcing one live feed."""
+    run_id = "layer0-daily-2024-01-02"
+    objects = _daily_manifest_objects(run_id, feed="sip")
+    keys = {
+        raw_price_path("AAPL"),
+        raw_news_path("2024-01-02"),
+        raw_universe_path("2024-01-02"),
+        raw_fundamentals_path("AAPL"),
+        raw_macro_path("2024-01-02"),
+        pipeline_manifest_path("layer0", run_id),
+        layer0_ohlcv_provenance_report_path(run_id),
+    }
+
+    report = validate_layer0_archive(
+        from_date=date(2024, 1, 2),
+        to_date=date(2024, 1, 2),
+        run_id=run_id,
+        reader=_Reader(keys, objects),
+    )
+
+    assert report.ready_for_layer1 is True
+    assert report.ohlcv_provenance_report_present is True
+    assert report.ohlcv_provenance_policy_id == "alpaca_live_1day_adjustment_raw"
+    assert report.ohlcv_provenance_validation_errors == []
 
 
 def test_validate_layer0_archive_surfaces_split_like_discontinuity_count() -> None:
