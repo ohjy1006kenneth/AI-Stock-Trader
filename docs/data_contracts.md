@@ -187,6 +187,26 @@ Notes:
 - no schema changes in `core/contracts/schemas.py` are required unless the project decides
   to promote macro observations into a typed inter-layer contract later
 
+### Layer 0 raw order-book archive (non-contract artifact)
+
+Purpose:
+- preserve optional pre-open Level 2 snapshots for spread and book-imbalance features
+- keep Layer 1 provider-agnostic by consuming only normalized R2 archives
+- allow the branch to remain disabled by default until an explicit provider/config exists
+
+Notes:
+- raw order-book observations, when provisioned, are stored under
+  `raw/order_book/{provider}/{run_date}.parquet`
+- the normalized archive is provider-agnostic and must include at least:
+  `date`, `ticker`, `captured_at`, `bid_price`, `ask_price`, `bid_size`, and `ask_size`
+- Layer 1 uses only snapshots available before the target market open and aggregates them
+  into optional per-ticker daily spread / imbalance features
+- missing order-book archives must not break the base Layer 1 run; when the branch is
+  explicitly enabled, missing coverage resolves to null order-book features instead
+- this archive is not a replacement for `FeatureRecord`
+- no schema changes in `core/contracts/schemas.py` are required unless the project decides
+  to promote raw order-book observations into a typed inter-layer contract later
+
 ---
 
 ## Layer 1 contracts
@@ -233,14 +253,16 @@ Required identity fields:
 
 Feature groups may include:
 - market features
+- optional order-book / market-microstructure features
 - text/sentiment features
 - context/fundamental features
 - regime features
 
 Input note:
 - generated from Layer 0 R2 archives/manifests plus the latest completed Layer 1.5
-  regime artifacts/manifests already persisted in R2; Layer 1 must not call external
-  data providers for feature inputs
+  regime artifacts/manifests already persisted in R2, plus any explicitly configured
+  provider-normalized order-book archives already staged in R2; Layer 1 must not call
+  external data providers for feature inputs
 - historical backfills store FeatureRecord rows as one per-ticker Parquet history under
   `features/layer1/{ticker}.parquet`; daily incremental paths may still address a single
   `(date, ticker)` row through `features/layer1/{date}/{ticker}.parquet`

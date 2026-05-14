@@ -103,6 +103,10 @@ Execution chain:
    - Read FRED macro context series from the `raw/macro/{run_date}.parquet` point-in-time
      snapshot (with backward-compatible legacy-vintage recovery when older observation-date
      shards still exist)
+   - When `config/order_book_features.json` explicitly enables a provider, read the
+     provider-normalized pre-open Level 2 snapshot from
+     `raw/order_book/{provider}/{run_date}.parquet`; if the archive is missing for a date,
+     keep the branch non-fatal and emit null order-book features for that date/ticker scope
    - Fail closed if the required Layer 0 raw archives or manifests are missing
    - Derive the ticker scope from Layer 0 universe masks; optional ticker filters may only
      narrow that scope, never replace it with a hand-maintained production list
@@ -115,7 +119,7 @@ Execution chain:
      `features/layer1/news_sentiment_scored/{YYYY-MM-DD}/{run_id}.parquet` and aggregate
      ticker-day sentiment FeatureRecords into
      `features/layer1/sentiment_features/{YYYY-MM-DD}/{run_id}.parquet`
-   - Compute market, NLP, and context features for today
+   - Compute market, NLP, context, and optional order-book spread / imbalance features for today
    - Refresh aligned per-ticker feature histories at `features/layer1/TICKER.parquet` in R2
      while preserving daily single-record shard support for incremental runs
    - Run final archive validation, persist the JSON report under

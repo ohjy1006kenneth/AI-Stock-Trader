@@ -25,6 +25,7 @@ from services.r2.paths import (
     raw_macro_date_from_key,
     raw_macro_path,
     raw_news_path,
+    raw_order_book_path,
     raw_price_path,
     raw_reference_path,
     raw_security_master_path,
@@ -45,6 +46,7 @@ def test_layer0_raw_path_builders_return_canonical_keys() -> None:
     assert raw_universe_path(date(2025, 1, 2)) == "raw/universe/2025-01-02.csv"
     assert raw_fundamentals_path("AAPL") == "raw/fundamentals/AAPL.parquet"
     assert raw_macro_path(date(2025, 1, 2)) == "raw/macro/2025-01-02.parquet"
+    assert raw_order_book_path("alpaca", "2025-01-02") == "raw/order_book/alpaca/2025-01-02.parquet"
     assert raw_macro_path("2025-01-02") == "raw/macro/2025-01-02.parquet"
     assert is_canonical_raw_macro_key("raw/macro/2025-01-02.parquet") is True
     assert raw_macro_date_from_key("raw/macro/2025-01-02.parquet") == "2025-01-02"

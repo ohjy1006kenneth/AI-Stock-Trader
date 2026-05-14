@@ -29,12 +29,14 @@ from app.lab.data_pipelines.run_text_topics import TEXT_TOPICS_STAGE
 from app.lab.data_pipelines.validate_layer1_archive import Layer1ValidationReport
 from core.contracts.schemas import PipelineManifestRecord, RunStatus
 from core.features.io import feature_records_to_parquet_bytes, read_feature_records
+from services.order_book.config import OrderBookFeatureConfig
 from services.r2.paths import (
     layer1_regime_path,
     layer1_sentiment_feature_path,
     layer1_validation_report_path,
     pipeline_manifest_path,
     raw_macro_path,
+    raw_order_book_path,
     raw_price_path,
 )
 from services.r2.writer import R2Writer
@@ -88,6 +90,7 @@ def test_run_daily_layer1_happy_path_writes_history_and_completed_manifest(
     assert history[0].features["nlp_sentiment_score"] == pytest.approx(0.25)
     assert history[0].features["regime_label"] == "bull"
     assert "sector_etf_ret" in history[0].features
+    assert "l2_bid_ask_spread" not in history[0].features
     assert history[0].features["sector_relative_strength"] is None
     assert writer.exists("features/layer1/2024-01-03/AAPL.parquet") is True
     assert writer.exists(
@@ -171,6 +174,70 @@ def test_run_daily_layer1_prefers_topic_sentence_count_when_sentiment_conflicts(
     assert result.ready_for_layer2 is True
     assert history[0].features["nlp_sentence_count"] == 1
     assert history[0].features["nlp_sentiment_score"] == pytest.approx(0.25)
+
+
+def test_run_daily_layer1_adds_optional_order_book_features_without_breaking_missing_dates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An enabled order-book branch writes features when present and nulls when absent."""
+    writer = local_writer(tmp_path, monkeypatch)
+    seed_layer0_archives(
+        writer,
+        dates=["2024-01-03", "2024-01-04"],
+        tickers=["AAPL"],
+        layer0_run_ids=("layer1-order-book",),
+    )
+    archive = pd.DataFrame(
+        [
+            {
+                "date": "2024-01-03",
+                "ticker": "AAPL",
+                "captured_at": "2024-01-03T14:25:00+00:00",
+                "bid_price": 100.01,
+                "ask_price": 100.06,
+                "bid_size": 700,
+                "ask_size": 300,
+            }
+        ]
+    )
+    buffer = io.BytesIO()
+    archive.to_parquet(buffer, index=False)
+    writer.put_object(raw_order_book_path("alpaca", "2024-01-03"), buffer.getvalue())
+    monkeypatch.setattr(
+        daily_layer1_module,
+        "load_order_book_feature_config",
+        lambda: OrderBookFeatureConfig(enabled=True, provider="alpaca"),
+    )
+
+    result = run_daily_layer1(
+        Layer1DailyConfig(
+            run_id="layer1-order-book",
+            from_date="2024-01-03",
+            to_date="2024-01-04",
+        ),
+        writer=writer,
+        news_runner=fake_news_runner(writer, ["AAPL"]),
+        text_topic_runner=fake_topic_runner(writer, ["AAPL"]),
+        finbert_runner=fake_sentiment_runner(writer, ["AAPL"]),
+        regime_runner=fake_regime_runner(writer),
+        validation_output_dir=tmp_path / "reports",
+        now=datetime(2024, 1, 5, 12, 0, tzinfo=UTC),
+    )
+
+    manifest = PipelineManifestRecord.model_validate_json(writer.get_object(result.manifest_key))
+    history = read_feature_records("AAPL", writer=writer)
+    by_date = {record.date: record.features for record in history}
+
+    assert result.ready_for_layer2 is True
+    assert by_date["2024-01-03"]["l2_bid_ask_spread"] == pytest.approx(0.05)
+    assert by_date["2024-01-03"]["l2_book_imbalance"] == pytest.approx(0.4)
+    assert by_date["2024-01-03"]["l2_snapshot_count"] == 1
+    assert by_date["2024-01-04"]["l2_bid_ask_spread"] is None
+    assert by_date["2024-01-04"]["l2_snapshot_count"] == 0
+    assert manifest.metadata["order_book_enabled"] is True
+    assert manifest.metadata["order_book_provider"] == "alpaca"
+    assert manifest.metadata["order_book_missing_dates"] == ["2024-01-04"]
 
 
 def test_run_daily_layer1_surfaces_regime_warmup_as_validation_warning(

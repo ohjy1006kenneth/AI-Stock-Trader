@@ -15,6 +15,7 @@ Out of scope:
 
 Subfolders:
 - `alpaca/` — delayed SIP OHLCV, historical/live news, live market data, broker state, and execution integrations
+- `order_book/` — optional Level 2 provider gating and non-secret config ownership
 - `r2/` — Cloudflare R2 object storage interfaces, canonical paths, and manifests
 - `modal/` — cloud job and deployment integrations
 - `observability/` — logging, metrics, and alert glue

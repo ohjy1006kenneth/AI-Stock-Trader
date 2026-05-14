@@ -211,6 +211,7 @@ ai-stock-trader/
 │   └── execution/                # Deterministic execution helpers
 ├── services/                     # External service adapters
 │   ├── alpaca/                   # Broker and market data integration
+│   ├── order_book/               # Optional Level 2/order-book config boundary
 │   ├── r2/                       # Object storage integration
 │   ├── modal/                    # Cloud job/deployment integration
 │   └── observability/            # Logging/metrics/alerts integration

@@ -19,6 +19,7 @@ from services.r2.paths import (
     is_canonical_raw_macro_key,
     raw_fundamentals_path,
     raw_macro_date_from_key,
+    raw_order_book_path,
     raw_price_path,
 )
 from services.r2.writer import R2Writer
@@ -117,6 +118,19 @@ def load_macro_frame(
             .reset_index(drop=True)
         )
         return frame
+    return frame.reset_index(drop=True)
+
+
+def load_order_book_frame(
+    provider: str,
+    as_of_date: str,
+    writer: R2Writer | None = None,
+) -> pd.DataFrame:
+    """Return one provider/day raw order-book archive frame from R2."""
+    pd = _require_pandas()
+    active_writer = writer or R2Writer()
+    payload = active_writer.get_object(raw_order_book_path(provider, as_of_date))
+    frame = pd.read_parquet(io.BytesIO(payload))
     return frame.reset_index(drop=True)
 
 

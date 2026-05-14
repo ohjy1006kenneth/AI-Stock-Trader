@@ -44,6 +44,8 @@ Use an R2 token/access key with read/write access to the bucket. Do not use the 
 - `config/fred_series.json` controls the default FRED macro/rate series and historical backfill date range.
 - `config/sector_etf_mapping.json` controls sector-name normalization and the
   sector-to-ETF mapping used by Layer 1 sector/factor features.
+- `config/order_book_features.json` gates the optional Layer 1 Level 2/order-book branch;
+  it stays disabled by default until an explicit provider name is configured.
 - `config/source_credibility.json` controls source credibility weights used for
   FinBERT sentiment aggregation.
 - `config/finbert_sentiment.json` controls the Modal app, model identity, batch size,

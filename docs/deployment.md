@@ -71,6 +71,10 @@ Expected execution chain:
      instead of falling back to local heavy-ML execution
    - The command derives ticker scope from Layer 0 universe masks and fails closed on
      missing upstream manifests or archives
+   - Optional Level 2 features stay disabled unless `config/order_book_features.json`
+     explicitly enables a provider; when enabled, Layer 1 reads only the staged R2 archive
+     `raw/order_book/{provider}/{run_date}.parquet` and treats missing per-date coverage as
+     a null-feature condition instead of breaking the rest of Layer 1
 5. Deploy cloud oracle with fixed contracts
 6. Validate edge-to-cloud handshake plus Alpaca live-market-data normalization
 7. Dry-run risk and execution path

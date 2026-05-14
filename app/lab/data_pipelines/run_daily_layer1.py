@@ -90,11 +90,16 @@ from core.features.loaders import (  # noqa: E402
     load_fundamentals_frame,
     load_macro_frame,
     load_ohlcv_frame,
+    load_order_book_frame,
 )
 from core.features.macro_features import compute_macro_features  # noqa: E402
 from core.features.market_features import (  # noqa: E402
     compute_market_features,
     market_features_to_records,
+)
+from core.features.order_book_features import (  # noqa: E402
+    compute_order_book_features,
+    order_book_features_to_records,
 )
 from core.features.regime_detection import regime_features_to_records  # noqa: E402
 from core.features.sector_features import (  # noqa: E402
@@ -102,11 +107,13 @@ from core.features.sector_features import (  # noqa: E402
     load_sector_etf_config,
     sector_features_to_records,
 )
+from services.order_book.config import load_order_book_feature_config  # noqa: E402
 from services.r2.paths import (  # noqa: E402
     layer1_ticker_history_path,
     pipeline_manifest_path,
     raw_fundamentals_path,
     raw_news_path,
+    raw_order_book_path,
     raw_price_path,
     raw_universe_path,
 )
@@ -287,6 +294,17 @@ class ModalBatchedStageOutputs:
     regime_output_keys_by_date: dict[str, str]
 
 
+@dataclass(frozen=True)
+class OptionalOrderBookBranch:
+    """Loaded optional order-book FeatureRecords keyed by ticker."""
+
+    enabled: bool
+    provider: str | None
+    records_by_ticker: dict[str, tuple[FeatureRecord, ...]]
+    archive_keys: tuple[str, ...]
+    missing_dates: tuple[str, ...]
+
+
 class Layer1ValidationError(RuntimeError):
     """Raised when Layer 1 validation completes but is not ready for Layer 2."""
 
@@ -402,7 +420,11 @@ def run_daily_layer1(
             regime_runner=regime_runner,
         )
 
-        feature_rows_written, history_files_written = _assemble_and_write_histories(
+        (
+            feature_rows_written,
+            history_files_written,
+            order_book_branch,
+        ) = _assemble_and_write_histories(
             writer=active_writer,
             universe_by_date=universe_by_date,
             benchmark_ticker=config.benchmark_ticker,
@@ -438,6 +460,10 @@ def run_daily_layer1(
                 "regime_output_keys": {
                     date_text: result.output_key for date_text, result in regime_results.items()
                 },
+                "order_book_enabled": order_book_branch.enabled,
+                "order_book_provider": order_book_branch.provider,
+                "order_book_archive_keys": list(order_book_branch.archive_keys),
+                "order_book_missing_dates": list(order_book_branch.missing_dates),
             }
         )
         finished_at = (now or datetime.now(UTC)).replace(microsecond=0)
@@ -741,7 +767,7 @@ def _assemble_and_write_histories(
     topic_results: Mapping[str, TextTopicPipelineResult],
     sentiment_results: Mapping[str, FinBERTPipelineResult],
     regime_results: Mapping[str, HMMRegimePipelineResult],
-) -> tuple[int, int]:
+) -> tuple[int, int, OptionalOrderBookBranch]:
     """Assemble daily features and upsert per-ticker histories."""
     target_dates_by_ticker = _expected_dates_by_ticker(universe_by_date)
     benchmark_bars = load_ohlcv_frame(benchmark_ticker, writer=writer)  # type: ignore[arg-type]
@@ -789,6 +815,10 @@ def _assemble_and_write_histories(
             sector_config=sector_config,
         ).items()
     }
+    order_book_branch = _load_order_book_branch(
+        writer=writer,
+        target_dates_by_ticker=target_dates_by_ticker,
+    )
 
     feature_rows_written = 0
     history_files_written = 0
@@ -826,6 +856,10 @@ def _assemble_and_write_histories(
             sentiment_records.get(ticker, []),
             target_dates,
         )
+        order_book_daily_records = _records_for_target_dates(
+            order_book_branch.records_by_ticker.get(ticker, ()),
+            target_dates,
+        )
         regime_daily_records = _broadcast_regime_records(
             ticker=ticker,
             target_dates=target_dates,
@@ -859,6 +893,11 @@ def _assemble_and_write_histories(
                     as_of_timestamp=SENTINEL_ASSEMBLY_AS_OF,
                 ),
                 Layer1FeatureInput(
+                    name="order_book",
+                    records=order_book_daily_records,
+                    as_of_timestamp=SENTINEL_ASSEMBLY_AS_OF,
+                ),
+                Layer1FeatureInput(
                     name="regime",
                     records=regime_daily_records,
                     as_of_timestamp=SENTINEL_ASSEMBLY_AS_OF,
@@ -876,7 +915,95 @@ def _assemble_and_write_histories(
         feature_rows_written += len(assembled)
         history_files_written += 1
 
-    return feature_rows_written, history_files_written
+    return feature_rows_written, history_files_written, order_book_branch
+
+
+def _load_order_book_branch(
+    *,
+    writer: ObjectStore,
+    target_dates_by_ticker: Mapping[str, Sequence[str]],
+) -> OptionalOrderBookBranch:
+    """Load optional order-book FeatureRecords for the requested ticker/date scope."""
+    config = load_order_book_feature_config()
+    if not config.is_active or config.provider is None:
+        return OptionalOrderBookBranch(
+            enabled=False,
+            provider=config.provider,
+            records_by_ticker={},
+            archive_keys=(),
+            missing_dates=(),
+        )
+
+    records_by_ticker: dict[str, list[FeatureRecord]] = {}
+    archive_keys: list[str] = []
+    missing_dates: list[str] = []
+    all_dates = sorted({date_text for dates in target_dates_by_ticker.values() for date_text in dates})
+    for date_text in all_dates:
+        date_tickers = sorted(
+            ticker
+            for ticker, ticker_dates in target_dates_by_ticker.items()
+            if date_text in ticker_dates
+        )
+        key = raw_order_book_path(config.provider, date_text)
+        if writer.exists(key):
+            frame = load_order_book_frame(config.provider, date_text, writer=writer)  # type: ignore[arg-type]
+            archive_keys.append(key)
+        else:
+            missing_dates.append(date_text)
+            frame = _empty_order_book_source_frame()
+
+        day_records = order_book_features_to_records(
+            compute_order_book_features(
+                frame,
+                target_date=date_text,
+                tickers=date_tickers,
+            )
+        )
+        for record in day_records:
+            records_by_ticker.setdefault(record.ticker, []).append(record)
+
+    if missing_dates:
+        sample = ", ".join(missing_dates[:5])
+        suffix = "" if len(missing_dates) <= 5 else ", ..."
+        logger.warning(
+            "Order-book branch enabled for provider={} but archives were missing for {} dates: {}{}",
+            config.provider,
+            len(missing_dates),
+            sample,
+            suffix,
+        )
+
+    return OptionalOrderBookBranch(
+        enabled=True,
+        provider=config.provider,
+        records_by_ticker={
+            ticker: tuple(sorted(records, key=lambda record: record.date))
+            for ticker, records in sorted(records_by_ticker.items())
+        },
+        archive_keys=tuple(archive_keys),
+        missing_dates=tuple(missing_dates),
+    )
+
+
+def _empty_order_book_source_frame():
+    """Return an empty provider-normalized order-book frame."""
+    try:
+        import pandas as pd
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            "pandas and pyarrow are required to build empty order-book frames."
+        ) from exc
+    return pd.DataFrame(
+        columns=[
+            "date",
+            "ticker",
+            "captured_at",
+            "bid_price",
+            "ask_price",
+            "bid_size",
+            "ask_size",
+        ]
+    )
 
 
 def _load_feature_records_by_key(
