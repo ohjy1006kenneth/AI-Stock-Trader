@@ -278,7 +278,8 @@ Appends today's data to the existing R2 database. Assumes the backfill has alrea
 - minimum average daily volume (ADV): $1M/day (lower bound for personal system)
 - minimum price: $5 (exclude penny stocks)
 - minimum market cap: configurable; computed as latest close on the mask date times the
-  latest SimFin shares-outstanding value available on or before that mask date
+  latest SimFin shares-outstanding value available on or before that mask date, or a
+  raw-share-count equivalent conservatively derived from same-period SimFin per-share metrics
 
 **Data quality checks (run on every data pull):**
 - flag any bar where volume is zero

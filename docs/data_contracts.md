@@ -76,7 +76,8 @@ Implementation notes:
 - daily eligibility masks treated as conjunction of `in_universe`, `tradable`, `liquid`, `!halted`, and `data_quality_ok`
 - when enabled by `QualityFilterConfig.min_market_cap`, Layer 0 also applies a market-cap
   screen using the latest close on the mask date and the latest SimFin
-  shares-outstanding value available on or before that date
+  shares-outstanding value available on or before that date, or a raw-share-count
+  equivalent conservatively derived from same-period SimFin per-share metrics
 - when that optional market-cap screen is enabled but point-in-time shares data is missing,
   Layer 0 marks the ticker illiquid and records `market_cap_unavailable` in `reason`
 - missing identity fields fail fast; optional fields have sensible defaults
@@ -130,7 +131,8 @@ Notes:
 - raw fundamentals are stored as archival Layer 0 data in R2 as per-ticker parquet
   histories under `raw/fundamentals/{ticker}.parquet`
 - the same archive also provides the point-in-time shares-outstanding inputs needed by the
-  optional Layer 0 market-cap eligibility screen
+  optional Layer 0 market-cap eligibility screen, including conservative derivation from
+  same-period SimFin per-share metrics when an explicit share-count field is absent
 - Layer 1 converts these raw records into context features such as valuation ratios,
   leverage, profitability, earnings proximity, and earnings surprises
 - this archive is not a replacement for `FeatureRecord`

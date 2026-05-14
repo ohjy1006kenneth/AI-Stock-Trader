@@ -598,6 +598,222 @@ def test_daily_layer0_incremental_uses_same_day_fundamentals_for_market_cap_filt
     assert universe_rows[0]["reason"] == ""
 
 
+def test_daily_layer0_incremental_ignores_generic_shares_field_for_market_cap() -> None:
+    """A bare vendor field named shares is too ambiguous for Layer 0 market-cap screening."""
+    writer = _Writer()
+    raw_rows = [
+        {
+            "source": "simfin",
+            "ticker": "AAPL",
+            "report_date": "2024-01-02",
+            "availability_date": "2024-01-02",
+            "retrieved_at": "2024-01-02T00:00:00+00:00",
+            "raw": {"shares": 200_000_000.0},
+        }
+    ]
+
+    class _GenericSharesFundamentalsFetcher:
+        def fetch_all_fundamentals(self, **_: Any) -> list[dict[str, object]]:
+            return raw_rows
+
+    run_daily_layer0_incremental(
+        config=DailyLayer0Config(
+            as_of_date=date(2024, 1, 2),
+            tickers=("AAPL",),
+            fred_series_ids=("DGS10",),
+            run_id="test-market-cap-generic-shares",
+            quality_config=QualityFilterConfig(
+                rolling_window_days=1,
+                min_market_cap=1_500_000_000.0,
+            ),
+        ),
+        live_price_fetcher=_LivePriceFetcher(
+            records=[
+                _bar(date_value="2024-01-02", ticker="AAPL"),
+                _bar(date_value="2024-01-02", ticker="SPY"),
+            ]
+        ),
+        news_fetcher=_NewsFetcher(),
+        fundamentals_fetcher=_GenericSharesFundamentalsFetcher(),
+        macro_fetcher=_MacroFetcher(),
+        writer=writer,
+        price_serializer=_bytes_serializer,
+        price_deserializer=_bytes_deserializer,
+        news_serializer=_bytes_serializer,
+        fundamentals_serializer=_bytes_serializer,
+        fundamentals_deserializer=_raw_rows_deserializer,
+        macro_serializer=_bytes_serializer,
+        universe_serializer=_universe_serializer,
+    )
+
+    universe_rows = list(
+        csv.DictReader(io.StringIO(writer.objects[raw_universe_path("2024-01-02")].decode()))
+    )
+    assert universe_rows[0]["ticker"] == "AAPL"
+    assert universe_rows[0]["liquid"] == "False"
+    assert universe_rows[0]["reason"] == "market_cap_unavailable"
+
+
+def test_daily_layer0_incremental_derives_market_cap_share_count_from_simfin_metrics() -> None:
+    """Same-period SimFin numerator/per-share metrics imply a raw share count."""
+    writer = _Writer()
+    raw_rows = [
+        {
+            "source": "simfin",
+            "ticker": "AAPL",
+            "report_date": "2024-03-31",
+            "availability_date": "2024-05-03",
+            "retrieved_at": "2024-05-03T00:00:00+00:00",
+            "fiscal_year": 2024,
+            "fiscal_period": "Q2",
+            "raw": {
+                "Report Date": "2024-03-31",
+                "Publish Date": "2024-05-03",
+                "Fiscal Year": 2024,
+                "Fiscal Period": "Q2",
+                "Revenue": 90_753_000_000.0,
+                "Net Income Available to Common Shareholders": 23_636_000_000.0,
+            },
+        },
+        {
+            "source": "simfin",
+            "ticker": "AAPL",
+            "report_date": "2024-03-31",
+            "availability_date": "2024-03-31",
+            "retrieved_at": "2024-03-31T00:00:00+00:00",
+            "fiscal_year": 2024,
+            "fiscal_period": "Q2",
+            "raw": {
+                "Report Date": "2024-03-31",
+                "Fiscal Year": 2024,
+                "Fiscal Period": "Q2",
+                "Sales Per Share": 5.89081,
+                "Earnings Per Share, Basic": 1.53422,
+            },
+        },
+    ]
+
+    class _DerivedSharesFundamentalsFetcher:
+        def fetch_all_fundamentals(self, **_: Any) -> list[dict[str, object]]:
+            return raw_rows
+
+    run_daily_layer0_incremental(
+        config=DailyLayer0Config(
+            as_of_date=date(2024, 5, 3),
+            tickers=("AAPL",),
+            fred_series_ids=("DGS10",),
+            run_id="test-market-cap-derived-shares",
+            quality_config=QualityFilterConfig(
+                rolling_window_days=1,
+                min_market_cap=100_000_000_000.0,
+            ),
+        ),
+        live_price_fetcher=_LivePriceFetcher(
+            records=[
+                _bar(date_value="2024-05-03", ticker="AAPL"),
+                _bar(date_value="2024-05-03", ticker="SPY"),
+            ]
+        ),
+        news_fetcher=_NewsFetcher(),
+        fundamentals_fetcher=_DerivedSharesFundamentalsFetcher(),
+        macro_fetcher=_MacroFetcher(),
+        writer=writer,
+        price_serializer=_bytes_serializer,
+        price_deserializer=_bytes_deserializer,
+        news_serializer=_bytes_serializer,
+        fundamentals_serializer=_bytes_serializer,
+        fundamentals_deserializer=_raw_rows_deserializer,
+        macro_serializer=_bytes_serializer,
+        universe_serializer=_universe_serializer,
+    )
+
+    universe_rows = list(
+        csv.DictReader(io.StringIO(writer.objects[raw_universe_path("2024-05-03")].decode()))
+    )
+    assert universe_rows[0]["ticker"] == "AAPL"
+    assert universe_rows[0]["liquid"] == "True"
+    assert universe_rows[0]["reason"] == ""
+
+
+def test_daily_layer0_incremental_derived_share_count_waits_for_latest_component() -> None:
+    """Derived share counts become eligible only after the last required SimFin row is available."""
+    writer = _Writer()
+    raw_rows = [
+        {
+            "source": "simfin",
+            "ticker": "AAPL",
+            "report_date": "2024-03-31",
+            "availability_date": "2024-05-03",
+            "retrieved_at": "2024-05-03T00:00:00+00:00",
+            "fiscal_year": 2024,
+            "fiscal_period": "Q2",
+            "raw": {
+                "Report Date": "2024-03-31",
+                "Publish Date": "2024-05-03",
+                "Fiscal Year": 2024,
+                "Fiscal Period": "Q2",
+                "Revenue": 90_753_000_000.0,
+            },
+        },
+        {
+            "source": "simfin",
+            "ticker": "AAPL",
+            "report_date": "2024-03-31",
+            "availability_date": "2024-03-31",
+            "retrieved_at": "2024-03-31T00:00:00+00:00",
+            "fiscal_year": 2024,
+            "fiscal_period": "Q2",
+            "raw": {
+                "Report Date": "2024-03-31",
+                "Fiscal Year": 2024,
+                "Fiscal Period": "Q2",
+                "Sales Per Share": 5.89081,
+            },
+        },
+    ]
+
+    class _DerivedSharesFundamentalsFetcher:
+        def fetch_all_fundamentals(self, **_: Any) -> list[dict[str, object]]:
+            return raw_rows
+
+    run_daily_layer0_incremental(
+        config=DailyLayer0Config(
+            as_of_date=date(2024, 5, 2),
+            tickers=("AAPL",),
+            fred_series_ids=("DGS10",),
+            run_id="test-market-cap-derived-shares-timing",
+            quality_config=QualityFilterConfig(
+                rolling_window_days=1,
+                min_market_cap=100_000_000_000.0,
+            ),
+        ),
+        live_price_fetcher=_LivePriceFetcher(
+            records=[
+                _bar(date_value="2024-05-02", ticker="AAPL"),
+                _bar(date_value="2024-05-02", ticker="SPY"),
+            ]
+        ),
+        news_fetcher=_NewsFetcher(),
+        fundamentals_fetcher=_DerivedSharesFundamentalsFetcher(),
+        macro_fetcher=_MacroFetcher(),
+        writer=writer,
+        price_serializer=_bytes_serializer,
+        price_deserializer=_bytes_deserializer,
+        news_serializer=_bytes_serializer,
+        fundamentals_serializer=_bytes_serializer,
+        fundamentals_deserializer=_raw_rows_deserializer,
+        macro_serializer=_bytes_serializer,
+        universe_serializer=_universe_serializer,
+    )
+
+    universe_rows = list(
+        csv.DictReader(io.StringIO(writer.objects[raw_universe_path("2024-05-02")].decode()))
+    )
+    assert universe_rows[0]["ticker"] == "AAPL"
+    assert universe_rows[0]["liquid"] == "False"
+    assert universe_rows[0]["reason"] == "market_cap_unavailable"
+
+
 def test_daily_layer0_incremental_canonicalizes_dot_tickers_across_outputs() -> None:
     writer = _Writer()
     live_fetcher = _LivePriceFetcher(

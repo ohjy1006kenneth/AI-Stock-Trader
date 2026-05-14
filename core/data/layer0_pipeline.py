@@ -194,9 +194,26 @@ _SHARES_OUTSTANDING_KEYS = (
     "sharesBasic",
     "sharesDiluted",
     "commonSharesOutstanding",
+    "Common Shares Outstanding",
     "shares_outstanding",
-    "shares",
 )
+_NET_INCOME_TO_COMMON_KEYS = (
+    "Net Income Available to Common Shareholders",
+    "netIncomeAvailableToCommonShareholders",
+)
+_BASIC_EPS_KEYS = ("Earnings Per Share, Basic", "earningsPerShareBasic", "epsBasic")
+_REVENUE_KEYS = ("Revenue", "revenue")
+_SALES_PER_SHARE_KEYS = ("Sales Per Share", "salesPerShare")
+_FREE_CASH_FLOW_KEYS = ("Free Cash Flow", "freeCashFlow")
+_FREE_CASH_FLOW_PER_SHARE_KEYS = ("Free Cash Flow Per Share", "freeCashFlowPerShare")
+_EQUITY_KEYS = (
+    "Equity Before Minority Interest",
+    "Total Equity",
+    "totalEquity",
+    "shareholdersEquity",
+    "stockholdersEquity",
+)
+_EQUITY_PER_SHARE_KEYS = ("Equity Per Share", "equityPerShare", "bookValuePerShare")
 
 
 @dataclass(frozen=True)
@@ -1422,7 +1439,16 @@ def _extract_shares_outstanding_snapshots(
     rows: Sequence[Mapping[str, object]],
 ) -> list[SharesOutstandingSnapshot]:
     """Return sorted point-in-time shares-outstanding snapshots from raw fundamentals rows."""
-    by_date: dict[str, SharesOutstandingSnapshot] = {}
+    # SimFin share-count inputs are treated as raw shares, not thousands. Verified on
+    # 2026-05-14 against the live AAPL 2024-03-31 / 2024-05-03 compact snapshot:
+    # Revenue 90,753,000,000 divided by Sales Per Share 5.89081 implies
+    # ~15.406B shares, so the resulting market cap stays in plain USD.
+    #
+    # Do not accept a bare "shares" key here. The compact API exposes many share-related
+    # metrics, and Layer 0 market-cap screening must only use explicitly named
+    # shares-outstanding fields or a ratio derived from official SimFin per-share metrics.
+    by_date: dict[str, tuple[str, SharesOutstandingSnapshot]] = {}
+    grouped_rows: dict[tuple[str, str, str], list[tuple[str, Mapping[str, object]]]] = {}
     for row in rows:
         availability_date = str(row.get("availability_date") or "").strip()
         if not availability_date:
@@ -1430,14 +1456,57 @@ def _extract_shares_outstanding_snapshots(
         raw = _decode_raw_row_payload(row.get("raw_json") or row.get("raw"))
         if not raw:
             continue
-        shares_outstanding = _read_numeric(raw, _SHARES_OUTSTANDING_KEYS)
+        report_date = str(row.get("report_date") or raw.get("Report Date") or "").strip()
+        fiscal_year = str(
+            row.get("fiscal_year") or raw.get("Fiscal Year") or raw.get("fiscalYear") or ""
+        ).strip()
+        fiscal_period = str(
+            row.get("fiscal_period")
+            or raw.get("Fiscal Period")
+            or raw.get("fiscalPeriod")
+            or ""
+        ).strip()
+        group_key = (report_date or availability_date, fiscal_year, fiscal_period)
+        grouped_rows.setdefault(group_key, []).append((availability_date, raw))
+
+    for (report_date, _, _), period_rows in grouped_rows.items():
+        merged_payload: dict[str, object] = {}
+        availability_date = ""
+        for row_availability_date, raw in period_rows:
+            merged_payload.update(raw)
+            availability_date = max(availability_date, row_availability_date)
+        shares_outstanding = _read_numeric(merged_payload, _SHARES_OUTSTANDING_KEYS)
+        if shares_outstanding is None or shares_outstanding <= 0.0:
+            shares_outstanding = _derive_shares_outstanding_from_simfin_metrics(merged_payload)
         if shares_outstanding is None or shares_outstanding <= 0.0:
             continue
-        by_date[availability_date] = SharesOutstandingSnapshot(
+        current = by_date.get(availability_date)
+        snapshot = SharesOutstandingSnapshot(
             availability_date=availability_date,
             shares_outstanding=shares_outstanding,
         )
-    return [by_date[as_of_date] for as_of_date in sorted(by_date)]
+        if current is None or report_date >= current[0]:
+            by_date[availability_date] = (report_date, snapshot)
+    return [snapshot for _, snapshot in (by_date[as_of_date] for as_of_date in sorted(by_date))]
+
+
+def _derive_shares_outstanding_from_simfin_metrics(
+    raw: Mapping[str, object],
+) -> float | None:
+    """Infer a raw share count from SimFin numerator/per-share metric pairs."""
+    ratio_pairs = (
+        (_NET_INCOME_TO_COMMON_KEYS, _BASIC_EPS_KEYS),
+        (_REVENUE_KEYS, _SALES_PER_SHARE_KEYS),
+        (_FREE_CASH_FLOW_KEYS, _FREE_CASH_FLOW_PER_SHARE_KEYS),
+        (_EQUITY_KEYS, _EQUITY_PER_SHARE_KEYS),
+    )
+    for numerator_keys, per_share_keys in ratio_pairs:
+        numerator = _read_numeric(raw, numerator_keys)
+        per_share_value = _read_numeric(raw, per_share_keys)
+        shares_outstanding = _positive_finite_ratio(numerator, per_share_value)
+        if shares_outstanding is not None:
+            return shares_outstanding
+    return None
 
 
 def _require_price_coverage_for_eligible_universe(
@@ -1788,6 +1857,21 @@ def _read_numeric(row: Mapping[str, object], keys: Sequence[str]) -> float | Non
         if candidate == candidate and candidate not in {float("inf"), float("-inf")}:
             return candidate
     return None
+
+
+def _positive_finite_ratio(
+    numerator: float | None,
+    denominator: float | None,
+) -> float | None:
+    """Return a positive finite ratio when both inputs define one."""
+    if numerator is None or denominator in (None, 0.0):
+        return None
+    candidate = numerator / denominator
+    if candidate <= 0.0:
+        return None
+    if candidate != candidate or candidate in {float("inf"), float("-inf")}:
+        return None
+    return candidate
 
 
 def _validate_date_window(from_date: date, to_date: date) -> None:
