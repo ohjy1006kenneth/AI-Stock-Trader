@@ -47,6 +47,12 @@ _REPO_ROOT = _resolve_repo_root()
 sys.path.insert(0, str(_REPO_ROOT))
 
 from core.features.io import parquet_bytes_to_feature_records  # noqa: E402
+from core.features.regime_detection import (  # noqa: E402
+    HMM_REGIME_COLUMNS,
+    REGIME_LABELS,
+    REGIME_PROBABILITY_COLUMNS,
+    REGIME_PROBABILITY_SUM_TOLERANCE,
+)
 from services.r2.paths import (  # noqa: E402
     layer1_feature_path,
     layer1_news_preprocessing_path,
@@ -115,6 +121,12 @@ class Layer1ValidationReport:
     skipped_dates: list[dict[str, object]] = field(default_factory=list)
     output_prefixes: dict[str, str] = field(default_factory=dict)
     leakage_spot_checks: list[dict[str, object]] = field(default_factory=list)
+    regime_validation_status: str = "not_checked"
+    layer2_regime_required_dates: list[str] = field(default_factory=list)
+    layer2_regime_optional_dates: list[str] = field(default_factory=list)
+    regime_diagnostics_by_date: dict[str, dict[str, object]] = field(default_factory=dict)
+    regime_failures: list[dict[str, object]] = field(default_factory=list)
+    regime_warnings: list[dict[str, object]] = field(default_factory=list)
     ready_for_layer2: bool = False
 
     def to_dict(self) -> dict:
@@ -173,6 +185,7 @@ def validate_layer1_archive(
     foreign_ticker_rows: dict[str, list[str]] = {}
     skipped_tickers: list[dict[str, object]] = []
     skipped_dates: list[dict[str, object]] = []
+    feature_rows_by_ticker_date: dict[tuple[str, str], FeatureRecord] = {}
 
     for ticker, expected_dates in sorted(expected_dates_by_ticker.items()):
         key = layer1_ticker_history_path(ticker)
@@ -222,6 +235,7 @@ def validate_layer1_archive(
             if record.date in expected_dates:
                 ticker_dates.append(record.date)
                 date_counts[record.date] = date_counts.get(record.date, 0) + 1
+                feature_rows_by_ticker_date.setdefault((ticker, record.date), record)
 
         actual_dates = set(ticker_dates)
         missing_dates = sorted(expected_dates - actual_dates)
@@ -277,6 +291,21 @@ def validate_layer1_archive(
     )
     if any(check["status"] == "fail" for check in leakage_spot_checks):
         ready = False
+    (
+        regime_status,
+        layer2_regime_required_dates,
+        layer2_regime_optional_dates,
+        regime_diagnostics_by_date,
+        regime_failures,
+        regime_warnings,
+    ) = _validate_regime_handoff(
+        run_id=run_id,
+        universe=universe,
+        feature_rows_by_ticker_date=feature_rows_by_ticker_date,
+        reader=reader,
+    )
+    if regime_failures or regime_warnings:
+        ready = False
     manifest_state = _empty_manifest_inspection()
     if require_completed_manifest or inspect_related_manifests:
         manifest_state = _inspect_layer1_manifests(
@@ -286,11 +315,14 @@ def validate_layer1_archive(
         )
     if manifest_state.manifest_errors:
         ready = False
+    validation_status = "completed" if ready else "failed"
+    if not ready and not missing and not schema_failures and not row_count_failures and not manifest_state.manifest_errors and not any(check["status"] == "fail" for check in leakage_spot_checks) and regime_warnings and not regime_failures:
+        validation_status = "warning"
     return Layer1ValidationReport(
         run_id=run_id,
         from_date=from_date,
         to_date=to_date,
-        validation_status="completed" if ready else "failed",
+        validation_status=validation_status,
         expected_ticker_files=expected_files,
         present_ticker_files=present_files,
         expected_rows=expected_rows,
@@ -318,6 +350,12 @@ def validate_layer1_archive(
         skipped_dates=skipped_dates,
         output_prefixes=dict(output_prefixes or {}),
         leakage_spot_checks=leakage_spot_checks,
+        regime_validation_status=regime_status,
+        layer2_regime_required_dates=layer2_regime_required_dates,
+        layer2_regime_optional_dates=layer2_regime_optional_dates,
+        regime_diagnostics_by_date=regime_diagnostics_by_date,
+        regime_failures=regime_failures,
+        regime_warnings=regime_warnings,
         ready_for_layer2=ready,
     )
 
@@ -579,6 +617,336 @@ def _build_leakage_spot_checks(
             "failures": failures,
         }
     ]
+
+
+def _validate_regime_handoff(
+    *,
+    run_id: str,
+    universe: Mapping[str, Sequence[str]],
+    feature_rows_by_ticker_date: Mapping[tuple[str, str], FeatureRecord],
+    reader: ArchiveReader,
+) -> tuple[
+    str,
+    list[str],
+    list[str],
+    dict[str, dict[str, object]],
+    list[dict[str, object]],
+    list[dict[str, object]],
+]:
+    """Validate Layer 1 regime completeness against Layer 1.5 diagnostics."""
+    if not _has_regime_validation_evidence(
+        run_id=run_id,
+        universe=universe,
+        feature_rows_by_ticker_date=feature_rows_by_ticker_date,
+        reader=reader,
+    ):
+        return ("not_checked", [], [], {}, [], [])
+    diagnostics_by_date: dict[str, dict[str, object]] = {}
+    regime_failures: list[dict[str, object]] = []
+    regime_warnings: list[dict[str, object]] = []
+    required_dates: list[str] = []
+    optional_dates: list[str] = []
+
+    for date_text, tickers in sorted(universe.items()):
+        diagnostic = _load_regime_diagnostic(run_id=run_id, date_text=date_text, reader=reader)
+        diagnostics_by_date[date_text] = diagnostic
+        if bool(diagnostic.get("required_for_layer2")):
+            required_dates.append(date_text)
+        else:
+            optional_dates.append(date_text)
+        if diagnostic["status"] == "failure":
+            regime_failures.append(diagnostic)
+            continue
+
+        explicit_null_tickers: list[str] = []
+        for ticker in sorted({_normalize_ticker(value) for value in tickers}):
+            record = feature_rows_by_ticker_date.get((ticker, date_text))
+            if record is None:
+                continue
+            presence = _inspect_regime_feature_presence(record.features)
+            if diagnostic["status"] == "ready":
+                if presence["state"] != "full":
+                    regime_failures.append(
+                        {
+                            "date": date_text,
+                            "ticker": ticker,
+                            "status": "failure",
+                            "reason": "required_regime_fields_missing",
+                            "required_for_layer2": True,
+                            "missing_keys": presence["missing_keys"],
+                        }
+                    )
+                    continue
+                value_errors = _regime_value_errors(
+                    date_text=date_text,
+                    ticker=ticker,
+                    features=record.features,
+                )
+                if value_errors:
+                    regime_failures.append(
+                        {
+                            "date": date_text,
+                            "ticker": ticker,
+                            "status": "failure",
+                            "reason": "invalid_regime_values",
+                            "required_for_layer2": True,
+                            "errors": value_errors,
+                        }
+                    )
+            else:
+                if presence["missing_keys"]:
+                    regime_failures.append(
+                        {
+                            "date": date_text,
+                            "ticker": ticker,
+                            "status": "failure",
+                            "reason": "regime_placeholder_keys_missing",
+                            "required_for_layer2": False,
+                            "missing_keys": presence["missing_keys"],
+                        }
+                    )
+                    continue
+                if presence["state"] == "partial":
+                    regime_failures.append(
+                        {
+                            "date": date_text,
+                            "ticker": ticker,
+                            "status": "failure",
+                            "reason": "regime_warning_rows_must_use_explicit_nulls",
+                            "required_for_layer2": False,
+                        }
+                    )
+                    continue
+                if presence["state"] == "full":
+                    regime_failures.append(
+                        {
+                            "date": date_text,
+                            "ticker": ticker,
+                            "status": "failure",
+                            "reason": "regime_row_conflicts_with_warning_diagnostic",
+                            "required_for_layer2": False,
+                        }
+                    )
+                    continue
+                explicit_null_tickers.append(ticker)
+        if diagnostic["status"] == "warning" and explicit_null_tickers:
+            regime_warnings.append(
+                {
+                    "date": date_text,
+                    "status": "warning",
+                    "reason": diagnostic.get("reason"),
+                    "required_for_layer2": False,
+                    "ticker_count": len(explicit_null_tickers),
+                    "tickers": explicit_null_tickers[:20],
+                    "complete_training_rows": diagnostic.get("complete_training_rows"),
+                    "min_training_rows": diagnostic.get("min_training_rows"),
+                    "missing_features": diagnostic.get("missing_features"),
+                }
+            )
+
+    status = "completed"
+    if regime_failures:
+        status = "failed"
+    elif regime_warnings:
+        status = "warning"
+    return (
+        status,
+        required_dates,
+        optional_dates,
+        diagnostics_by_date,
+        regime_failures,
+        regime_warnings,
+    )
+
+
+def _has_regime_validation_evidence(
+    *,
+    run_id: str,
+    universe: Mapping[str, Sequence[str]],
+    feature_rows_by_ticker_date: Mapping[tuple[str, str], FeatureRecord],
+    reader: ArchiveReader,
+) -> bool:
+    """Return True when the archive contains regime artifacts or regime feature keys."""
+    for record in feature_rows_by_ticker_date.values():
+        if any(name in record.features for name in HMM_REGIME_COLUMNS[1:]):
+            return True
+    for date_text in universe:
+        if reader.exists(layer1_regime_path(f"{run_id}-{date_text}")):
+            return True
+    return False
+
+
+def _load_regime_diagnostic(
+    *,
+    run_id: str,
+    date_text: str,
+    reader: ArchiveReader,
+) -> dict[str, object]:
+    """Load one Layer 1.5 regime artifact row and normalize its readiness diagnostics."""
+    stage_run_id = f"{run_id}-{date_text}"
+    output_key = layer1_regime_path(stage_run_id)
+    manifest_key = pipeline_manifest_path("layer1_5_regime", stage_run_id)
+    diagnostic: dict[str, object] = {
+        "date": date_text,
+        "status": "failure",
+        "reason": "missing_regime_output",
+        "required_for_layer2": False,
+        "output_key": output_key,
+        "manifest_key": manifest_key,
+    }
+    if not reader.exists(output_key):
+        return diagnostic
+
+    frame = _read_parquet_frame(reader.get_object(output_key))
+    missing = sorted(set(HMM_REGIME_COLUMNS) - set(frame.columns))
+    if missing:
+        diagnostic["reason"] = "regime_output_missing_columns"
+        diagnostic["missing_columns"] = missing
+        return diagnostic
+    rows = frame[frame["date"].astype(str) == date_text].reset_index(drop=True)
+    if len(rows) != 1:
+        diagnostic["reason"] = "regime_output_row_count_mismatch"
+        diagnostic["row_count"] = len(rows)
+        return diagnostic
+
+    row = rows.iloc[0].to_dict()
+    required_for_layer2 = bool(row.get("regime_required_for_layer2"))
+    if "regime_required_for_layer2" not in row:
+        required_for_layer2 = _row_has_populated_regime_values(row)
+    missing_features = _split_csv_values(row.get("regime_missing_features"))
+    diagnostic.update(
+        {
+            "status": str(row.get("regime_readiness_status") or ("ready" if required_for_layer2 else "warning")),
+            "reason": str(
+                row.get("regime_readiness_reason")
+                or ("ready" if required_for_layer2 else "legacy_missing_diagnostics")
+            ),
+            "required_for_layer2": required_for_layer2,
+            "missing_features": missing_features,
+            "complete_training_rows": _safe_int(row.get("complete_training_rows")),
+            "min_training_rows": _safe_int(row.get("min_training_rows")),
+            "probability_sum": _safe_float(row.get("regime_probability_sum")),
+        }
+    )
+    if required_for_layer2 and not _row_has_populated_regime_values(row):
+        diagnostic["status"] = "failure"
+        diagnostic["reason"] = "required_regime_output_is_null"
+    return diagnostic
+
+
+def _inspect_regime_feature_presence(features: Mapping[str, object]) -> dict[str, object]:
+    """Summarize whether the expected regime keys are present and null/non-null."""
+    missing_keys = [
+        name for name in HMM_REGIME_COLUMNS[1:] if name not in features
+    ]
+    values = [features.get(name) for name in HMM_REGIME_COLUMNS[1:]]
+    populated = [_normalize_optional_value(value) is not None for value in values]
+    if missing_keys:
+        state = "missing"
+    elif all(populated):
+        state = "full"
+    elif not any(populated):
+        state = "none"
+    else:
+        state = "partial"
+    return {"state": state, "missing_keys": missing_keys}
+
+
+def _regime_value_errors(
+    *,
+    date_text: str,
+    ticker: str,
+    features: Mapping[str, object],
+) -> list[str]:
+    """Return validation errors for one fully populated ticker-day regime feature set."""
+    errors: list[str] = []
+    label = str(features.get("regime_label")).strip().lower()
+    if label not in REGIME_LABELS:
+        errors.append(f"{ticker}/{date_text}: invalid regime_label={label!r}")
+        return errors
+    confidence = _safe_float(features.get("regime_confidence"))
+    probabilities = {
+        label_name: _safe_float(features.get(column_name))
+        for label_name, column_name in zip(REGIME_LABELS, REGIME_PROBABILITY_COLUMNS, strict=True)
+    }
+    if confidence is None or any(value is None for value in probabilities.values()):
+        errors.append(f"{ticker}/{date_text}: regime fields must be populated together")
+        return errors
+    if confidence < 0.0 or confidence > 1.0:
+        errors.append(f"{ticker}/{date_text}: regime_confidence out of range")
+    if any(value < 0.0 or value > 1.0 for value in probabilities.values()):
+        errors.append(f"{ticker}/{date_text}: regime probabilities out of range")
+    probability_sum = sum(probabilities.values())
+    if abs(probability_sum - 1.0) > REGIME_PROBABILITY_SUM_TOLERANCE:
+        errors.append(
+            f"{ticker}/{date_text}: regime probabilities sum to {probability_sum:.6f}"
+        )
+    max_label = max(probabilities, key=probabilities.get)
+    if label != max_label:
+        errors.append(
+            f"{ticker}/{date_text}: regime_label={label!r} does not match max probability"
+        )
+    if abs(confidence - probabilities[label]) > REGIME_PROBABILITY_SUM_TOLERANCE:
+        errors.append(
+            f"{ticker}/{date_text}: regime_confidence does not match regime_prob_{label}"
+        )
+    return errors
+
+
+def _read_parquet_frame(payload: bytes):
+    """Read a parquet payload into a pandas DataFrame."""
+    try:
+        import pandas as pd
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            "pandas and pyarrow are required to read Layer 1 parquet payloads."
+        ) from exc
+    return pd.read_parquet(io.BytesIO(payload))
+
+
+def _row_has_populated_regime_values(row: Mapping[str, object]) -> bool:
+    """Return True when a regime artifact row is fully populated."""
+    values = [_normalize_optional_value(row.get(name)) for name in HMM_REGIME_COLUMNS[1:]]
+    return all(value is not None for value in values)
+
+
+def _normalize_optional_value(value: object) -> object | None:
+    """Normalize common null-like feature values to None."""
+    numeric = _safe_float(value)
+    if numeric is not None:
+        return numeric
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
+
+
+def _safe_float(value: object) -> float | None:
+    """Return a finite float or None when the value is null-like."""
+    if value is None:
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if numeric != numeric:
+        return None
+    return numeric
+
+
+def _safe_int(value: object) -> int | None:
+    """Return an integer when coercion is lossless enough for diagnostics."""
+    numeric = _safe_float(value)
+    if numeric is None:
+        return None
+    return int(numeric)
+
+
+def _split_csv_values(value: object) -> list[str]:
+    """Return a normalized list from a comma-delimited diagnostic string."""
+    if value is None:
+        return []
+    return [item for item in str(value).split(",") if item]
 
 
 def _inspect_layer1_manifests(

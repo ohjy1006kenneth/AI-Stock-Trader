@@ -14,14 +14,18 @@ if TYPE_CHECKING:
     import pandas as pd
 
 REGIME_LABELS: tuple[str, str, str] = ("bear", "sideways", "bull")
-HMM_REGIME_FEATURE_COLUMNS: tuple[str, ...] = (
-    "regime_label",
-    "regime_confidence",
+REGIME_PROBABILITY_COLUMNS: tuple[str, ...] = (
     "regime_prob_bear",
     "regime_prob_sideways",
     "regime_prob_bull",
 )
+HMM_REGIME_FEATURE_COLUMNS: tuple[str, ...] = (
+    "regime_label",
+    "regime_confidence",
+    *REGIME_PROBABILITY_COLUMNS,
+)
 HMM_REGIME_COLUMNS: tuple[str, ...] = ("date", *HMM_REGIME_FEATURE_COLUMNS)
+REGIME_PROBABILITY_SUM_TOLERANCE = 1e-4
 
 
 @dataclass(frozen=True)
@@ -67,6 +71,35 @@ class HMMRegimeModel:
     label_by_state: tuple[str, ...]
     log_likelihood: float
     iterations: int
+
+
+@dataclass(frozen=True)
+class HMMRegimeReadiness:
+    """Readiness summary for one bounded HMM training/inference window."""
+
+    feature_columns: tuple[str, ...]
+    dropped_feature_columns: tuple[str, ...]
+    training_rows: int
+    complete_training_rows: int
+    min_training_rows: int
+    inference_dates: tuple[str, ...]
+    complete_inference_dates: tuple[str, ...]
+    incomplete_inference_feature_gaps: dict[str, tuple[str, ...]]
+
+    @property
+    def has_active_feature_columns(self) -> bool:
+        """Return True when the bounded training window exposes usable features."""
+        return bool(self.feature_columns)
+
+    @property
+    def has_sufficient_training_rows(self) -> bool:
+        """Return True when the bounded train window has enough complete rows."""
+        return self.complete_training_rows >= self.min_training_rows
+
+    @property
+    def can_fit_model(self) -> bool:
+        """Return True when the HMM can be fit for this bounded window."""
+        return self.has_active_feature_columns and self.has_sufficient_training_rows
 
 
 def fit_hmm_regime_model(
@@ -118,6 +151,77 @@ def fit_hmm_regime_model(
         label_by_state=labels,
         log_likelihood=float(parameters["log_likelihood"]),
         iterations=int(parameters["iterations"]),
+    )
+
+
+def inspect_hmm_regime_readiness(
+    training_frame: pd.DataFrame,
+    *,
+    train_end_date: str,
+    inference_dates: list[str] | None = None,
+    train_start_date: str | None = None,
+    config: HMMRegimeConfig | None = None,
+    feature_columns: tuple[str, ...] = HMM_TRAINING_FEATURE_COLUMNS,
+) -> HMMRegimeReadiness:
+    """Inspect whether a bounded HMM window can emit non-null regime features."""
+    pd = _require_pandas()
+    active_config = config or HMMRegimeConfig()
+    _validate_training_frame(training_frame, feature_columns)
+    active_feature_columns = _active_feature_columns(
+        training_frame,
+        feature_columns=feature_columns,
+        train_start_date=train_start_date,
+        train_end_date=train_end_date,
+    )
+    dropped_feature_columns = tuple(
+        column for column in feature_columns if column not in active_feature_columns
+    )
+    bounded_rows = _bounded_rows(
+        training_frame,
+        train_start_date=train_start_date,
+        train_end_date=train_end_date,
+    )
+    complete_rows = (
+        bounded_rows[_complete_row_mask(bounded_rows, active_feature_columns)]
+        if active_feature_columns
+        else bounded_rows.iloc[0:0].copy()
+    )
+    infer_rows = _requested_inference_rows(
+        training_frame,
+        train_end_date=train_end_date,
+        inference_dates=inference_dates,
+    )
+    incomplete_inference_feature_gaps: dict[str, tuple[str, ...]] = {}
+    complete_inference_dates: list[str] = []
+    if len(infer_rows) > 0:
+        numeric = (
+            infer_rows.loc[:, list(active_feature_columns)].apply(pd.to_numeric, errors="coerce")
+            if active_feature_columns
+            else pd.DataFrame(index=infer_rows.index)
+        )
+        for row_index, row in infer_rows.reset_index(drop=True).iterrows():
+            date_text = str(row["date"])
+            if not active_feature_columns:
+                incomplete_inference_feature_gaps[date_text] = tuple(feature_columns)
+                continue
+            missing = tuple(
+                column
+                for column in active_feature_columns
+                if pd.isna(numeric.iloc[row_index][column])
+            )
+            if missing:
+                incomplete_inference_feature_gaps[date_text] = missing
+            else:
+                complete_inference_dates.append(date_text)
+    return HMMRegimeReadiness(
+        feature_columns=active_feature_columns,
+        dropped_feature_columns=dropped_feature_columns,
+        training_rows=len(bounded_rows),
+        complete_training_rows=len(complete_rows),
+        min_training_rows=active_config.min_training_rows,
+        inference_dates=tuple(str(value) for value in infer_rows["date"].tolist()),
+        complete_inference_dates=tuple(complete_inference_dates),
+        incomplete_inference_feature_gaps=incomplete_inference_feature_gaps,
     )
 
 
@@ -200,6 +304,59 @@ def regime_features_to_records(features: pd.DataFrame) -> list[FeatureRecord]:
             )
         )
     return records
+
+
+def validate_hmm_regime_probabilities(
+    features: pd.DataFrame,
+    *,
+    tolerance: float = REGIME_PROBABILITY_SUM_TOLERANCE,
+) -> list[str]:
+    """Return validation errors for populated HMM regime rows."""
+    _validate_regime_feature_frame(features)
+    errors: list[str] = []
+    for row in features.to_dict(orient="records"):
+        date_text = str(row["date"])
+        label = _normalize_optional_string(row.get("regime_label"))
+        confidence = _normalize_optional_float(row.get("regime_confidence"))
+        probabilities = {
+            label_name: _normalize_optional_float(row.get(column_name))
+            for label_name, column_name in zip(
+                REGIME_LABELS,
+                REGIME_PROBABILITY_COLUMNS,
+                strict=True,
+            )
+        }
+        present_count = sum(
+            value is not None for value in (label, confidence, *probabilities.values())
+        )
+        if present_count == 0:
+            continue
+        if present_count != len(HMM_REGIME_FEATURE_COLUMNS):
+            errors.append(f"{date_text}: partially populated regime fields")
+            continue
+        if label not in REGIME_LABELS:
+            errors.append(f"{date_text}: invalid regime label {label!r}")
+            continue
+        if confidence is None or any(value is None for value in probabilities.values()):
+            errors.append(f"{date_text}: regime fields must be fully populated or fully null")
+            continue
+        if confidence < 0.0 or confidence > 1.0:
+            errors.append(f"{date_text}: regime_confidence out of range")
+        if any(value < 0.0 or value > 1.0 for value in probabilities.values()):
+            errors.append(f"{date_text}: regime probabilities out of range")
+        probability_sum = sum(probabilities.values())
+        if abs(probability_sum - 1.0) > tolerance:
+            errors.append(f"{date_text}: regime probabilities sum to {probability_sum:.6f}")
+        max_label = max(probabilities, key=probabilities.get)
+        if label != max_label:
+            errors.append(
+                f"{date_text}: regime_label={label!r} does not match max probability {max_label!r}"
+            )
+        if abs(confidence - probabilities[label]) > tolerance:
+            errors.append(
+                f"{date_text}: regime_confidence does not match regime_prob_{label}"
+            )
+    return errors
 
 
 def _fit_gaussian_hmm(
@@ -465,6 +622,20 @@ def _bounded_complete_rows(
     return rows.sort_values("date").reset_index(drop=True)
 
 
+def _bounded_rows(
+    training_frame: pd.DataFrame,
+    *,
+    train_start_date: str | None,
+    train_end_date: str,
+) -> pd.DataFrame:
+    """Return all bounded training rows before completeness filtering."""
+    rows = training_frame.copy()
+    if train_start_date is not None:
+        rows = rows[rows["date"] >= train_start_date]
+    rows = rows[rows["date"] < train_end_date]
+    return rows.sort_values("date").reset_index(drop=True)
+
+
 def _active_feature_columns(
     training_frame: pd.DataFrame,
     *,
@@ -511,6 +682,28 @@ def _inference_rows(
     else:
         requested_dates = sorted(set(inference_dates))
         invalid = [date for date in requested_dates if date <= model.train_end_date]
+        if invalid:
+            raise ValueError(
+                "inference_dates must be strictly after train_end_date; "
+                f"invalid dates: {invalid}"
+            )
+        rows = rows[rows["date"].isin(requested_dates)]
+    return rows.sort_values("date").reset_index(drop=True)
+
+
+def _requested_inference_rows(
+    training_frame: pd.DataFrame,
+    *,
+    train_end_date: str,
+    inference_dates: list[str] | None,
+) -> pd.DataFrame:
+    """Return requested inference rows before a fitted HMM exists."""
+    rows = training_frame.copy()
+    if inference_dates is None:
+        rows = rows[rows["date"] > train_end_date]
+    else:
+        requested_dates = sorted(set(inference_dates))
+        invalid = [date for date in requested_dates if date <= train_end_date]
         if invalid:
             raise ValueError(
                 "inference_dates must be strictly after train_end_date; "

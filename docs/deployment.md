@@ -220,6 +220,10 @@ Operational notes for the readiness report:
 - The report records the authoritative manifest key/status plus sibling stale `running`
   manifests so operators can distinguish the successful run from interrupted attempts such as
   `...-v4` or `...-v6`.
+- The same report now distinguishes regime warm-up warnings from hard data-contract failures:
+  explicit null regime placeholders are acceptable only when Layer 1.5 diagnostics say the
+  bounded HMM window is still too short, and those warnings still keep
+  `ready_for_layer2=false` until a later rerun fills the regime fields.
 
 Operational notes for Layer 0 OHLCV provenance:
 - `python app/lab/data_pipelines/validate_layer0_archive.py ...` now fails closed when the

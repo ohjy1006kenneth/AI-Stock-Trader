@@ -19,6 +19,7 @@ from app.lab.data_pipelines.validate_layer1_archive import (
 from core.contracts.schemas import FeatureRecord, PipelineManifestRecord, RunStatus
 from core.features.io import feature_records_to_parquet_bytes
 from services.r2.paths import (
+    layer1_regime_path,
     layer1_ticker_history_path,
     layer1_validation_report_path,
     pipeline_manifest_path,
@@ -70,6 +71,25 @@ def _history_bytes(ticker: str, dates: list[str]) -> bytes:
         for as_of_date in dates
     ]
     return feature_records_to_parquet_bytes(records)
+
+
+def _history_bytes_with_features(
+    ticker: str,
+    rows: list[tuple[str, dict[str, object]]],
+) -> bytes:
+    """Return a Layer 1 history payload with explicit per-date feature maps."""
+    records = [
+        FeatureRecord(date=as_of_date, ticker=ticker, features=features)
+        for as_of_date, features in rows
+    ]
+    return feature_records_to_parquet_bytes(records)
+
+
+def _regime_artifact_bytes(rows: list[dict[str, object]]) -> bytes:
+    """Return a parquet payload for one Layer 1.5 regime artifact."""
+    buffer = io.BytesIO()
+    pd.DataFrame(rows).to_parquet(buffer, index=False)
+    return buffer.getvalue()
 
 
 def _manifest_bytes(run_id: str, status: RunStatus) -> bytes:
@@ -198,6 +218,110 @@ def test_validate_layer1_archive_flags_row_count_mismatch() -> None:
     assert report.ready_for_layer2 is False
     assert report.row_count_failures == 1
     assert report.row_count_failure_keys == [layer1_ticker_history_path("AAPL")]
+
+
+def test_validate_layer1_archive_marks_short_history_regime_as_warning() -> None:
+    """Explicit null regime placeholders become warnings when HMM history is insufficient."""
+    reader = _Reader(
+        {
+            layer1_ticker_history_path("AAPL"): _history_bytes_with_features(
+                "AAPL",
+                [
+                    (
+                        "2024-01-03",
+                        {
+                            "returns_1d": 0.01,
+                            "regime_label": None,
+                            "regime_confidence": None,
+                            "regime_prob_bear": None,
+                            "regime_prob_sideways": None,
+                            "regime_prob_bull": None,
+                        },
+                    )
+                ],
+            ),
+            layer1_regime_path("layer1-warmup-2024-01-03"): _regime_artifact_bytes(
+                [
+                    {
+                        "date": "2024-01-03",
+                        "regime_label": None,
+                        "regime_confidence": float("nan"),
+                        "regime_prob_bear": float("nan"),
+                        "regime_prob_sideways": float("nan"),
+                        "regime_prob_bull": float("nan"),
+                        "regime_required_for_layer2": False,
+                        "regime_readiness_status": "warning",
+                        "regime_readiness_reason": "insufficient_training_history",
+                        "regime_missing_features": "",
+                        "regime_probability_sum": float("nan"),
+                        "training_rows": 15,
+                        "complete_training_rows": 15,
+                        "min_training_rows": 30,
+                    }
+                ]
+            ),
+        }
+    )
+
+    report = validate_layer1_archive(
+        run_id="layer1-warmup",
+        from_date="2024-01-03",
+        to_date="2024-01-03",
+        universe={"2024-01-03": ["AAPL"]},
+        reader=reader,
+    )
+
+    assert report.ready_for_layer2 is False
+    assert report.validation_status == "warning"
+    assert report.regime_validation_status == "warning"
+    assert report.layer2_regime_optional_dates == ["2024-01-03"]
+    assert report.regime_failures == []
+    assert report.regime_warnings[0]["reason"] == "insufficient_training_history"
+
+
+def test_validate_layer1_archive_fails_when_required_regime_fields_are_missing() -> None:
+    """Null or absent regime fields fail readiness once Layer 1.5 says they are required."""
+    reader = _Reader(
+        {
+            layer1_ticker_history_path("AAPL"): _history_bytes_with_features(
+                "AAPL",
+                [("2024-01-03", {"returns_1d": 0.01})],
+            ),
+            layer1_regime_path("layer1-required-regime-2024-01-03"): _regime_artifact_bytes(
+                [
+                    {
+                        "date": "2024-01-03",
+                        "regime_label": "bull",
+                        "regime_confidence": 0.8,
+                        "regime_prob_bear": 0.1,
+                        "regime_prob_sideways": 0.1,
+                        "regime_prob_bull": 0.8,
+                        "regime_required_for_layer2": True,
+                        "regime_readiness_status": "ready",
+                        "regime_readiness_reason": "ready",
+                        "regime_missing_features": "",
+                        "regime_probability_sum": 1.0,
+                        "training_rows": 40,
+                        "complete_training_rows": 40,
+                        "min_training_rows": 30,
+                    }
+                ]
+            ),
+        }
+    )
+
+    report = validate_layer1_archive(
+        run_id="layer1-required-regime",
+        from_date="2024-01-03",
+        to_date="2024-01-03",
+        universe={"2024-01-03": ["AAPL"]},
+        reader=reader,
+    )
+
+    assert report.ready_for_layer2 is False
+    assert report.validation_status == "failed"
+    assert report.layer2_regime_required_dates == ["2024-01-03"]
+    assert report.regime_failures[0]["reason"] == "required_regime_fields_missing"
 
 
 def test_validate_layer1_archive_rejects_non_iso_dates() -> None:

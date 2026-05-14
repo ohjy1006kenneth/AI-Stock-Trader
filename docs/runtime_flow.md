@@ -121,6 +121,10 @@ Execution chain:
    - Run final archive validation, persist the JSON report under
      `artifacts/reports/integration/layer1_archive_validation_{run_id}_{from}_to_{to}.json`,
      and return nonzero unless `ready_for_layer2=true`
+   - Validation distinguishes hard failures from regime warm-up warnings: explicit null
+     regime placeholders are allowed only when Layer 1.5 diagnostics show insufficient
+     bounded history, but that still leaves `ready_for_layer2=false` until a later rerun
+     produces non-null regime fields
    - Write `PipelineManifestRecord` (stage=layer1, statuses: running/completed/failed)
    - Modal runner entrypoints:
      `run_news_preprocessing.py`, `run_text_topics.py`, `run_finbert_sentiment.py`,
@@ -159,6 +163,10 @@ python app/lab/data_pipelines/validate_layer1_archive.py \
    - Run HMM to classify current regime (bull / bear / sideways)
    - Write market-wide regime probabilities to `features/layer1_5/regime/{run_id}.parquet`
    - Write `PipelineManifestRecord` (stage=layer1_5_regime)
+   - If the bounded HMM train window is too short or the inference row is still incomplete,
+     write explicit warning diagnostics plus null regime placeholders rather than failing
+     closed inside Layer 1.5 itself; the downstream Layer 1 validator then blocks Layer 2
+     handoff until a rerun has enough history
    - Layer 1 feature assembly broadcasts the regime label/probabilities onto ticker rows
 
 4. **Layer 2 inference** (Modal)
