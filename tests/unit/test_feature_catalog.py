@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from core.features.catalog import feature_catalog, validate_feature_value
+from core.features.order_book_features import ORDER_BOOK_FEATURE_COLUMNS
 from core.features.sector_features import SECTOR_FEATURE_COLUMNS
 
 
@@ -24,3 +25,26 @@ def test_sector_relative_strength_has_bounded_catalog_rule() -> None:
     assert validate_feature_value("sector_relative_strength", -0.01, rule) is not None
     assert validate_feature_value("sector_relative_strength", 1.01, rule) is not None
     assert validate_feature_value("sector_relative_strength", 0.5, rule) is None
+
+
+def test_feature_catalog_registers_optional_order_book_features() -> None:
+    """Order-book columns remain optional and use bounded numeric rules."""
+    catalog = feature_catalog()
+
+    for feature_name in ORDER_BOOK_FEATURE_COLUMNS:
+        assert feature_name in catalog
+        assert catalog[feature_name].owner == "order_book"
+        assert catalog[feature_name].required is False
+
+    assert (
+        validate_feature_value("l2_bid_ask_spread", -0.01, catalog["l2_bid_ask_spread"])
+        is not None
+    )
+    assert (
+        validate_feature_value("l2_book_imbalance", 1.1, catalog["l2_book_imbalance"])
+        is not None
+    )
+    assert (
+        validate_feature_value("l2_book_imbalance", 0.2, catalog["l2_book_imbalance"])
+        is None
+    )

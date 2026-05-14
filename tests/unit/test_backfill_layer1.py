@@ -20,6 +20,7 @@ from app.lab.data_pipelines.backfill_layer1 import (
 )
 from core.contracts.schemas import FeatureRecord, PipelineManifestRecord, RunStatus
 from core.features.io import feature_records_to_parquet_bytes, read_feature_records
+from services.order_book.config import OrderBookFeatureConfig
 from services.r2.client import (
     R2_ACCESS_KEY_ENV,
     R2_BUCKET_ENV,
@@ -34,6 +35,7 @@ from services.r2.paths import (
     pipeline_manifest_path,
     raw_fundamentals_path,
     raw_macro_path,
+    raw_order_book_path,
     raw_price_path,
 )
 from services.r2.writer import R2Writer
@@ -313,6 +315,58 @@ def test_backfill_layer1_merges_optional_branch_outputs_into_final_histories(
     assert by_date["2024-01-02"]["nlp_dominant_topic_id"] == 7
     assert by_date["2024-01-02"]["regime_label"] == "bull"
     assert by_date["2024-01-04"]["regime_prob_bear"] == 0.90
+
+
+def test_backfill_layer1_adds_optional_order_book_features_with_null_fallbacks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Historical Layer 1 assembly stays stable when order-book coverage is partial."""
+    writer = _local_writer(tmp_path, monkeypatch)
+    _write_synthetic_ohlcv(writer, "AAPL", num_bars=3)
+    _write_synthetic_ohlcv(writer, "SPY", num_bars=3)
+    _write_empty_macro_shard(writer)
+    _write_empty_fundamentals(writer, "AAPL")
+    archive = pd.DataFrame(
+        [
+            {
+                "date": "2024-01-02",
+                "ticker": "AAPL",
+                "captured_at": "2024-01-02T14:25:00+00:00",
+                "bid_price": 100.01,
+                "ask_price": 100.06,
+                "bid_size": 700,
+                "ask_size": 300,
+            }
+        ]
+    )
+    buffer = io.BytesIO()
+    archive.to_parquet(buffer, index=False)
+    writer.put_object(raw_order_book_path("alpaca", "2024-01-02"), buffer.getvalue())
+    monkeypatch.setattr(
+        "app.lab.data_pipelines.backfill_layer1.load_order_book_feature_config",
+        lambda: OrderBookFeatureConfig(enabled=True, provider="alpaca"),
+    )
+
+    backfill_layer1(
+        Layer1BackfillConfig(run_id="layer1-order-book", tickers=("AAPL",)),
+        writer=writer,
+    )
+
+    records = read_feature_records("AAPL", writer=writer)
+    by_date = {record.date: record.features for record in records}
+    manifest = PipelineManifestRecord.model_validate_json(
+        writer.get_object(
+            pipeline_manifest_path(LAYER1_BACKFILL_STAGE, "layer1-order-book")
+        )
+    )
+
+    assert by_date["2024-01-02"]["l2_bid_ask_spread"] == pytest.approx(0.05)
+    assert by_date["2024-01-02"]["l2_snapshot_count"] == 1
+    assert by_date["2024-01-03"]["l2_bid_ask_spread"] is None
+    assert by_date["2024-01-03"]["l2_snapshot_count"] == 0
+    assert manifest.metadata["order_book_enabled"] is True
+    assert manifest.metadata["order_book_provider"] == "alpaca"
 
 
 def test_backfill_layer1_skips_tickers_with_no_ohlcv(

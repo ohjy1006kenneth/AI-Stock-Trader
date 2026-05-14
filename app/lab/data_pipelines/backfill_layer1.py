@@ -51,10 +51,15 @@ from core.features.loaders import (  # noqa: E402
     load_fundamentals_frame,
     load_macro_frame,
     load_ohlcv_frame,
+    load_order_book_frame,
 )
 from core.features.market_features import (  # noqa: E402
     compute_market_features,
     market_features_to_records,
+)
+from core.features.order_book_features import (  # noqa: E402
+    compute_order_book_features,
+    order_book_features_to_records,
 )
 from core.features.regime_detection import HMM_REGIME_FEATURE_COLUMNS  # noqa: E402
 from core.features.sector_features import (  # noqa: E402
@@ -62,7 +67,13 @@ from core.features.sector_features import (  # noqa: E402
     load_sector_etf_config,
     sector_features_to_records,
 )
-from services.r2.paths import build_r2_key, layer1_regime_path, pipeline_manifest_path  # noqa: E402
+from services.order_book.config import load_order_book_feature_config  # noqa: E402
+from services.r2.paths import (  # noqa: E402
+    build_r2_key,
+    layer1_regime_path,
+    pipeline_manifest_path,
+    raw_order_book_path,
+)
 from services.r2.writer import R2Writer  # noqa: E402
 
 LAYER1_BACKFILL_STAGE = "layer1_backfill"
@@ -126,6 +137,18 @@ class OptionalRegimeBranch:
     features_by_date: dict[str, dict[str, object]]
     covered_dates: frozenset[str]
     artifact_keys: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class OptionalOrderBookBranch:
+    """Loaded order-book FeatureRecords keyed by ticker."""
+
+    enabled: bool
+    provider: str | None
+    records_by_ticker: dict[str, tuple[FeatureRecord, ...]]
+    covered_dates: frozenset[str]
+    archive_keys: tuple[str, ...]
+    missing_dates: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -200,6 +223,14 @@ def backfill_layer1(
         covered_dates=frozenset(),
         artifact_keys=(),
     )
+    order_book_branch = OptionalOrderBookBranch(
+        enabled=False,
+        provider=None,
+        records_by_ticker={},
+        covered_dates=frozenset(),
+        archive_keys=(),
+        missing_dates=(),
+    )
     try:
         sentiment_branch = _load_optional_feature_branch(
             writer=active_writer,
@@ -243,6 +274,10 @@ def backfill_layer1(
                 sector_config=sector_config,
             ).items()
         }
+        order_book_branch = _load_optional_order_book_branch(
+            writer=active_writer,
+            ohlcv_by_ticker=ohlcv_by_ticker,
+        )
 
         for ticker in config.tickers:
             if ticker not in ohlcv_by_ticker:
@@ -301,6 +336,17 @@ def backfill_layer1(
             if topic_input is not None:
                 inputs.append(topic_input)
 
+            order_book_input = _optional_branch_input(
+                name="order_book",
+                records=_records_for_ticker_branch(
+                    order_book_branch,
+                    ticker=ticker,
+                    allowed_dates=ticker_dates,
+                ),
+            )
+            if order_book_input is not None:
+                inputs.append(order_book_input)
+
             regime_input = _optional_branch_input(
                 name="regime",
                 records=_regime_records_for_ticker(
@@ -322,6 +368,7 @@ def backfill_layer1(
         missing_regime_dates = _missing_branch_dates(processed_dates, regime_branch.covered_dates)
         _log_missing_optional_branch_dates("sentiment", missing_sentiment_dates)
         _log_missing_optional_branch_dates("topics", missing_topic_dates)
+        _log_missing_optional_branch_dates("order_book", order_book_branch.missing_dates)
         _log_missing_optional_branch_dates("regime", missing_regime_dates)
 
         finished = (now or datetime.now(UTC)).replace(microsecond=0)
@@ -338,6 +385,10 @@ def backfill_layer1(
                 "benchmark_ticker": config.benchmark_ticker,
                 "sentiment_artifacts_loaded": len(sentiment_branch.artifact_keys),
                 "topic_artifacts_loaded": len(topic_branch.artifact_keys),
+                "order_book_enabled": order_book_branch.enabled,
+                "order_book_provider": order_book_branch.provider,
+                "order_book_artifacts_loaded": len(order_book_branch.archive_keys),
+                "missing_order_book_dates": len(order_book_branch.missing_dates),
                 "regime_artifacts_loaded": len(regime_branch.artifact_keys),
                 "missing_sentiment_dates": len(missing_sentiment_dates),
                 "missing_topic_dates": len(missing_topic_dates),
@@ -374,6 +425,9 @@ def backfill_layer1(
                 "benchmark_ticker": config.benchmark_ticker,
                 "sentiment_artifacts_loaded": len(sentiment_branch.artifact_keys),
                 "topic_artifacts_loaded": len(topic_branch.artifact_keys),
+                "order_book_enabled": order_book_branch.enabled,
+                "order_book_provider": order_book_branch.provider,
+                "order_book_artifacts_loaded": len(order_book_branch.archive_keys),
                 "regime_artifacts_loaded": len(regime_branch.artifact_keys),
             },
         )
@@ -632,7 +686,7 @@ def _validate_daily_feature_records(
 
 
 def _records_for_ticker_branch(
-    branch: OptionalFeatureBranch,
+    branch: OptionalFeatureBranch | OptionalOrderBookBranch,
     *,
     ticker: str,
     allowed_dates: frozenset[str],
@@ -723,6 +777,65 @@ def _compute_context_records(
     return context_features_to_records(features)
 
 
+def _load_optional_order_book_branch(
+    *,
+    writer: ObjectStore,
+    ohlcv_by_ticker: dict[str, object],
+) -> OptionalOrderBookBranch:
+    """Load optional order-book records for every available OHLCV date in scope."""
+    config = load_order_book_feature_config()
+    if not config.is_active or config.provider is None:
+        return OptionalOrderBookBranch(
+            enabled=False,
+            provider=config.provider,
+            records_by_ticker={},
+            covered_dates=frozenset(),
+            archive_keys=(),
+            missing_dates=(),
+        )
+
+    records_by_ticker: dict[str, list[FeatureRecord]] = {}
+    covered_dates: set[str] = set()
+    archive_keys: list[str] = []
+    missing_dates: set[str] = set()
+    date_tickers_map: dict[str, set[str]] = {}
+    for ticker, ohlcv in ohlcv_by_ticker.items():
+        for date_value in ohlcv["date"].astype(str).tolist():
+            date_tickers_map.setdefault(str(date_value), set()).add(ticker)
+
+    for date_text, tickers in sorted(date_tickers_map.items()):
+        key = raw_order_book_path(config.provider, date_text)
+        if writer.exists(key):
+            frame = load_order_book_frame(config.provider, date_text, writer=writer)
+            covered_dates.add(date_text)
+            archive_keys.append(key)
+        else:
+            frame = _empty_order_book_source_frame()
+            missing_dates.add(date_text)
+
+        day_records = order_book_features_to_records(
+            compute_order_book_features(
+                frame,
+                target_date=date_text,
+                tickers=sorted(tickers),
+            )
+        )
+        for record in day_records:
+            records_by_ticker.setdefault(record.ticker, []).append(record)
+
+    return OptionalOrderBookBranch(
+        enabled=True,
+        provider=config.provider,
+        records_by_ticker={
+            ticker: tuple(sorted(records, key=lambda record: record.date))
+            for ticker, records in sorted(records_by_ticker.items())
+        },
+        covered_dates=frozenset(covered_dates),
+        archive_keys=tuple(archive_keys),
+        missing_dates=tuple(sorted(missing_dates)),
+    )
+
+
 def _try_load_benchmark(writer: ObjectStore, ticker: str):
     """Return the benchmark OHLCV frame when available, else None."""
     try:
@@ -758,6 +871,27 @@ def _empty_fundamentals_frame(ohlcv):
             "fiscal_period",
             "raw_json",
             "earnings_date",
+        ]
+    )
+
+
+def _empty_order_book_source_frame():
+    """Return an empty provider-normalized order-book frame."""
+    try:
+        import pandas as pd
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            "pandas and pyarrow are required to build empty order-book frames."
+        ) from exc
+    return pd.DataFrame(
+        columns=[
+            "date",
+            "ticker",
+            "captured_at",
+            "bid_price",
+            "ask_price",
+            "bid_size",
+            "ask_size",
         ]
     )
 

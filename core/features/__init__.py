@@ -43,6 +43,11 @@ from core.features.news_preprocessing import (
     records_to_news_sentiment_frame,
     split_article_sentences,
 )
+from core.features.order_book_features import (
+    ORDER_BOOK_FEATURE_COLUMNS,
+    compute_order_book_features,
+    order_book_features_to_records,
+)
 from core.features.regime_detection import (
     HMM_REGIME_COLUMNS,
     HMM_REGIME_FEATURE_COLUMNS,
@@ -110,6 +115,7 @@ __all__ = [
     "MACRO_FEATURE_COLUMNS",
     "MARKET_FEATURE_COLUMNS",
     "NewsPreprocessingConfig",
+    "ORDER_BOOK_FEATURE_COLUMNS",
     "SECTOR_FEATURE_COLUMNS",
     "SENTIMENT_AGGREGATE_COLUMNS",
     "SentimentScore",
@@ -127,6 +133,7 @@ __all__ = [
     "compute_fundamentals_features",
     "compute_macro_features",
     "compute_market_features",
+    "compute_order_book_features",
     "compute_sector_features",
     "compute_sentence_embeddings",
     "compute_text_topics",
@@ -148,6 +155,7 @@ __all__ = [
     "macro_features_to_records",
     "market_features_to_records",
     "news_sentiment_frame_to_records",
+    "order_book_features_to_records",
     "parquet_bytes_to_feature_record",
     "parquet_bytes_to_feature_records",
     "preprocess_news_articles",

@@ -142,6 +142,7 @@ This is not just a switch in the optimizer. It requires:
 | S&P 500 universe membership | Wikipedia edit history | Point-in-time constituent list; never use today's snapshot for history |
 | Fundamentals / earnings dates | SimFin | As-reported filing data to avoid future restatements leaking backward |
 | Macro / rates | FRED | Fed funds, Treasury yields, CPI, and other regime/context inputs |
+| Optional Level 2 / order-book snapshots | Explicit provider config only | Disabled by default; Layer 1 reads provider-normalized pre-open archives from R2 only when they are explicitly staged and configured |
 | Live daily prices / broker state / execution | Alpaca Market Data + Trading API | Current-day bar snapshot, reconciliation source of truth, and order routing |
 
 ### Universe construction note
@@ -188,6 +189,7 @@ r2/
     universe/         # Daily eligibility masks as CSV
     fundamentals/     # SimFin as-reported point-in-time fundamentals per ticker parquet
     macro/            # FRED per-run-date point-in-time macro snapshots
+    order_book/       # Optional provider-normalized pre-open Level 2 snapshots
     reference/        # Symbol/security-reference snapshots
   features/
     layer1/           # Layer 1 feature histories as Parquet (one file per ticker)
@@ -233,6 +235,7 @@ Any artifact that must survive a Pi restart or be accessed by Modal must be writ
 | News raw archive | JSON Lines | One article per line; easy to stream |
 | Fundamentals archive | Parquet (per ticker history) | Point-in-time company fundamentals at `raw/fundamentals/{ticker}.parquet`; efficient ticker/date joins and targeted recovery |
 | Macro/rates archive | Parquet | `raw/macro/{run_date}.parquet` snapshot; preserve the latest available row per series plus row-level observation/realtime metadata |
+| Order-book archive | Parquet | Optional provider-normalized pre-open snapshots at `raw/order_book/{provider}/{run_date}.parquet`; disabled by default and read only when explicit config enables the branch |
 | Sentiment scores | Parquet | Processed output from FinBERT pipeline |
 | Universe eligibility masks | CSV | Small; human-inspectable |
 | Daily order files | CSV | Human-readable for debugging |
@@ -263,6 +266,8 @@ Responsibilities:
 - detect stale, missing, or corrupted market data
 - generate daily eligibility masks and quality flags
 - persist every external data source needed by Layer 1 into R2 before feature generation runs
+- when an explicit Level 2 provider is enabled, stage its normalized pre-open order-book
+  snapshots in R2 before Layer 1 tries to consume them
 
 **Layer 0 operates in two distinct modes:**
 
@@ -313,6 +318,7 @@ Market-cap policy:
 - raw news archive (JSON Lines) for Layer 1 processing
 - raw SimFin fundamentals and earnings-date archive for Layer 1 context features
 - raw FRED macro/rate archive for Layer 1 context and regime features
+- optional raw order-book archive for Layer 1 spread / book-imbalance features
 
 ### Layer 1 — Feature Generation
 

@@ -53,7 +53,7 @@ Future work that stays compatible with this baseline:
    - `app/cloud/` — Cloud Oracle inference service and contract handling
    - `app/pi/` — Edge Pi runtime for fetch, execution, reconciliation, and reporting
 - `core/` — shared business and domain logic
-- `services/` — external service integrations (Alpaca, R2, Modal, observability)
+- `services/` — external service integrations (Alpaca, optional order-book gating, R2, Modal, observability)
 - `config/` — non-secret configuration, schemas, examples, and requirement split notes
 - `docs/` — architecture notes, setup guides, and process docs
 - `tests/` — unit, integration, and pipeline tests

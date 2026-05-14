@@ -67,6 +67,17 @@ def raw_macro_path(archive_date: str | Date | datetime) -> str:
     return build_r2_key("raw", "macro", f"{_format_date(archive_date)}.parquet")
 
 
+def raw_order_book_path(provider: str, archive_date: str | Date | datetime) -> str:
+    """Return the canonical raw order-book Parquet path for one provider/date pair."""
+    safe_provider = _validate_key_part(provider).lower()
+    return build_r2_key(
+        "raw",
+        "order_book",
+        safe_provider,
+        f"{_format_date(archive_date)}.parquet",
+    )
+
+
 def is_canonical_raw_macro_key(key: str) -> bool:
     """Return True when a raw macro key follows the one-file-per-day pattern."""
     if not isinstance(key, str):
