@@ -19,6 +19,7 @@ from core.data.layer0_pipeline import (
 )
 from core.data.quality import QualityFilterConfig, SharesOutstandingSnapshot
 from services.r2.paths import (
+    layer0_ohlcv_provenance_report_path,
     pipeline_manifest_path,
     raw_fundamentals_path,
     raw_macro_path,
@@ -26,6 +27,11 @@ from services.r2.paths import (
     raw_price_path,
     raw_security_master_path,
     raw_universe_path,
+)
+from tests.fixtures.layer0_ohlcv_support import (
+    build_split_like_history,
+    daily_raw_provenance,
+    historical_adjusted_provenance,
 )
 
 
@@ -101,6 +107,9 @@ class _HistoricalPriceFetcher:
         self.calls.append({"ticker": security.ticker, "from_date": from_date, "to_date": to_date})
         return [_bar(date_value=from_date, ticker=security.ticker)]
 
+    def describe_adjustment_provenance(self) -> dict[str, object]:
+        return historical_adjusted_provenance()
+
 
 class _LivePriceFetcher:
     def __init__(self, records: list[OHLCVRecord] | None = None) -> None:
@@ -114,6 +123,9 @@ class _LivePriceFetcher:
         if self.records is not None:
             return self.records
         return [_bar(date_value=as_of_date, ticker=ticker) for ticker in tickers]
+
+    def describe_adjustment_provenance(self) -> dict[str, object]:
+        return daily_raw_provenance()
 
 
 class _NewsFetcher:
@@ -371,6 +383,7 @@ def test_historical_layer0_backfill_writes_all_raw_archives_and_manifest() -> No
         raw_price_path("perm-aapl"),
         raw_price_path("perm-msft"),
         raw_price_path("perm-spy"),
+        layer0_ohlcv_provenance_report_path(run_id),
         raw_universe_path("2024-01-02"),
         raw_universe_path("2024-01-03"),
         raw_news_path("2024-01-02"),
@@ -392,6 +405,17 @@ def test_historical_layer0_backfill_writes_all_raw_archives_and_manifest() -> No
         "macro",
         "manifest",
     }
+    assert manifest["metadata"]["prices"]["adjustment_provenance"] == {
+        "policy_id": "alpaca_historical_1day_adjustment_all",
+        "provider": "alpaca",
+        "feed": "sip",
+        "request_adjustment": "all",
+        "stored_ohlc_basis": "provider_adjusted",
+        "normalized_adj_close_policy": "copy_close_to_adj_close",
+    }
+    provenance_report = json.loads(writer.objects[layer0_ohlcv_provenance_report_path(run_id)])
+    assert provenance_report["price_adjustment_provenance"]["feed"] == "sip"
+    assert provenance_report["archive_summary"]["close_diff_adj_close_rows"] == 0
 
     universe_rows = list(
         csv.DictReader(io.StringIO(writer.objects[raw_universe_path("2024-01-02")].decode()))
@@ -486,12 +510,20 @@ def test_daily_layer0_incremental_uses_alpaca_shape_and_canonical_paths() -> Non
     assert raw_fundamentals_path("AAPL") in writer.objects
     assert raw_macro_path("2024-01-02") in writer.objects
     assert raw_universe_path("2024-01-02") in writer.objects
+    assert layer0_ohlcv_provenance_report_path(run_id) in writer.objects
     assert pipeline_manifest_path("layer0", run_id) in writer.objects
     assert result.status == RunStatus.COMPLETED
 
     price_payload = json.loads(writer.objects[raw_price_path("AAPL")])
     assert price_payload[0]["ticker"] == "AAPL"
     assert price_payload[0]["date"] == "2024-01-02"
+    manifest = _manifest(writer, run_id)
+    assert manifest["metadata"]["prices"]["adjustment_provenance"]["policy_id"] == (
+        "alpaca_live_1day_adjustment_raw"
+    )
+    provenance_report = json.loads(writer.objects[layer0_ohlcv_provenance_report_path(run_id)])
+    assert provenance_report["price_adjustment_provenance"]["request_adjustment"] == "raw"
+    assert provenance_report["archive_summary"]["close_diff_adj_close_rows"] == 0
 
 
 def test_daily_layer0_incremental_writes_run_date_macro_snapshot() -> None:
@@ -913,7 +945,57 @@ def test_daily_layer0_incremental_is_idempotent_for_existing_raw_outputs() -> No
     )
 
     assert {key: writer.put_counts[key] for key in keys} == {key: 0 for key in keys}
+    assert writer.put_counts[layer0_ohlcv_provenance_report_path("test-idempotent")] == 1
     assert writer.objects[pipeline_manifest_path("layer0", "test-idempotent")]
+
+
+def test_historical_layer0_backfill_reports_split_like_discontinuities_for_audit() -> None:
+    """Provenance reports surface split-like price jumps as audit-only context."""
+    writer = _Writer()
+
+    class _SplitLikeHistoricalPriceFetcher(_HistoricalPriceFetcher):
+        def fetch_security_records(
+            self,
+            security: _Security,
+            from_date: str,
+            to_date: str,
+        ) -> list[OHLCVRecord]:
+            self.calls.append(
+                {"ticker": security.ticker, "from_date": from_date, "to_date": to_date}
+            )
+            return build_split_like_history(security.ticker)
+
+    run_historical_layer0_backfill(
+        config=HistoricalLayer0Config(
+            from_date=date(2024, 1, 2),
+            to_date=date(2024, 1, 3),
+            fred_series_ids=("DGS10",),
+            run_id="test-split-like-audit",
+            quality_config=QualityFilterConfig(rolling_window_days=1),
+        ),
+        universe_provider=_UniverseProvider(),
+        price_fetcher=_SplitLikeHistoricalPriceFetcher(),
+        security_master=_SecurityMaster(),
+        news_fetcher=_NewsFetcher(),
+        fundamentals_fetcher=_FundamentalsFetcher(),
+        macro_fetcher=_MacroFetcher(),
+        writer=writer,
+        price_serializer=_bytes_serializer,
+        price_deserializer=_bytes_deserializer,
+        news_serializer=_bytes_serializer,
+        fundamentals_serializer=_bytes_serializer,
+        macro_serializer=_bytes_serializer,
+    )
+
+    provenance_report = json.loads(
+        writer.objects[layer0_ohlcv_provenance_report_path("test-split-like-audit")]
+    )
+    assert provenance_report["archive_summary"]["split_like_discontinuity_count"] >= 1
+    assert provenance_report["archive_summary"]["split_like_discontinuity_samples"][0]["ticker"] in {
+        "perm-aapl",
+        "perm-msft",
+        "perm-spy",
+    }
 
 
 def test_daily_layer0_incremental_skips_new_empty_fundamentals_archives() -> None:

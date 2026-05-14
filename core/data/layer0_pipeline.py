@@ -22,6 +22,7 @@ from core.data.quality import (
 )
 from core.data.universe import build_universe_record
 from services.r2.paths import (
+    layer0_ohlcv_provenance_report_path,
     pipeline_manifest_path,
     raw_fundamentals_path,
     raw_macro_path,
@@ -122,6 +123,13 @@ class LivePriceFetcher(Protocol):
         as_of_date: str,
     ) -> list[OHLCVRecord]:
         """Fetch current daily bars normalized to OHLCVRecord."""
+
+
+class PriceAdjustmentProvenanceProvider(Protocol):
+    """Price fetchers that can describe their corporate-action adjustment policy."""
+
+    def describe_adjustment_provenance(self) -> dict[str, object]:
+        """Return machine-readable adjustment provenance for downstream manifests/reports."""
 
 
 class NewsFetcher(Protocol):
@@ -299,6 +307,10 @@ class Layer0PipelineResult:
     metadata: dict[str, object]
 
 
+_SPLIT_LIKE_RATIO_THRESHOLD = 1.8
+_SPLIT_LIKE_SAMPLE_LIMIT = 20
+
+
 def run_historical_layer0_backfill(
     *,
     config: HistoricalLayer0Config,
@@ -380,7 +392,17 @@ def run_historical_layer0_backfill(
             skip_quality_reads=masks_complete,
         )
         output_keys.extend(price_result.output_keys)
-        metadata["prices"] = price_result.metadata
+        metadata["prices"] = dict(price_result.metadata)
+        provenance_report_key, adjustment_provenance = _write_ohlcv_provenance_report(
+            writer=cached_writer,
+            run_id=run_id,
+            mode="historical_backfill",
+            price_metadata=metadata["prices"],
+            fetcher=price_fetcher,
+        )
+        metadata["prices"]["adjustment_provenance"] = adjustment_provenance
+        metadata["prices"]["provenance_report_key"] = provenance_report_key
+        output_keys.append(provenance_report_key)
         logger.info("Phase prices done: {}", price_result.metadata)
 
         logger.info("Phase: fundamentals (SimFin)")
@@ -548,7 +570,17 @@ def run_daily_layer0_incremental(
             deserializer=price_deserializer or _parquet_bytes_to_records,
         )
         output_keys.extend(price_result.output_keys)
-        metadata["prices"] = price_result.metadata
+        metadata["prices"] = dict(price_result.metadata)
+        provenance_report_key, adjustment_provenance = _write_ohlcv_provenance_report(
+            writer=writer,
+            run_id=run_id,
+            mode="daily_incremental",
+            price_metadata=metadata["prices"],
+            fetcher=live_price_fetcher,
+        )
+        metadata["prices"]["adjustment_provenance"] = adjustment_provenance
+        metadata["prices"]["provenance_report_key"] = provenance_report_key
+        output_keys.append(provenance_report_key)
 
         quality_window = _copy_ohlcv_window(config.quality_ohlcv_window)
         _extend_quality_window_from_price_archives(
@@ -735,9 +767,14 @@ def _backfill_historical_prices(
     ]
     grouped = _group_securities_by_id(active_securities)
     output_keys: list[str] = []
+    archive_keys: list[str] = []
     written = 0
     skipped = 0
     empty = 0
+    observed_rows = 0
+    close_equals_adj_close_rows = 0
+    close_diff_adj_close_rows = 0
+    split_like_discontinuities: list[dict[str, object]] = []
 
     reference_key = raw_security_master_path(config.to_date)
     if not writer.exists(reference_key) or config.overwrite:
@@ -754,6 +791,7 @@ def _backfill_historical_prices(
 
     for security_id, security_rows in grouped.items():
         key = raw_price_path(security_id)
+        archive_keys.append(key)
         existing_records = (
             _canonicalize_ohlcv_records(_read_existing_records(writer, key, deserializer))
             if writer.exists(key)
@@ -789,6 +827,14 @@ def _backfill_historical_prices(
             empty += 1
             continue
 
+        observed_rows += len(records)
+        equality_counts = _adj_close_equality_counts(records)
+        close_equals_adj_close_rows += equality_counts["equal"]
+        close_diff_adj_close_rows += equality_counts["different"]
+        split_like_discontinuities.extend(
+            _detect_split_like_discontinuities(records, ticker=security_id)
+        )
+
         if history_changed:
             writer.put_object(key, serializer(_sort_ohlcv_records(records)))
             output_keys.append(key)
@@ -808,6 +854,14 @@ def _backfill_historical_prices(
             "empty": empty,
             "missing_tickers": list(missing_tickers),
             "reference_key": reference_key,
+            "archive_keys": archive_keys,
+            "observed_rows": observed_rows,
+            "close_equals_adj_close_rows": close_equals_adj_close_rows,
+            "close_diff_adj_close_rows": close_diff_adj_close_rows,
+            "split_like_discontinuity_count": len(split_like_discontinuities),
+            "split_like_discontinuity_samples": split_like_discontinuities[
+                :_SPLIT_LIKE_SAMPLE_LIMIT
+            ],
             "output_keys": output_keys,
         },
     )
@@ -883,14 +937,28 @@ def _write_daily_prices(
         grouped.setdefault(record.ticker.upper(), []).append(record)
 
     output_keys: list[str] = []
+    archive_keys: list[str] = []
     written = 0
     skipped = 0
+    observed_rows = 0
+    close_equals_adj_close_rows = 0
+    close_diff_adj_close_rows = 0
+    split_like_discontinuities: list[dict[str, object]] = []
     for ticker, ticker_records in sorted(grouped.items()):
         key = raw_price_path(ticker)
+        archive_keys.append(key)
         if not writer.exists(key):
-            writer.put_object(key, serializer(_sort_ohlcv_records(ticker_records)))
+            sorted_records = _sort_ohlcv_records(ticker_records)
+            writer.put_object(key, serializer(sorted_records))
             output_keys.append(key)
             written += 1
+            observed_rows += len(sorted_records)
+            equality_counts = _adj_close_equality_counts(sorted_records)
+            close_equals_adj_close_rows += equality_counts["equal"]
+            close_diff_adj_close_rows += equality_counts["different"]
+            split_like_discontinuities.extend(
+                _detect_split_like_discontinuities(sorted_records, ticker=ticker)
+            )
             continue
 
         existing_records = _canonicalize_ohlcv_records(
@@ -902,10 +970,24 @@ def _write_daily_prices(
         )
         if _ohlcv_histories_equal(existing_records, merged_records):
             skipped += 1
+            observed_rows += len(existing_records)
+            equality_counts = _adj_close_equality_counts(existing_records)
+            close_equals_adj_close_rows += equality_counts["equal"]
+            close_diff_adj_close_rows += equality_counts["different"]
+            split_like_discontinuities.extend(
+                _detect_split_like_discontinuities(existing_records, ticker=ticker)
+            )
             continue
         writer.put_object(key, serializer(_sort_ohlcv_records(merged_records)))
         output_keys.append(key)
         written += 1
+        observed_rows += len(merged_records)
+        equality_counts = _adj_close_equality_counts(merged_records)
+        close_equals_adj_close_rows += equality_counts["equal"]
+        close_diff_adj_close_rows += equality_counts["different"]
+        split_like_discontinuities.extend(
+            _detect_split_like_discontinuities(merged_records, ticker=ticker)
+        )
 
     return _WriteResult(
         output_keys=output_keys,
@@ -914,6 +996,14 @@ def _write_daily_prices(
             "written": written,
             "skipped": skipped,
             "empty": 0 if records else 1,
+            "archive_keys": archive_keys,
+            "observed_rows": observed_rows,
+            "close_equals_adj_close_rows": close_equals_adj_close_rows,
+            "close_diff_adj_close_rows": close_diff_adj_close_rows,
+            "split_like_discontinuity_count": len(split_like_discontinuities),
+            "split_like_discontinuity_samples": split_like_discontinuities[
+                :_SPLIT_LIKE_SAMPLE_LIMIT
+            ],
             "output_keys": output_keys,
         },
     )
@@ -1234,6 +1324,56 @@ def _write_daily_macro_snapshot(
     )
 
 
+def _write_ohlcv_provenance_report(
+    *,
+    writer: ObjectWriter,
+    run_id: str,
+    mode: str,
+    price_metadata: dict[str, object],
+    fetcher: HistoricalPriceFetcher | LivePriceFetcher,
+) -> tuple[str, dict[str, object]]:
+    """Persist one provenance report and return its key plus the manifest summary."""
+    provenance = _price_adjustment_provenance(fetcher)
+    report_key = layer0_ohlcv_provenance_report_path(run_id)
+    archive_keys = list(_string_list(price_metadata.get("archive_keys")))
+    written_keys = [
+        key for key in _string_list(price_metadata.get("output_keys")) if key in set(archive_keys)
+    ]
+    report = {
+        "run_id": run_id,
+        "mode": mode,
+        "generated_at": datetime.now(UTC).isoformat(),
+        "price_adjustment_provenance": provenance,
+        "archive_summary": {
+            "archive_keys": archive_keys,
+            "written_keys": written_keys,
+            "observed_rows": int(price_metadata.get("observed_rows", 0)),
+            "close_equals_adj_close_rows": int(
+                price_metadata.get("close_equals_adj_close_rows", 0)
+            ),
+            "close_diff_adj_close_rows": int(
+                price_metadata.get("close_diff_adj_close_rows", 0)
+            ),
+            "split_like_discontinuity_count": int(
+                price_metadata.get("split_like_discontinuity_count", 0)
+            ),
+            "split_like_discontinuity_samples": list(
+                _mapping_list(price_metadata.get("split_like_discontinuity_samples"))
+            ),
+        },
+    }
+    writer.put_object(report_key, json.dumps(report, indent=2, sort_keys=True))
+    adjustment_provenance = {
+        "policy_id": provenance["policy_id"],
+        "provider": provenance["provider"],
+        "feed": provenance["feed"],
+        "request_adjustment": provenance["request_adjustment"],
+        "stored_ohlc_basis": provenance["stored_ohlc_basis"],
+        "normalized_adj_close_policy": provenance["normalized_adj_close_policy"],
+    }
+    return report_key, adjustment_provenance
+
+
 def _write_pipeline_manifest(
     *,
     writer: ObjectWriter,
@@ -1283,6 +1423,22 @@ def _write_failure_manifest(
 
 def _sanitize_error_message(message: str) -> str:
     return SENSITIVE_ERROR_PATTERN.sub(r"\g<prefix><redacted>", message)
+
+
+def _price_adjustment_provenance(
+    fetcher: HistoricalPriceFetcher | LivePriceFetcher,
+) -> dict[str, object]:
+    """Return machine-readable OHLCV adjustment provenance for a price fetcher."""
+    describe = getattr(fetcher, "describe_adjustment_provenance", None)
+    if callable(describe):
+        provenance = describe()
+        if not isinstance(provenance, Mapping):
+            raise TypeError("describe_adjustment_provenance() must return a mapping")
+        return dict(provenance)
+    raise TypeError(
+        f"{type(fetcher).__name__} must implement describe_adjustment_provenance() "
+        "for Layer 0 OHLCV provenance tracking"
+    )
 
 
 def _base_metadata(
@@ -1872,6 +2028,59 @@ def _positive_finite_ratio(
     if candidate != candidate or candidate in {float("inf"), float("-inf")}:
         return None
     return candidate
+
+
+def _adj_close_equality_counts(records: Sequence[OHLCVRecord]) -> dict[str, int]:
+    """Count rows whose normalized adj_close matches or differs from close."""
+    equal = 0
+    different = 0
+    for record in records:
+        if abs(record.close - record.adj_close) <= 1e-9:
+            equal += 1
+        else:
+            different += 1
+    return {"equal": equal, "different": different}
+
+
+def _detect_split_like_discontinuities(
+    records: Sequence[OHLCVRecord],
+    *,
+    ticker: str,
+) -> list[dict[str, object]]:
+    """Flag large adjacent close-ratio jumps for audit-only corporate-action review."""
+    sorted_records = _sort_ohlcv_records(records)
+    discontinuities: list[dict[str, object]] = []
+    for previous, current in zip(sorted_records, sorted_records[1:], strict=False):
+        prior_close = previous.adj_close
+        current_close = current.adj_close
+        if prior_close <= 0.0 or current_close <= 0.0:
+            continue
+        ratio = max(current_close / prior_close, prior_close / current_close)
+        if ratio < _SPLIT_LIKE_RATIO_THRESHOLD:
+            continue
+        discontinuities.append(
+            {
+                "ticker": ticker,
+                "previous_date": previous.date,
+                "current_date": current.date,
+                "price_ratio": round(ratio, 6),
+            }
+        )
+    return discontinuities
+
+
+def _string_list(value: object) -> tuple[str, ...]:
+    """Return only string values from a generic list-like object."""
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return ()
+    return tuple(item for item in value if isinstance(item, str))
+
+
+def _mapping_list(value: object) -> tuple[dict[str, object], ...]:
+    """Return dictionary items from a generic list-like object."""
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return ()
+    return tuple(dict(item) for item in value if isinstance(item, Mapping))
 
 
 def _validate_date_window(from_date: date, to_date: date) -> None:

@@ -179,6 +179,26 @@ def test_fetch_live_daily_bars_rejects_empty_ticker_list() -> None:
         client.fetch_live_daily_bars(tickers=[], as_of_date="2024-01-02")
 
 
+def test_describe_adjustment_provenance_reports_live_policy() -> None:
+    """Live market-data client exposes the raw daily-bar adjustment policy explicitly."""
+    client = AlpacaMarketDataClient(
+        AlpacaMarketDataConfig(
+            api_key_id="test-key",
+            api_secret_key="test-secret",
+            feed="iex",
+        )
+    )
+
+    provenance = client.describe_adjustment_provenance()
+
+    assert provenance["policy_id"] == "alpaca_live_1day_adjustment_raw"
+    assert provenance["provider"] == "alpaca"
+    assert provenance["feed"] == "iex"
+    assert provenance["request_adjustment"] == "raw"
+    assert provenance["stored_ohlc_basis"] == "raw"
+    assert provenance["normalized_adj_close_policy"] == "copy_close_to_adj_close"
+
+
 def test_normalize_alpaca_bar_response_builds_schema_valid_records() -> None:
     """Alpaca bars normalize into OHLCVRecord rows compatible with Layer 0 storage."""
     records = normalize_alpaca_bar_response(

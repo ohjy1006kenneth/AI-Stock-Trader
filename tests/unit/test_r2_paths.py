@@ -8,6 +8,7 @@ from services.r2.paths import (
     build_r2_key,
     is_canonical_raw_price_key,
     is_legacy_raw_price_key,
+    layer0_ohlcv_provenance_report_path,
     layer1_feature_path,
     layer1_news_preprocessing_path,
     layer1_regime_path,
@@ -99,6 +100,10 @@ def test_layer1_text_artifact_paths_return_canonical_keys() -> None:
         == "features/layer1/sentiment_features/2025-01-02/run-001.parquet"
     )
     assert layer1_regime_path("run-001") == "features/layer1_5/regime/run-001.parquet"
+    assert (
+        layer0_ohlcv_provenance_report_path("run-001")
+        == "artifacts/reports/integration/layer0_ohlcv_provenance_run-001.json"
+    )
     assert (
         layer1_validation_report_path("run-001", "2025-01-02", "2025-01-03")
         == "artifacts/reports/integration/"

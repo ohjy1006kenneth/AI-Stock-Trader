@@ -179,6 +179,17 @@ def layer1_validation_report_path(run_id: str, from_date: str, to_date: str) -> 
     )
 
 
+def layer0_ohlcv_provenance_report_path(run_id: str) -> str:
+    """Return the canonical Layer 0 OHLCV adjustment-provenance report key for one run."""
+    safe_run_id = _validate_key_part(run_id)
+    return build_r2_key(
+        "artifacts",
+        "reports",
+        "integration",
+        f"layer0_ohlcv_provenance_{safe_run_id}.json",
+    )
+
+
 def layer1_label_path(as_of_date: str | Date | datetime, ticker: str) -> str:
     """Return the canonical Layer 1 label-shard Parquet path for one date/ticker pair."""
     safe_ticker = _validate_key_part(ticker)

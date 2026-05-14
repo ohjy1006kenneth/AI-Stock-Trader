@@ -160,6 +160,17 @@ used for the live daily bar snapshot that the Pi needs near the close or before 
 Historical and live Alpaca bars must both normalize into the same `OHLCVRecord` shape before
 being written to the raw store.
 
+Adjustment policy and limitation:
+- historical Layer 0 backfills request Alpaca daily bars with `feed=sip` and
+  `adjustment=all`, so stored OHLC values reflect Alpaca's split/dividend-adjusted response
+- daily incremental Layer 0 runs request Alpaca daily bars with `adjustment=raw`, so the
+  run-date OHLC values reflect the live raw snapshot rather than a later retroactive rewrite
+- `OHLCVRecord.adj_close` currently mirrors the normalized `close` in both flows because the
+  Alpaca daily-bar payload does not provide a second adjusted-close field for the contract
+- Layer 0 therefore persists explicit adjustment provenance per run in the manifest metadata
+  plus `artifacts/reports/integration/layer0_ohlcv_provenance_{run_id}.json` so downstream
+  validation can audit which policy produced each archive update
+
 ---
 
 ## Storage model
@@ -194,6 +205,7 @@ r2/
     bundles/          # Packaged model bundles
     diagnostics/      # SHAP plots, metrics JSON
     manifests/        # ArtifactManifestRecord JSON files
+    reports/          # Validation and adjustment-provenance reports
   reports/
     daily/            # Daily execution summaries
     backtests/        # Backtest result JSON and equity curves
@@ -215,6 +227,7 @@ Any artifact that must survive a Pi restart or be accessed by Modal must be writ
 | Data type | Format | Reason |
 |---|---|---|
 | OHLCV history | Parquet (per ticker) | 10–50x faster than CSV; columnar reads; `pd.read_parquet()` |
+| OHLCV adjustment provenance | JSON report per Layer 0 run | Auditable request policy for `adjustment=all` vs `adjustment=raw`, plus continuity audit samples |
 | Feature tables | Parquet (per ticker history) | Keeps Layer 1 artifacts aligned to the FeatureRecord contract while reducing object count |
 | Model scores | Parquet | Small, fast to read |
 | News raw archive | JSON Lines | One article per line; easy to stream |

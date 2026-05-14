@@ -47,8 +47,13 @@ Expected execution chain:
 1. Build and validate the complete Layer 0 historical backfill in R2:
    Wikipedia universe, Alpaca delayed SIP OHLCV, Alpaca news,
    SimFin fundamentals/earnings, and FRED macro/rates
+   - historical OHLCV provenance must record `feed=sip` and `adjustment=all`
+     in the Layer 0 manifest metadata plus
+     `artifacts/reports/integration/layer0_ohlcv_provenance_{run_id}.json`
 2. Validate the Layer 0 daily incremental path:
    Alpaca live bars/news, SimFin refreshes, FRED refreshes, universe masks, and manifests
+   - daily OHLCV provenance must record `adjustment=raw`; the run-date bar is stored as a
+     raw snapshot and is not retroactively rewritten in-place during the same run
 3. Validate the Pi -> Modal Layer 1 handoff:
    Pi submits the daily Modal job, then blocks on the R2 Layer 1 manifest
 4. Build Layer 1 features strictly from existing R2 Layer 0 archives
@@ -213,6 +218,16 @@ Operational notes for the readiness report:
 - The report records the authoritative manifest key/status plus sibling stale `running`
   manifests so operators can distinguish the successful run from interrupted attempts such as
   `...-v4` or `...-v6`.
+
+Operational notes for Layer 0 OHLCV provenance:
+- `python app/lab/data_pipelines/validate_layer0_archive.py ...` now fails closed when the
+  Layer 0 manifest omits the OHLCV adjustment provenance summary or when the companion
+  `artifacts/reports/integration/layer0_ohlcv_provenance_{run_id}.json` report is missing
+  or inconsistent
+- the provenance report is the authoritative audit record for whether a Layer 0 run wrote
+  Alpaca `adjustment=all` historical bars or `adjustment=raw` daily bars
+- split-like discontinuity samples in that report are heuristic audit context only; they are
+  not a substitute for a dedicated provider corporate-actions archive
 
 Baseline paper execution is long-only equities. Hedge and long-short capabilities must stay
 disabled by policy until the relevant risk and execution gates are implemented:
