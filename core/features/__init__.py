@@ -72,6 +72,14 @@ from core.features.sentiment_features import (
     sentiment_feature_records_from_scored_news,
     sentiment_feature_records_to_frame,
 )
+from core.features.sector_features import (
+    DEFAULT_SECTOR_ETF_CONFIG_PATH,
+    SECTOR_FEATURE_COLUMNS,
+    SectorEtfConfig,
+    compute_sector_features,
+    load_sector_etf_config,
+    sector_features_to_records,
+)
 from core.features.text_topics import (
     EMBEDDING_COLUMNS,
     TOPIC_LABEL_COLUMNS,
@@ -89,6 +97,7 @@ from core.features.text_topics import (
 __all__ = [
     "CONTEXT_FEATURE_COLUMNS",
     "DEFAULT_SOURCE_CREDIBILITY_CONFIG_PATH",
+    "DEFAULT_SECTOR_ETF_CONFIG_PATH",
     "EMBEDDING_COLUMNS",
     "FUNDAMENTAL_FEATURE_COLUMNS",
     "HMM_REGIME_COLUMNS",
@@ -101,9 +110,11 @@ __all__ = [
     "MACRO_FEATURE_COLUMNS",
     "MARKET_FEATURE_COLUMNS",
     "NewsPreprocessingConfig",
+    "SECTOR_FEATURE_COLUMNS",
     "SENTIMENT_AGGREGATE_COLUMNS",
     "SentimentScore",
     "SentimentScorer",
+    "SectorEtfConfig",
     "SourceCredibilityConfig",
     "TOPIC_LABEL_COLUMNS",
     "TextEmbeddingConfig",
@@ -116,6 +127,7 @@ __all__ = [
     "compute_fundamentals_features",
     "compute_macro_features",
     "compute_market_features",
+    "compute_sector_features",
     "compute_sentence_embeddings",
     "compute_text_topics",
     "compute_topic_labels",
@@ -131,6 +143,7 @@ __all__ = [
     "load_fundamentals_frame",
     "load_macro_frame",
     "load_ohlcv_frame",
+    "load_sector_etf_config",
     "load_source_credibility_config",
     "macro_features_to_records",
     "market_features_to_records",
@@ -143,6 +156,7 @@ __all__ = [
     "regime_features_to_records",
     "records_to_news_sentiment_frame",
     "score_news_sentiment",
+    "sector_features_to_records",
     "sentiment_aggregates_to_records",
     "sentiment_feature_records_from_scored_news",
     "sentiment_feature_records_to_frame",

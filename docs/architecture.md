@@ -449,6 +449,12 @@ sector_momentum          = sector ETF 21-day return
 sector_relative_strength = stock's 63d return rank within its sector
 ```
 
+Implementation note:
+- sector ETF selection is driven by repository config, not hardcoded inside the
+  computation path
+- sector-relative-strength is only emitted when point-in-time sector membership
+  is known and enough same-sector peers are present in the active Layer 1 scope
+
 ### Layer 1.5 — Regime Detection
 
 Regime detection asks "what kind of market are we in right now?" and routes to a model

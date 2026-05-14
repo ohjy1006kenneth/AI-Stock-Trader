@@ -205,6 +205,8 @@ def test_backfill_layer1_writes_feature_histories_and_manifest(
     assert feature_keys == [layer1_ticker_history_path("AAPL")]
     loaded_records = read_feature_records("AAPL", writer=writer)
     assert len(loaded_records) == result.feature_rows_written
+    assert "sector_etf_ret" in loaded_records[0].features
+    assert loaded_records[0].features["sector_relative_strength"] is None
     manifest_payload = writer.get_object(result.manifest_key)
     payload = json.loads(manifest_payload.decode("utf-8"))
     assert payload["status"] == "completed"

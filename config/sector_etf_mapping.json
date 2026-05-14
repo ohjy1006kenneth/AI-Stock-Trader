@@ -1,0 +1,45 @@
+{
+  "sector_field_names": [
+    "sector",
+    "gicsSector",
+    "gics_sector",
+    "gicsSectorName",
+    "sectorName",
+    "sector_name"
+  ],
+  "sector_aliases": {
+    "communication": "communication services",
+    "communication services": "communication services",
+    "consumer cyclical": "consumer discretionary",
+    "consumer cyclicals": "consumer discretionary",
+    "consumer discretionary": "consumer discretionary",
+    "consumer staples": "consumer staples",
+    "energy": "energy",
+    "financial": "financials",
+    "financial services": "financials",
+    "financials": "financials",
+    "health care": "health care",
+    "healthcare": "health care",
+    "industrial": "industrials",
+    "industrials": "industrials",
+    "information technology": "information technology",
+    "materials": "materials",
+    "real estate": "real estate",
+    "technology": "information technology",
+    "telecommunication services": "communication services",
+    "utilities": "utilities"
+  },
+  "sector_to_etf": {
+    "communication services": "XLC",
+    "consumer discretionary": "XLY",
+    "consumer staples": "XLP",
+    "energy": "XLE",
+    "financials": "XLF",
+    "health care": "XLV",
+    "industrials": "XLI",
+    "information technology": "XLK",
+    "materials": "XLB",
+    "real estate": "XLRE",
+    "utilities": "XLU"
+  }
+}

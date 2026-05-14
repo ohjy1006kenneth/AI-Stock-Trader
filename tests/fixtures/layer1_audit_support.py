@@ -22,6 +22,7 @@ from core.features.news_preprocessing import (
     records_to_news_sentiment_frame,
 )
 from core.features.regime_detection import HMM_REGIME_COLUMNS
+from core.features.sector_features import compute_sector_features, sector_features_to_records
 from core.features.sentiment_features import sentiment_feature_records_from_scored_news
 from core.features.text_topics import TOPIC_LABEL_COLUMNS, topic_labels_to_feature_records
 from services.r2.client import (
@@ -209,6 +210,16 @@ def seed_layer1_audit_fixture(
         ),
         as_of_date,
     )
+    sector_record = _single_record(
+        sector_features_to_records(
+            compute_sector_features(
+                ohlcv_by_ticker={ticker: ohlcv},
+                fundamentals_by_ticker={ticker: fundamentals},
+                target_dates_by_ticker={ticker: (as_of_date,)},
+            )[ticker]
+        ),
+        as_of_date,
+    )
     topic_record = _single_record(topic_feature_records, as_of_date)
     sentiment_record = _single_record(sentiment_feature_records, as_of_date)
     history_record = FeatureRecord(
@@ -217,6 +228,7 @@ def seed_layer1_audit_fixture(
         features={
             **dict(market_record.features if market_record is not None else {}),
             **dict(context_record.features if context_record is not None else {}),
+            **dict(sector_record.features if sector_record is not None else {}),
             **dict(topic_record.features if topic_record is not None else {}),
             **dict(sentiment_record.features if sentiment_record is not None else {}),
             "regime_label": "bull",

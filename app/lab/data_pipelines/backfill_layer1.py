@@ -57,6 +57,11 @@ from core.features.market_features import (  # noqa: E402
     market_features_to_records,
 )
 from core.features.regime_detection import HMM_REGIME_FEATURE_COLUMNS  # noqa: E402
+from core.features.sector_features import (  # noqa: E402
+    compute_sector_features,
+    load_sector_etf_config,
+    sector_features_to_records,
+)
 from services.r2.paths import build_r2_key, layer1_regime_path, pipeline_manifest_path  # noqa: E402
 from services.r2.writer import R2Writer  # noqa: E402
 
@@ -172,6 +177,8 @@ def backfill_layer1(
 
     macro_frame = load_macro_frame(writer=active_writer)
     benchmark_bars = _try_load_benchmark(active_writer, config.benchmark_ticker)
+    ohlcv_by_ticker: dict[str, object] = {}
+    fundamentals_by_ticker: dict[str, object] = {}
 
     ticker_files_written = 0
     feature_rows_written = 0
@@ -222,7 +229,26 @@ def backfill_layer1(
                 fundamentals = load_fundamentals_frame(ticker, writer=active_writer)
             except FileNotFoundError:
                 fundamentals = _empty_fundamentals_frame(ohlcv)
+            ohlcv_by_ticker[ticker] = ohlcv
+            fundamentals_by_ticker[ticker] = fundamentals
+            processed_dates.update(frozenset(str(value) for value in ohlcv["date"].astype(str).tolist()))
 
+        sector_config = load_sector_etf_config()
+        sector_records_by_ticker = {
+            ticker: sector_features_to_records(frame)
+            for ticker, frame in compute_sector_features(
+                ohlcv_by_ticker=ohlcv_by_ticker,
+                fundamentals_by_ticker=fundamentals_by_ticker,
+                sector_price_frames=_load_sector_price_frames(active_writer, sector_config),
+                sector_config=sector_config,
+            ).items()
+        }
+
+        for ticker in config.tickers:
+            if ticker not in ohlcv_by_ticker:
+                continue
+            ohlcv = ohlcv_by_ticker[ticker]
+            fundamentals = fundamentals_by_ticker[ticker]
             market_records = _compute_market_records(
                 ticker=ticker,
                 ohlcv=ohlcv,
@@ -235,7 +261,6 @@ def backfill_layer1(
                 macro=macro_frame,
             )
             ticker_dates = frozenset(str(value) for value in ohlcv["date"].astype(str).tolist())
-            processed_dates.update(ticker_dates)
 
             inputs = [
                 Layer1FeatureInput(
@@ -246,6 +271,11 @@ def backfill_layer1(
                 Layer1FeatureInput(
                     name="context",
                     records=context_records,
+                    as_of_timestamp=SENTINEL_ASSEMBLY_AS_OF,
+                ),
+                Layer1FeatureInput(
+                    name="sector",
+                    records=sector_records_by_ticker.get(ticker, []),
                     as_of_timestamp=SENTINEL_ASSEMBLY_AS_OF,
                 ),
             ]
@@ -700,6 +730,20 @@ def _try_load_benchmark(writer: ObjectStore, ticker: str):
     except FileNotFoundError:
         logger.warning("Benchmark OHLCV missing for ticker={}; cross-asset features will be NaN", ticker)
         return None
+
+
+def _load_sector_price_frames(writer: ObjectStore, sector_config) -> dict[str, object]:
+    """Return the configured sector ETF histories available to the backfill."""
+    frames: dict[str, object] = {}
+    for etf_ticker in sorted(set(sector_config.sector_to_etf.values())):
+        try:
+            frames[etf_ticker] = load_ohlcv_frame(etf_ticker, writer=writer)
+        except FileNotFoundError:
+            logger.warning(
+                "Sector ETF OHLCV missing for ticker={}; related sector features will be null",
+                etf_ticker,
+            )
+    return frames
 
 
 def _empty_fundamentals_frame(ohlcv):
