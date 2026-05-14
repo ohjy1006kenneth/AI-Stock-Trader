@@ -7,6 +7,7 @@ import io
 import json
 import os
 import sys
+import types
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -40,6 +41,8 @@ from app.lab.training.finbert_finetuning import (  # noqa: E402
 from core.contracts.schemas import (  # noqa: E402
     SCHEMA_VERSION,
     ArtifactManifestRecord,
+    FeatureRecord,
+    NewsSentimentRecord,
     PipelineManifestRecord,
     RunStatus,
 )
@@ -217,7 +220,7 @@ def run_finbert_finetuning(
     active_trainer = trainer or TransformersFineTuneTrainer(active_scorer)
     started_at = datetime.now(UTC)
     root = (artifact_root or _REPO_ROOT).resolve()
-    paths = _offline_output_paths(root=root, run_id=config.run_id)
+    paths = _offline_output_paths(run_id=config.run_id)
 
     metadata: dict[str, object] = {
         "from_date": config.from_date,
@@ -577,10 +580,10 @@ def _load_news_records(
     from_date: str,
     to_date: str,
     tickers: tuple[str, ...],
-) -> tuple[list[object], tuple[str, ...]]:
+) -> tuple[list[NewsSentimentRecord], tuple[str, ...]]:
     """Load preprocessed news rows for a historical date range."""
     pd = _require_pandas()
-    all_records: list[object] = []
+    all_records: list[NewsSentimentRecord] = []
     missing_dates: list[str] = []
     ticker_filter = {ticker.upper() for ticker in tickers}
 
@@ -601,10 +604,10 @@ def _load_news_records(
 def _load_label_records(
     *,
     writer: ObjectStore,
-    news_records: Sequence[object],
-) -> dict[tuple[str, str], object]:
+    news_records: Sequence[NewsSentimentRecord],
+) -> dict[tuple[str, str], FeatureRecord]:
     """Load one label shard per `(date, ticker)` present in the news sample."""
-    records: dict[tuple[str, str], object] = {}
+    records: dict[tuple[str, str], FeatureRecord] = {}
     keys = sorted({(record.date, record.ticker) for record in news_records})
     for date_text, ticker in keys:
         try:
@@ -614,10 +617,9 @@ def _load_label_records(
     return records
 
 
-def _offline_output_paths(*, root: Path, run_id: str) -> dict[str, str]:
+def _offline_output_paths(*, run_id: str) -> dict[str, str]:
     """Return repo-relative output paths for one offline run."""
     _validate_run_id(run_id)
-    del root
     bundle_path = Path("artifacts") / "bundles" / "finbert_finetuning" / run_id
     return {
         "bundle_path": bundle_path.as_posix(),
@@ -657,7 +659,8 @@ def _write_pipeline_manifest(
     metadata: dict[str, object],
 ) -> None:
     """Persist a local pipeline manifest for the offline run."""
-    manifest_path = root / _offline_output_paths(root=root, run_id=run_id)["pipeline_manifest_path"]
+    output_paths = _offline_output_paths(run_id=run_id)
+    manifest_path = root / output_paths["pipeline_manifest_path"]
     manifest = PipelineManifestRecord(
         run_id=run_id,
         stage=FINBERT_FINETUNING_STAGE,
@@ -665,7 +668,7 @@ def _write_pipeline_manifest(
         started_at=started_at,
         finished_at=datetime.now(UTC),
         metadata=metadata,
-        output_path=_offline_output_paths(root=root, run_id=run_id)["bundle_path"],
+        output_path=output_paths["bundle_path"],
     )
     _write_text(manifest_path, manifest.model_dump_json(indent=2))
 
@@ -723,7 +726,7 @@ def _build_torch_dataloader(
     max_length: int,
     shuffle: bool,
     torch_module: object,
-):
+) -> object:
     """Tokenize one dataset and return a PyTorch DataLoader."""
     encoded = tokenizer(
         dataset["text"].astype(str).tolist(),
@@ -746,7 +749,13 @@ def _build_torch_dataloader(
     return torch_module.utils.data.DataLoader(_EncodedDataset(), batch_size=batch_size, shuffle=shuffle)
 
 
-def _predict_from_loader(*, model: object, eval_loader: object, torch_module: object, device: object):
+def _predict_from_loader(
+    *,
+    model: object,
+    eval_loader: object,
+    torch_module: object,
+    device: object,
+) -> tuple[list[int], list[int]]:
     """Run model inference over one encoded evaluation loader."""
     model.eval()
     predicted_ids: list[int] = []
@@ -959,7 +968,10 @@ def _define_modal_app() -> object | None:
     return app
 
 
-def _build_modal_image(modal_module: object, runtime: FinBERTFineTuneRuntimeConfig):
+def _build_modal_image(
+    modal_module: object,
+    runtime: FinBERTFineTuneRuntimeConfig,
+) -> object:
     """Build the Modal image while preserving local `-r base.txt` includes."""
     requirements_path = Path(runtime.requirements_path)
     requirements_dir = requirements_path.parent
@@ -986,7 +998,7 @@ def _build_modal_image(modal_module: object, runtime: FinBERTFineTuneRuntimeConf
     )
 
 
-def _require_pandas():
+def _require_pandas() -> types.ModuleType:
     """Import pandas lazily with a clear error when absent."""
     try:
         return importlib.import_module("pandas")
