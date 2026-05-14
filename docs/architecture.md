@@ -187,7 +187,7 @@ r2/
     news/             # Raw news as JSON Lines (one article per line)
     universe/         # Daily eligibility masks as CSV
     fundamentals/     # SimFin as-reported point-in-time fundamentals per ticker parquet
-    macro/            # FRED macro/rate observations as available on the run date
+    macro/            # FRED per-run-date point-in-time macro snapshots
     reference/        # Symbol/security-reference snapshots
   features/
     layer1/           # Layer 1 feature histories as Parquet (one file per ticker)
@@ -232,7 +232,7 @@ Any artifact that must survive a Pi restart or be accessed by Modal must be writ
 | Model scores | Parquet | Small, fast to read |
 | News raw archive | JSON Lines | One article per line; easy to stream |
 | Fundamentals archive | Parquet (per ticker history) | Point-in-time company fundamentals at `raw/fundamentals/{ticker}.parquet`; efficient ticker/date joins and targeted recovery |
-| Macro/rates archive | Parquet or CSV | Small daily series; preserve observations used by a run |
+| Macro/rates archive | Parquet | `raw/macro/{run_date}.parquet` snapshot; preserve the latest available row per series plus row-level observation/realtime metadata |
 | Sentiment scores | Parquet | Processed output from FinBERT pipeline |
 | Universe eligibility masks | CSV | Small; human-inspectable |
 | Daily order files | CSV | Human-readable for debugging |

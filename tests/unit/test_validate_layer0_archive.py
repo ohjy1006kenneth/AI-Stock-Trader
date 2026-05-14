@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import io
 import json
 from datetime import date
 from pathlib import Path
+
+import pandas as pd
 
 from app.lab.data_pipelines.validate_layer0_archive import (
     validate_layer0_archive,
@@ -49,6 +52,7 @@ def _historical_manifest_objects(run_id: str) -> dict[str, bytes]:
                 "status": "completed",
                 "metadata": {
                     "mode": "historical_backfill",
+                    "fred_series_ids": ["DGS10"],
                     "prices": {
                         "adjustment_provenance": {
                             "policy_id": "alpaca_historical_1day_adjustment_all",
@@ -84,6 +88,7 @@ def _daily_manifest_objects(run_id: str, *, feed: str) -> dict[str, bytes]:
                 "status": "completed",
                 "metadata": {
                     "mode": "daily_incremental",
+                    "fred_series_ids": ["DGS10"],
                     "prices": {
                         "adjustment_provenance": {
                             "policy_id": "alpaca_live_1day_adjustment_raw",
@@ -109,12 +114,38 @@ def _daily_manifest_objects(run_id: str, *, feed: str) -> dict[str, bytes]:
     }
 
 
+def _macro_snapshot_object(snapshot_date: str, *, observation_date: str | None = None) -> bytes:
+    rows = [
+        {
+            "source": "fred",
+            "series_id": "DGS10",
+            "snapshot_date": snapshot_date,
+            "observation_date": observation_date or snapshot_date,
+            "realtime_start": observation_date or snapshot_date,
+            "realtime_end": snapshot_date,
+            "retrieved_at": f"{snapshot_date}T00:00:00+00:00",
+            "value": 4.2,
+            "is_missing": False,
+        }
+    ]
+    buffer = io.BytesIO()
+    pd.DataFrame(rows).to_parquet(buffer, index=False)
+    return buffer.getvalue()
+
+
 def test_validate_layer0_archive_reports_ready_when_required_keys_exist() -> None:
     """Validation is ready when all required archive families and manifest exist."""
     from_date = date(2024, 1, 1)
     to_date = date(2024, 1, 3)
     run_id = "layer0-historical-2024-01-01_to_2024-01-03"
     objects = _historical_manifest_objects(run_id)
+    objects.update(
+        {
+            raw_macro_path("2024-01-01"): _macro_snapshot_object("2024-01-01"),
+            raw_macro_path("2024-01-02"): _macro_snapshot_object("2024-01-02"),
+            raw_macro_path("2024-01-03"): _macro_snapshot_object("2024-01-03"),
+        }
+    )
     keys = {
         raw_price_path("AAPL"),
         raw_news_path("2024-01-01"),
@@ -124,7 +155,9 @@ def test_validate_layer0_archive_reports_ready_when_required_keys_exist() -> Non
         raw_universe_path("2024-01-02"),
         raw_universe_path("2024-01-03"),
         raw_fundamentals_path("AAPL"),
+        raw_macro_path("2024-01-01"),
         raw_macro_path("2024-01-02"),
+        raw_macro_path("2024-01-03"),
         pipeline_manifest_path("layer0", run_id),
         layer0_ohlcv_provenance_report_path(run_id),
     }
@@ -142,7 +175,10 @@ def test_validate_layer0_archive_reports_ready_when_required_keys_exist() -> Non
     assert report.news_days_present == 3
     assert report.universe_days_present == 3
     assert report.fundamentals_ticker_count == 1
-    assert report.macro_day_count == 1
+    assert report.macro_day_count == 3
+    assert report.macro_days_recoverable == 3
+    assert report.macro_available_series_by_date["2024-01-02"] == ["DGS10"]
+    assert report.macro_missing_series_by_date["2024-01-02"] == []
     assert report.noncanonical_price_keys == []
     assert report.ohlcv_provenance_report_present is True
     assert report.ohlcv_provenance_policy_id == "alpaca_historical_1day_adjustment_all"
@@ -155,6 +191,13 @@ def test_validate_layer0_archive_blocks_layer1_when_active_fundamentals_are_miss
     to_date = date(2024, 1, 3)
     run_id = "layer0-historical-2024-01-01_to_2024-01-03"
     objects = _historical_manifest_objects(run_id)
+    objects.update(
+        {
+            raw_macro_path("2024-01-01"): _macro_snapshot_object("2024-01-01"),
+            raw_macro_path("2024-01-02"): _macro_snapshot_object("2024-01-02"),
+            raw_macro_path("2024-01-03"): _macro_snapshot_object("2024-01-03"),
+        }
+    )
     keys = {
         raw_price_path("AAPL"),
         raw_news_path("2024-01-01"),
@@ -165,7 +208,9 @@ def test_validate_layer0_archive_blocks_layer1_when_active_fundamentals_are_miss
         raw_universe_path("2024-01-03"),
         raw_fundamentals_path("AAPL"),
         raw_fundamentals_path("MSFT"),
+        raw_macro_path("2024-01-01"),
         raw_macro_path("2024-01-02"),
+        raw_macro_path("2024-01-03"),
         pipeline_manifest_path("layer0", run_id),
         layer0_ohlcv_provenance_report_path(run_id),
     }
@@ -206,6 +251,7 @@ def test_validate_layer0_archive_reports_missing_dates() -> None:
         "2024-01-08",
     ]
     assert report.missing_universe_dates == ["2024-01-05", "2024-01-08"]
+    assert report.missing_macro_dates == ["2024-01-05", "2024-01-08"]
     assert "missing_manifest_payload" in report.ohlcv_provenance_validation_errors
 
 
@@ -215,6 +261,7 @@ def test_validate_layer0_archive_blocks_noncanonical_price_keys() -> None:
     to_date = date(2024, 1, 1)
     run_id = "layer0-historical-2024-01-01"
     objects = _historical_manifest_objects(run_id)
+    objects[raw_macro_path("2024-01-01")] = _macro_snapshot_object("2024-01-01")
     keys = {
         raw_price_path("AAPL"),
         "raw/prices/AAPL_2017-01-03_2024-01-01.parquet",
@@ -254,6 +301,7 @@ def test_validate_layer0_archive_blocks_missing_or_mismatched_ohlcv_provenance()
                 "status": "completed",
                 "metadata": {
                     "mode": "historical_backfill",
+                    "fred_series_ids": ["DGS10"],
                     "prices": {
                         "adjustment_provenance": {
                             "policy_id": "alpaca_live_1day_adjustment_raw",
@@ -276,6 +324,7 @@ def test_validate_layer0_archive_blocks_missing_or_mismatched_ohlcv_provenance()
                 observed_rows=2,
             )
         ).encode("utf-8"),
+        raw_macro_path("2024-01-02"): _macro_snapshot_object("2024-01-02"),
     }
     keys = {
         raw_price_path("AAPL"),
@@ -307,6 +356,7 @@ def test_validate_layer0_archive_accepts_valid_daily_incremental_manifest() -> N
     """Validation accepts daily incremental provenance without enforcing one live feed."""
     run_id = "layer0-daily-2024-01-02"
     objects = _daily_manifest_objects(run_id, feed="sip")
+    objects[raw_macro_path("2024-01-02")] = _macro_snapshot_object("2024-01-02")
     keys = {
         raw_price_path("AAPL"),
         raw_news_path("2024-01-02"),
@@ -335,6 +385,7 @@ def test_validate_layer0_archive_surfaces_split_like_discontinuity_count() -> No
     run_id = "layer0-historical-2024-01-03"
     report_key = layer0_ohlcv_provenance_report_path(run_id)
     objects = _historical_manifest_objects(run_id)
+    objects[raw_macro_path("2024-01-03")] = _macro_snapshot_object("2024-01-03")
     objects[report_key] = json.dumps(
         build_provenance_report(
             run_id=run_id,

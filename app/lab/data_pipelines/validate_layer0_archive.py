@@ -18,11 +18,13 @@ from loguru import logger
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(_REPO_ROOT))
 
+from core.features.loaders import available_macro_series_by_date  # noqa: E402
 from services.r2.paths import (  # noqa: E402
     is_canonical_raw_price_key,
     layer0_ohlcv_provenance_report_path,
     pipeline_manifest_path,
     raw_fundamentals_path,
+    raw_macro_path,
     raw_news_path,
     raw_universe_path,
 )
@@ -90,6 +92,12 @@ class Layer0ArchiveValidationReport:
     fundamentals_min_rows: int
     fundamentals_tickers_below_min_rows: list[str]
     macro_day_count: int
+    macro_days_expected: int
+    macro_days_recoverable: int
+    macro_available_series_by_date: dict[str, list[str]]
+    macro_missing_series_by_date: dict[str, list[str]]
+    missing_macro_dates: list[str]
+    macro_recovered_from_legacy_dates: list[str]
     manifest_present: bool
     ohlcv_provenance_report_present: bool
     ohlcv_provenance_policy_id: str | None
@@ -133,6 +141,7 @@ def validate_layer0_archive(
     manifest_key = pipeline_manifest_path("layer0", run_id)
     manifest_present = reader.exists(manifest_key)
     manifest_payload = _read_json_object(reader, manifest_key) if manifest_present else None
+    requested_macro_series = _manifest_fred_series_ids(manifest_payload)
     fundamentals_expected = 0
     fundamentals_present = len(fundamentals_keys)
     fundamentals_below_min: list[str] = []
@@ -155,11 +164,36 @@ def validate_layer0_archive(
         run_id=run_id,
         manifest_payload=manifest_payload,
     )
+    macro_available_series_by_date = available_macro_series_by_date(
+        [day.isoformat() for day in business_days],
+        writer=reader,  # type: ignore[arg-type]
+        series_ids=requested_macro_series or None,
+    )
+    macro_missing_series_by_date: dict[str, list[str]] = {}
+    missing_macro_dates: list[str] = []
+    macro_recovered_from_legacy_dates: list[str] = []
+    requested_macro_series_set = set(requested_macro_series)
+    for day in business_days:
+        date_text = day.isoformat()
+        available_series = sorted(macro_available_series_by_date.get(date_text, []))
+        available_series_set = set(available_series)
+        if requested_macro_series_set:
+            missing_series = sorted(requested_macro_series_set - available_series_set)
+        else:
+            missing_series = []
+        macro_missing_series_by_date[date_text] = missing_series
+        if (requested_macro_series_set and missing_series) or (
+            not requested_macro_series_set and not available_series
+        ):
+            missing_macro_dates.append(date_text)
+        if not reader.exists(raw_macro_path(date_text)) and available_series:
+            macro_recovered_from_legacy_dates.append(date_text)
 
     ready = bool(canonical_price_keys) and not noncanonical_price_keys
     ready = ready and not missing_news and not missing_universe
     ready = ready and bool(fundamentals_keys) and bool(macro_keys) and manifest_present
     ready = ready and not fundamentals_below_min
+    ready = ready and not missing_macro_dates
     ready = ready and provenance_report.ready
 
     return Layer0ArchiveValidationReport(
@@ -177,6 +211,12 @@ def validate_layer0_archive(
         fundamentals_min_rows=fundamentals_min_rows,
         fundamentals_tickers_below_min_rows=fundamentals_below_min,
         macro_day_count=len(macro_keys),
+        macro_days_expected=len(business_days),
+        macro_days_recoverable=len(business_days) - len(missing_macro_dates),
+        macro_available_series_by_date=macro_available_series_by_date,
+        macro_missing_series_by_date=macro_missing_series_by_date,
+        missing_macro_dates=missing_macro_dates,
+        macro_recovered_from_legacy_dates=macro_recovered_from_legacy_dates,
         manifest_present=manifest_present,
         ohlcv_provenance_report_present=provenance_report.report_present,
         ohlcv_provenance_policy_id=provenance_report.policy_id,
@@ -221,6 +261,26 @@ def _count_parquet_rows(reader: ArchiveReader, key: str) -> int:
         ) from exc
     frame = pd.read_parquet(BytesIO(payload))
     return int(len(frame.index))
+
+
+def _manifest_fred_series_ids(manifest_payload: dict[str, object] | None) -> list[str]:
+    """Return normalized FRED series IDs declared in the Layer 0 manifest metadata."""
+    if not isinstance(manifest_payload, dict):
+        return []
+    metadata = manifest_payload.get("metadata")
+    if not isinstance(metadata, dict):
+        return []
+    value = metadata.get("fred_series_ids")
+    if not isinstance(value, list):
+        return []
+    normalized: list[str] = []
+    for series_id in value:
+        if not isinstance(series_id, str):
+            continue
+        cleaned = series_id.strip().upper()
+        if cleaned:
+            normalized.append(cleaned)
+    return sorted(set(normalized))
 
 
 @dataclass(frozen=True)

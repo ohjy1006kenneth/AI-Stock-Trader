@@ -86,6 +86,7 @@ from core.features.io import (  # noqa: E402
     write_feature_records,
 )
 from core.features.loaders import (  # noqa: E402
+    available_macro_series_by_date,
     load_fundamentals_frame,
     load_macro_frame,
     load_ohlcv_frame,
@@ -100,7 +101,6 @@ from services.r2.paths import (  # noqa: E402
     layer1_ticker_history_path,
     pipeline_manifest_path,
     raw_fundamentals_path,
-    raw_macro_path,
     raw_news_path,
     raw_price_path,
     raw_universe_path,
@@ -367,6 +367,7 @@ def run_daily_layer1(
             scope_tickers=scope_tickers,
             benchmark_ticker=config.benchmark_ticker,
             universe_by_date=universe_by_date,
+            required_macro_series=_manifest_fred_series_ids(upstream_manifest),
         )
 
         news_results = _run_news_stage(
@@ -985,12 +986,12 @@ def _require_upstream_archives(
     scope_tickers: Sequence[str],
     benchmark_ticker: str,
     universe_by_date: Mapping[str, Sequence[str]],
+    required_macro_series: Sequence[str],
 ) -> None:
     """Require the Layer 0 archives needed by the daily Layer 1 run."""
     required_keys = [raw_price_path(benchmark_ticker)]
     required_keys.extend(raw_news_path(date_text) for date_text in processed_dates)
     required_keys.extend(raw_universe_path(date_text) for date_text in processed_dates)
-    required_keys.extend(raw_macro_path(date_text) for date_text in processed_dates)
     for ticker in scope_tickers:
         required_keys.append(raw_price_path(ticker))
         required_keys.append(raw_fundamentals_path(ticker))
@@ -1001,12 +1002,42 @@ def _require_upstream_archives(
             "Missing required Layer 0 archives for Layer 1 run: "
             + ", ".join(missing)
         )
+    macro_available = available_macro_series_by_date(
+        list(processed_dates),
+        writer=writer,  # type: ignore[arg-type]
+        series_ids=required_macro_series or None,
+    )
+    macro_missing = {
+        date_text: sorted(set(required_macro_series) - set(macro_available.get(date_text, [])))
+        for date_text in processed_dates
+        if set(required_macro_series) - set(macro_available.get(date_text, []))
+    }
+    if macro_missing:
+        raise FileNotFoundError(
+            "Missing recoverable raw macro coverage for Layer 1 run: "
+            + _format_ticker_dates(macro_missing)
+        )
     _require_target_date_price_coverage(
         writer,
         processed_dates=processed_dates,
         benchmark_ticker=benchmark_ticker,
         universe_by_date=universe_by_date,
     )
+
+
+def _manifest_fred_series_ids(manifest: PipelineManifestRecord) -> list[str]:
+    """Return normalized FRED series IDs recorded by the completed Layer 0 manifest."""
+    value = manifest.metadata.get("fred_series_ids")
+    if not isinstance(value, list):
+        return []
+    normalized: list[str] = []
+    for series_id in value:
+        if not isinstance(series_id, str):
+            continue
+        cleaned = series_id.strip().upper()
+        if cleaned:
+            normalized.append(cleaned)
+    return sorted(set(normalized))
 
 
 def _require_target_date_price_coverage(

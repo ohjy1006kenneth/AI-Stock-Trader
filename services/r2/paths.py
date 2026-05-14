@@ -7,6 +7,7 @@ from pathlib import PurePosixPath
 
 RAW_PRICE_PREFIX = "raw/prices/"
 _CANONICAL_RAW_PRICE_KEY_RE = re.compile(r"^raw/prices/[^/_]+\.parquet$")
+_CANONICAL_RAW_MACRO_KEY_RE = re.compile(r"^raw/macro/(?P<date>\d{4}-\d{2}-\d{2})\.parquet$")
 
 
 def build_r2_key(*parts: str) -> str:
@@ -64,6 +65,23 @@ def raw_fundamentals_path(ticker: str) -> str:
 def raw_macro_path(archive_date: str | Date | datetime) -> str:
     """Return the canonical raw macro/rates Parquet path for one archive date."""
     return build_r2_key("raw", "macro", f"{_format_date(archive_date)}.parquet")
+
+
+def is_canonical_raw_macro_key(key: str) -> bool:
+    """Return True when a raw macro key follows the one-file-per-day pattern."""
+    if not isinstance(key, str):
+        raise TypeError("key must be a string")
+    return bool(_CANONICAL_RAW_MACRO_KEY_RE.fullmatch(key.strip()))
+
+
+def raw_macro_date_from_key(key: str) -> str:
+    """Return the archive date encoded in a canonical raw macro key."""
+    if not isinstance(key, str):
+        raise TypeError("key must be a string")
+    match = _CANONICAL_RAW_MACRO_KEY_RE.fullmatch(key.strip())
+    if match is None:
+        raise ValueError(f"Not a canonical raw macro key: {key}")
+    return _format_date(match.group("date"))
 
 
 def raw_reference_path(name: str, extension: str = "json") -> str:

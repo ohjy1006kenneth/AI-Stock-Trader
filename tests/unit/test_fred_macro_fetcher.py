@@ -475,7 +475,7 @@ def test_normalize_preserves_retrieval_and_realtime_dates() -> None:
 
 
 def test_backfill_writes_raw_macro_archive() -> None:
-    """Backfill writes one deterministic raw macro archive for the range."""
+    """Backfill writes one deterministic run-date macro snapshot per business day."""
     rows = normalize_fred_observations(
         _fixture_payload()["page1"]["observations"],
         series_id="FEDFUNDS",
@@ -486,7 +486,7 @@ def test_backfill_writes_raw_macro_archive() -> None:
 
     result = backfill_fred_archive(
         from_date=date(2024, 1, 1),
-        to_date=date(2024, 12, 31),
+        to_date=date(2024, 1, 2),
         fetcher=fetcher,
         writer=writer,
         series_ids=["FEDFUNDS", "DGS10"],
@@ -505,10 +505,12 @@ def test_backfill_writes_raw_macro_archive() -> None:
     day2_rows = _read_json(writer.objects[key_day2])
     assert [row["observation_date"] for row in day1_rows] == ["2024-01-01"]
     assert [row["observation_date"] for row in day2_rows] == ["2024-01-02"]
+    assert all(row["snapshot_date"] == "2024-01-01" for row in day1_rows)
+    assert all(row["snapshot_date"] == "2024-01-02" for row in day2_rows)
     assert "raw" in day1_rows[0]
     assert fetcher.calls[0]["series_ids"] == ("DGS10", "FEDFUNDS")
     assert fetcher.calls[0]["realtime_start"] == "2024-01-01"
-    assert fetcher.calls[0]["realtime_end"] == "2024-12-31"
+    assert fetcher.calls[0]["realtime_end"] == "2024-01-02"
 
 
 def test_backfill_is_idempotent_for_existing_archive() -> None:
@@ -520,20 +522,26 @@ def test_backfill_is_idempotent_for_existing_archive() -> None:
     )
     existing_keys = {raw_macro_path(row["observation_date"]) for row in rows}
     writer = _FakeWriter(existing=existing_keys)
+    for row in rows:
+        key = raw_macro_path(row["observation_date"])
+        writer.objects[key] = _json_serializer(
+            [dict(row, snapshot_date=row["observation_date"])]
+        )
     fetcher = _FakeFetcher(rows)
 
     result = backfill_fred_archive(
         from_date=date(2024, 1, 1),
-        to_date=date(2024, 12, 31),
+        to_date=date(2024, 1, 2),
         fetcher=fetcher,
         writer=writer,
         series_ids=["FEDFUNDS"],
         serializer=_json_serializer,
+        deserializer=_json_deserializer,
     )
 
     assert result.written == 0
-    assert result.skipped == len(existing_keys)
-    assert fetcher.calls
+    assert result.skipped == 0
+    assert fetcher.calls == []
 
 
 def test_backfill_merge_existing_preserves_old_series_and_adds_new_rows() -> None:

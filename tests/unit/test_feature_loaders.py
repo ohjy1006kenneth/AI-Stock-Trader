@@ -45,5 +45,6 @@ def test_load_macro_frame_deduplicates_equivalent_vintages_across_archive_dates(
 
     assert len(frame.index) == 1
     assert frame.loc[0, "series_id"] == "DGS10"
+    assert frame.loc[0, "snapshot_date"] == "2026-05-13"
     assert frame.loc[0, "observation_date"] == "2026-05-12"
     assert frame.loc[0, "retrieved_at"] == "2026-05-13T20:00:00+00:00"
