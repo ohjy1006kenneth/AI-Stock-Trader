@@ -46,6 +46,7 @@ def _resolve_repo_root() -> Path:
 _REPO_ROOT = _resolve_repo_root()
 sys.path.insert(0, str(_REPO_ROOT))
 
+from core.contracts.schemas import FeatureRecord  # noqa: E402
 from core.features.io import parquet_bytes_to_feature_records  # noqa: E402
 from core.features.regime_detection import (  # noqa: E402
     HMM_REGIME_COLUMNS,

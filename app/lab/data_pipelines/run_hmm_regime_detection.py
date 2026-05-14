@@ -37,8 +37,8 @@ sys.path.insert(0, str(_REPO_ROOT))
 from core.contracts.schemas import PipelineManifestRecord, RunStatus  # noqa: E402
 from core.features.loaders import load_macro_frame, load_ohlcv_frame  # noqa: E402
 from core.features.regime_detection import (  # noqa: E402
-    HMMRegimeConfig,
     HMM_REGIME_COLUMNS,
+    HMMRegimeConfig,
     fit_and_emit_hmm_regime_features,
     inspect_hmm_regime_readiness,
     validate_hmm_regime_probabilities,
