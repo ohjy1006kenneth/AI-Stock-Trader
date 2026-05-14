@@ -221,7 +221,18 @@ class _MacroFetcher:
                 "limit": limit,
             }
         )
-        return [{"series_id": series_ids[0], "observation_date": start_date, "value": "1.0"}]
+        return [
+            {
+                "series_id": series_ids[0],
+                "observation_date": start_date,
+                "realtime_start": start_date,
+                "realtime_end": end_date,
+                "retrieved_at": f"{end_date}T00:00:00+00:00",
+                "value": "1.0",
+                "is_missing": False,
+                "raw": {"series_id": series_ids[0]},
+            }
+        ]
 
     def fetch_latest_available_macro_observations(
         self,
@@ -391,6 +402,7 @@ def test_historical_layer0_backfill_writes_all_raw_archives_and_manifest() -> No
         raw_fundamentals_path("AAPL"),
         raw_fundamentals_path("MSFT"),
         raw_macro_path("2024-01-02"),
+        raw_macro_path("2024-01-03"),
         pipeline_manifest_path("layer0", run_id),
     }
     assert expected_keys.issubset(writer.objects)
@@ -569,6 +581,7 @@ def test_daily_layer0_incremental_writes_run_date_macro_snapshot() -> None:
             "realtime_start": "2026-05-12",
             "retrieved_at": "2026-05-13T00:00:00+00:00",
             "series_id": "DGS10",
+            "snapshot_date": "2026-05-13",
             "value": 1.0,
         }
     ]
@@ -908,7 +921,23 @@ def test_daily_layer0_incremental_is_idempotent_for_existing_raw_outputs() -> No
     )
     writer.put_object(raw_news_path("2024-01-02"), b"existing")
     writer.put_object(raw_fundamentals_path("AAPL"), b"existing")
-    writer.put_object(raw_macro_path("2024-01-02"), b"existing")
+    writer.put_object(
+        raw_macro_path("2024-01-02"),
+        _bytes_serializer(
+            [
+                {
+                    "series_id": "DGS10",
+                    "observation_date": "2024-01-01",
+                    "realtime_start": "2024-01-01",
+                    "realtime_end": "2024-01-02",
+                    "retrieved_at": "2024-01-02T00:00:00+00:00",
+                    "snapshot_date": "2024-01-02",
+                    "value": 4.2,
+                    "is_missing": False,
+                }
+            ]
+        ),
+    )
     writer.put_object(
         universe_key,
         _universe_serializer(

@@ -54,6 +54,8 @@ Expected execution chain:
    Alpaca live bars/news, SimFin refreshes, FRED refreshes, universe masks, and manifests
    - daily OHLCV provenance must record `adjustment=raw`; the run-date bar is stored as a
      raw snapshot and is not retroactively rewritten in-place during the same run
+   - daily FRED refreshes must persist `raw/macro/{run_date}.parquet` as the point-in-time
+     snapshot for that run date rather than keying shards only by observation date
 3. Validate the Pi -> Modal Layer 1 handoff:
    Pi submits the daily Modal job, then blocks on the R2 Layer 1 manifest
 4. Build Layer 1 features strictly from existing R2 Layer 0 archives

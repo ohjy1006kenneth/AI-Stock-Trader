@@ -24,10 +24,10 @@
   `list_keys()` (paginated ListObjectsV2) for every existence check. Should add a
   `head_object`-based `exists()` to `CloudflareR2Client`. Affects all data families
   (prices, universe, news, fundamentals, macro) — thousands of slow calls per backfill run.
-- [ ] Macro archive layout still mixes legacy observation-date shards with run-date
-  readiness snapshots under `raw/macro/{YYYY-MM-DD}.parquet`. Issue `#148` should
-  consolidate the convention and document/migrate any backward-compatibility cleanup
-  needed across backfill, validation, and Layer 1 consumers.
+- [x] Macro archive layout no longer mixes observation-date-only shards with run-date
+  snapshots. Issue `#148` standardized `raw/macro/{YYYY-MM-DD}.parquet` as a run-date
+  point-in-time snapshot, added backward-compatible legacy recovery, and tightened
+  validation/Layer 1 macro loading around deterministic as-of-date reconstruction.
 - [ ] `_SHARES_OUTSTANDING_KEYS` in `core/data/layer0_pipeline.py` duplicates `_SHARES_KEYS`
   in `core/features/fundamentals_features.py`; consolidate SimFin share-key ownership before
   the next fundamentals or market-cap filter change.

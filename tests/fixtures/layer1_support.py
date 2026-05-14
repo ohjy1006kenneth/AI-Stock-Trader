@@ -84,6 +84,16 @@ def seed_layer0_archives(
             metadata={
                 "from_date": min(dates),
                 "to_date": max(dates),
+                "fred_series_ids": [
+                    "FEDFUNDS",
+                    "DGS3MO",
+                    "DGS2",
+                    "DGS10",
+                    "VIXCLS",
+                    "DTWEXBGS",
+                    "CPIAUCSL",
+                    "BAMLH0A0HYM2",
+                ],
             },
         )
         for run_id in layer0_run_ids or ("layer1-daily",):

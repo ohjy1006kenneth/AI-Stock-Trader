@@ -173,8 +173,14 @@ Purpose:
 - avoid rewriting historical feature values when upstream macro series are revised
 
 Notes:
-- raw macro/rate observations are stored as archival Layer 0 data in R2, for example under
-  `raw/macro/`
+- raw macro/rate observations are stored as archival Layer 0 data in R2 under
+  `raw/macro/{run_date}.parquet`
+- each raw macro shard is a run-date point-in-time snapshot containing the latest available
+  row per configured series as of that `run_date`; the row payload still preserves the
+  underlying `observation_date`, `realtime_start`, and `realtime_end`
+- Layer 1 loaders and validators read legacy observation-date shards backward-compatibly when
+  rebuilding historical macro vintages, but new Layer 0 writes must use the run-date snapshot
+  convention above
 - Layer 1 converts these raw records into macro and regime-context features such as
   yield-curve slope, policy-rate level, CPI context, and credit/risk proxies
 - this archive is not a replacement for `FeatureRecord`

@@ -13,6 +13,10 @@ from typing import Protocol
 from loguru import logger
 
 from core.contracts.schemas import OHLCVRecord, PipelineManifestRecord, RunStatus, UniverseRecord
+from core.data.macro_archive import (
+    build_latest_available_macro_snapshot,
+    macro_snapshot_is_usable,
+)
 from core.data.quality import (
     QualityFilterConfig,
     SharesOutstandingSnapshot,
@@ -1187,9 +1191,14 @@ def _write_macro_archive(
     writer: ObjectWriter,
     serializer: RawRowSerializer,
 ) -> _WriteResult:
-    """Fetch and persist FRED macro observations per observation_date."""
+    """Fetch vintages once and persist one run-date macro snapshot per business day."""
     normalized_series = _normalize_tokens(series_ids)
-    if not overwrite and _macro_archive_covers_range(writer, from_date, to_date):
+    if not overwrite and _macro_archive_covers_range(
+        writer,
+        from_date,
+        to_date,
+        series_ids=normalized_series,
+    ):
         logger.info(
             "Macro archive already covers {}..{}; skipping FRED fetch",
             from_date.isoformat(),
@@ -1215,33 +1224,39 @@ def _write_macro_archive(
         realtime_end=to_date.isoformat(),
         limit=limit,
     )
-    rows_by_date: dict[str, list[dict[str, object]]] = {}
-    for row in rows:
-        observation_date = str(row.get("observation_date") or "").strip()
-        if not observation_date:
-            continue
-        rows_by_date.setdefault(observation_date, []).append(row)
+    ordered_rows = _sort_raw_rows(
+        rows,
+        ("series_id", "observation_date", "realtime_start", "realtime_end"),
+    )
 
     output_keys: list[str] = []
     written = 0
     skipped = 0
     empty = 0
     total_rows = 0
-    for observation_date in sorted(rows_by_date):
-        date_rows = _sort_raw_rows(
-            rows_by_date[observation_date],
-            ("series_id", "realtime_start", "realtime_end"),
+    for snapshot_day in _business_days(from_date, to_date):
+        snapshot_date = snapshot_day.isoformat()
+        date_rows = build_latest_available_macro_snapshot(
+            ordered_rows,
+            snapshot_date=snapshot_date,
+            series_ids=normalized_series,
         )
-        key = raw_macro_path(observation_date)
-        if not overwrite and writer.exists(key):
+        key = raw_macro_path(snapshot_date)
+        if not date_rows:
+            empty += 1
+            continue
+        if not overwrite and _macro_snapshot_key_is_usable(
+            writer,
+            key,
+            snapshot_date=snapshot_date,
+            required_series_ids=normalized_series,
+        ):
             skipped += 1
             continue
         writer.put_object(key, serializer(date_rows))
         output_keys.append(key)
         written += 1
         total_rows += len(date_rows)
-        if not date_rows:
-            empty += 1
 
     return _WriteResult(
         output_keys=output_keys,
@@ -1269,7 +1284,12 @@ def _write_daily_macro_snapshot(
     """Fetch and persist one run-date macro snapshot using latest available observations."""
     normalized_series = _normalize_tokens(series_ids)
     key = raw_macro_path(as_of_date)
-    if not overwrite and writer.exists(key):
+    if not overwrite and _macro_snapshot_key_is_usable(
+        writer,
+        key,
+        snapshot_date=as_of_date.isoformat(),
+        required_series_ids=normalized_series,
+    ):
         logger.info(
             "Daily macro snapshot already exists for {}; skipping FRED fetch",
             as_of_date.isoformat(),
@@ -1295,7 +1315,12 @@ def _write_daily_macro_snapshot(
         ),
         ("series_id", "observation_date", "realtime_start", "realtime_end"),
     )
-    if not rows:
+    snapshot_rows = build_latest_available_macro_snapshot(
+        rows,
+        snapshot_date=as_of_date.isoformat(),
+        series_ids=normalized_series,
+    )
+    if not snapshot_rows:
         return _WriteResult(
             output_keys=[],
             metadata={
@@ -1309,7 +1334,7 @@ def _write_daily_macro_snapshot(
             },
         )
 
-    writer.put_object(key, serializer(rows))
+    writer.put_object(key, serializer(snapshot_rows))
     return _WriteResult(
         output_keys=[key],
         metadata={
@@ -1317,7 +1342,7 @@ def _write_daily_macro_snapshot(
             "written": 1,
             "skipped": 0,
             "empty": 0,
-            "total_rows": len(rows),
+            "total_rows": len(snapshot_rows),
             "output_keys": [key],
             "snapshot_date": as_of_date.isoformat(),
         },
@@ -1508,6 +1533,22 @@ def _parquet_bytes_to_raw_rows(data: bytes) -> list[dict[str, object]]:
 
     frame = pd.read_parquet(io.BytesIO(data))
     return [dict(row) for row in frame.to_dict("records")]
+
+
+def _best_effort_raw_rows_from_payload(data: bytes) -> list[dict[str, object]]:
+    """Deserialize raw-row payloads from Parquet first, then JSON test fixtures."""
+    try:
+        return _parquet_bytes_to_raw_rows(data)
+    except (ModuleNotFoundError, ValueError, TypeError):
+        payload = json.loads(data.decode("utf-8"))
+        if not isinstance(payload, list):
+            raise ValueError("Expected a list of raw rows")
+        rows: list[dict[str, object]] = []
+        for row in payload:
+            if not isinstance(row, dict):
+                raise ValueError("Expected raw rows to be JSON objects")
+            rows.append(dict(row))
+        return rows
 
 
 def _raw_rows_to_parquet_bytes(rows: list[dict[str, object]]) -> bytes:
@@ -2120,13 +2161,47 @@ def _next_business_day(value: date) -> date:
     return current
 
 
-def _macro_archive_covers_range(writer: ObjectWriter, from_date: date, to_date: date) -> bool:
-    """Return True when every business day in the range has a raw/macro/{date}.parquet key."""
-    expected = {raw_macro_path(day.isoformat()) for day in _business_days(from_date, to_date)}
-    if not expected:
+def _macro_archive_covers_range(
+    writer: ObjectWriter,
+    from_date: date,
+    to_date: date,
+    *,
+    series_ids: Sequence[str] | None = None,
+) -> bool:
+    """Return True when every business day already has a usable raw macro snapshot."""
+    business_days = _business_days(from_date, to_date)
+    if not business_days:
         return False
-    present = set(writer.list_keys("raw/macro/"))
-    return expected.issubset(present)
+    return all(
+        _macro_snapshot_key_is_usable(
+            writer,
+            raw_macro_path(day.isoformat()),
+            snapshot_date=day.isoformat(),
+            required_series_ids=series_ids,
+        )
+        for day in business_days
+    )
+
+
+def _macro_snapshot_key_is_usable(
+    writer: ObjectWriter,
+    key: str,
+    *,
+    snapshot_date: str,
+    required_series_ids: Sequence[str] | None = None,
+) -> bool:
+    """Return True when an existing macro shard is already a usable run-date snapshot."""
+    if not writer.exists(key):
+        return False
+    try:
+        rows = _best_effort_raw_rows_from_payload(writer.get_object(key))
+    except (json.JSONDecodeError, ModuleNotFoundError, TypeError, ValueError):
+        return False
+    return macro_snapshot_is_usable(
+        rows,
+        snapshot_date=snapshot_date,
+        required_series_ids=required_series_ids,
+    )
 
 
 def _sort_ohlcv_records(records: Sequence[OHLCVRecord]) -> list[OHLCVRecord]:

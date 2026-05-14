@@ -17,6 +17,10 @@ from loguru import logger
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(_REPO_ROOT))
 
+from core.data.macro_archive import (  # noqa: E402
+    build_latest_available_macro_snapshot,
+    macro_snapshot_is_usable,
+)
 from services.fred.macro_fetcher import (  # noqa: E402
     DEFAULT_FRED_CONFIG_PATH,
     DEFAULT_FRED_PAGE_LIMIT,
@@ -89,7 +93,7 @@ def backfill_fred_archive(
     serializer: MacroSerializer | None = None,
     deserializer: MacroDeserializer | None = None,
 ) -> BackfillResult:
-    """Backfill FRED macro/rate observations into R2, sharding per observation_date."""
+    """Backfill one point-in-time-safe raw macro snapshot per business day."""
     if from_date > to_date:
         raise ValueError("from_date must be <= to_date")
     if limit <= 0:
@@ -100,7 +104,13 @@ def backfill_fred_archive(
     if (
         not overwrite
         and not merge_existing
-        and _macro_archive_covers_range(writer, from_date, to_date)
+        and _macro_archive_covers_range(
+            writer,
+            from_date,
+            to_date,
+            series_ids=normalized_series_ids,
+            deserializer=deserializer,
+        )
     ):
         logger.info(
             "FRED macro archive already covers {}..{}; skipping provider fetch",
@@ -124,12 +134,7 @@ def backfill_fred_archive(
         realtime_end=to_date.isoformat(),
         limit=limit,
     )
-    rows_by_date: dict[str, list[dict[str, object]]] = {}
-    for row in rows:
-        observation_date = str(row.get("observation_date") or "").strip()
-        if not observation_date:
-            continue
-        rows_by_date.setdefault(observation_date, []).append(row)
+    ordered_rows = _sort_macro_observations(rows)
 
     payload_serializer = serializer or _macro_to_parquet_bytes
     payload_deserializer = deserializer or _macro_from_parquet_bytes
@@ -138,25 +143,36 @@ def backfill_fred_archive(
     skipped = 0
     total_rows = 0
     empty = 0
-    for observation_date in sorted(rows_by_date):
-        date_rows = _sort_macro_observations(rows_by_date[observation_date])
-        key = raw_macro_path(observation_date)
-        if writer.exists(key) and not overwrite and not merge_existing:
-            skipped += 1
-            continue
-        output_rows = date_rows
-        if writer.exists(key) and merge_existing and not overwrite:
+    for snapshot_day in _business_days(from_date, to_date):
+        snapshot_date = snapshot_day.isoformat()
+        date_rows = build_latest_available_macro_snapshot(
+            ordered_rows,
+            snapshot_date=snapshot_date,
+            series_ids=normalized_series_ids,
+        )
+        key = raw_macro_path(snapshot_date)
+        output_rows = list(date_rows)
+        if writer.exists(key) and not overwrite:
             existing_rows = payload_deserializer(writer.get_object(key))
-            if _rows_already_include_series(existing_rows, date_rows):
+            if macro_snapshot_is_usable(
+                existing_rows,
+                snapshot_date=snapshot_date,
+                required_series_ids=normalized_series_ids,
+            ):
                 skipped += 1
                 continue
-            output_rows = _merge_macro_observations(existing_rows, date_rows)
+            if merge_existing:
+                output_rows = build_latest_available_macro_snapshot(
+                    [*existing_rows, *date_rows],
+                    snapshot_date=snapshot_date,
+                )
+        if not output_rows:
+            empty += 1
+            continue
         writer.put_object(key, payload_serializer(output_rows))
         output_keys.append(key)
         written += 1
         total_rows += len(output_rows)
-        if not output_rows:
-            empty += 1
         if written % 100 == 0:
             logger.info("FRED macro backfill progress written={} skipped={}", written, skipped)
     logger.info(
@@ -332,18 +348,42 @@ def _resolve_to_date(value: str) -> date:
     return date.fromisoformat(value)
 
 
-def _macro_archive_covers_range(writer: ObjectWriter, from_date: date, to_date: date) -> bool:
-    """Return True when every business day in the range has a raw/macro/{date}.parquet key."""
-    expected: set[str] = set()
+def _macro_archive_covers_range(
+    writer: ObjectWriter,
+    from_date: date,
+    to_date: date,
+    *,
+    series_ids: Sequence[str] | None = None,
+    deserializer: MacroDeserializer | None = None,
+) -> bool:
+    """Return True when every business day already has a usable raw macro snapshot."""
+    business_days = _business_days(from_date, to_date)
+    if not business_days:
+        return False
+    payload_deserializer = deserializer or _macro_from_parquet_bytes
+    for day in business_days:
+        key = raw_macro_path(day.isoformat())
+        if not writer.exists(key):
+            return False
+        rows = payload_deserializer(writer.get_object(key))
+        if not macro_snapshot_is_usable(
+            rows,
+            snapshot_date=day.isoformat(),
+            required_series_ids=series_ids,
+        ):
+            return False
+    return True
+
+
+def _business_days(from_date: date, to_date: date) -> list[date]:
+    """Return every business day in the inclusive window."""
+    days: list[date] = []
     day = from_date
     while day <= to_date:
         if day.weekday() < 5:
-            expected.add(raw_macro_path(day.isoformat()))
+            days.append(day)
         day += timedelta(days=1)
-    if not expected:
-        return False
-    present = set(writer.list_keys("raw/macro/"))
-    return expected.issubset(present)
+    return days
 
 
 def _normalize_series_ids(series_ids: Sequence[str]) -> tuple[str, ...]:

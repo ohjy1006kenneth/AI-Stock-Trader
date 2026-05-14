@@ -75,7 +75,8 @@ Execution chain:
    - Normalize and append it to the canonical raw price store in R2
    - Fetch today's raw Alpaca news -> write `raw/news/YYYY-MM-DD.jsonl` to R2
    - Refresh newly available SimFin filings and earnings-calendar data -> write `raw/fundamentals/`
-   - Refresh FRED macro/rate observations available for the run date -> write `raw/macro/`
+   - Refresh FRED macro/rate observations available for the run date -> write
+     `raw/macro/{YYYY-MM-DD}.parquet`
    - Recompute today's eligibility mask (quality + liquidity filters)
    - Write `raw/universe/YYYY-MM-DD.csv` to R2
    - Write `PipelineManifestRecord` (stage=layer0)
@@ -99,7 +100,9 @@ Execution chain:
    - Pi records the expected Layer 1 manifest key and waits on R2 before moving on
    - Read today's OHLCV Parquet, news JSON Lines, and universe CSV from R2
    - Read point-in-time SimFin fundamentals and earnings dates from R2
-   - Read FRED macro context series persisted for the run date from R2
+   - Read FRED macro context series from the `raw/macro/{run_date}.parquet` point-in-time
+     snapshot (with backward-compatible legacy-vintage recovery when older observation-date
+     shards still exist)
    - Fail closed if the required Layer 0 raw archives or manifests are missing
    - Derive the ticker scope from Layer 0 universe masks; optional ticker filters may only
      narrow that scope, never replace it with a hand-maintained production list

@@ -33,6 +33,7 @@ from services.r2.paths import (
     layer1_sentiment_feature_path,
     layer1_validation_report_path,
     pipeline_manifest_path,
+    raw_macro_path,
     raw_price_path,
 )
 from services.r2.writer import R2Writer
@@ -328,6 +329,42 @@ def test_run_daily_layer1_fails_closed_when_raw_price_history_misses_target_date
     )
     assert manifest.status is RunStatus.FAILED
     assert "missing target-date coverage" in str(manifest.metadata["error"]["message"])
+
+
+def test_run_daily_layer1_recovers_macro_inputs_without_target_date_snapshot_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Layer 1 can recover point-in-time macro rows from legacy-compatible prior shards."""
+    writer = local_writer(tmp_path, monkeypatch)
+    seed_layer0_archives(
+        writer,
+        dates=["2024-01-02", "2024-01-03"],
+        tickers=["AAPL"],
+        layer0_run_ids=("layer1-macro-recovery",),
+    )
+    macro_key = raw_macro_path("2024-01-03")
+    macro_payload = writer.get_object(macro_key)
+    writer.delete_object(macro_key)
+
+    result = run_daily_layer1(
+        Layer1DailyConfig(
+            run_id="layer1-macro-recovery",
+            from_date="2024-01-03",
+            to_date="2024-01-03",
+            allow_layer0_manifest_date_range=True,
+        ),
+        writer=writer,
+        news_runner=fake_news_runner(writer, ["AAPL"]),
+        text_topic_runner=fake_topic_runner(writer, ["AAPL"]),
+        finbert_runner=fake_sentiment_runner(writer, ["AAPL"]),
+        regime_runner=fake_regime_runner(writer),
+        validation_output_dir=tmp_path / "reports",
+    )
+
+    writer.put_object(macro_key, macro_payload)
+
+    assert result.ready_for_layer2 is True
 
 
 def test_run_daily_layer1_writes_failed_manifest_on_branch_error(

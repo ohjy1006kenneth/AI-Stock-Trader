@@ -8,9 +8,19 @@ from __future__ import annotations
 
 import importlib
 import io
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
-from services.r2.paths import raw_fundamentals_path, raw_price_path
+from core.data.macro_archive import (
+    MACRO_SNAPSHOT_DATE_COLUMN,
+    build_latest_available_macro_snapshot,
+)
+from services.r2.paths import (
+    is_canonical_raw_macro_key,
+    raw_fundamentals_path,
+    raw_macro_date_from_key,
+    raw_price_path,
+)
 from services.r2.writer import R2Writer
 
 if TYPE_CHECKING:
@@ -64,12 +74,15 @@ def load_macro_frame(
     """
     pd = _require_pandas()
     active_writer = writer or R2Writer()
-    keys = sorted(active_writer.list_keys("raw/macro/"))
+    keys = sorted(
+        key for key in active_writer.list_keys("raw/macro/") if is_canonical_raw_macro_key(key)
+    )
     if not keys:
         return pd.DataFrame(
             columns=[
                 "source",
                 "series_id",
+                MACRO_SNAPSHOT_DATE_COLUMN,
                 "observation_date",
                 "realtime_start",
                 "realtime_end",
@@ -83,7 +96,10 @@ def load_macro_frame(
     frames = []
     for key in keys:
         payload = active_writer.get_object(key)
-        frames.append(pd.read_parquet(io.BytesIO(payload)))
+        frame = pd.read_parquet(io.BytesIO(payload))
+        if MACRO_SNAPSHOT_DATE_COLUMN not in frame.columns:
+            frame[MACRO_SNAPSHOT_DATE_COLUMN] = raw_macro_date_from_key(key)
+        frames.append(frame)
     frame = pd.concat(frames, ignore_index=True)
     identity_columns = [
         column
@@ -102,6 +118,33 @@ def load_macro_frame(
         )
         return frame
     return frame.reset_index(drop=True)
+
+
+def available_macro_series_by_date(
+    target_dates: Sequence[str],
+    *,
+    writer: R2Writer | None = None,
+    series_ids: Sequence[str] | None = None,
+) -> dict[str, list[str]]:
+    """Return recoverable macro series IDs for each requested snapshot date."""
+    normalized_dates = sorted({str(value).strip() for value in target_dates if str(value).strip()})
+    if not normalized_dates:
+        return {}
+
+    macro_frame = load_macro_frame(writer=writer)
+    if len(macro_frame.index) == 0:
+        return {date_text: [] for date_text in normalized_dates}
+
+    rows = macro_frame.to_dict("records")
+    available: dict[str, list[str]] = {}
+    for date_text in normalized_dates:
+        snapshot_rows = build_latest_available_macro_snapshot(
+            rows,
+            snapshot_date=date_text,
+            series_ids=series_ids,
+        )
+        available[date_text] = [str(row["series_id"]) for row in snapshot_rows]
+    return available
 
 
 def _require_pandas() -> Any:

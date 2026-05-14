@@ -6,6 +6,7 @@ import pytest
 
 from services.r2.paths import (
     build_r2_key,
+    is_canonical_raw_macro_key,
     is_canonical_raw_price_key,
     is_legacy_raw_price_key,
     layer0_ohlcv_provenance_report_path,
@@ -21,6 +22,7 @@ from services.r2.paths import (
     layer1_validation_report_path,
     pipeline_manifest_path,
     raw_fundamentals_path,
+    raw_macro_date_from_key,
     raw_macro_path,
     raw_news_path,
     raw_price_path,
@@ -44,6 +46,8 @@ def test_layer0_raw_path_builders_return_canonical_keys() -> None:
     assert raw_fundamentals_path("AAPL") == "raw/fundamentals/AAPL.parquet"
     assert raw_macro_path(date(2025, 1, 2)) == "raw/macro/2025-01-02.parquet"
     assert raw_macro_path("2025-01-02") == "raw/macro/2025-01-02.parquet"
+    assert is_canonical_raw_macro_key("raw/macro/2025-01-02.parquet") is True
+    assert raw_macro_date_from_key("raw/macro/2025-01-02.parquet") == "2025-01-02"
     assert raw_reference_path("tiingo_security_master") == "raw/reference/tiingo_security_master.json"
     assert (
         raw_security_master_path("2025-01-02")
