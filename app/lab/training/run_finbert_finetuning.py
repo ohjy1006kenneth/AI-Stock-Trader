@@ -9,8 +9,8 @@ import os
 import sys
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from datetime import UTC, date as Date
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
+from datetime import date as Date
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
@@ -30,18 +30,18 @@ _REPO_ROOT = _resolve_repo_root()
 sys.path.insert(0, str(_REPO_ROOT))
 
 from app.lab.training.finbert_finetuning import (  # noqa: E402
-    ClassificationMetrics,
     FINBERT_LABEL_ORDER,
+    ClassificationMetrics,
     ReturnLabelingConfig,
     build_return_labeled_dataset,
     evaluate_return_labeled_dataset,
     split_dataset_chronologically,
 )
 from core.contracts.schemas import (  # noqa: E402
+    SCHEMA_VERSION,
     ArtifactManifestRecord,
     PipelineManifestRecord,
     RunStatus,
-    SCHEMA_VERSION,
 )
 from core.features.news_preprocessing import news_sentiment_frame_to_records  # noqa: E402
 from core.features.sentiment_features import SentimentScore, SentimentScorer  # noqa: E402

@@ -11,9 +11,9 @@ from app.lab.training.finbert_finetuning import ClassificationMetrics
 from app.lab.training.run_finbert_finetuning import (
     ARTIFACT_MANIFEST_STAGE,
     FINBERT_FINETUNING_STAGE,
-    FineTuneTrainingArtifact,
     FinBERTFineTuneConfig,
     FinBERTFineTuneRuntimeConfig,
+    FineTuneTrainingArtifact,
     load_finbert_finetuning_runtime_config,
     run_finbert_finetuning,
 )
