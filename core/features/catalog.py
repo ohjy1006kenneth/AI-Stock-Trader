@@ -88,6 +88,8 @@ def feature_catalog() -> dict[str, FeatureRule]:
     for name in MARKET_FEATURE_COLUMNS:
         rules[name] = FeatureRule(owner="market", kind="number", required=True)
     for name in SECTOR_FEATURE_COLUMNS:
+        if name == "sector_relative_strength":
+            continue
         rules[name] = FeatureRule(owner="sector", kind="number", required=True)
     for name in (
         "realized_vol_5d",

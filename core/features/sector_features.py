@@ -124,11 +124,7 @@ def compute_sector_features(
 
     combined_frames: list[pd.DataFrame] = []
     for ticker, target_dates in sorted(normalized_target_dates.items()):
-        bars = ohlcv_by_ticker.get(ticker)
-        if bars is None:
-            combined_frames.append(_empty_frame(pd, ticker=ticker))
-            continue
-
+        bars = ohlcv_by_ticker[ticker]
         ticker_frame = pd.DataFrame({"date": list(target_dates)})
         ticker_frame["ticker"] = ticker
         ticker_frame = ticker_frame.merge(
@@ -271,7 +267,7 @@ def _point_in_time_sector_assignments(
     target_dates: Sequence[str],
     sector_config: SectorEtfConfig,
 ) -> pd.DataFrame:
-    """Return point-in-time sector assignments for the requested target dates."""
+    """Return point-in-time sector assignments for sorted ascending target dates."""
     if not target_dates:
         return pd.DataFrame(columns=["date", "_sector_key", "_sector_etf_ticker"])
 
@@ -371,13 +367,6 @@ def _stock_return_features(pd: Any, bars: pd.DataFrame) -> pd.DataFrame:
         ).shift(1)
     )
     return frame[["date", "_stock_return_1d", "_stock_return_63d"]]
-
-
-def _empty_frame(pd: Any, *, ticker: str) -> pd.DataFrame:
-    """Return an empty feature frame with canonical sector columns."""
-    return pd.DataFrame(columns=["date", "ticker", *SECTOR_FEATURE_COLUMNS]).assign(
-        ticker=ticker
-    )[["date", "ticker", *SECTOR_FEATURE_COLUMNS]]
 
 
 def _normalize_field_name(value: Any) -> str:
