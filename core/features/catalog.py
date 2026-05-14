@@ -9,8 +9,8 @@ from core.features.fundamentals_features import FUNDAMENTAL_FEATURE_COLUMNS
 from core.features.macro_features import MACRO_FEATURE_COLUMNS
 from core.features.market_features import MARKET_FEATURE_COLUMNS
 from core.features.regime_detection import HMM_REGIME_FEATURE_COLUMNS
-from core.features.sentiment_features import SENTIMENT_FEATURE_COLUMNS
 from core.features.sector_features import SECTOR_FEATURE_COLUMNS
+from core.features.sentiment_features import SENTIMENT_FEATURE_COLUMNS
 from core.features.text_topics import TOPIC_FEATURE_COLUMNS
 
 

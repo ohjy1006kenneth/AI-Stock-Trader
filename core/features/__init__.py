@@ -59,6 +59,14 @@ from core.features.regime_training import (
     build_hmm_training_frame,
     complete_hmm_training_matrix,
 )
+from core.features.sector_features import (
+    DEFAULT_SECTOR_ETF_CONFIG_PATH,
+    SECTOR_FEATURE_COLUMNS,
+    SectorEtfConfig,
+    compute_sector_features,
+    load_sector_etf_config,
+    sector_features_to_records,
+)
 from core.features.sentiment_features import (
     DEFAULT_SOURCE_CREDIBILITY_CONFIG_PATH,
     SENTIMENT_AGGREGATE_COLUMNS,
@@ -71,14 +79,6 @@ from core.features.sentiment_features import (
     sentiment_aggregates_to_records,
     sentiment_feature_records_from_scored_news,
     sentiment_feature_records_to_frame,
-)
-from core.features.sector_features import (
-    DEFAULT_SECTOR_ETF_CONFIG_PATH,
-    SECTOR_FEATURE_COLUMNS,
-    SectorEtfConfig,
-    compute_sector_features,
-    load_sector_etf_config,
-    sector_features_to_records,
 )
 from core.features.text_topics import (
     EMBEDDING_COLUMNS,
