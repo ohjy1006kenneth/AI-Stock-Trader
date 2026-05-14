@@ -36,17 +36,17 @@ from core.features.market_features import (
     compute_market_features,
     market_features_to_records,
 )
-from core.features.order_book_features import (
-    ORDER_BOOK_FEATURE_COLUMNS,
-    compute_order_book_features,
-    order_book_features_to_records,
-)
 from core.features.news_preprocessing import (
     NewsPreprocessingConfig,
     news_sentiment_frame_to_records,
     preprocess_news_articles,
     records_to_news_sentiment_frame,
     split_article_sentences,
+)
+from core.features.order_book_features import (
+    ORDER_BOOK_FEATURE_COLUMNS,
+    compute_order_book_features,
+    order_book_features_to_records,
 )
 from core.features.regime_detection import (
     HMM_REGIME_COLUMNS,
