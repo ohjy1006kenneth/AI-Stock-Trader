@@ -46,6 +46,9 @@ Use an R2 token/access key with read/write access to the bucket. Do not use the 
   sector-to-ETF mapping used by Layer 1 sector/factor features.
 - `config/order_book_features.json` gates the optional Layer 1 Level 2/order-book branch;
   it stays disabled by default until an explicit provider name is configured.
+- no repository config currently enables Layer 1 options-derived features; the baseline
+  stack defines no non-secret config or point-in-time historical options-chain archive
+  contract for `iv_rank`, `put_call_ratio`, or `iv_skew`
 - `config/source_credibility.json` controls source credibility weights used for
   FinBERT sentiment aggregation.
 - `config/finbert_sentiment.json` controls the Modal app, model identity, batch size,

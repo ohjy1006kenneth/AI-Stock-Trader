@@ -23,3 +23,8 @@ Subfolders:
 - `tiingo/` — deprecated legacy historical OHLCV adapters; not a Layer 0 production dependency
 - `simfin/` — point-in-time fundamentals and earnings-date adapters
 - `fred/` — macro and rates context adapters
+
+The current baseline repo has no active options-chain adapter or archive contract. Layer 1
+options-derived features such as `iv_rank`, `put_call_ratio`, and `iv_skew` are therefore
+out of scope until a future task adds an existing-stack provider and the corresponding
+repository-owned archive/config surfaces.

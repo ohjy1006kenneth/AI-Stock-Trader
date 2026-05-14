@@ -203,6 +203,9 @@ Notes:
   into optional per-ticker daily spread / imbalance features
 - missing order-book archives must not break the base Layer 1 run; when the branch is
   explicitly enabled, missing coverage resolves to null order-book features instead
+- this is the only optional market-data archive branch defined in the current baseline;
+  no raw options-chain archive contract exists for `iv_rank`, `put_call_ratio`, or
+  `iv_skew`
 - this archive is not a replacement for `FeatureRecord`
 - no schema changes in `core/contracts/schemas.py` are required unless the project decides
   to promote raw order-book observations into a typed inter-layer contract later
@@ -263,6 +266,9 @@ Input note:
   regime artifacts/manifests already persisted in R2, plus any explicitly configured
   provider-normalized order-book archives already staged in R2; Layer 1 must not call
   external data providers for feature inputs
+- the current baseline defines no Layer 0 raw options-chain archive and no Layer 1
+  options-derived feature branch, so `iv_rank`, `put_call_ratio`, and `iv_skew` are not
+  expected FeatureRecord keys
 - historical backfills store FeatureRecord rows as one per-ticker Parquet history under
   `features/layer1/{ticker}.parquet`; daily incremental paths may still address a single
   `(date, ticker)` row through `features/layer1/{date}/{ticker}.parquet`

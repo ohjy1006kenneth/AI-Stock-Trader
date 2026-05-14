@@ -149,6 +149,12 @@ This is not just a switch in the optimizer. It requires:
 | Optional Level 2 / order-book snapshots | Explicit provider config only | Disabled by default; Layer 1 reads provider-normalized pre-open archives from R2 only when they are explicitly staged and configured |
 | Live daily prices / broker state / execution | Alpaca Market Data + Trading API | Current-day bar snapshot, reconciliation source of truth, and order routing |
 
+Current baseline omission:
+- the repository does not define a point-in-time historical options-chain provider,
+  raw options archive, or Layer 1 options-derived branch
+- `iv_rank`, `put_call_ratio`, and `iv_skew` are intentionally out of scope until an
+  existing-stack provider is adopted and documented end-to-end
+
 ### Universe construction note
 Wikipedia's S&P 500 page revision history provides historical constituent changes at no cost.
 The revision history — not the current page — must be scraped to obtain point-in-time membership.
@@ -272,6 +278,8 @@ Responsibilities:
 - persist every external data source needed by Layer 1 into R2 before feature generation runs
 - when an explicit Level 2 provider is enabled, stage its normalized pre-open order-book
   snapshots in R2 before Layer 1 tries to consume them
+- do not assume a raw options-chain archive exists in the current baseline; Layer 1 has no
+  point-in-time historical options inputs for `iv_rank`, `put_call_ratio`, or `iv_skew`
 
 **Layer 0 operates in two distinct modes:**
 

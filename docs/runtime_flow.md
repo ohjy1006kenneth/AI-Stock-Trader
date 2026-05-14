@@ -107,6 +107,9 @@ Execution chain:
      provider-normalized pre-open Level 2 snapshot from
      `raw/order_book/{provider}/{run_date}.parquet`; if the archive is missing for a date,
      keep the branch non-fatal and emit null order-book features for that date/ticker scope
+   - No options-derived Layer 1 branch is part of the baseline daily flow; the repo does
+     not define a point-in-time historical options-chain archive or config for `iv_rank`,
+     `put_call_ratio`, or `iv_skew`
    - Fail closed if the required Layer 0 raw archives or manifests are missing
    - Derive the ticker scope from Layer 0 universe masks; optional ticker filters may only
      narrow that scope, never replace it with a hand-maintained production list

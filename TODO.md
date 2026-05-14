@@ -11,6 +11,10 @@
 - [x] FinBERT source credibility weighting missing from sentiment_features.py
 - [x] HMM regime detection needs training data pipeline before it can be fitted
 - [x] data/sample/ fixture files do not exist yet — needed for all unit tests
+- [x] Unsupported Layer 1 options-derived planning branch (`iv_rank`, `put_call_ratio`,
+  `iv_skew`) was removed from the current baseline in Issue `#150` because the repo has no
+  existing-stack point-in-time historical options-chain provider, archive contract, or
+  non-secret config surface for those inputs
 
 ## Technical debt
 <!-- Things that work but should be improved -->
