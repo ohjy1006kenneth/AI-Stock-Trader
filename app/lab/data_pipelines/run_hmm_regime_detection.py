@@ -10,15 +10,19 @@ import argparse
 import importlib
 import io
 import json
+import math
 import os
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from loguru import logger
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 
 def _resolve_repo_root() -> Path:
@@ -36,8 +40,12 @@ sys.path.insert(0, str(_REPO_ROOT))
 from core.contracts.schemas import PipelineManifestRecord, RunStatus  # noqa: E402
 from core.features.loaders import load_macro_frame, load_ohlcv_frame  # noqa: E402
 from core.features.regime_detection import (  # noqa: E402
+    HMM_REGIME_COLUMNS,
     HMMRegimeConfig,
+    HMMRegimeReadiness,
     fit_and_emit_hmm_regime_features,
+    inspect_hmm_regime_readiness,
+    validate_hmm_regime_probabilities,
 )
 from core.features.regime_training import build_hmm_training_frame  # noqa: E402
 from services.r2.paths import build_r2_key, pipeline_manifest_path, raw_price_path  # noqa: E402
@@ -152,22 +160,57 @@ def run_hmm_regime_detection(
         benchmark = load_ohlcv_frame(config.benchmark_ticker, writer=active_writer)  # type: ignore[arg-type]
         macro = load_macro_frame(writer=active_writer)  # type: ignore[arg-type]
         training_frame = build_hmm_training_frame(benchmark, macro)
-        regime_frame = fit_and_emit_hmm_regime_features(
+        hmm_config = HMMRegimeConfig(
+            max_iterations=config.max_iterations,
+            min_training_rows=config.min_training_rows,
+        )
+        readiness = inspect_hmm_regime_readiness(
             training_frame,
             train_start_date=config.train_start_date,
             train_end_date=config.train_end_date,
             inference_dates=list(config.inference_dates) or None,
-            config=HMMRegimeConfig(
-                max_iterations=config.max_iterations,
-                min_training_rows=config.min_training_rows,
-            ),
+            config=hmm_config,
         )
+        if readiness.can_fit_model:
+            regime_frame = fit_and_emit_hmm_regime_features(
+                training_frame,
+                train_start_date=config.train_start_date,
+                train_end_date=config.train_end_date,
+                inference_dates=list(config.inference_dates) or None,
+                config=hmm_config,
+            )
+        else:
+            regime_frame = _empty_regime_frame(readiness.inference_dates)
+        regime_frame = _with_regime_readiness_columns(regime_frame, readiness=readiness)
+        probability_errors = validate_hmm_regime_probabilities(regime_frame)
+        if probability_errors:
+            raise ValueError(
+                "Invalid HMM regime probabilities emitted: "
+                + "; ".join(probability_errors[:5])
+            )
         active_writer.put_object(output_key, _frame_to_parquet_bytes(regime_frame))
-        complete_training_rows = int(training_frame["is_complete"].astype(bool).sum())
         metadata.update(
             {
-                "training_rows": len(training_frame),
-                "complete_training_rows": complete_training_rows,
+                "training_rows": readiness.training_rows,
+                "complete_training_rows": readiness.complete_training_rows,
+                "dropped_feature_columns": list(readiness.dropped_feature_columns),
+                "ready_inference_dates": list(readiness.complete_inference_dates),
+                "inference_feature_gaps": {
+                    date_text: list(columns)
+                    for date_text, columns in sorted(
+                        readiness.incomplete_inference_feature_gaps.items()
+                    )
+                },
+                "warning_inference_dates": [
+                    date_text
+                    for date_text in readiness.inference_dates
+                    if (not readiness.can_fit_model)
+                    or date_text in readiness.incomplete_inference_feature_gaps
+                ],
+                "regime_layer2_ready": bool(
+                    readiness.can_fit_model
+                    and len(readiness.complete_inference_dates) == len(readiness.inference_dates)
+                ),
                 "regime_rows": len(regime_frame),
             }
         )
@@ -185,8 +228,8 @@ def run_hmm_regime_detection(
             run_id=config.run_id,
             output_key=output_key,
             manifest_key=manifest_key,
-            training_rows=len(training_frame),
-            complete_training_rows=complete_training_rows,
+            training_rows=readiness.training_rows,
+            complete_training_rows=readiness.complete_training_rows,
             regime_rows=len(regime_frame),
         )
     except Exception as exc:
@@ -219,6 +262,81 @@ def load_modal_runtime_config(path: Path = MODAL_CONFIG_PATH) -> ModalRuntimeCon
         python_version=str(payload.get("python_version", "3.11")),
         requirements_path=str(payload.get("requirements_path", "requirements/modal.txt")),
     )
+
+
+def _empty_regime_frame(inference_dates: Sequence[str]) -> pd.DataFrame:
+    """Return one explicit null regime row for each requested inference date."""
+    try:
+        import pandas as pd
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            "pandas and pyarrow are required to write HMM regime outputs."
+        ) from exc
+
+    rows = [
+        {
+            "date": date_text,
+            "regime_label": None,
+            "regime_confidence": math.nan,
+            "regime_prob_bear": math.nan,
+            "regime_prob_sideways": math.nan,
+            "regime_prob_bull": math.nan,
+        }
+        for date_text in inference_dates
+    ]
+    return pd.DataFrame(rows, columns=list(HMM_REGIME_COLUMNS))
+
+
+def _with_regime_readiness_columns(
+    frame: pd.DataFrame,
+    *,
+    readiness: HMMRegimeReadiness,
+) -> pd.DataFrame:
+    """Annotate the regime artifact with per-date readiness diagnostics."""
+    try:
+        import pandas as pd
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            "pandas and pyarrow are required to write HMM regime outputs."
+        ) from exc
+    if not isinstance(frame, pd.DataFrame):
+        raise TypeError("frame must be a pandas DataFrame")
+
+    annotated = frame.copy()
+    annotated["regime_required_for_layer2"] = False
+    annotated["regime_readiness_status"] = "warning"
+    annotated["regime_readiness_reason"] = "insufficient_training_history"
+    annotated["regime_missing_features"] = ""
+    annotated["regime_probability_sum"] = math.nan
+    annotated["training_rows"] = readiness.training_rows
+    annotated["complete_training_rows"] = readiness.complete_training_rows
+    annotated["min_training_rows"] = readiness.min_training_rows
+
+    for index, row in annotated.iterrows():
+        date_text = str(row["date"])
+        missing_features = readiness.incomplete_inference_feature_gaps.get(date_text, ())
+        if not readiness.can_fit_model:
+            reason = "insufficient_training_history"
+        elif missing_features:
+            reason = "incomplete_inference_features"
+        else:
+            reason = "ready"
+        annotated.loc[index, "regime_readiness_reason"] = reason
+        annotated.loc[index, "regime_missing_features"] = ",".join(missing_features)
+        if reason == "ready":
+            annotated.loc[index, "regime_required_for_layer2"] = True
+            annotated.loc[index, "regime_readiness_status"] = "ready"
+        else:
+            annotated.loc[index, "regime_required_for_layer2"] = False
+            annotated.loc[index, "regime_readiness_status"] = "warning"
+        probability_values = [
+            row.get("regime_prob_bear"),
+            row.get("regime_prob_sideways"),
+            row.get("regime_prob_bull"),
+        ]
+        if all(value is not None and not pd.isna(value) for value in probability_values):
+            annotated.loc[index, "regime_probability_sum"] = float(sum(probability_values))
+    return annotated
 
 
 def _frame_to_parquet_bytes(frame: object) -> bytes:

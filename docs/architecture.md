@@ -485,6 +485,13 @@ observations = [
 - Algorithm: Baum-Welch (Expectation-Maximization) — no manual labeling required
 - Read macro regime inputs such as Fed funds, CPI, and yield-curve measures from the
   Layer 0 FRED archive and market-state inputs such as SPY/VIX from the market data branch
+- HMM trainability is date-bounded. If the bounded train window has fewer than the minimum
+  complete rows, or if the target-date inference row is still incomplete because of rolling
+  warm-up, Layer 1.5 writes an explicit warning diagnostic plus null regime placeholders
+  instead of inventing a fallback label
+- When regime probabilities are populated, each probability must stay in `[0, 1]`, the
+  three probabilities must sum to `1.0` within tolerance `1e-4`, and
+  `regime_confidence` must equal the probability assigned to `regime_label`
 - **Lookahead bias:** never train HMM on full history and use its labels for backtesting.
   Correct approach: walk-forward (train on data up to T, label T, slide forward).
   Practical approximation: fit once on first few years, re-fit quarterly.
@@ -523,6 +530,12 @@ Use 5-day forward return as the prediction horizon. Test 1, 5, and 10 days and c
 **Regime-specific model architecture:**
 Train one XGBoost model per regime (bull, bear, sideways). At inference, the HMM identifies
 the current regime and the corresponding model is activated.
+
+Handoff rule:
+- Layer 2 may only consume a Layer 1 date when regime is fully populated and the Layer 1
+  readiness report says `ready_for_layer2=true`
+- During early-history warm-up, Layer 1 may still archive explicit null regime placeholders
+  for auditability, but that is a warning state, not a production-ready fallback path
 
 **Recommended XGBoost hyperparameters (starting point):**
 ```python

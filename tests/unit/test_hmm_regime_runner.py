@@ -89,6 +89,39 @@ def test_run_hmm_regime_detection_writes_failure_manifest(
     assert manifest["metadata"]["error"]["type"] == "FileNotFoundError"
 
 
+def test_run_hmm_regime_detection_emits_warning_rows_for_short_history(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Short history writes explicit null regime rows instead of failing the stage."""
+    writer = _local_writer(tmp_path, monkeypatch)
+    bars = _benchmark_bars(35)
+    macro = _macro_archive(60)
+    _write_parquet(writer, raw_price_path("SPY"), bars)
+    _write_parquet(writer, raw_macro_path("2023-01-02"), macro)
+
+    result = run_hmm_regime_detection(
+        HMMRegimePipelineConfig(
+            run_id="hmm-short-history",
+            train_end_date=str(bars.loc[20, "date"]),
+            inference_dates=(str(bars.loc[25, "date"]),),
+            min_training_rows=30,
+            max_iterations=20,
+        ),
+        writer=writer,
+    )
+
+    output = pd.read_parquet(io.BytesIO(writer.get_object(result.output_key)))
+    manifest = json.loads(writer.get_object(result.manifest_key))
+
+    assert output.loc[0, "regime_label"] is None or pd.isna(output.loc[0, "regime_label"])
+    assert pd.isna(output.loc[0, "regime_confidence"])
+    assert output.loc[0, "regime_readiness_status"] == "warning"
+    assert output.loc[0, "regime_readiness_reason"] == "insufficient_training_history"
+    assert manifest["status"] == RunStatus.COMPLETED
+    assert manifest["metadata"]["regime_layer2_ready"] is False
+
+
 def test_load_modal_runtime_config_reads_repo_config() -> None:
     """Modal app and secret names live in config rather than code constants."""
     config = load_modal_runtime_config()

@@ -1220,6 +1220,19 @@ def _expected_dates_by_ticker(
 
 def _validation_failure_summary(report: Layer1ValidationReport) -> str:
     """Return a compact operator-facing summary for one failed validation report."""
+    if report.regime_failures:
+        sample = report.regime_failures[0]
+        date_text = sample.get("date")
+        reason = sample.get("reason")
+        ticker = sample.get("ticker")
+        location = f"{ticker}/{date_text}" if ticker else str(date_text)
+        return f"regime validation failed at {location}: {reason}"
+    if report.regime_warnings:
+        sample = report.regime_warnings[0]
+        return (
+            f"regime warm-up warning on {sample.get('date')}: "
+            f"{sample.get('reason')}"
+        )
     if report.missing_ticker_files:
         return (
             f"{len(report.missing_ticker_files)} ticker histories missing; "

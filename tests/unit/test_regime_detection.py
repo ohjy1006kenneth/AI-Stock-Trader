@@ -9,6 +9,8 @@ from core.features.regime_detection import (
     emit_hmm_regime_features,
     fit_and_emit_hmm_regime_features,
     fit_hmm_regime_model,
+    inspect_hmm_regime_readiness,
+    validate_hmm_regime_probabilities,
 )
 from core.features.regime_training import HMM_TRAINING_FEATURE_COLUMNS
 
@@ -132,3 +134,42 @@ def test_fit_hmm_regime_model_drops_all_nan_features_in_train_window() -> None:
 
     assert "high_yield_spread" not in model.feature_columns
     assert "spy_log_return_1d" in model.feature_columns
+
+
+def test_inspect_hmm_regime_readiness_marks_short_history_not_trainable() -> None:
+    """Short training windows surface explicit readiness diagnostics."""
+    training = _synthetic_training_frame().iloc[:20].copy()
+    train_end_date = str(training.iloc[15]["date"])
+    inference_date = str(training.iloc[19]["date"])
+
+    readiness = inspect_hmm_regime_readiness(
+        training,
+        train_end_date=train_end_date,
+        inference_dates=[inference_date],
+        config=HMMRegimeConfig(min_training_rows=30),
+    )
+
+    assert readiness.can_fit_model is False
+    assert readiness.complete_training_rows == 15
+    assert readiness.complete_inference_dates == (inference_date,)
+
+
+def test_validate_hmm_regime_probabilities_rejects_bad_probability_sums() -> None:
+    """Populated regime rows must stay normalized and internally consistent."""
+    features = pd.DataFrame(
+        [
+            {
+                "date": "2024-06-03",
+                "regime_label": "bull",
+                "regime_confidence": 0.75,
+                "regime_prob_bear": 0.1,
+                "regime_prob_sideways": 0.1,
+                "regime_prob_bull": 0.75,
+            }
+        ],
+        columns=list(HMM_REGIME_COLUMNS),
+    )
+
+    errors = validate_hmm_regime_probabilities(features)
+
+    assert errors == ["2024-06-03: regime probabilities sum to 0.950000"]

@@ -244,6 +244,16 @@ Input note:
 - historical backfills store FeatureRecord rows as one per-ticker Parquet history under
   `features/layer1/{ticker}.parquet`; daily incremental paths may still address a single
   `(date, ticker)` row through `features/layer1/{date}/{ticker}.parquet`
+- regime features (`regime_label`, `regime_confidence`, `regime_prob_bear`,
+  `regime_prob_sideways`, `regime_prob_bull`) follow a two-tier rule:
+  when the bounded HMM train window has enough complete history and the target-date
+  inference row is complete, those fields are required and must be non-null on every
+  validated Layer 1 row for that date; when the HMM is still in short-history warm-up,
+  Layer 1 may persist explicit null placeholders for those five keys, but the archive is
+  not `ready_for_layer2` until a later rerun fills them
+- populated regime probabilities must each lie in `[0.0, 1.0]` and must sum to `1.0`
+  within tolerance `1e-4`; `regime_confidence` must equal the probability of
+  `regime_label`
 
 Examples:
 - `returns_1d`
@@ -295,7 +305,8 @@ Interpretation:
   beta return forecast
 - `pos_prob`: calibrated probability of positive or relative outperformance
 - `rank_score`: normalized rank or cross-sectional ordering metric
-- `regime`: regime label used by the model
+- `regime`: regime label used by the model; consume this only when the upstream Layer 1
+  readiness report has `ready_for_layer2=true`
 - `confidence`: model or regime confidence
 - `model_version`: artifact/version that produced this score
 
@@ -306,6 +317,10 @@ Training note:
   cross-sectional rank. Raw forward returns may be tracked as diagnostics, but they should
   not become the primary target because they cause the model to learn market/sector beta
   instead of stock-specific alpha.
+- Layer 2 treats regime as required for production handoff, not optional. The only time
+  Layer 1 may archive explicit null regime placeholders is during HMM warm-up, and that
+  condition must surface as a readiness warning with `ready_for_layer2=false` rather than
+  silently routing a fallback model.
 
 ---
 

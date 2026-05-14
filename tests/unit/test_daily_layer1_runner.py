@@ -30,6 +30,7 @@ from app.lab.data_pipelines.validate_layer1_archive import Layer1ValidationRepor
 from core.contracts.schemas import PipelineManifestRecord, RunStatus
 from core.features.io import feature_records_to_parquet_bytes, read_feature_records
 from services.r2.paths import (
+    layer1_regime_path,
     layer1_sentiment_feature_path,
     layer1_validation_report_path,
     pipeline_manifest_path,
@@ -170,6 +171,78 @@ def test_run_daily_layer1_prefers_topic_sentence_count_when_sentiment_conflicts(
     assert result.ready_for_layer2 is True
     assert history[0].features["nlp_sentence_count"] == 1
     assert history[0].features["nlp_sentiment_score"] == pytest.approx(0.25)
+
+
+def test_run_daily_layer1_surfaces_regime_warmup_as_validation_warning(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Short-history regime diagnostics keep explicit nulls and fail Layer 2 readiness."""
+    writer = local_writer(tmp_path, monkeypatch)
+    seed_layer0_archives(
+        writer,
+        dates=["2024-01-03"],
+        tickers=["AAPL"],
+        layer0_run_ids=("layer1-regime-warmup",),
+    )
+
+    def warning_regime_runner(config, *, writer: R2Writer):
+        output_key = layer1_regime_path(config.run_id)
+        frame = pd.DataFrame(
+            [
+                {
+                    "date": config.inference_dates[0],
+                    "regime_label": None,
+                    "regime_confidence": float("nan"),
+                    "regime_prob_bear": float("nan"),
+                    "regime_prob_sideways": float("nan"),
+                    "regime_prob_bull": float("nan"),
+                    "regime_required_for_layer2": False,
+                    "regime_readiness_status": "warning",
+                    "regime_readiness_reason": "insufficient_training_history",
+                    "regime_missing_features": "",
+                    "regime_probability_sum": float("nan"),
+                    "training_rows": 15,
+                    "complete_training_rows": 15,
+                    "min_training_rows": 30,
+                }
+            ]
+        )
+        buffer = io.BytesIO()
+        frame.to_parquet(buffer, index=False)
+        writer.put_object(output_key, buffer.getvalue())
+        return daily_layer1_module.HMMRegimePipelineResult(
+            run_id=config.run_id,
+            output_key=output_key,
+            manifest_key=pipeline_manifest_path("layer1_5_regime", config.run_id),
+            training_rows=15,
+            complete_training_rows=15,
+            regime_rows=1,
+        )
+
+    with pytest.raises(Layer1ValidationError) as exc_info:
+        run_daily_layer1(
+            Layer1DailyConfig(
+                run_id="layer1-regime-warmup",
+                from_date="2024-01-03",
+                to_date="2024-01-03",
+            ),
+            writer=writer,
+            news_runner=fake_news_runner(writer, ["AAPL"]),
+            text_topic_runner=fake_topic_runner(writer, ["AAPL"]),
+            finbert_runner=fake_sentiment_runner(writer, ["AAPL"]),
+            regime_runner=warning_regime_runner,
+            validation_output_dir=tmp_path / "reports",
+            now=datetime(2024, 1, 4, 12, 0, tzinfo=UTC),
+        )
+
+    report = exc_info.value.report
+    history = read_feature_records("AAPL", writer=writer)
+
+    assert report.validation_status == "warning"
+    assert report.regime_warnings[0]["reason"] == "insufficient_training_history"
+    assert history[0].features["regime_label"] is None
+    assert history[0].features["regime_confidence"] is None
 
 
 def test_run_daily_layer1_computes_shared_macro_features_once(
