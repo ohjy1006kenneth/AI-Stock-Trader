@@ -97,6 +97,11 @@ from core.features.market_features import (  # noqa: E402
     market_features_to_records,
 )
 from core.features.regime_detection import regime_features_to_records  # noqa: E402
+from core.features.sector_features import (  # noqa: E402
+    compute_sector_features,
+    load_sector_etf_config,
+    sector_features_to_records,
+)
 from services.r2.paths import (  # noqa: E402
     layer1_ticker_history_path,
     pipeline_manifest_path,
@@ -762,12 +767,34 @@ def _assemble_and_write_histories(
         writer,
         {date_text: result.output_key for date_text, result in regime_results.items()},
     )
+    ohlcv_by_ticker: dict[str, object] = {}
+    fundamentals_by_ticker: dict[str, object] = {}
+    for ticker in sorted(target_dates_by_ticker):
+        ohlcv_by_ticker[ticker] = load_ohlcv_frame(ticker, writer=writer)  # type: ignore[arg-type]
+        try:
+            fundamentals_by_ticker[ticker] = load_fundamentals_frame(  # type: ignore[arg-type]
+                ticker,
+                writer=writer,
+            )
+        except FileNotFoundError:
+            fundamentals_by_ticker[ticker] = _empty_fundamentals_frame()
+    sector_config = load_sector_etf_config()
+    sector_records_by_ticker = {
+        ticker: sector_features_to_records(frame)
+        for ticker, frame in compute_sector_features(
+            ohlcv_by_ticker=ohlcv_by_ticker,
+            fundamentals_by_ticker=fundamentals_by_ticker,
+            target_dates_by_ticker=target_dates_by_ticker,
+            sector_price_frames=_load_sector_price_frames(writer, sector_config),
+            sector_config=sector_config,
+        ).items()
+    }
 
     feature_rows_written = 0
     history_files_written = 0
     for ticker, target_dates in sorted(target_dates_by_ticker.items()):
-        ohlcv = load_ohlcv_frame(ticker, writer=writer)  # type: ignore[arg-type]
-        fundamentals = load_fundamentals_frame(ticker, writer=writer)  # type: ignore[arg-type]
+        ohlcv = ohlcv_by_ticker[ticker]
+        fundamentals = fundamentals_by_ticker[ticker]
         market_records = _records_for_target_dates(
             market_features_to_records(
                 compute_market_features(ohlcv, ticker, benchmark_bars=benchmark_bars)
@@ -785,6 +812,10 @@ def _assemble_and_write_histories(
                     target_dates=target_dates,
                 )
             ),
+            target_dates,
+        )
+        sector_daily_records = _records_for_target_dates(
+            sector_records_by_ticker.get(ticker, []),
             target_dates,
         )
         topic_daily_records = _records_for_target_dates(
@@ -810,6 +841,11 @@ def _assemble_and_write_histories(
                 Layer1FeatureInput(
                     name="context",
                     records=context_records,
+                    as_of_timestamp=SENTINEL_ASSEMBLY_AS_OF,
+                ),
+                Layer1FeatureInput(
+                    name="sector",
+                    records=sector_daily_records,
                     as_of_timestamp=SENTINEL_ASSEMBLY_AS_OF,
                 ),
                 Layer1FeatureInput(
@@ -853,6 +889,44 @@ def _load_feature_records_by_key(
         for record in parquet_bytes_to_feature_records(writer.get_object(key)):
             grouped.setdefault(record.ticker, []).append(record)
     return grouped
+
+
+def _load_sector_price_frames(writer: ObjectStore, sector_config) -> dict[str, object]:
+    """Return the configured sector ETF histories available in storage."""
+    frames: dict[str, object] = {}
+    for etf_ticker in sorted(set(sector_config.sector_to_etf.values())):
+        try:
+            frames[etf_ticker] = load_ohlcv_frame(etf_ticker, writer=writer)  # type: ignore[arg-type]
+        except FileNotFoundError:
+            logger.warning(
+                "Sector ETF OHLCV missing for ticker={}; related sector features will be null",
+                etf_ticker,
+            )
+    return frames
+
+
+def _empty_fundamentals_frame():
+    """Return an empty fundamentals frame matching the expected archive columns."""
+    try:
+        import pandas as pd
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            "pandas and pyarrow are required to build empty Layer 1 fundamentals frames."
+        ) from exc
+    return pd.DataFrame(
+        columns=[
+            "source",
+            "ticker",
+            "report_date",
+            "availability_date",
+            "retrieved_at",
+            "fiscal_year",
+            "fiscal_period",
+            "statement",
+            "earnings_date",
+            "raw_json",
+        ]
+    )
 
 
 def _assembly_safe_sentiment_records(

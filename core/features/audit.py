@@ -41,6 +41,12 @@ from core.features.regime_detection import (
     HMM_REGIME_FEATURE_COLUMNS,
     regime_features_to_records,
 )
+from core.features.sector_features import (
+    SECTOR_FEATURE_COLUMNS,
+    compute_sector_features,
+    load_sector_etf_config,
+    sector_features_to_records,
+)
 from core.features.sentiment_features import (
     SENTIMENT_FEATURE_COLUMNS,
     load_source_credibility_config,
@@ -192,6 +198,54 @@ def audit_layer1_features(
         writer=active_writer,
     )
     macro_frame = load_macro_frame(writer=active_writer)  # type: ignore[arg-type]
+    sector_scope = tuple(sorted(set(universe_scope) if universe_scope else set(normalized_tickers)))
+    sector_ohlcv_by_ticker: dict[str, object] = {}
+    sector_fundamentals_by_ticker: dict[str, object] = {}
+    for ticker in sector_scope:
+        try:
+            sector_ohlcv_by_ticker[ticker] = load_ohlcv_frame(ticker, writer=active_writer)  # type: ignore[arg-type]
+        except FileNotFoundError:
+            findings.append(
+                AuditFinding(
+                    status="warn",
+                    category="layer0",
+                    subject=f"{ticker} price archive",
+                    message="Sector audit skipped this ticker because the OHLCV archive is missing.",
+                )
+            )
+            continue
+        try:
+            sector_fundamentals_by_ticker[ticker] = load_fundamentals_frame(  # type: ignore[arg-type]
+                ticker,
+                writer=active_writer,
+            )
+        except FileNotFoundError:
+            sector_fundamentals_by_ticker[ticker] = _empty_fundamentals_frame()
+    sector_config = load_sector_etf_config()
+    sector_expected = {
+        ticker: (
+            record.features
+            if (
+                record := _record_for_date(
+                    sector_features_to_records(frame),
+                    as_of_date,
+                )
+            )
+            is not None
+            else {}
+        )
+        for ticker, frame in compute_sector_features(
+            ohlcv_by_ticker=sector_ohlcv_by_ticker,
+            fundamentals_by_ticker=sector_fundamentals_by_ticker,
+            target_dates_by_ticker={ticker: (as_of_date,) for ticker in sector_ohlcv_by_ticker},
+            sector_price_frames=_load_sector_price_frames(
+                writer=active_writer,
+                sector_config=sector_config,
+                findings=findings,
+            ),
+            sector_config=sector_config,
+        ).items()
+    }
 
     _audit_news_preprocessing(
         writer=active_writer,
@@ -287,6 +341,18 @@ def audit_layer1_features(
                 actual=history.features,
                 expected=context_record.features if context_record is not None else {},
                 feature_names=CONTEXT_FEATURE_COLUMNS,
+                artifact_key=None,
+                findings=findings,
+            )
+        )
+        branch_results.append(
+            _compare_branch(
+                branch="sector",
+                ticker=ticker,
+                as_of_date=as_of_date,
+                actual=history.features,
+                expected=sector_expected.get(ticker, {}),
+                feature_names=SECTOR_FEATURE_COLUMNS,
                 artifact_key=None,
                 findings=findings,
             )
@@ -1263,6 +1329,29 @@ def _empty_fundamentals_frame() -> Any:
             "raw_json",
         ]
     )
+
+
+def _load_sector_price_frames(
+    *,
+    writer: AuditReader,
+    sector_config,
+    findings: list[AuditFinding],
+) -> dict[str, object]:
+    """Return available sector ETF histories for audit recomputation."""
+    frames: dict[str, object] = {}
+    for etf_ticker in sorted(set(sector_config.sector_to_etf.values())):
+        try:
+            frames[etf_ticker] = load_ohlcv_frame(etf_ticker, writer=writer)  # type: ignore[arg-type]
+        except FileNotFoundError:
+            findings.append(
+                AuditFinding(
+                    status="warn",
+                    category="layer0",
+                    subject=f"{etf_ticker} sector ETF archive",
+                    message="Sector ETF OHLCV archive missing; affected sector features are null.",
+                )
+            )
+    return frames
 
 
 def _normalize_tickers(tickers: Sequence[str]) -> tuple[str, ...]:

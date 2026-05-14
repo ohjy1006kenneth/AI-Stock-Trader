@@ -9,6 +9,7 @@ from core.features.fundamentals_features import FUNDAMENTAL_FEATURE_COLUMNS
 from core.features.macro_features import MACRO_FEATURE_COLUMNS
 from core.features.market_features import MARKET_FEATURE_COLUMNS
 from core.features.regime_detection import HMM_REGIME_FEATURE_COLUMNS
+from core.features.sector_features import SECTOR_FEATURE_COLUMNS
 from core.features.sentiment_features import SENTIMENT_FEATURE_COLUMNS
 from core.features.text_topics import TOPIC_FEATURE_COLUMNS
 
@@ -51,7 +52,7 @@ FEATURE_FAMILY_SPECS: tuple[FeatureFamilySpec, ...] = (
     FeatureFamilySpec(
         key="market",
         label="Market",
-        feature_names=MARKET_FEATURE_COLUMNS,
+        feature_names=_unique_feature_names((*MARKET_FEATURE_COLUMNS, *SECTOR_FEATURE_COLUMNS)),
     ),
     FeatureFamilySpec(
         key="macro_context",
@@ -86,6 +87,10 @@ def feature_catalog() -> dict[str, FeatureRule]:
     rules: dict[str, FeatureRule] = {}
     for name in MARKET_FEATURE_COLUMNS:
         rules[name] = FeatureRule(owner="market", kind="number", required=True)
+    for name in SECTOR_FEATURE_COLUMNS:
+        if name == "sector_relative_strength":
+            continue
+        rules[name] = FeatureRule(owner="sector", kind="number", required=True)
     for name in (
         "realized_vol_5d",
         "realized_vol_21d",
@@ -107,6 +112,13 @@ def feature_catalog() -> dict[str, FeatureRule]:
         required=True,
         minimum=0.0,
         maximum=100.0,
+    )
+    rules["sector_relative_strength"] = FeatureRule(
+        owner="sector",
+        kind="number",
+        required=True,
+        minimum=0.0,
+        maximum=1.0,
     )
 
     for name in FUNDAMENTAL_FEATURE_COLUMNS:

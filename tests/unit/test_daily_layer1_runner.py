@@ -86,6 +86,8 @@ def test_run_daily_layer1_happy_path_writes_history_and_completed_manifest(
     assert history[0].features["nlp_topic_count"] == 1
     assert history[0].features["nlp_sentiment_score"] == pytest.approx(0.25)
     assert history[0].features["regime_label"] == "bull"
+    assert "sector_etf_ret" in history[0].features
+    assert history[0].features["sector_relative_strength"] is None
     assert writer.exists("features/layer1/2024-01-03/AAPL.parquet") is True
     assert writer.exists(
         layer1_validation_report_path("layer1-daily", "2024-01-03", "2024-01-04")

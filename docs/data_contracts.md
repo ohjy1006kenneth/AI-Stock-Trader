@@ -250,14 +250,25 @@ Examples:
 - `returns_21d`
 - `realized_vol_21d`
 - `volume_ratio`
+- `sector_etf_ret`
+- `stock_vs_sector`
+- `sector_momentum`
+- `sector_relative_strength`
 - `same_day_news_count`
 - `news_count_7d`
 - `sentiment_score_7d`
 - `days_since_last_news`
-- `sector_momentum`
 - `days_to_earnings`
 - `regime_label`
 - `regime_confidence`
+
+Implementation note:
+- sector/factor features use the latest fundamentals sector classification whose
+  `availability_date` is strictly before the feature date, plus the repository
+  config in `config/sector_etf_mapping.json`
+- when sector classification, mapping, ETF history, or enough same-sector peers
+  are unavailable, the sector feature values remain null rather than using a
+  guessed fallback
 
 The schema intentionally allows a flexible `features` dictionary so the system can evolve without hardcoding every feature name into every caller.
 
