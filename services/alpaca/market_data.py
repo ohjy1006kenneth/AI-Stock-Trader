@@ -197,6 +197,24 @@ class AlpacaMarketDataClient:
             raise last_error
         raise RuntimeError("Alpaca market-data request failed without an exception")
 
+    def describe_adjustment_provenance(self) -> dict[str, object]:
+        """Describe the corporate-action adjustment policy for live daily bars."""
+        return {
+            "policy_id": "alpaca_live_1day_adjustment_raw",
+            "provider": "alpaca",
+            "endpoint": ALPACA_STOCK_BARS_ENDPOINT,
+            "timeframe": "1Day",
+            "feed": _normalize_feed(self.config.feed),
+            "request_adjustment": "raw",
+            "stored_ohlc_basis": "raw",
+            "normalized_adj_close_policy": "copy_close_to_adj_close",
+            "corporate_actions_reflected": [],
+            "limitations": [
+                "Daily incremental bars preserve Alpaca's raw close for the run date and do not retroactively replay later split/dividend adjustments.",
+                "OHLCVRecord.adj_close mirrors the normalized close because Alpaca daily bars do not supply a second adjusted-close field.",
+            ],
+        }
+
 
 def normalize_alpaca_bar_response(
     payload: Mapping[str, Any],

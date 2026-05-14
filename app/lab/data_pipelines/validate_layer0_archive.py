@@ -20,6 +20,7 @@ sys.path.insert(0, str(_REPO_ROOT))
 
 from services.r2.paths import (  # noqa: E402
     is_canonical_raw_price_key,
+    layer0_ohlcv_provenance_report_path,
     pipeline_manifest_path,
     raw_fundamentals_path,
     raw_news_path,
@@ -50,6 +51,23 @@ DEFAULT_VALIDATION_FROM_DATE = "2017-01-01"
 DEFAULT_REPORT_DIR = Path("artifacts/reports/integration")
 DEFAULT_FUNDAMENTALS_MIN_ROWS = 1
 FundamentalsRowCounter = Callable[[ArchiveReader, str], int]
+_EXPECTED_OHLCV_POLICIES = {
+    "historical_backfill": {
+        "policy_id": "alpaca_historical_1day_adjustment_all",
+        "provider": "alpaca",
+        "request_adjustment": "all",
+        "stored_ohlc_basis": "provider_adjusted",
+        "normalized_adj_close_policy": "copy_close_to_adj_close",
+        "feed": "sip",
+    },
+    "daily_incremental": {
+        "policy_id": "alpaca_live_1day_adjustment_raw",
+        "provider": "alpaca",
+        "request_adjustment": "raw",
+        "stored_ohlc_basis": "raw",
+        "normalized_adj_close_policy": "copy_close_to_adj_close",
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -71,6 +89,10 @@ class Layer0ArchiveValidationReport:
     fundamentals_tickers_below_min_rows: list[str]
     macro_day_count: int
     manifest_present: bool
+    ohlcv_provenance_report_present: bool
+    ohlcv_provenance_policy_id: str | None
+    ohlcv_provenance_validation_errors: list[str]
+    ohlcv_split_like_discontinuity_count: int
     missing_news_dates: list[str]
     noncanonical_price_keys: list[str]
     missing_universe_dates: list[str]
@@ -106,7 +128,9 @@ def validate_layer0_archive(
     missing_universe = [
         day.isoformat() for day in business_days if not reader.exists(raw_universe_path(day))
     ]
-    manifest_present = reader.exists(pipeline_manifest_path("layer0", run_id))
+    manifest_key = pipeline_manifest_path("layer0", run_id)
+    manifest_present = reader.exists(manifest_key)
+    manifest_payload = _read_json_object(reader, manifest_key) if manifest_present else None
     fundamentals_expected = 0
     fundamentals_present = len(fundamentals_keys)
     fundamentals_below_min: list[str] = []
@@ -124,10 +148,17 @@ def validate_layer0_archive(
             if counter(reader, key) < fundamentals_min_rows:
                 fundamentals_below_min.append(ticker)
 
+    provenance_report = _validate_ohlcv_provenance(
+        reader=reader,
+        run_id=run_id,
+        manifest_payload=manifest_payload,
+    )
+
     ready = bool(canonical_price_keys) and not noncanonical_price_keys
     ready = ready and not missing_news and not missing_universe
     ready = ready and bool(fundamentals_keys) and bool(macro_keys) and manifest_present
     ready = ready and not fundamentals_below_min
+    ready = ready and provenance_report.ready
 
     return Layer0ArchiveValidationReport(
         from_date=from_date.isoformat(),
@@ -145,6 +176,10 @@ def validate_layer0_archive(
         fundamentals_tickers_below_min_rows=fundamentals_below_min,
         macro_day_count=len(macro_keys),
         manifest_present=manifest_present,
+        ohlcv_provenance_report_present=provenance_report.report_present,
+        ohlcv_provenance_policy_id=provenance_report.policy_id,
+        ohlcv_provenance_validation_errors=provenance_report.errors,
+        ohlcv_split_like_discontinuity_count=provenance_report.split_like_discontinuity_count,
         missing_news_dates=missing_news,
         noncanonical_price_keys=noncanonical_price_keys,
         missing_universe_dates=missing_universe,
@@ -184,6 +219,134 @@ def _count_parquet_rows(reader: ArchiveReader, key: str) -> int:
         ) from exc
     frame = pd.read_parquet(BytesIO(payload))
     return int(len(frame.index))
+
+
+@dataclass(frozen=True)
+class _OhlcvProvenanceValidation:
+    """Result of validating Layer 0 OHLCV adjustment provenance artifacts."""
+
+    ready: bool
+    report_present: bool
+    policy_id: str | None
+    errors: list[str]
+    split_like_discontinuity_count: int
+
+
+def _validate_ohlcv_provenance(
+    *,
+    reader: ArchiveReader,
+    run_id: str,
+    manifest_payload: dict[str, object] | None,
+) -> _OhlcvProvenanceValidation:
+    """Validate manifest and report metadata for Layer 0 OHLCV adjustment provenance."""
+    if manifest_payload is None:
+        return _OhlcvProvenanceValidation(
+            ready=False,
+            report_present=False,
+            policy_id=None,
+            errors=["missing_manifest_payload"],
+            split_like_discontinuity_count=0,
+        )
+
+    errors: list[str] = []
+    metadata = manifest_payload.get("metadata")
+    if not isinstance(metadata, dict):
+        return _OhlcvProvenanceValidation(
+            ready=False,
+            report_present=False,
+            policy_id=None,
+            errors=["manifest_missing_metadata"],
+            split_like_discontinuity_count=0,
+        )
+
+    mode = str(metadata.get("mode") or "").strip()
+    expected_policy = _EXPECTED_OHLCV_POLICIES.get(mode)
+    if expected_policy is None:
+        errors.append(f"unsupported_layer0_mode:{mode or 'missing'}")
+
+    prices_metadata = metadata.get("prices")
+    if not isinstance(prices_metadata, dict):
+        return _OhlcvProvenanceValidation(
+            ready=False,
+            report_present=False,
+            policy_id=None,
+            errors=errors + ["manifest_missing_prices_metadata"],
+            split_like_discontinuity_count=0,
+        )
+
+    provenance_metadata = prices_metadata.get("adjustment_provenance")
+    if not isinstance(provenance_metadata, dict):
+        errors.append("manifest_missing_adjustment_provenance")
+        provenance_metadata = {}
+
+    report_key = str(
+        prices_metadata.get("provenance_report_key") or layer0_ohlcv_provenance_report_path(run_id)
+    ).strip()
+    report_present = bool(report_key) and reader.exists(report_key)
+    if report_key != layer0_ohlcv_provenance_report_path(run_id):
+        errors.append("unexpected_provenance_report_key")
+    if not report_present:
+        errors.append("missing_provenance_report")
+        return _OhlcvProvenanceValidation(
+            ready=False,
+            report_present=False,
+            policy_id=str(provenance_metadata.get("policy_id") or "") or None,
+            errors=errors,
+            split_like_discontinuity_count=0,
+        )
+
+    report_payload = _read_json_object(reader, report_key)
+    report_provenance = (
+        report_payload.get("price_adjustment_provenance")
+        if isinstance(report_payload, dict)
+        else None
+    )
+    if not isinstance(report_provenance, dict):
+        errors.append("report_missing_price_adjustment_provenance")
+        report_provenance = {}
+
+    archive_summary = report_payload.get("archive_summary") if isinstance(report_payload, dict) else None
+    if not isinstance(archive_summary, dict):
+        errors.append("report_missing_archive_summary")
+        archive_summary = {}
+
+    policy_id = str(report_provenance.get("policy_id") or provenance_metadata.get("policy_id") or "")
+    split_like_discontinuity_count = int(archive_summary.get("split_like_discontinuity_count", 0))
+    if expected_policy is not None:
+        for field_name, expected_value in expected_policy.items():
+            manifest_value = provenance_metadata.get(field_name)
+            report_value = report_provenance.get(field_name)
+            if manifest_value != expected_value:
+                errors.append(f"manifest_{field_name}_expected_{expected_value}")
+            if report_value != expected_value:
+                errors.append(f"report_{field_name}_expected_{expected_value}")
+            if manifest_value != report_value:
+                errors.append(f"manifest_report_mismatch_{field_name}")
+
+    observed_rows = int(archive_summary.get("observed_rows", 0))
+    equal_rows = int(archive_summary.get("close_equals_adj_close_rows", 0))
+    different_rows = int(archive_summary.get("close_diff_adj_close_rows", 0))
+    if observed_rows != equal_rows + different_rows:
+        errors.append("archive_summary_row_counts_inconsistent")
+    if different_rows != 0:
+        errors.append("normalized_adj_close_policy_violated")
+
+    return _OhlcvProvenanceValidation(
+        ready=not errors,
+        report_present=True,
+        policy_id=policy_id or None,
+        errors=errors,
+        split_like_discontinuity_count=split_like_discontinuity_count,
+    )
+
+
+def _read_json_object(reader: ArchiveReader, key: str) -> dict[str, object]:
+    """Read and decode one JSON object payload from the archive."""
+    payload = reader.get_object(key)
+    parsed = json.loads(payload)
+    if not isinstance(parsed, dict):
+        raise ValueError(f"Expected JSON object at {key}")
+    return dict(parsed)
 
 
 def _normalize_ticker(ticker: str) -> str:

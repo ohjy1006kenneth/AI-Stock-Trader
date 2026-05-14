@@ -187,3 +187,17 @@ def test_fetch_price_page_rejects_nan_values() -> None:
 
     with pytest.raises(ValueError, match="finite"):
         fetcher.fetch_price_page(ticker="AAPL", from_date="2024-01-02", to_date="2024-01-02")
+
+
+def test_describe_adjustment_provenance_reports_historical_policy() -> None:
+    """Historical fetcher exposes the stored Alpaca corporate-action policy explicitly."""
+    fetcher = _client(_FakeSession([]))
+
+    provenance = fetcher.describe_adjustment_provenance()
+
+    assert provenance["policy_id"] == "alpaca_historical_1day_adjustment_all"
+    assert provenance["provider"] == "alpaca"
+    assert provenance["feed"] == "sip"
+    assert provenance["request_adjustment"] == "all"
+    assert provenance["stored_ohlc_basis"] == "provider_adjusted"
+    assert provenance["normalized_adj_close_policy"] == "copy_close_to_adj_close"

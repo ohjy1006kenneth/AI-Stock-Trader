@@ -158,6 +158,24 @@ class AlpacaHistoricalOHLCVFetcher:
         """Fetch records for a resolved Alpaca ticker identity."""
         return self.fetch_records(ticker=security.ticker, from_date=from_date, to_date=to_date)
 
+    def describe_adjustment_provenance(self) -> dict[str, object]:
+        """Describe the corporate-action adjustment policy for historical bars."""
+        return {
+            "policy_id": "alpaca_historical_1day_adjustment_all",
+            "provider": "alpaca",
+            "endpoint": ALPACA_STOCK_BARS_ENDPOINT,
+            "timeframe": "1Day",
+            "feed": self.feed,
+            "request_adjustment": self.adjustment,
+            "stored_ohlc_basis": "provider_adjusted",
+            "normalized_adj_close_policy": "copy_close_to_adj_close",
+            "corporate_actions_reflected": ["splits", "dividends"],
+            "limitations": [
+                "Stored OHLC fields preserve Alpaca's adjustment=all response but do not persist a separate corporate-actions ledger.",
+                "OHLCVRecord.adj_close mirrors the normalized close because Alpaca daily bars do not supply a second adjusted-close field.",
+            ],
+        }
+
     def _request_json(self, params: Mapping[str, Any]) -> Any:
         """Request one Alpaca bars payload with bounded retries and provider throttling."""
         url = f"{self.config.base_url.rstrip('/')}{ALPACA_STOCK_BARS_ENDPOINT}"

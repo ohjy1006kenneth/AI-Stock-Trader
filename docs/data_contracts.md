@@ -107,7 +107,33 @@ Implementation notes:
 - missing price fields fail fast; non-finite values are rejected
 - OHLC price relationships are validated before record construction: `high >= low`, `open in [low, high]`, `close in [low, high]`
 - volume must be non-negative integer; dollar_volume must be non-negative float
+- historical Alpaca backfills request `adjustment=all`; daily incremental Alpaca bars request
+  `adjustment=raw`
+- `OHLCVRecord.adj_close` currently mirrors the normalized `close` for both flows because the
+  Alpaca daily-bar payload does not expose a second adjusted-close field to store separately
+- the contract therefore does not by itself encode whether a stored row came from raw or
+  provider-adjusted OHLC; Layer 0 persists that provenance in the run manifest metadata and
+  in `artifacts/reports/integration/layer0_ohlcv_provenance_{run_id}.json`
 
+### Layer 0 OHLCV adjustment provenance report (non-contract artifact)
+
+Purpose:
+- make the historical-vs-live Alpaca adjustment policy explicit and auditable
+- let Layer 0 validation fail closed when the expected price-adjustment policy was not
+  recorded for a run
+- surface audit-only split-like continuity jumps without pretending the system stores a full
+  corporate-actions ledger
+
+Notes:
+- stored as JSON under `artifacts/reports/integration/layer0_ohlcv_provenance_{run_id}.json`
+- manifest metadata for `stage=layer0` includes the compact `prices.adjustment_provenance`
+  summary plus the `prices.provenance_report_key`
+- this artifact records the request policy (`adjustment=all` vs `adjustment=raw`), feed,
+  normalized `adj_close` behavior, archive counts, and heuristic split-like discontinuity
+  samples
+- it does not replace a dedicated splits/dividends archive; if later work needs exact
+  corporate-action event history or raw-vs-adjusted dual pricing, that remains a separate
+  design decision
 ### Layer 0 raw news archive (non-contract artifact)
 
 Purpose:
