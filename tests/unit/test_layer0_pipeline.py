@@ -17,7 +17,7 @@ from core.data.layer0_pipeline import (
     run_daily_layer0_incremental,
     run_historical_layer0_backfill,
 )
-from core.data.quality import QualityFilterConfig
+from core.data.quality import QualityFilterConfig, SharesOutstandingSnapshot
 from services.r2.paths import (
     pipeline_manifest_path,
     raw_fundamentals_path,
@@ -163,7 +163,10 @@ class _FundamentalsFetcher:
                 "limit": limit,
             }
         )
-        return [{"ticker": ticker, "report_date": start_date, "raw": {"x": 1}} for ticker in tickers]
+        return [
+            {"ticker": ticker, "report_date": start_date, "raw": {"x": 1}}
+            for ticker in tickers
+        ]
 
 
 class _EmptyFundamentalsFetcher:
@@ -260,6 +263,10 @@ def _bytes_deserializer(data: bytes) -> list[OHLCVRecord]:
     return [OHLCVRecord(**row) for row in json.loads(data)]
 
 
+def _raw_rows_deserializer(data: bytes) -> list[dict[str, object]]:
+    return json.loads(data)
+
+
 def _universe_serializer(rows: list[Any]) -> bytes:
     buffer = io.StringIO()
     writer = csv.DictWriter(
@@ -299,6 +306,37 @@ def test_build_universe_mask_records_applies_quality_filters() -> None:
     assert by_ticker["AAPL"].data_quality_ok is True
     assert by_ticker["MSFT"].data_quality_ok is False
     assert by_ticker["MSFT"].reason == "missing_ohlcv_window"
+
+
+def test_build_universe_mask_records_applies_market_cap_filter() -> None:
+    records = build_universe_mask_records(
+        as_of_date=date(2024, 1, 2),
+        tickers=["aapl"],
+        ohlcv_window={
+            "AAPL": [
+                _bar(
+                    date_value="2024-01-02",
+                    ticker="AAPL",
+                    dollar_volume=2_000_000.0,
+                )
+            ]
+        },
+        quality_config=QualityFilterConfig(
+            rolling_window_days=1,
+            min_market_cap=2_000_000_000.0,
+        ),
+        shares_outstanding_window={
+            "AAPL": [
+                SharesOutstandingSnapshot(
+                    availability_date="2024-01-02",
+                    shares_outstanding=100_000_000.0,
+                )
+            ]
+        },
+    )
+
+    assert records[0].liquid is False
+    assert records[0].reason == "market_cap_below_minimum"
 
 
 def test_historical_layer0_backfill_writes_all_raw_archives_and_manifest() -> None:
@@ -456,7 +494,7 @@ def test_daily_layer0_incremental_uses_alpaca_shape_and_canonical_paths() -> Non
     assert price_payload[0]["date"] == "2024-01-02"
 
 
-def test_daily_layer0_incremental_writes_run_date_macro_snapshot_from_latest_available_rows() -> None:
+def test_daily_layer0_incremental_writes_run_date_macro_snapshot() -> None:
     """Daily Layer 0 keys macro shards by run date even when FRED lags one day."""
     writer = _Writer()
     macro_fetcher = _MacroFetcher()
@@ -502,6 +540,62 @@ def test_daily_layer0_incremental_writes_run_date_macro_snapshot_from_latest_ava
             "value": 1.0,
         }
     ]
+
+
+def test_daily_layer0_incremental_uses_same_day_fundamentals_for_market_cap_filter() -> None:
+    """Same-day SimFin availability can satisfy the optional market-cap screen."""
+    writer = _Writer()
+    raw_rows = [
+        {
+            "source": "simfin",
+            "ticker": "AAPL",
+            "report_date": "2024-01-02",
+            "availability_date": "2024-01-02",
+            "retrieved_at": "2024-01-02T00:00:00+00:00",
+            "raw": {"sharesBasic": 200_000_000.0},
+        }
+    ]
+
+    class _SharesFundamentalsFetcher:
+        def fetch_all_fundamentals(self, **_: Any) -> list[dict[str, object]]:
+            return raw_rows
+
+    run_daily_layer0_incremental(
+        config=DailyLayer0Config(
+            as_of_date=date(2024, 1, 2),
+            tickers=("AAPL",),
+            fred_series_ids=("DGS10",),
+            run_id="test-market-cap-same-day",
+            quality_config=QualityFilterConfig(
+                rolling_window_days=1,
+                min_market_cap=1_500_000_000.0,
+            ),
+        ),
+        live_price_fetcher=_LivePriceFetcher(
+            records=[
+                _bar(date_value="2024-01-02", ticker="AAPL"),
+                _bar(date_value="2024-01-02", ticker="SPY"),
+            ]
+        ),
+        news_fetcher=_NewsFetcher(),
+        fundamentals_fetcher=_SharesFundamentalsFetcher(),
+        macro_fetcher=_MacroFetcher(),
+        writer=writer,
+        price_serializer=_bytes_serializer,
+        price_deserializer=_bytes_deserializer,
+        news_serializer=_bytes_serializer,
+        fundamentals_serializer=_bytes_serializer,
+        fundamentals_deserializer=_raw_rows_deserializer,
+        macro_serializer=_bytes_serializer,
+        universe_serializer=_universe_serializer,
+    )
+
+    universe_rows = list(
+        csv.DictReader(io.StringIO(writer.objects[raw_universe_path("2024-01-02")].decode()))
+    )
+    assert universe_rows[0]["ticker"] == "AAPL"
+    assert universe_rows[0]["liquid"] == "True"
+    assert universe_rows[0]["reason"] == ""
 
 
 def test_daily_layer0_incremental_canonicalizes_dot_tickers_across_outputs() -> None:
@@ -867,7 +961,7 @@ def test_historical_backfill_repairs_existing_price_history_for_one_day_catch_up
     assert universe_rows[0]["data_quality_ok"] == "True"
 
 
-def test_historical_backfill_fetches_benchmark_prices_without_adding_benchmark_to_universe() -> None:
+def test_historical_backfill_fetches_benchmark_prices_only_for_prices() -> None:
     writer = _Writer()
     price_fetcher = _HistoricalPriceFetcher()
 
@@ -943,7 +1037,11 @@ def test_historical_backfill_repairs_stale_benchmark_archive_missing_target_date
         universe_serializer=_universe_serializer,
     )
 
-    assert {"ticker": "SPY", "from_date": "2024-01-03", "to_date": "2024-01-03"} in price_fetcher.calls
+    assert {
+        "ticker": "SPY",
+        "from_date": "2024-01-03",
+        "to_date": "2024-01-03",
+    } in price_fetcher.calls
     benchmark_payload = json.loads(writer.objects[benchmark_key])
     assert [row["date"] for row in benchmark_payload] == ["2024-01-02", "2024-01-03"]
     assert writer.put_counts[benchmark_key] == 1
