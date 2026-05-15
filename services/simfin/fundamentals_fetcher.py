@@ -16,6 +16,7 @@ from loguru import logger
 
 SIMFIN_API_KEY_ENV = "SIMFIN_API_KEY"
 SIMFIN_BASE_URL_ENV = "SIMFIN_BASE_URL"
+SEC_USER_AGENT_ENV = "SEC_USER_AGENT"
 DEFAULT_SIMFIN_BASE_URL = "https://backend.simfin.com/api/v3"
 SIMFIN_STATEMENTS_ENDPOINT = "/companies/statements/compact"
 DEFAULT_SIMFIN_PAGE_LIMIT = 1000
@@ -23,6 +24,9 @@ DEFAULT_SIMFIN_TICKER_BATCH_SIZE = 50
 DEFAULT_SIMFIN_STATEMENTS = ("pl", "bs", "cf", "derived")
 DEFAULT_SIMFIN_PERIODS = ("q1", "q2", "q3", "q4", "fy")
 SIMFIN_ENV_FILE = Path(__file__).resolve().parents[2] / "config" / "simfin.env"
+SEC_COMPANY_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
+SEC_COMPANYFACTS_URL_TEMPLATE = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
+_SEC_ALLOWED_FORMS = frozenset({"10-K", "10-K/A", "10-Q", "10-Q/A", "20-F", "20-F/A", "40-F"})
 _SIMFIN_REQUEST_TICKER_OVERRIDES: dict[str, str] = {
     # Current S&P 500 ticker aliases that SimFin still serves under an older
     # vendor symbol or the economic share-class peer with identical company fundamentals.
@@ -72,8 +76,60 @@ class SimFinPage:
     limit: int
 
 
+@dataclass(frozen=True)
+class _SecConceptSpec:
+    """One SEC company-facts concept mapped onto a Layer 0 raw field."""
+
+    raw_field: str
+    taxonomy: str
+    concept: str
+    unit_kind: str
+
+
+_SEC_CONCEPT_SPECS: tuple[_SecConceptSpec, ...] = (
+    _SecConceptSpec("Revenue", "us-gaap", "Revenues", "currency"),
+    _SecConceptSpec("Revenue", "us-gaap", "SalesRevenueNet", "currency"),
+    _SecConceptSpec(
+        "Revenue",
+        "us-gaap",
+        "RevenueFromContractWithCustomerExcludingAssessedTax",
+        "currency",
+    ),
+    _SecConceptSpec("Net Income", "us-gaap", "NetIncomeLoss", "currency"),
+    _SecConceptSpec(
+        "Net Income Available to Common Shareholders",
+        "us-gaap",
+        "NetIncomeLossAvailableToCommonStockholdersBasic",
+        "currency",
+    ),
+    _SecConceptSpec("Gross Profit", "us-gaap", "GrossProfit", "currency"),
+    _SecConceptSpec("totalAssets", "us-gaap", "Assets", "currency"),
+    _SecConceptSpec("totalLiabilities", "us-gaap", "Liabilities", "currency"),
+    _SecConceptSpec("stockholdersEquity", "us-gaap", "StockholdersEquity", "currency"),
+    _SecConceptSpec(
+        "stockholdersEquity",
+        "us-gaap",
+        "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
+        "currency",
+    ),
+    _SecConceptSpec("operatingIncome", "us-gaap", "OperatingIncomeLoss", "currency"),
+    _SecConceptSpec("interestExpense", "us-gaap", "InterestExpense", "currency"),
+    _SecConceptSpec("interestExpense", "us-gaap", "InterestExpenseNonoperating", "currency"),
+    _SecConceptSpec("sharesBasic", "dei", "EntityCommonStockSharesOutstanding", "shares"),
+    _SecConceptSpec("sharesBasic", "us-gaap", "CommonStockSharesOutstanding", "shares"),
+    _SecConceptSpec(
+        "sharesBasic",
+        "us-gaap",
+        "WeightedAverageNumberOfSharesOutstandingBasic",
+        "shares",
+    ),
+    _SecConceptSpec("epsBasic", "us-gaap", "EarningsPerShareBasic", "per_share"),
+    _SecConceptSpec("epsDiluted", "us-gaap", "EarningsPerShareDiluted", "per_share"),
+)
+
+
 class SimFinFundamentalsFetcher:
-    """Fetch and normalize SimFin as-reported fundamentals and earnings metadata."""
+    """Fetch SimFin fundamentals and recover zero-row ticker gaps from SEC company facts."""
 
     def __init__(
         self,
@@ -84,6 +140,7 @@ class SimFinFundamentalsFetcher:
         self.config = config
         self.session = session or requests.Session()
         self._last_request_at: float | None = None
+        self._sec_cik_by_ticker: dict[str, str] | None = None
 
     def fetch_statement_rows(
         self,
@@ -184,6 +241,72 @@ class SimFinFundamentalsFetcher:
                 len(rows),
             )
 
+        missing_tickers = _tickers_without_rows(rows=rows, tickers=normalized_tickers)
+        if missing_tickers:
+            fallback_rows = self._fetch_sec_fallback_rows(
+                tickers=missing_tickers,
+                start_date=start_date,
+                end_date=end_date,
+                retrieved_at=archive_retrieved_at,
+            )
+            if fallback_rows:
+                logger.info(
+                    "SEC company-facts fallback recovered {} rows across {} tickers",
+                    len(fallback_rows),
+                    len({str(row.get('ticker') or '') for row in fallback_rows}),
+                )
+                for row in fallback_rows:
+                    key = _fundamental_key(row)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    rows.append(row)
+
+        return rows
+
+    def _fetch_sec_fallback_rows(
+        self,
+        *,
+        tickers: Sequence[str],
+        start_date: str,
+        end_date: str,
+        retrieved_at: datetime,
+    ) -> list[dict[str, Any]]:
+        """Recover unresolved tickers from the public SEC company-facts API."""
+        cik_by_ticker = self._load_sec_cik_by_ticker()
+        rows: list[dict[str, Any]] = []
+        unresolved: list[str] = []
+        for ticker in tickers:
+            cik = cik_by_ticker.get(ticker)
+            if cik is None:
+                unresolved.append(ticker)
+                continue
+            try:
+                payload = self._request_sec_json(SEC_COMPANYFACTS_URL_TEMPLATE.format(cik=cik))
+            except requests.RequestException as exc:
+                logger.warning(
+                    "SEC company-facts fallback failed for {} (CIK {}): {}",
+                    ticker,
+                    cik,
+                    type(exc).__name__,
+                )
+                unresolved.append(ticker)
+                continue
+            rows.extend(
+                _sec_companyfacts_to_normalized_rows(
+                    payload,
+                    ticker=ticker,
+                    cik=cik,
+                    start_date=start_date,
+                    end_date=end_date,
+                    retrieved_at=retrieved_at,
+                )
+            )
+        if unresolved:
+            logger.warning(
+                "SEC company-facts fallback could not resolve tickers: {}",
+                ",".join(unresolved),
+            )
         return rows
 
     def _fetch_fundamentals_batch(
@@ -346,6 +469,63 @@ class SimFinFundamentalsFetcher:
         if last_error is not None:
             raise last_error
         raise RuntimeError("SimFin request failed without an exception")
+
+    def _load_sec_cik_by_ticker(self) -> dict[str, str]:
+        """Load and cache the SEC ticker-to-CIK map used by the fallback path."""
+        if self._sec_cik_by_ticker is not None:
+            return self._sec_cik_by_ticker
+
+        payload = self._request_sec_json(SEC_COMPANY_TICKERS_URL)
+        if not isinstance(payload, Mapping):
+            raise ValueError("SEC company_tickers payload must be a JSON object")
+
+        cik_by_ticker: dict[str, str] = {}
+        for value in payload.values():
+            if not isinstance(value, Mapping):
+                continue
+            ticker = value.get("ticker")
+            cik_str = value.get("cik_str")
+            if not isinstance(ticker, str) or cik_str is None:
+                continue
+            cik_by_ticker[_normalize_ticker(ticker)] = str(cik_str).strip().zfill(10)
+        self._sec_cik_by_ticker = cik_by_ticker
+        return cik_by_ticker
+
+    def _request_sec_json(self, url: str) -> Any:
+        """Request one SEC JSON payload with the same retry/throttle behavior."""
+        headers = {
+            "accept": "application/json",
+            "accept-encoding": "gzip, deflate",
+            "user-agent": _required_sec_user_agent(),
+        }
+        last_error: requests.RequestException | None = None
+        for attempt in range(self.config.max_retries + 1):
+            try:
+                self._throttle_if_needed()
+                response = self.session.get(
+                    url,
+                    headers=headers,
+                    timeout=self.config.timeout_seconds,
+                )
+                response.raise_for_status()
+                return response.json()
+            except requests.RequestException as exc:
+                last_error = exc
+                if attempt >= self.config.max_retries or not _is_retryable_error(exc):
+                    raise
+                time.sleep(
+                    _retry_backoff_seconds(
+                        exc,
+                        attempt,
+                        self.config.retry_sleep_seconds,
+                        self.config.rate_limit_sleep_seconds,
+                    )
+                )
+            finally:
+                self._last_request_at = time.monotonic()
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("SEC request failed without an exception")
 
     def _throttle_if_needed(self) -> None:
         """Throttle requests to respect SimFin rate limits."""
@@ -551,6 +731,203 @@ def _fundamental_key(row: Mapping[str, Any]) -> str:
             json.dumps(row.get("raw") or {}, sort_keys=True, separators=(",", ":")),
         ]
     )
+
+
+def _tickers_without_rows(
+    *,
+    rows: Sequence[Mapping[str, Any]],
+    tickers: Sequence[str],
+) -> list[str]:
+    """Return requested tickers that still have no normalized fundamentals rows."""
+    present = {_normalize_ticker(str(row.get("ticker") or "")) for row in rows if row.get("ticker")}
+    return [ticker for ticker in tickers if ticker not in present]
+
+
+def _required_sec_user_agent() -> str:
+    """Return the configured SEC EDGAR user-agent or fail closed when absent."""
+    configured = (os.getenv(SEC_USER_AGENT_ENV) or "").strip()
+    if not configured:
+        raise ValueError(
+            f"Missing required SEC environment variable for EDGAR access: {SEC_USER_AGENT_ENV}"
+        )
+    return configured
+
+
+def _sec_companyfacts_to_normalized_rows(
+    payload: Any,
+    *,
+    ticker: str,
+    cik: str,
+    start_date: str,
+    end_date: str,
+    retrieved_at: datetime,
+) -> list[dict[str, Any]]:
+    """Map SEC company-facts JSON into the normalized Layer 0 fundamentals shape."""
+    if not isinstance(payload, Mapping):
+        raise ValueError("SEC companyfacts payload must be a JSON object")
+    facts = payload.get("facts")
+    if not isinstance(facts, Mapping):
+        return []
+
+    grouped: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
+    for spec in _SEC_CONCEPT_SPECS:
+        taxonomy_payload = facts.get(spec.taxonomy)
+        if not isinstance(taxonomy_payload, Mapping):
+            continue
+        concept_payload = taxonomy_payload.get(spec.concept)
+        if not isinstance(concept_payload, Mapping):
+            continue
+        units_payload = concept_payload.get("units")
+        if not isinstance(units_payload, Mapping):
+            continue
+        for unit_name, unit_rows in units_payload.items():
+            if not _sec_unit_matches(str(unit_name), spec.unit_kind):
+                continue
+            if not isinstance(unit_rows, Sequence):
+                continue
+            for unit_row in unit_rows:
+                if not isinstance(unit_row, Mapping):
+                    continue
+                normalized_row = _sec_fact_row_to_archive_row(
+                    grouped=grouped,
+                    sec_row=unit_row,
+                    ticker=ticker,
+                    cik=cik,
+                    start_date=start_date,
+                    end_date=end_date,
+                )
+                if normalized_row is None:
+                    continue
+                raw = normalized_row["raw"]
+                if spec.raw_field not in raw:
+                    raw[spec.raw_field] = unit_row.get("val")
+
+    rows = list(grouped.values())
+    rows.sort(
+        key=lambda row: (
+            str(row.get("ticker") or ""),
+            str(row.get("report_date") or ""),
+            str(row.get("availability_date") or ""),
+            str(row.get("statement") or ""),
+        )
+    )
+    retrieval_time = retrieved_at.isoformat()
+    for row in rows:
+        row["retrieved_at"] = retrieval_time
+    return rows
+
+
+def _sec_fact_row_to_archive_row(
+    *,
+    grouped: dict[tuple[str, str, str, str, str], dict[str, Any]],
+    sec_row: Mapping[str, Any],
+    ticker: str,
+    cik: str,
+    start_date: str,
+    end_date: str,
+) -> dict[str, Any] | None:
+    """Create or retrieve one grouped archive row from a single SEC fact row."""
+    filed = _optional_sec_date(sec_row.get("filed"))
+    report_date = _optional_sec_date(sec_row.get("end"))
+    if filed is None or report_date is None:
+        return None
+    if filed < start_date or filed > end_date:
+        return None
+
+    form = str(sec_row.get("form") or "").strip().upper()
+    if form not in _SEC_ALLOWED_FORMS:
+        return None
+
+    fiscal_year = _optional_sec_int(sec_row.get("fy"))
+    fiscal_period = _optional_sec_text(sec_row.get("fp"))
+    accession = _optional_sec_text(sec_row.get("accn")) or f"{ticker}-{filed}-{report_date}-{form}"
+    key = (
+        filed,
+        report_date,
+        accession,
+        fiscal_period or "",
+        str(fiscal_year) if fiscal_year is not None else "",
+    )
+    existing = grouped.get(key)
+    if existing is not None:
+        return existing
+
+    raw: dict[str, Any] = {
+        "ticker": ticker.replace("-", "."),
+        "cik": cik,
+        "accessionNumber": accession,
+        "filed": filed,
+        "form": form,
+        "reportDate": report_date,
+    }
+    if fiscal_year is not None:
+        raw["Fiscal Year"] = fiscal_year
+    if fiscal_period is not None:
+        raw["Fiscal Period"] = fiscal_period
+
+    normalized: dict[str, Any] = {
+        "source": "sec_companyfacts",
+        "ticker": ticker,
+        "report_date": report_date,
+        "availability_date": filed,
+        "statement": "sec_companyfacts",
+        "raw": raw,
+    }
+    if fiscal_year is not None:
+        normalized["fiscal_year"] = fiscal_year
+    if fiscal_period is not None:
+        normalized["fiscal_period"] = fiscal_period
+
+    grouped[key] = normalized
+    return normalized
+
+
+def _sec_unit_matches(unit_name: str, expected_kind: str) -> bool:
+    """Return True when a SEC company-facts unit string matches the expected field type."""
+    normalized = unit_name.strip().lower()
+    if expected_kind == "currency":
+        return normalized == "usd"
+    if expected_kind == "shares":
+        return normalized == "shares"
+    if expected_kind == "per_share":
+        return "usd" in normalized and "share" in normalized
+    raise ValueError(f"Unsupported SEC unit kind: {expected_kind}")
+
+
+def _optional_sec_date(value: Any) -> str | None:
+    """Return a validated SEC date string when present."""
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str):
+        return None
+    return _validate_date(value, "sec_date")
+
+
+def _optional_sec_int(value: Any) -> int | None:
+    """Return an integer-like SEC fact field when present."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        try:
+            return int(stripped)
+        except ValueError:
+            return None
+    return None
+
+
+def _optional_sec_text(value: Any) -> str | None:
+    """Return trimmed SEC text when present."""
+    if value is None:
+        return None
+    cleaned = str(value).strip()
+    return cleaned or None
 
 
 def _normalize_tickers(tickers: Sequence[str]) -> list[str]:

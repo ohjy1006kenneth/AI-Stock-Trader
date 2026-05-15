@@ -1,4 +1,4 @@
-"""Historical SimFin fundamentals backfill into the canonical R2 raw archive."""
+"""Historical fundamentals backfill into the canonical R2 raw archive."""
 from __future__ import annotations
 
 import argparse
@@ -86,7 +86,7 @@ def backfill_simfin_archive(
     retrieved_at: datetime | None = None,
     serializer: FundamentalsSerializer | None = None,
 ) -> BackfillResult:
-    """Backfill SimFin as-reported fundamentals into R2, sharding per-ticker."""
+    """Backfill Layer 0 fundamentals into R2, sharding per-ticker."""
     if from_date > to_date:
         raise ValueError("from_date must be <= to_date")
     if limit <= 0:
