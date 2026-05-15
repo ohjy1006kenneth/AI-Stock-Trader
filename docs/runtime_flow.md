@@ -27,14 +27,16 @@ What it produces in R2:
 - `raw/prices/{ticker}.parquet` - full Alpaca delayed SIP adjusted OHLCV history per ticker
 - `raw/news/YYYY-MM-DD.jsonl` - Alpaca news archive per date
 - `raw/universe/YYYY-MM-DD.csv` - eligibility masks for all historical dates
-- `raw/fundamentals/` - SimFin as-reported fundamentals and earnings-date archive
+- `raw/fundamentals/` - SimFin-first fundamentals and earnings-date archive with SEC
+  company-facts fallback for unresolved ticker gaps
 - `raw/macro/` - FRED macro/rate observations archive
 
 Historical backfill uses:
 - Wikipedia revision history for point-in-time index membership
 - Alpaca delayed SIP (`feed=sip`, `timeframe=1Day`, `adjustment=all`) for canonical historical OHLCV from 2017-01-01 onward
 - Alpaca News for historical/live raw news archives
-- SimFin for as-reported fundamentals and earnings dates, persisted before feature generation
+- SimFin for as-reported fundamentals and earnings dates, with public SEC company-facts
+  fallback when SimFin has no rows for a ticker that must remain strict-ready
 - FRED for macro context series, persisted before feature generation
 
 Without this, Layer 1 feature generation and model training cannot run.
@@ -236,8 +238,9 @@ manifests whose `as_of_date` or upstream `layer0_run_id` metadata do not match t
 
 Source-of-truth rules for the daily loop:
 - Alpaca delayed SIP is the canonical historical archive source for raw adjusted prices
-- SimFin is the canonical provider for point-in-time fundamentals and earnings dates, but
-  Layer 1 reads the Layer 0 R2 archive rather than calling SimFin directly
+- SimFin is the primary provider for point-in-time fundamentals and earnings dates, with SEC
+  company-facts fallback only inside Layer 0 when SimFin returns no usable rows; Layer 1 reads
+  the Layer 0 R2 archive rather than calling either provider directly
 - FRED is the canonical provider for macro context inputs, but Layer 1 reads the Layer 0
   R2 archive rather than calling FRED directly
 - Alpaca is the canonical archive source for raw news and the live source for current-day market data, broker reconciliation, and execution

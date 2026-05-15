@@ -8,7 +8,8 @@ The target data stack is:
 - historical universe membership from Wikipedia revision history
 - canonical historical OHLCV archives from Alpaca delayed SIP
 - historical and live raw news from Alpaca
-- point-in-time fundamentals and earnings dates from SimFin
+- point-in-time fundamentals and earnings dates from SimFin, with public SEC company-facts
+  fallback when SimFin has no rows for an otherwise active ticker
 - macro and rate context from FRED
 - live market data, broker state, and execution from Alpaca
 
@@ -271,7 +272,8 @@ Responsibilities:
 - apply daily liquidity and tradeability filters
 - use Alpaca delayed SIP adjusted OHLCV as the canonical historical market data store
 - ingest raw Alpaca news with point-in-time timestamps and raw text
-- ingest SimFin as-reported fundamentals and earnings dates as point-in-time raw context
+- ingest SimFin as-reported fundamentals and earnings dates as point-in-time raw context,
+  with public SEC company-facts fallback when SimFin has a provider gap
 - ingest FRED macro and rate series as point-in-time raw context
 - detect stale, missing, or corrupted market data
 - generate daily eligibility masks and quality flags
@@ -289,7 +291,8 @@ Runs on laptop or Modal — not the Pi. The Pi has no role in the backfill.
 - Entrypoint: `app/lab/data_pipelines/backfill_layer0.py`
 - Fetches full OHLCV history from 2017-01-01 onward for all historical constituents keyed by ticker
 - Fetches historical raw news archive from Alpaca → `r2://raw/news/YYYY-MM-DD.jsonl` per date
-- Fetches SimFin as-reported fundamentals and earnings dates → `r2://raw/fundamentals/`
+- Fetches SimFin as-reported fundamentals and earnings dates, then fills any zero-row active
+  ticker gaps from the public SEC company-facts API → `r2://raw/fundamentals/`
 - Fetches FRED macro/rate series → `r2://raw/macro/`
 - Computes eligibility masks for all historical dates → `r2://raw/universe/YYYY-MM-DD.csv`
 - Idempotent: safe to re-run; skips dates already stored in R2
@@ -827,7 +830,8 @@ The following must be completed before the daily loop can run:
    - Builds complete Alpaca delayed SIP-backed OHLCV Parquet database in R2 — one file per ticker
    - Builds Alpaca historical news archive in R2 — one JSON Lines file per date
    - Builds historical eligibility masks in R2 — one CSV per date
-   - Builds SimFin as-reported fundamentals and earnings-date archives in R2
+   - Builds SimFin-first fundamentals and earnings-date archives in R2, with SEC
+     company-facts fallback for unresolved active-ticker gaps
    - Builds FRED macro/rate archives in R2
 2. Train and validate the XGBoost models (Milestones 2, 2.5, 3, 4)
 3. Deploy validated model bundle to R2 / cloud Oracle

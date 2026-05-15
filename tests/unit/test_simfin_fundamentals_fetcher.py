@@ -94,6 +94,139 @@ def _read_json(payload: bytes | str) -> list[dict[str, Any]]:
     return json.loads(text)
 
 
+def _sec_company_tickers_payload(*, ticker: str, cik: int, title: str) -> dict[str, Any]:
+    return {"0": {"ticker": ticker, "cik_str": cik, "title": title}}
+
+
+def _sec_companyfacts_payload(
+    *,
+    accession: str,
+    report_date: str,
+    filed_date: str,
+    fiscal_year: int,
+    fiscal_period: str,
+    form: str = "10-Q",
+) -> dict[str, Any]:
+    return {
+        "cik": 14693,
+        "entityName": "BROWN FORMAN CORP",
+        "facts": {
+            "dei": {
+                "EntityCommonStockSharesOutstanding": {
+                    "units": {
+                        "shares": [
+                            {
+                                "accn": accession,
+                                "end": report_date,
+                                "filed": filed_date,
+                                "form": form,
+                                "fp": fiscal_period,
+                                "fy": fiscal_year,
+                                "val": 217_000_000,
+                            }
+                        ]
+                    }
+                }
+            },
+            "us-gaap": {
+                "RevenueFromContractWithCustomerExcludingAssessedTax": {
+                    "units": {
+                        "USD": [
+                            {
+                                "accn": accession,
+                                "end": report_date,
+                                "filed": filed_date,
+                                "form": form,
+                                "fp": fiscal_period,
+                                "fy": fiscal_year,
+                                "start": "2025-02-01",
+                                "val": 1_051_200_000,
+                            }
+                        ]
+                    }
+                },
+                "NetIncomeLoss": {
+                    "units": {
+                        "USD": [
+                            {
+                                "accn": accession,
+                                "end": report_date,
+                                "filed": filed_date,
+                                "form": form,
+                                "fp": fiscal_period,
+                                "fy": fiscal_year,
+                                "start": "2025-02-01",
+                                "val": 266_700_000,
+                            }
+                        ]
+                    }
+                },
+                "Assets": {
+                    "units": {
+                        "USD": [
+                            {
+                                "accn": accession,
+                                "end": report_date,
+                                "filed": filed_date,
+                                "form": form,
+                                "fp": fiscal_period,
+                                "fy": fiscal_year,
+                                "val": 7_933_500_000,
+                            }
+                        ]
+                    }
+                },
+                "Liabilities": {
+                    "units": {
+                        "USD": [
+                            {
+                                "accn": accession,
+                                "end": report_date,
+                                "filed": filed_date,
+                                "form": form,
+                                "fp": fiscal_period,
+                                "fy": fiscal_year,
+                                "val": 4_712_800_000,
+                            }
+                        ]
+                    }
+                },
+                "StockholdersEquity": {
+                    "units": {
+                        "USD": [
+                            {
+                                "accn": accession,
+                                "end": report_date,
+                                "filed": filed_date,
+                                "form": form,
+                                "fp": fiscal_period,
+                                "fy": fiscal_year,
+                                "val": 3_220_700_000,
+                            }
+                        ]
+                    }
+                },
+                "EarningsPerShareBasic": {
+                    "units": {
+                        "USD/shares": [
+                            {
+                                "accn": accession,
+                                "end": report_date,
+                                "filed": filed_date,
+                                "form": form,
+                                "fp": fiscal_period,
+                                "fy": fiscal_year,
+                                "start": "2025-02-01",
+                                "val": 1.23,
+                            }
+                        ]
+                    }
+                },
+            },
+        },
+    }
+
+
 def test_client_config_from_env_reads_key(monkeypatch: pytest.MonkeyPatch) -> None:
     """SimFin config reads API settings from environment variables."""
     monkeypatch.setenv("SIMFIN_API_KEY", "test-key")
@@ -205,7 +338,11 @@ def test_fetch_all_fundamentals_batches_large_ticker_sets() -> None:
     """Large ticker universes are split into smaller SimFin requests."""
     session = _FakeSession([_FakeResponse({"data": []}), _FakeResponse({"data": []})])
     fetcher = SimFinFundamentalsFetcher(
-        SimFinClientConfig(api_key="test-key", retry_sleep_seconds=0),
+        SimFinClientConfig(
+            api_key="test-key",
+            retry_sleep_seconds=0,
+            min_request_interval_seconds=0,
+        ),
         session=session,  # type: ignore[arg-type]
     )
 
@@ -217,9 +354,10 @@ def test_fetch_all_fundamentals_batches_large_ticker_sets() -> None:
     )
 
     assert rows == []
-    assert len(session.calls) == 2
+    assert len(session.calls) == 3
     assert session.calls[0]["params"]["ticker"] == ",".join(tickers[:50])
     assert session.calls[1]["params"]["ticker"] == tickers[50]
+    assert session.calls[2]["url"] == "https://www.sec.gov/files/company_tickers.json"
 
 
 def test_fetch_all_fundamentals_splits_on_server_error() -> None:
@@ -551,6 +689,60 @@ def test_fetch_statement_rows_maps_provider_rename_aliases_back_to_canonical_tic
 
     assert session.calls[0]["params"]["ticker"] == "FLT"
     assert [row["ticker"] for row in page.rows] == ["CPAY"]
+
+
+def test_fetch_all_fundamentals_uses_sec_companyfacts_fallback_for_missing_ticker() -> None:
+    """Public SEC company facts backfill tickers when SimFin returns no rows."""
+    session = _FakeSession(
+        [
+            _FakeResponse({"data": []}),
+            _FakeResponse(
+                _sec_company_tickers_payload(
+                    ticker="BF-B",
+                    cik=14693,
+                    title="BROWN FORMAN CORP",
+                )
+            ),
+            _FakeResponse(
+                _sec_companyfacts_payload(
+                    accession="0000014693-26-000123",
+                    report_date="2025-04-30",
+                    filed_date="2026-03-04",
+                    fiscal_year=2026,
+                    fiscal_period="Q4",
+                )
+            ),
+        ]
+    )
+    fetcher = SimFinFundamentalsFetcher(
+        SimFinClientConfig(api_key="test-key", retry_sleep_seconds=0, rate_limit_sleep_seconds=0),
+        session=session,  # type: ignore[arg-type]
+    )
+
+    rows = fetcher.fetch_all_fundamentals(
+        tickers=["BF-B"],
+        start_date="2026-03-01",
+        end_date="2026-03-31",
+        retrieved_at=datetime(2026, 3, 5, tzinfo=UTC),
+        limit=100,
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["source"] == "sec_companyfacts"
+    assert rows[0]["ticker"] == "BF-B"
+    assert rows[0]["report_date"] == "2025-04-30"
+    assert rows[0]["availability_date"] == "2026-03-04"
+    assert rows[0]["fiscal_year"] == 2026
+    assert rows[0]["fiscal_period"] == "Q4"
+    assert rows[0]["statement"] == "sec_companyfacts"
+    assert rows[0]["retrieved_at"] == "2026-03-05T00:00:00+00:00"
+    assert rows[0]["raw"]["Revenue"] == 1_051_200_000
+    assert rows[0]["raw"]["Net Income"] == 266_700_000
+    assert rows[0]["raw"]["sharesBasic"] == 217_000_000
+    assert rows[0]["raw"]["epsBasic"] == 1.23
+    assert session.calls[0]["params"]["ticker"] == "BF.B"
+    assert session.calls[1]["url"] == "https://www.sec.gov/files/company_tickers.json"
+    assert session.calls[2]["url"] == "https://data.sec.gov/api/xbrl/companyfacts/CIK0000014693.json"
 
 
 def test_normalize_accepts_missing_optional_fields() -> None:

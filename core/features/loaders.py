@@ -48,10 +48,10 @@ def load_fundamentals_frame(
     ticker: str,
     writer: R2Writer | None = None,
 ) -> pd.DataFrame:
-    """Return the SimFin fundamentals archive for one ticker, sorted by availability date.
+    """Return the Layer 0 fundamentals archive for one ticker, sorted by availability date.
 
     Reads `raw/fundamentals/{ticker}.parquet` through the active R2 (or local
-    mock) backend. The returned frame carries the normalized SimFin columns
+    mock) backend. The returned frame carries the normalized Layer 0 columns
     (`report_date`, `availability_date`, `fiscal_year`, `fiscal_period`,
     `statement`, `earnings_date`, `raw_json`, ...).
     """

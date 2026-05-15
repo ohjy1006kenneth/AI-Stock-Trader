@@ -15,8 +15,11 @@ This document describes deployment surfaces and responsibilities.
   canonical historical adjusted OHLCV archives from 2017-01-01 onward
 - Alpaca News: Layer 0 raw Benzinga-sourced news archive used by Layer 1 text features
 - SimFin:
-  Layer 0 as-reported fundamentals and earnings-date archive used by Layer 1
+  Layer 0 primary fundamentals and earnings-date archive source used by Layer 1
   context features
+- SEC company-facts API:
+  public Layer 0 fallback for active-ticker fundamentals gaps when SimFin returns
+  no usable rows
 - FRED: Layer 0 macro and rates archive used by Layer 1 context and regime features
 - Alpaca Trading API: broker reconciliation and execution
 

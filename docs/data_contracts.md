@@ -149,13 +149,18 @@ Notes:
 ### Layer 0 raw fundamentals archive (non-contract artifact)
 
 Purpose:
-- preserve SimFin as-reported fundamentals and earnings-date availability
+- preserve point-in-time fundamentals and earnings-date availability, sourced from SimFin first
+  and recovered from the public SEC company-facts API when SimFin has no usable rows
 - keep filing timestamps / effective dates available for point-in-time feature generation
-- prevent Layer 1 from calling SimFin directly or accidentally using future restatements
+- prevent Layer 1 from calling providers directly or accidentally using future restatements
 
 Notes:
 - raw fundamentals are stored as archival Layer 0 data in R2 as per-ticker parquet
   histories under `raw/fundamentals/{ticker}.parquet`
+- SimFin remains the primary source for normalized as-reported fundamentals rows; when SimFin
+  returns zero rows for a ticker, Layer 0 may synthesize the same archive-row shape from SEC
+  company-facts filings keyed by SEC `filed` dates so the Layer 1 consumer contract stays
+  unchanged
 - the same archive also provides the point-in-time shares-outstanding inputs needed by the
   optional Layer 0 market-cap eligibility screen, including conservative derivation from
   same-period SimFin per-share metrics when an explicit share-count field is absent

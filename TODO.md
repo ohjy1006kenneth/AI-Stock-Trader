@@ -42,8 +42,7 @@
   and `Q`/`IQV` transition boundaries, but residual non-aliased delisting or
   archive-gap mismatches (for example stale `AGN` boundary holes in old
   membership exports) still need data cleanup or an explicit exception policy.
-- [ ] SimFin still lacks direct coverage for several current S&P 500 symbols even after
-  per-ticker recovery and safe alias rewrites (confirmed on 2026-05-13 for `BF-B`,
-  `BRK-B`, `GEV`, `SOLV`, `SW`, `TKO`, `VLTO`). Decide whether to maintain explicit
-  provider-gap exceptions, source a secondary fundamentals provider for those names, or
-  relax readiness rules only with explicit human approval.
+- [x] Issue `#184` closed the strict-readiness SimFin provider gaps for `BF-B`, `BRK-B`,
+  `GEV`, `SOLV`, `SW`, `TKO`, and `VLTO` by keeping the existing Layer 0 archive contract
+  and recovering zero-row tickers from the public SEC company-facts API instead of adding
+  readiness exceptions.
