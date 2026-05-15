@@ -1,14 +1,17 @@
-"""Layer 1 fundamentals context features from the SimFin raw archive.
+"""Layer 1 fundamentals context features from the Layer 0 raw fundamentals archive.
 
 Features are forward-filled per ticker from the latest filing whose
 `availability_date` is strictly before each target date — the point-in-time
 convention that prevents a filing released on 2024-03-15 from appearing in
 feature rows for dates 2024-03-14 or earlier.
 
-Earnings-calendar features use the `earnings_date` column emitted by the
-Layer 0 SimFin normalizer. Ratios that require price data (PE, PB, PS) read
-adjusted closing prices from the supplied OHLCV frame; any ratio whose inputs
-are missing on a given date resolves to `None` in the output record.
+Earnings-calendar features use the optional `earnings_date` column emitted by
+Layer 0. SimFin-sourced rows may populate that field, while SEC-backed fallback
+rows keep the same point-in-time archive contract without an earnings-calendar
+date; for SEC-only ticker histories the earnings-calendar features therefore
+remain `None`. Ratios that require price data (PE, PB, PS) read adjusted
+closing prices from the supplied OHLCV frame; any ratio whose inputs are
+missing on a given date resolves to `None` in the output record.
 """
 from __future__ import annotations
 
@@ -84,9 +87,13 @@ def compute_fundamentals_features(
     """Return per-date fundamentals context features for one ticker.
 
     Args:
-        fundamentals: Raw SimFin archive rows for this ticker as written by
-            Layer 0, including `report_date`, `availability_date`, `raw_json`,
-            `earnings_date`, and `fiscal_year` / `fiscal_period` columns.
+        fundamentals: Raw Layer 0 fundamentals archive rows for this ticker as
+            written by Layer 0, including `report_date`, `availability_date`,
+            `raw_json`, and `fiscal_year` / `fiscal_period` columns. SimFin
+            rows may also include `earnings_date`; SEC-backed fallback rows may
+            omit it, in which case the earnings-calendar feature trio stays
+            `None` while the rest of the point-in-time feature logic still
+            applies.
         ohlcv: Adjusted OHLCV frame matching the OHLCVRecord contract. Only the
             `date` and `adj_close` columns are consulted, but the full contract
             is required for downstream feature alignment.

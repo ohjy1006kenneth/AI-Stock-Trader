@@ -26,7 +26,6 @@ DEFAULT_SIMFIN_PERIODS = ("q1", "q2", "q3", "q4", "fy")
 SIMFIN_ENV_FILE = Path(__file__).resolve().parents[2] / "config" / "simfin.env"
 SEC_COMPANY_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 SEC_COMPANYFACTS_URL_TEMPLATE = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
-DEFAULT_SEC_USER_AGENT = "Quant Trading Research research@example.com"
 _SEC_ALLOWED_FORMS = frozenset({"10-K", "10-K/A", "10-Q", "10-Q/A", "20-F", "20-F/A", "40-F"})
 _SIMFIN_REQUEST_TICKER_OVERRIDES: dict[str, str] = {
     # Current S&P 500 ticker aliases that SimFin still serves under an older
@@ -497,7 +496,7 @@ class SimFinFundamentalsFetcher:
         headers = {
             "accept": "application/json",
             "accept-encoding": "gzip, deflate",
-            "user-agent": os.getenv(SEC_USER_AGENT_ENV) or DEFAULT_SEC_USER_AGENT,
+            "user-agent": _required_sec_user_agent(),
         }
         last_error: requests.RequestException | None = None
         for attempt in range(self.config.max_retries + 1):
@@ -742,6 +741,16 @@ def _tickers_without_rows(
     """Return requested tickers that still have no normalized fundamentals rows."""
     present = {_normalize_ticker(str(row.get("ticker") or "")) for row in rows if row.get("ticker")}
     return [ticker for ticker in tickers if ticker not in present]
+
+
+def _required_sec_user_agent() -> str:
+    """Return the configured SEC EDGAR user-agent or fail closed when absent."""
+    configured = (os.getenv(SEC_USER_AGENT_ENV) or "").strip()
+    if not configured:
+        raise ValueError(
+            f"Missing required SEC environment variable for EDGAR access: {SEC_USER_AGENT_ENV}"
+        )
+    return configured
 
 
 def _sec_companyfacts_to_normalized_rows(

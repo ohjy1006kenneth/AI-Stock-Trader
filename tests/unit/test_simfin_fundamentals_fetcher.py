@@ -29,6 +29,7 @@ from services.simfin.fundamentals_fetcher import (
 )
 
 FIXTURE_PATH = Path("data/sample/simfin_fundamentals_response.json")
+SEC_TEST_USER_AGENT = "AI Stock Trader ops@quanttradingresearch.test"
 
 
 class _FakeResponse:
@@ -92,6 +93,10 @@ def _json_serializer(rows: list[dict[str, object]]) -> bytes:
 def _read_json(payload: bytes | str) -> list[dict[str, Any]]:
     text = payload.decode("utf-8") if isinstance(payload, bytes) else payload
     return json.loads(text)
+
+
+def _set_sec_user_agent(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SEC_USER_AGENT", SEC_TEST_USER_AGENT)
 
 
 def _sec_company_tickers_payload(*, ticker: str, cik: int, title: str) -> dict[str, Any]:
@@ -334,8 +339,11 @@ def test_fetch_all_fundamentals_paginates_and_deduplicates() -> None:
     assert {row["retrieved_at"] for row in rows} == {"2024-08-05T00:00:00+00:00"}
 
 
-def test_fetch_all_fundamentals_batches_large_ticker_sets() -> None:
+def test_fetch_all_fundamentals_batches_large_ticker_sets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Large ticker universes are split into smaller SimFin requests."""
+    _set_sec_user_agent(monkeypatch)
     session = _FakeSession([_FakeResponse({"data": []}), _FakeResponse({"data": []})])
     fetcher = SimFinFundamentalsFetcher(
         SimFinClientConfig(
@@ -360,8 +368,11 @@ def test_fetch_all_fundamentals_batches_large_ticker_sets() -> None:
     assert session.calls[2]["url"] == "https://www.sec.gov/files/company_tickers.json"
 
 
-def test_fetch_all_fundamentals_splits_on_server_error() -> None:
+def test_fetch_all_fundamentals_splits_on_server_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Transient 5xx errors split ticker batches to isolate failures."""
+    _set_sec_user_agent(monkeypatch)
     response = requests.Response()
     response.status_code = 500
     error = requests.HTTPError("server error", response=response)
@@ -394,8 +405,11 @@ def test_fetch_all_fundamentals_splits_on_server_error() -> None:
     assert session.calls[2]["params"]["ticker"] == "MSFT"
 
 
-def test_fetch_all_fundamentals_splits_on_rate_limit() -> None:
+def test_fetch_all_fundamentals_splits_on_rate_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Rate-limit errors split ticker batches to reduce request pressure."""
+    _set_sec_user_agent(monkeypatch)
     response = requests.Response()
     response.status_code = 429
     error = requests.HTTPError("rate limited", response=response)
@@ -429,8 +443,11 @@ def test_fetch_all_fundamentals_splits_on_rate_limit() -> None:
     assert session.calls[2]["params"]["ticker"] == "MSFT"
 
 
-def test_fetch_all_fundamentals_skips_single_ticker_when_retries_exhausted() -> None:
+def test_fetch_all_fundamentals_skips_single_ticker_when_retries_exhausted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Single-ticker failures after split are logged and skipped, not re-raised."""
+    _set_sec_user_agent(monkeypatch)
     server_response = requests.Response()
     server_response.status_code = 500
     server_error = requests.HTTPError("server error", response=server_response)
@@ -691,8 +708,11 @@ def test_fetch_statement_rows_maps_provider_rename_aliases_back_to_canonical_tic
     assert [row["ticker"] for row in page.rows] == ["CPAY"]
 
 
-def test_fetch_all_fundamentals_uses_sec_companyfacts_fallback_for_missing_ticker() -> None:
+def test_fetch_all_fundamentals_uses_sec_companyfacts_fallback_for_missing_ticker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Public SEC company facts backfill tickers when SimFin returns no rows."""
+    _set_sec_user_agent(monkeypatch)
     session = _FakeSession(
         [
             _FakeResponse({"data": []}),
@@ -742,7 +762,34 @@ def test_fetch_all_fundamentals_uses_sec_companyfacts_fallback_for_missing_ticke
     assert rows[0]["raw"]["epsBasic"] == 1.23
     assert session.calls[0]["params"]["ticker"] == "BF.B"
     assert session.calls[1]["url"] == "https://www.sec.gov/files/company_tickers.json"
+    assert session.calls[1]["headers"]["user-agent"] == SEC_TEST_USER_AGENT
     assert session.calls[2]["url"] == "https://data.sec.gov/api/xbrl/companyfacts/CIK0000014693.json"
+    assert session.calls[2]["headers"]["user-agent"] == SEC_TEST_USER_AGENT
+
+
+def test_fetch_all_fundamentals_requires_sec_user_agent_for_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SEC fallback fails closed when no EDGAR user-agent is configured."""
+    monkeypatch.delenv("SEC_USER_AGENT", raising=False)
+    session = _FakeSession([_FakeResponse({"data": []})])
+    fetcher = SimFinFundamentalsFetcher(
+        SimFinClientConfig(
+            api_key="test-key",
+            retry_sleep_seconds=0,
+            rate_limit_sleep_seconds=0,
+        ),
+        session=session,  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(ValueError, match="SEC_USER_AGENT"):
+        fetcher.fetch_all_fundamentals(
+            tickers=["BF-B"],
+            start_date="2026-03-01",
+            end_date="2026-03-31",
+            retrieved_at=datetime(2026, 3, 5, tzinfo=UTC),
+            limit=100,
+        )
 
 
 def test_normalize_accepts_missing_optional_fields() -> None:
