@@ -75,6 +75,10 @@ Expected execution chain:
      explicitly enables a provider; when enabled, Layer 1 reads only the staged R2 archive
      `raw/order_book/{provider}/{run_date}.parquet` and treats missing per-date coverage as
      a null-feature condition instead of breaking the rest of Layer 1
+   - The baseline stack does not define an options-chain archive or non-secret config for
+     `iv_rank`, `put_call_ratio`, or `iv_skew`; do not expect an options-derived Layer 1
+     branch unless a future task adds an existing-stack provider and documents the archive
+     contract
 5. Deploy cloud oracle with fixed contracts
 6. Validate edge-to-cloud handshake plus Alpaca live-market-data normalization
 7. Dry-run risk and execution path
