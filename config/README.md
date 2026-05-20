@@ -53,4 +53,7 @@ Use an R2 token/access key with read/write access to the bucket. Do not use the 
   FinBERT sentiment aggregation.
 - `config/finbert_sentiment.json` controls the Modal app, model identity, batch size,
   source-weight config path, and date-bucketing timezone for FinBERT scoring.
+- `config/modal.json` controls the Pi-triggered Layer 1 orchestration apps, including the
+  dedicated multi-date readiness timeout and the optional `T4` GPU cap for the batched
+  Layer 1 runner.
 - `config/requirements/` is deprecated; dependency files live under repository-root `requirements/`.

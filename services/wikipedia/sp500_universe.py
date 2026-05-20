@@ -116,6 +116,16 @@ def _resolve_change_event_ticker(
     )
 
 
+def _resolve_current_table_ticker(ticker: str) -> str:
+    """Resolve one current-constituents-table symbol to the live security identity."""
+    normalized = _normalize_ticker(ticker)
+    if not normalized:
+        return ""
+    if normalized == "Q":
+        return "IQV"
+    return _canonicalize_ticker(normalized)
+
+
 def fetch_html(cache_path: Path = DEFAULT_CACHE_PATH) -> str:
     """Return Wikipedia HTML from cache if fresh, otherwise fetch and cache it."""
     if cache_path.exists():
@@ -149,7 +159,7 @@ def parse_current_tickers(html: str) -> set[str]:
     for row in table.find_all("tr")[1:]:  # skip header
         cells = row.find_all("td")
         if cells:
-            ticker = _canonicalize_ticker(cells[0].get_text(strip=True))
+            ticker = _resolve_current_table_ticker(cells[0].get_text(strip=True))
             if ticker:
                 tickers.add(ticker)
 

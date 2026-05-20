@@ -280,6 +280,7 @@ class ModalRuntimeConfig:
     r2_secret_name: str
     timeout_seconds: int
     batch_timeout_seconds: int
+    batch_gpu_type: str | None
     python_version: str
     requirements_path: str
 
@@ -559,6 +560,8 @@ def load_modal_runtime_config(path: Path = MODAL_CONFIG_PATH) -> ModalRuntimeCon
     """Load Modal app and image settings from repository config."""
     payload = json.loads(path.read_text(encoding="utf-8"))
     timeout_seconds = int(payload["timeout_seconds"])
+    batch_gpu_type = payload.get("layer1_batch_gpu_type")
+    normalized_batch_gpu = None if batch_gpu_type in (None, "") else str(batch_gpu_type)
     return ModalRuntimeConfig(
         app_name=str(payload["layer1_daily_app_name"]),
         r2_secret_name=str(payload["r2_secret_name"]),
@@ -566,6 +569,7 @@ def load_modal_runtime_config(path: Path = MODAL_CONFIG_PATH) -> ModalRuntimeCon
         batch_timeout_seconds=int(
             payload.get("layer1_batch_timeout_seconds", timeout_seconds)
         ),
+        batch_gpu_type=normalized_batch_gpu,
         python_version=str(payload.get("python_version", "3.11")),
         requirements_path=str(payload.get("requirements_path", "requirements/modal.txt")),
     )
@@ -1866,11 +1870,14 @@ def _define_modal_app() -> object | None:
         secrets=[modal.Secret.from_name(runtime.r2_secret_name)],
         timeout=runtime.timeout_seconds,
     )(_modal_run_daily_layer1_entry)
-    modal_run_batched_layer1 = app.function(
-        image=image,
-        secrets=[modal.Secret.from_name(runtime.r2_secret_name)],
-        timeout=runtime.batch_timeout_seconds,
-    )(_modal_run_batched_layer1_entry)
+    batched_options: dict[str, object] = {
+        "image": image,
+        "secrets": [modal.Secret.from_name(runtime.r2_secret_name)],
+        "timeout": runtime.batch_timeout_seconds,
+    }
+    if runtime.batch_gpu_type is not None:
+        batched_options["gpu"] = runtime.batch_gpu_type
+    modal_run_batched_layer1 = app.function(**batched_options)(_modal_run_batched_layer1_entry)
     app.local_entrypoint()(modal_main)
     _modal_run_batched_layer1 = modal_run_batched_layer1
     _modal_run_daily_layer1 = modal_run_daily_layer1

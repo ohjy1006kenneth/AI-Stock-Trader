@@ -12,6 +12,7 @@ from app.lab.data_pipelines.run_finbert_sentiment import (
     FINBERT_SENTIMENT_STAGE,
     FinBERTModelRuntimeConfig,
     FinBERTPipelineConfig,
+    _resolve_runtime_device,
     load_finbert_runtime_config,
     run_finbert_sentiment,
 )
@@ -120,6 +121,26 @@ def test_load_finbert_runtime_config_reads_repo_config() -> None:
     assert config.model_revision == "db38d3727cbaed87c9aed72df7b3519e2ba5cca1"
     assert config.batch_size > 0
     assert config.bucket_timezone == "America/New_York"
+
+
+def test_resolve_runtime_device_prefers_cuda_when_available(monkeypatch) -> None:
+    """A GPU-backed runtime should reuse device 0 even when config defaults to CPU."""
+
+    class _FakeCuda:
+        @staticmethod
+        def is_available() -> bool:
+            return True
+
+    class _FakeTorch:
+        cuda = _FakeCuda()
+
+    monkeypatch.setattr(
+        "app.lab.data_pipelines.run_finbert_sentiment.importlib.import_module",
+        lambda name: _FakeTorch() if name == "torch" else None,
+    )
+
+    assert _resolve_runtime_device(-1) == 0
+    assert _resolve_runtime_device(1) == 1
 
 
 def _local_writer(tmp_path: Path, monkeypatch) -> R2Writer:

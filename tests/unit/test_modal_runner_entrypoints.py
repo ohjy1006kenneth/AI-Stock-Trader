@@ -364,6 +364,7 @@ def test_daily_layer1_modal_app_builds_workspace_image(
     assert batched_registered.options["image"] is image
     assert batched_registered.options["timeout"] == runtime.batch_timeout_seconds
     assert batched_registered.options["secrets"][0].name == runtime.r2_secret_name
+    assert batched_registered.options["gpu"] == runtime.batch_gpu_type
 
 
 def test_daily_layer1_modal_main_orchestrates_stage_apps_before_final_assembly(

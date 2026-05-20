@@ -241,7 +241,7 @@ class FinBERTScorer:
             tokenizer=runtime_config.model_name,
             revision=runtime_config.model_revision,
             top_k=None,
-            device=runtime_config.device,
+            device=_resolve_runtime_device(runtime_config.device),
         )
 
     def score(self, texts: Sequence[str]) -> Sequence[SentimentScore]:
@@ -274,6 +274,20 @@ def load_finbert_runtime_config(path: Path = FINBERT_CONFIG_PATH) -> FinBERTMode
         source_credibility_config_path=(_REPO_ROOT / str(source_config)).resolve(),
         device=int(payload.get("device", -1)),
     )
+
+
+def _resolve_runtime_device(requested_device: int) -> int:
+    """Use GPU device 0 automatically when the runtime exposes CUDA."""
+    if requested_device >= 0:
+        return requested_device
+    try:
+        torch = importlib.import_module("torch")
+    except ModuleNotFoundError:
+        return requested_device
+    cuda = getattr(torch, "cuda", None)
+    if cuda is not None and callable(getattr(cuda, "is_available", None)) and cuda.is_available():
+        return 0
+    return requested_device
 
 
 def _score_from_model_output(output: object) -> SentimentScore:
