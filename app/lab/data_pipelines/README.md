@@ -14,7 +14,9 @@ This is where news, market, and context inputs are aligned into training-ready t
   price and macro archives.
 - `run_daily_layer1.py` is the single-command Layer 1 orchestration entrypoint: it validates
   Layer 0 readiness, derives ticker scope from universe masks, runs the text/regime branches,
-  assembles aligned per-ticker histories, and runs final Layer 1 archive validation.
+  assembles aligned per-ticker histories, and runs final Layer 1 archive validation. Multi-date
+  readiness runs use the same batched Modal entrypoint and may request a config-capped `T4`
+  GPU worker when the text/FinBERT branches need acceleration.
   The Pi daily runtime invokes the same module through `modal run` for single-date jobs after
   Layer 0 completes, while local/lab runs can use `python ... --from-date/--to-date`.
 

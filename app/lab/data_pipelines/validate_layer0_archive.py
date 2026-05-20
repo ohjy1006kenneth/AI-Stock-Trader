@@ -253,14 +253,11 @@ def _count_parquet_rows(reader: ArchiveReader, key: str) -> int:
     if not payload:
         return 0
     try:
-        import pandas as pd
         importlib.import_module("pyarrow")
+        from pyarrow import parquet
     except ModuleNotFoundError as exc:
-        raise ModuleNotFoundError(
-            "pandas and pyarrow are required to validate fundamentals row coverage."
-        ) from exc
-    frame = pd.read_parquet(BytesIO(payload))
-    return int(len(frame.index))
+        raise ModuleNotFoundError("pyarrow is required to validate fundamentals row coverage.") from exc
+    return int(parquet.read_metadata(BytesIO(payload)).num_rows)
 
 
 def _manifest_fred_series_ids(manifest_payload: dict[str, object] | None) -> list[str]:

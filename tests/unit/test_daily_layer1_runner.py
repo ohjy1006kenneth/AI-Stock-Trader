@@ -1012,6 +1012,7 @@ def test_load_modal_runtime_config_reads_repo_config() -> None:
     assert config.r2_secret_name
     assert config.timeout_seconds == 7200
     assert config.batch_timeout_seconds == 18000
+    assert config.batch_gpu_type == "T4"
 
 
 def _write_completed_stage_manifest(

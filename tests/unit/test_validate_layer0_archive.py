@@ -8,6 +8,7 @@ from pathlib import Path
 import pandas as pd
 
 from app.lab.data_pipelines.validate_layer0_archive import (
+    _count_parquet_rows,
     validate_layer0_archive,
     write_validation_report,
 )
@@ -430,3 +431,12 @@ def test_write_validation_report_writes_json(tmp_path: Path) -> None:
     assert path.name == "layer0_archive_validation_2024-01-01_to_2024-01-01.json"
     payload = json.loads(path.read_text(encoding="utf-8"))
     assert payload["ready_for_layer1"] is False
+
+
+def test_count_parquet_rows_reads_parquet_metadata_only() -> None:
+    """Row counts are derived from Parquet metadata without loading a dataframe."""
+    buffer = io.BytesIO()
+    pd.DataFrame([{"ticker": "AAPL"}, {"ticker": "MSFT"}]).to_parquet(buffer, index=False)
+    reader = _Reader(set(), {"raw/fundamentals/AAPL.parquet": buffer.getvalue()})
+
+    assert _count_parquet_rows(reader, "raw/fundamentals/AAPL.parquet") == 2

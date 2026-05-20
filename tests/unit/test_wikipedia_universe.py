@@ -156,6 +156,18 @@ class TestParseCurrentTickers:
         result = parse_current_tickers(html)
         assert result == set(fixture["current_tickers"])
 
+    def test_resolves_duplicate_current_q_alias_to_iqv(self) -> None:
+        html = _build_html(
+            {
+                "current_tickers": ["AAPL", "Q", "IQV"],
+                "changes": [],
+            }
+        )
+
+        result = parse_current_tickers(html)
+
+        assert result == {"AAPL", "IQV"}
+
     def test_missing_table_raises(self) -> None:
         with pytest.raises(ValueError, match="constituents"):
             parse_current_tickers("<html><body></body></html>")
