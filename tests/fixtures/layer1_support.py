@@ -220,10 +220,27 @@ def fake_regime_runner(writer: R2Writer):
             columns=list(HMM_REGIME_COLUMNS),
         )
         _write_parquet(writer, output_key, frame)
+        manifest_key = pipeline_manifest_path("layer1_5_regime", config.run_id)
+        writer.put_object(
+            manifest_key,
+            PipelineManifestRecord(
+                run_id=config.run_id,
+                stage="layer1_5_regime",
+                status=RunStatus.COMPLETED,
+                started_at=datetime(2024, 1, 3, 12, 0, tzinfo=UTC),
+                finished_at=datetime(2024, 1, 3, 12, 5, tzinfo=UTC),
+                output_path=output_key,
+                metadata={
+                    "train_end_date": config.train_end_date,
+                    "inference_dates": list(config.inference_dates),
+                    "regime_layer2_ready": True,
+                },
+            ).model_dump_json(),
+        )
         return HMMRegimePipelineResult(
             run_id=config.run_id,
             output_key=output_key,
-            manifest_key=pipeline_manifest_path("layer1_5_regime", config.run_id),
+            manifest_key=manifest_key,
             training_rows=30,
             complete_training_rows=30,
             regime_rows=1,

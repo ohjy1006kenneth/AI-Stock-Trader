@@ -40,6 +40,7 @@ from core.features.regime_detection import (
     HMM_REGIME_COLUMNS,
     HMM_REGIME_FEATURE_COLUMNS,
     regime_features_to_records,
+    validate_hmm_regime_probabilities,
 )
 from core.features.sector_features import (
     SECTOR_FEATURE_COLUMNS,
@@ -907,6 +908,7 @@ def _audit_regime_branch(
     findings: list[AuditFinding],
     leakage_checks: list[AuditFinding],
 ) -> dict[str, dict[str, object]]:
+    """Audit one Layer 1.5 regime artifact against the stored ticker histories."""
     if artifact is None:
         findings.append(
             AuditFinding(
@@ -919,6 +921,20 @@ def _audit_regime_branch(
         return {}
     frame = _read_parquet_frame(writer, artifact.output_path or "")
     _require_columns(frame, HMM_REGIME_COLUMNS, label="regime output")
+    probability_errors = validate_hmm_regime_probabilities(frame)
+    if probability_errors:
+        findings.append(
+            AuditFinding(
+                status="fail",
+                category="regime",
+                subject=artifact.run_id,
+                message="Regime artifact probabilities are not internally coherent.",
+                details={
+                    "artifact_key": artifact.output_path,
+                    "errors": probability_errors[:10],
+                },
+            )
+        )
     records = regime_features_to_records(frame)
     expected_record = _record_for_date(records, as_of_date)
     if expected_record is None:
@@ -953,15 +969,29 @@ def _audit_regime_branch(
                 details={"train_end_date": train_end_date, "as_of_date": as_of_date},
             )
         )
-    findings.append(
-        AuditFinding(
-            status="pass",
-            category="regime",
-            subject=as_of_date,
-            message="Loaded broadcast regime features for the audited date.",
-            details={"artifact_key": artifact.output_path},
+    regime_values = {
+        name: expected_record.features.get(name) for name in HMM_REGIME_FEATURE_COLUMNS
+    }
+    if all(value is None for value in regime_values.values()):
+        findings.append(
+            AuditFinding(
+                status="warn",
+                category="regime",
+                subject=as_of_date,
+                message="Regime artifact uses explicit null placeholder values for the audited date.",
+                details={"artifact_key": artifact.output_path, "features": regime_values},
+            )
         )
-    )
+    elif not probability_errors:
+        findings.append(
+            AuditFinding(
+                status="pass",
+                category="regime",
+                subject=as_of_date,
+                message="Loaded coherent broadcast regime features for the audited date.",
+                details={"artifact_key": artifact.output_path, "features": regime_values},
+            )
+        )
     return {ticker: dict(expected_record.features) for ticker in tickers}
 
 

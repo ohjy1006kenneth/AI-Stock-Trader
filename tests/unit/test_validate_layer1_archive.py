@@ -101,6 +101,29 @@ def _regime_artifact_bytes(rows: list[dict[str, object]]) -> bytes:
     return buffer.getvalue()
 
 
+def _regime_manifest_bytes(
+    *,
+    run_id: str,
+    output_path: str,
+    status: RunStatus = RunStatus.COMPLETED,
+    inference_dates: list[str] | None = None,
+) -> bytes:
+    """Return a serialized Layer 1.5 manifest payload for one run."""
+    return PipelineManifestRecord(
+        run_id=run_id,
+        stage="layer1_5_regime",
+        status=status,
+        started_at=datetime(2024, 1, 5, 11, 0, tzinfo=UTC),
+        finished_at=(
+            datetime(2024, 1, 5, 11, 30, tzinfo=UTC)
+            if status is RunStatus.COMPLETED
+            else None
+        ),
+        output_path=output_path,
+        metadata={"inference_dates": inference_dates or []},
+    ).model_dump_json().encode("utf-8")
+
+
 def _manifest_bytes(run_id: str, status: RunStatus) -> bytes:
     """Return a serialized Layer 1 manifest payload for one run."""
     return PipelineManifestRecord(
@@ -117,6 +140,53 @@ def _manifest_bytes(run_id: str, status: RunStatus) -> bytes:
     ).model_dump_json().encode("utf-8")
 
 
+def _ready_regime_features(
+    *,
+    label: str = "bull",
+    confidence: float = 0.8,
+    bear: float = 0.1,
+    sideways: float = 0.1,
+    bull: float = 0.8,
+) -> dict[str, object]:
+    """Return a coherent ready-state regime feature map for one ticker-day row."""
+    return {
+        "regime_label": label,
+        "regime_confidence": confidence,
+        "regime_prob_bear": bear,
+        "regime_prob_sideways": sideways,
+        "regime_prob_bull": bull,
+    }
+
+
+def _ready_regime_objects(parent_run_id: str, date_text: str) -> dict[str, bytes]:
+    """Return a completed per-date Layer 1.5 artifact plus manifest."""
+    stage_run_id = f"{parent_run_id}-{date_text}"
+    output_key = layer1_regime_path(stage_run_id)
+    return {
+        output_key: _regime_artifact_bytes(
+            [
+                {
+                    "date": date_text,
+                    **_ready_regime_features(),
+                    "regime_required_for_layer2": True,
+                    "regime_readiness_status": "ready",
+                    "regime_readiness_reason": "ready",
+                    "regime_missing_features": "",
+                    "regime_probability_sum": 1.0,
+                    "training_rows": 40,
+                    "complete_training_rows": 40,
+                    "min_training_rows": 30,
+                }
+            ]
+        ),
+        pipeline_manifest_path("layer1_5_regime", stage_run_id): _regime_manifest_bytes(
+            run_id=stage_run_id,
+            output_path=output_key,
+            inference_dates=[date_text],
+        ),
+    }
+
+
 def test_validate_layer1_archive_marks_ready_when_every_history_present() -> None:
     """A complete archive yields ready_for_layer2=True with no missing histories."""
     universe = {
@@ -125,14 +195,23 @@ def test_validate_layer1_archive_marks_ready_when_every_history_present() -> Non
     }
     reader = _Reader(
         {
-            layer1_ticker_history_path("AAPL"): _history_bytes(
-                "AAPL", ["2024-01-02", "2024-01-03"]
+            layer1_ticker_history_path("AAPL"): _history_bytes_with_features(
+                "AAPL",
+                [
+                    ("2024-01-02", {"returns_1d": 0.01, **_ready_regime_features()}),
+                    ("2024-01-03", {"returns_1d": 0.01, **_ready_regime_features()}),
+                ],
             ),
-            layer1_ticker_history_path("MSFT"): _history_bytes("MSFT", ["2024-01-02"]),
+            layer1_ticker_history_path("MSFT"): _history_bytes_with_features(
+                "MSFT",
+                [("2024-01-02", {"returns_1d": 0.01, **_ready_regime_features()})],
+            ),
             pipeline_manifest_path("layer1", "layer1-2024-01-02_to_2024-01-03"): _manifest_bytes(
                 "layer1-2024-01-02_to_2024-01-03",
                 RunStatus.COMPLETED,
             ),
+            **_ready_regime_objects("layer1-2024-01-02_to_2024-01-03", "2024-01-02"),
+            **_ready_regime_objects("layer1-2024-01-02_to_2024-01-03", "2024-01-03"),
         }
     )
 
@@ -238,6 +317,8 @@ def test_validate_layer1_archive_flags_row_count_mismatch() -> None:
 
 def test_validate_layer1_archive_marks_short_history_regime_as_warning() -> None:
     """Explicit null regime placeholders become warnings when HMM history is insufficient."""
+    run_id = "layer1-warmup-2024-01-03"
+    output_key = layer1_regime_path(run_id)
     reader = _Reader(
         {
             layer1_ticker_history_path("AAPL"): _history_bytes_with_features(
@@ -256,7 +337,7 @@ def test_validate_layer1_archive_marks_short_history_regime_as_warning() -> None
                     )
                 ],
             ),
-            layer1_regime_path("layer1-warmup-2024-01-03"): _regime_artifact_bytes(
+            output_key: _regime_artifact_bytes(
                 [
                     {
                         "date": "2024-01-03",
@@ -276,6 +357,11 @@ def test_validate_layer1_archive_marks_short_history_regime_as_warning() -> None
                     }
                 ]
             ),
+            pipeline_manifest_path("layer1_5_regime", run_id): _regime_manifest_bytes(
+                run_id=run_id,
+                output_path=output_key,
+                inference_dates=["2024-01-03"],
+            ),
         }
     )
 
@@ -293,17 +379,22 @@ def test_validate_layer1_archive_marks_short_history_regime_as_warning() -> None
     assert report.layer2_regime_optional_dates == ["2024-01-03"]
     assert report.regime_failures == []
     assert report.regime_warnings[0]["reason"] == "insufficient_training_history"
+    assert report.regime_window_summary["output_dates_present"] == ["2024-01-03"]
+    assert report.regime_window_summary["explicit_null_rate"] == pytest.approx(1.0)
+    assert report.regime_feature_coverage_by_date["2024-01-03"]["explicit_null_rows"] == 1
 
 
 def test_validate_layer1_archive_fails_when_required_regime_fields_are_missing() -> None:
     """Null or absent regime fields fail readiness once Layer 1.5 says they are required."""
+    run_id = "layer1-required-regime-2024-01-03"
+    output_key = layer1_regime_path(run_id)
     reader = _Reader(
         {
             layer1_ticker_history_path("AAPL"): _history_bytes_with_features(
                 "AAPL",
                 [("2024-01-03", {"returns_1d": 0.01})],
             ),
-            layer1_regime_path("layer1-required-regime-2024-01-03"): _regime_artifact_bytes(
+            output_key: _regime_artifact_bytes(
                 [
                     {
                         "date": "2024-01-03",
@@ -323,6 +414,11 @@ def test_validate_layer1_archive_fails_when_required_regime_fields_are_missing()
                     }
                 ]
             ),
+            pipeline_manifest_path("layer1_5_regime", run_id): _regime_manifest_bytes(
+                run_id=run_id,
+                output_path=output_key,
+                inference_dates=["2024-01-03"],
+            ),
         }
     )
 
@@ -338,10 +434,13 @@ def test_validate_layer1_archive_fails_when_required_regime_fields_are_missing()
     assert report.validation_status == "failed"
     assert report.layer2_regime_required_dates == ["2024-01-03"]
     assert report.regime_failures[0]["reason"] == "required_regime_fields_missing"
+    assert report.regime_window_summary["rows_missing_feature_keys"] == 1
 
 
 def test_validate_layer1_archive_fails_when_required_regime_output_uses_nan() -> None:
     """Required Layer 1.5 rows with NaN regime values fail readiness as missing output."""
+    run_id = "layer1-required-regime-nan-2024-01-03"
+    output_key = layer1_regime_path(run_id)
     reader = _Reader(
         {
             layer1_ticker_history_path("AAPL"): _history_bytes_with_features(
@@ -360,7 +459,7 @@ def test_validate_layer1_archive_fails_when_required_regime_output_uses_nan() ->
                     )
                 ],
             ),
-            layer1_regime_path("layer1-required-regime-nan-2024-01-03"): _regime_artifact_bytes(
+            output_key: _regime_artifact_bytes(
                 [
                     {
                         "date": "2024-01-03",
@@ -379,6 +478,11 @@ def test_validate_layer1_archive_fails_when_required_regime_output_uses_nan() ->
                         "min_training_rows": 30,
                     }
                 ]
+            ),
+            pipeline_manifest_path("layer1_5_regime", run_id): _regime_manifest_bytes(
+                run_id=run_id,
+                output_path=output_key,
+                inference_dates=["2024-01-03"],
             ),
         }
     )
@@ -400,17 +504,96 @@ def test_validate_layer1_archive_fails_when_required_regime_output_uses_nan() ->
             "status": "failure",
             "reason": "required_regime_output_is_null",
             "required_for_layer2": True,
-            "output_key": layer1_regime_path("layer1-required-regime-nan-2024-01-03"),
-            "manifest_key": pipeline_manifest_path(
-                "layer1_5_regime",
-                "layer1-required-regime-nan-2024-01-03",
-            ),
+            "output_key": output_key,
+            "output_present": True,
+            "manifest_key": pipeline_manifest_path("layer1_5_regime", run_id),
+            "manifest_present": True,
+            "manifest_status": "completed",
+            "manifest_inference_dates": ["2024-01-03"],
             "missing_features": [],
             "complete_training_rows": 40,
             "min_training_rows": 30,
             "probability_sum": None,
         }
     ]
+
+
+def test_validate_layer1_archive_fails_when_regime_output_is_missing_for_requested_date() -> None:
+    """Layer 1 readiness fails closed when the requested window has no Layer 1.5 output."""
+    report = validate_layer1_archive(
+        run_id="layer1-missing-regime",
+        from_date="2024-01-03",
+        to_date="2024-01-03",
+        universe={"2024-01-03": ["AAPL"]},
+        reader=_Reader(
+            {
+                layer1_ticker_history_path("AAPL"): _history_bytes("AAPL", ["2024-01-03"]),
+            }
+        ),
+    )
+
+    assert report.ready_for_layer2 is False
+    assert report.regime_validation_status == "failed"
+    assert report.regime_failures == [
+        {
+            "date": "2024-01-03",
+            "status": "failure",
+            "reason": "missing_regime_manifest",
+            "required_for_layer2": False,
+            "output_key": layer1_regime_path("layer1-missing-regime-2024-01-03"),
+            "output_present": False,
+            "manifest_key": pipeline_manifest_path(
+                "layer1_5_regime",
+                "layer1-missing-regime-2024-01-03",
+            ),
+            "manifest_present": False,
+            "manifest_status": None,
+        }
+    ]
+    assert report.regime_window_summary["manifest_dates_missing"] == ["2024-01-03"]
+    assert report.regime_window_summary["output_dates_missing"] == ["2024-01-03"]
+
+
+def test_validate_layer1_archive_fails_when_regime_manifest_is_not_completed() -> None:
+    """Incomplete Layer 1.5 manifests block readiness even when the parquet exists."""
+    run_id = "layer1-regime-running-2024-01-03"
+    output_key = layer1_regime_path(run_id)
+    reader = _Reader(
+        {
+            layer1_ticker_history_path("AAPL"): _history_bytes("AAPL", ["2024-01-03"]),
+            output_key: _regime_artifact_bytes(
+                [
+                    {
+                        "date": "2024-01-03",
+                        "regime_label": "bull",
+                        "regime_confidence": 0.8,
+                        "regime_prob_bear": 0.1,
+                        "regime_prob_sideways": 0.1,
+                        "regime_prob_bull": 0.8,
+                    }
+                ]
+            ),
+            pipeline_manifest_path("layer1_5_regime", run_id): _regime_manifest_bytes(
+                run_id=run_id,
+                output_path=output_key,
+                status=RunStatus.RUNNING,
+                inference_dates=["2024-01-03"],
+            ),
+        }
+    )
+
+    report = validate_layer1_archive(
+        run_id="layer1-regime-running",
+        from_date="2024-01-03",
+        to_date="2024-01-03",
+        universe={"2024-01-03": ["AAPL"]},
+        reader=reader,
+    )
+
+    assert report.ready_for_layer2 is False
+    assert report.regime_failures[0]["reason"] == "regime_manifest_not_completed"
+    assert report.regime_window_summary["manifest_dates_present"] == ["2024-01-03"]
+    assert report.regime_window_summary["output_dates_present"] == ["2024-01-03"]
 
 
 def test_validate_layer1_archive_rejects_non_iso_dates() -> None:
@@ -479,11 +662,18 @@ def test_validate_layer1_archive_warns_when_dated_shards_are_partial_but_histori
     universe = {"2024-01-02": ["AAPL", "MSFT"]}
     reader = _Reader(
         {
-            layer1_ticker_history_path("AAPL"): _history_bytes("AAPL", ["2024-01-02"]),
-            layer1_ticker_history_path("MSFT"): _history_bytes("MSFT", ["2024-01-02"]),
+            layer1_ticker_history_path("AAPL"): _history_bytes_with_features(
+                "AAPL",
+                [("2024-01-02", {"returns_1d": 0.01, **_ready_regime_features()})],
+            ),
+            layer1_ticker_history_path("MSFT"): _history_bytes_with_features(
+                "MSFT",
+                [("2024-01-02", {"returns_1d": 0.01, **_ready_regime_features()})],
+            ),
             "features/layer1/2024-01-02/AAPL.parquet": feature_records_to_parquet_bytes(
                 [FeatureRecord(date="2024-01-02", ticker="AAPL", features={"returns_1d": 0.01})]
             ),
+            **_ready_regime_objects("layer1-partial-dated-shards", "2024-01-02"),
         }
     )
 
@@ -509,14 +699,21 @@ def test_validate_layer1_archive_uses_non_aapl_examples_for_expected_anchor_tick
     universe = {"2024-01-02": ["MSFT", "NVDA"]}
     reader = _Reader(
         {
-            layer1_ticker_history_path("MSFT"): _history_bytes("MSFT", ["2024-01-02"]),
-            layer1_ticker_history_path("NVDA"): _history_bytes("NVDA", ["2024-01-02"]),
+            layer1_ticker_history_path("MSFT"): _history_bytes_with_features(
+                "MSFT",
+                [("2024-01-02", {"returns_1d": 0.01, **_ready_regime_features()})],
+            ),
+            layer1_ticker_history_path("NVDA"): _history_bytes_with_features(
+                "NVDA",
+                [("2024-01-02", {"returns_1d": 0.01, **_ready_regime_features()})],
+            ),
             "features/layer1/2024-01-02/MSFT.parquet": feature_records_to_parquet_bytes(
                 [FeatureRecord(date="2024-01-02", ticker="MSFT", features={"returns_1d": 0.01})]
             ),
             "features/layer1/2024-01-02/NVDA.parquet": feature_records_to_parquet_bytes(
                 [FeatureRecord(date="2024-01-02", ticker="NVDA", features={"returns_1d": 0.02})]
             ),
+            **_ready_regime_objects("layer1-non-aapl-dated-shards", "2024-01-02"),
         }
     )
 
@@ -558,7 +755,13 @@ def test_validate_layer1_archive_fails_when_canonical_histories_are_not_listable
 def test_validate_layer1_archive_skips_manifest_inspection_by_default() -> None:
     """Daily orchestration does not inspect sibling manifests unless opted in."""
     reader = _NoManifestInspectionReader(
-        {layer1_ticker_history_path("AAPL"): _history_bytes("AAPL", ["2024-01-02"])}
+        {
+            layer1_ticker_history_path("AAPL"): _history_bytes_with_features(
+                "AAPL",
+                [("2024-01-02", {"returns_1d": 0.01, **_ready_regime_features()})],
+            ),
+            **_ready_regime_objects("layer1-2024-01-02", "2024-01-02"),
+        }
     )
 
     report = validate_layer1_archive(
@@ -689,7 +892,10 @@ def test_validate_layer1_archive_documents_sibling_running_manifests() -> None:
     """Successful readiness reports still call out stale sibling manifests."""
     reader = _Reader(
         {
-            layer1_ticker_history_path("AAPL"): _history_bytes("AAPL", ["2024-01-02"]),
+            layer1_ticker_history_path("AAPL"): _history_bytes_with_features(
+                "AAPL",
+                [("2024-01-02", {"returns_1d": 0.01, **_ready_regime_features()})],
+            ),
             pipeline_manifest_path("layer1", "layer1-readiness-2024-01-02-v4"): _manifest_bytes(
                 "layer1-readiness-2024-01-02-v4",
                 RunStatus.RUNNING,
@@ -698,6 +904,7 @@ def test_validate_layer1_archive_documents_sibling_running_manifests() -> None:
                 "layer1-readiness-2024-01-02-v9",
                 RunStatus.COMPLETED,
             ),
+            **_ready_regime_objects("layer1-readiness-2024-01-02-v9", "2024-01-02"),
         }
     )
 
@@ -783,6 +990,7 @@ def test_build_layer1_output_prefixes_includes_validation_and_history_layouts() 
     assert prefixes["layer1_daily_shards"] == "features/layer1/2024-01-03/"
     assert prefixes["layer1_dated_shards"] == prefixes["layer1_daily_shards"]
     assert prefixes["regime_outputs"] == "features/layer1_5/regime/"
+    assert prefixes["regime_manifests"] == "artifacts/manifests/layer1_5_regime/"
     assert prefixes["layer1_manifests"] == "artifacts/manifests/layer1/"
     assert prefixes["validation_reports"] == "artifacts/reports/integration/"
 

@@ -48,7 +48,11 @@ from core.features.regime_detection import (  # noqa: E402
     validate_hmm_regime_probabilities,
 )
 from core.features.regime_training import build_hmm_training_frame  # noqa: E402
-from services.r2.paths import build_r2_key, pipeline_manifest_path, raw_price_path  # noqa: E402
+from services.r2.paths import (  # noqa: E402
+    layer1_regime_path,
+    pipeline_manifest_path,
+    raw_price_path,
+)
 from services.r2.writer import R2Writer  # noqa: E402
 
 MODAL_CONFIG_PATH = _REPO_ROOT / "config" / "modal.json"
@@ -249,7 +253,7 @@ def run_hmm_regime_detection(
 
 def hmm_regime_output_path(run_id: str) -> str:
     """Return the canonical R2 output key for one HMM regime run."""
-    return build_r2_key("features", "layer1_5", "regime", f"{run_id}.parquet")
+    return layer1_regime_path(run_id)
 
 
 def load_modal_runtime_config(path: Path = MODAL_CONFIG_PATH) -> ModalRuntimeConfig:

@@ -255,6 +255,7 @@ def test_run_daily_layer1_surfaces_regime_warmup_as_validation_warning(
 
     def warning_regime_runner(config, *, writer: R2Writer):
         output_key = layer1_regime_path(config.run_id)
+        manifest_key = pipeline_manifest_path("layer1_5_regime", config.run_id)
         frame = pd.DataFrame(
             [
                 {
@@ -278,10 +279,26 @@ def test_run_daily_layer1_surfaces_regime_warmup_as_validation_warning(
         buffer = io.BytesIO()
         frame.to_parquet(buffer, index=False)
         writer.put_object(output_key, buffer.getvalue())
+        writer.put_object(
+            manifest_key,
+            PipelineManifestRecord(
+                run_id=config.run_id,
+                stage="layer1_5_regime",
+                status=RunStatus.COMPLETED,
+                started_at=datetime(2024, 1, 4, 10, 0, tzinfo=UTC),
+                finished_at=datetime(2024, 1, 4, 10, 5, tzinfo=UTC),
+                output_path=output_key,
+                metadata={
+                    "train_end_date": config.train_end_date,
+                    "inference_dates": list(config.inference_dates),
+                    "regime_layer2_ready": False,
+                },
+            ).model_dump_json(),
+        )
         return daily_layer1_module.HMMRegimePipelineResult(
             run_id=config.run_id,
             output_key=output_key,
-            manifest_key=pipeline_manifest_path("layer1_5_regime", config.run_id),
+            manifest_key=manifest_key,
             training_rows=15,
             complete_training_rows=15,
             regime_rows=1,
