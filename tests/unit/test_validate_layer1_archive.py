@@ -60,6 +60,15 @@ class _ManifestRaceReader(_Reader):
         return super().get_object(key)
 
 
+class _HiddenHistoryListingReader(_Reader):
+    """Reader that can resolve expected histories but hides them from prefix listing."""
+
+    def list_keys(self, prefix: str) -> list[str]:
+        if prefix == "features/layer1/":
+            return []
+        return super().list_keys(prefix)
+
+
 def _history_bytes(ticker: str, dates: list[str]) -> bytes:
     """Return a valid Layer 1 feature-history payload for one ticker."""
     records = [
@@ -149,7 +158,12 @@ def test_validate_layer1_archive_marks_ready_when_every_history_present() -> Non
     assert report.expected_rows == 3
     assert report.present_rows == 3
     assert report.missing_ticker_files == []
+    assert report.present_ticker_counts_by_date == {"2024-01-02": 2, "2024-01-03": 1}
+    assert report.missing_tickers_by_date == {}
     assert report.schema_failures == 0
+    assert report.archive_layout_failures == []
+    assert report.canonical_history_key_count == 2
+    assert report.listed_expected_history_ticker_count == 2
     assert report.related_manifests == []
     assert report.manifest_errors == []
 
@@ -176,6 +190,8 @@ def test_validate_layer1_archive_reports_missing_histories() -> None:
     assert report.ready_for_layer2 is False
     assert report.expected_ticker_files == 2
     assert report.present_ticker_files == 1
+    assert report.present_ticker_counts_by_date == {"2024-01-02": 1}
+    assert report.missing_tickers_by_date == {"2024-01-02": ["MSFT"]}
     assert report.missing_ticker_files == [layer1_ticker_history_path("MSFT")]
 
 
@@ -458,6 +474,87 @@ def test_validate_layer1_archive_samples_daily_shards_deterministically() -> Non
     assert first_sample == second_sample
 
 
+def test_validate_layer1_archive_warns_when_dated_shards_are_partial_but_histories_are_complete() -> None:
+    """Partial dated shards stay non-authoritative and do not block ready histories."""
+    universe = {"2024-01-02": ["AAPL", "MSFT"]}
+    reader = _Reader(
+        {
+            layer1_ticker_history_path("AAPL"): _history_bytes("AAPL", ["2024-01-02"]),
+            layer1_ticker_history_path("MSFT"): _history_bytes("MSFT", ["2024-01-02"]),
+            "features/layer1/2024-01-02/AAPL.parquet": feature_records_to_parquet_bytes(
+                [FeatureRecord(date="2024-01-02", ticker="AAPL", features={"returns_1d": 0.01})]
+            ),
+        }
+    )
+
+    report = validate_layer1_archive(
+        run_id="layer1-partial-dated-shards",
+        from_date="2024-01-02",
+        to_date="2024-01-02",
+        universe=universe,
+        reader=reader,
+    )
+
+    assert report.ready_for_layer2 is True
+    assert report.archive_layout_failures == []
+    assert report.archive_layout_warnings == ["dated_shards_partial_non_authoritative"]
+    assert report.dated_shard_counts_by_date == {"2024-01-02": 1}
+    assert report.dated_shard_counts_by_ticker == {"AAPL": 1, "MSFT": 0}
+    assert report.dated_shard_missing_tickers_by_date == {"2024-01-02": ["MSFT"]}
+    assert report.dated_shard_non_aapl_examples == []
+
+
+def test_validate_layer1_archive_uses_non_aapl_examples_for_expected_anchor_ticker() -> None:
+    """Dated-shard diagnostics still show contrast examples when AAPL is not requested."""
+    universe = {"2024-01-02": ["MSFT", "NVDA"]}
+    reader = _Reader(
+        {
+            layer1_ticker_history_path("MSFT"): _history_bytes("MSFT", ["2024-01-02"]),
+            layer1_ticker_history_path("NVDA"): _history_bytes("NVDA", ["2024-01-02"]),
+            "features/layer1/2024-01-02/MSFT.parquet": feature_records_to_parquet_bytes(
+                [FeatureRecord(date="2024-01-02", ticker="MSFT", features={"returns_1d": 0.01})]
+            ),
+            "features/layer1/2024-01-02/NVDA.parquet": feature_records_to_parquet_bytes(
+                [FeatureRecord(date="2024-01-02", ticker="NVDA", features={"returns_1d": 0.02})]
+            ),
+        }
+    )
+
+    report = validate_layer1_archive(
+        run_id="layer1-non-aapl-dated-shards",
+        from_date="2024-01-02",
+        to_date="2024-01-02",
+        universe=universe,
+        reader=reader,
+    )
+
+    assert report.ready_for_layer2 is True
+    assert report.dated_shard_non_aapl_examples == ["features/layer1/2024-01-02/NVDA.parquet"]
+
+
+def test_validate_layer1_archive_fails_when_canonical_histories_are_not_listable() -> None:
+    """Readiness fails when canonical histories exist but are not discoverable by listing."""
+    reader = _HiddenHistoryListingReader(
+        {
+            layer1_ticker_history_path("AAPL"): _history_bytes("AAPL", ["2024-01-02"]),
+            layer1_ticker_history_path("MSFT"): _history_bytes("MSFT", ["2024-01-02"]),
+        }
+    )
+
+    report = validate_layer1_archive(
+        run_id="layer1-hidden-history-listing",
+        from_date="2024-01-02",
+        to_date="2024-01-02",
+        universe={"2024-01-02": ["AAPL", "MSFT"]},
+        reader=reader,
+    )
+
+    assert report.ready_for_layer2 is False
+    assert report.archive_layout_failures == ["canonical_history_listing_incomplete"]
+    assert report.canonical_history_key_count == 0
+    assert report.missing_listed_expected_tickers == ["AAPL", "MSFT"]
+
+
 def test_validate_layer1_archive_skips_manifest_inspection_by_default() -> None:
     """Daily orchestration does not inspect sibling manifests unless opted in."""
     reader = _NoManifestInspectionReader(
@@ -682,7 +779,9 @@ def test_build_layer1_output_prefixes_includes_validation_and_history_layouts() 
     prefixes = build_layer1_output_prefixes(["2024-01-02", "2024-01-03"])
 
     assert prefixes["layer1_history"] == "features/layer1/"
+    assert prefixes["layer1_canonical_history"] == prefixes["layer1_history"]
     assert prefixes["layer1_daily_shards"] == "features/layer1/2024-01-03/"
+    assert prefixes["layer1_dated_shards"] == prefixes["layer1_daily_shards"]
     assert prefixes["regime_outputs"] == "features/layer1_5/regime/"
     assert prefixes["layer1_manifests"] == "artifacts/manifests/layer1/"
     assert prefixes["validation_reports"] == "artifacts/reports/integration/"

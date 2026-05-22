@@ -62,6 +62,39 @@ class DashboardSelectionRow:
 
 
 @dataclass(frozen=True)
+class DashboardCoverageByDate:
+    """Coverage summary for one observed date in the selected dashboard window."""
+
+    date: str
+    status: DashboardStatus
+    requested_ticker_count: int
+    present_ticker_count: int
+    missing_ticker_count: int
+    missing_tickers: list[str]
+
+    def to_dict(self) -> dict[str, object]:
+        """Return a JSON-serializable representation."""
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class DashboardCoverageByTicker:
+    """Coverage summary for one selected ticker across the observed dates."""
+
+    ticker: str
+    history_key: str
+    status: DashboardStatus
+    observed_date_count: int
+    present_date_count: int
+    missing_date_count: int
+    missing_dates: list[str]
+
+    def to_dict(self) -> dict[str, object]:
+        """Return a JSON-serializable representation."""
+        return asdict(self)
+
+
+@dataclass(frozen=True)
 class FeatureHeatmapCell:
     """Per-row feature completeness and validity cell for the heatmap."""
 
@@ -171,6 +204,8 @@ class Layer1AuditDashboardReport:
     encountered_unknown_features: tuple[str, ...]
     family_definitions: list[dict[str, object]]
     selection_rows: list[dict[str, object]]
+    coverage_by_date: list[dict[str, object]]
+    coverage_by_ticker: list[dict[str, object]]
     load_warnings: list[dict[str, object]]
     heatmap_cells: list[dict[str, object]]
     feature_null_summaries: list[dict[str, object]]
@@ -249,6 +284,10 @@ def build_layer1_audit_dashboard_report(
         )
         for record in sorted_rows
     ]
+    coverage_by_date, coverage_by_ticker = _build_coverage_summaries(
+        selection_rows=selection_rows,
+        requested_tickers=normalized_tickers,
+    )
 
     catalog = feature_catalog()
     family_by_feature = feature_family_map()
@@ -287,6 +326,8 @@ def build_layer1_audit_dashboard_report(
     )
     summary = _build_dashboard_summary(
         selection_rows=selection_rows,
+        coverage_by_date=coverage_by_date,
+        coverage_by_ticker=coverage_by_ticker,
         load_warnings=load_warnings,
         family_status_summaries=family_status_summaries,
         outlier_records=outlier_records,
@@ -311,6 +352,8 @@ def build_layer1_audit_dashboard_report(
             for spec in FEATURE_FAMILY_SPECS
         ],
         selection_rows=[row.to_dict() for row in selection_rows],
+        coverage_by_date=[item.to_dict() for item in coverage_by_date],
+        coverage_by_ticker=[item.to_dict() for item in coverage_by_ticker],
         load_warnings=[warning.to_dict() for warning in load_warnings],
         heatmap_cells=[cell.to_dict() for cell in heatmap_cells],
         feature_null_summaries=[summary_item.to_dict() for summary_item in feature_null_summaries],
@@ -361,6 +404,14 @@ def render_layer1_audit_dashboard_summary(report: Layer1AuditDashboardReport) ->
         f"Date window: {report.from_date} -> {report.to_date}",
         f"Tickers: {', '.join(report.tickers)}",
         f"Rows loaded: {report.rows_loaded}",
+        (
+            "Coverage: "
+            f"dates PASS={report.summary.get('coverage_date_pass_count', 0)} "
+            f"WARN={report.summary.get('coverage_date_warn_count', 0)}; "
+            f"tickers PASS={report.summary.get('coverage_ticker_pass_count', 0)} "
+            f"WARN={report.summary.get('coverage_ticker_warn_count', 0)} "
+            f"FAIL={report.summary.get('coverage_ticker_fail_count', 0)}"
+        ),
         f"Load warnings: {report.summary.get('load_warning_count', 0)}",
         (
             "Family status counts: "
@@ -391,6 +442,24 @@ def render_layer1_audit_dashboard_summary(report: Layer1AuditDashboardReport) ->
         lines.extend(["", "Load Warnings:"])
         for item in report.load_warnings:
             lines.append(f"  {item['ticker']}: {item['message']}")
+    partial_dates = [item for item in report.coverage_by_date if item["status"] != "pass"]
+    partial_tickers = [item for item in report.coverage_by_ticker if item["status"] != "pass"]
+    if partial_dates:
+        lines.extend(["", "Partial Date Coverage:"])
+        for item in partial_dates[:10]:
+            lines.append(
+                "  "
+                f"{item['date']}: present={item['present_ticker_count']}/"
+                f"{item['requested_ticker_count']} missing={', '.join(item['missing_tickers'])}"
+            )
+    if partial_tickers:
+        lines.extend(["", "Partial Ticker Coverage:"])
+        for item in partial_tickers[:10]:
+            lines.append(
+                "  "
+                f"{item['ticker']}: present={item['present_date_count']}/"
+                f"{item['observed_date_count']} missing={', '.join(item['missing_dates'])}"
+            )
     if report.outlier_records:
         lines.extend(["", "Outlier Samples:"])
         for item in report.outlier_records[:10]:
@@ -726,20 +795,99 @@ def _build_outlier_records(
     )
 
 
+def _build_coverage_summaries(
+    *,
+    selection_rows: Sequence[DashboardSelectionRow],
+    requested_tickers: Sequence[str],
+) -> tuple[list[DashboardCoverageByDate], list[DashboardCoverageByTicker]]:
+    """Summarize selected-window coverage by observed date and requested ticker."""
+    requested = tuple(
+        sorted(
+            {
+                ticker.strip().upper()
+                for ticker in requested_tickers
+                if ticker.strip()
+            }
+        )
+    )
+    rows_by_date: dict[str, set[str]] = defaultdict(set)
+    rows_by_ticker: dict[str, set[str]] = defaultdict(set)
+    for row in selection_rows:
+        rows_by_date[row.date].add(row.ticker)
+        rows_by_ticker[row.ticker].add(row.date)
+
+    observed_dates = sorted(rows_by_date)
+    coverage_by_date: list[DashboardCoverageByDate] = []
+    for date_text in observed_dates:
+        present_tickers = rows_by_date.get(date_text, set())
+        missing_tickers = sorted(set(requested) - present_tickers)
+        status: DashboardStatus = "pass" if not missing_tickers else "warn"
+        coverage_by_date.append(
+            DashboardCoverageByDate(
+                date=date_text,
+                status=status,
+                requested_ticker_count=len(requested),
+                present_ticker_count=len(present_tickers),
+                missing_ticker_count=len(missing_tickers),
+                missing_tickers=missing_tickers,
+            )
+        )
+
+    coverage_by_ticker: list[DashboardCoverageByTicker] = []
+    observed_date_set = set(observed_dates)
+    for ticker in requested:
+        present_dates = rows_by_ticker.get(ticker, set())
+        missing_dates = sorted(observed_date_set - present_dates)
+        if observed_dates and not present_dates:
+            status = "fail"
+        elif missing_dates:
+            status = "warn"
+        else:
+            status = "pass"
+        coverage_by_ticker.append(
+            DashboardCoverageByTicker(
+                ticker=ticker,
+                history_key=layer1_ticker_history_path(ticker),
+                status=status,
+                observed_date_count=len(observed_dates),
+                present_date_count=len(present_dates),
+                missing_date_count=len(missing_dates),
+                missing_dates=missing_dates,
+            )
+        )
+    return coverage_by_date, coverage_by_ticker
+
+
 def _build_dashboard_summary(
     *,
     selection_rows: Sequence[DashboardSelectionRow],
+    coverage_by_date: Sequence[DashboardCoverageByDate],
+    coverage_by_ticker: Sequence[DashboardCoverageByTicker],
     load_warnings: Sequence[DashboardLoadWarning],
     family_status_summaries: Sequence[FeatureFamilyStatus],
     outlier_records: Sequence[OutlierRecord],
     spot_check_records: Sequence[MarketFeatureSpotCheckRecord],
 ) -> dict[str, int]:
     counts = {"pass": 0, "warn": 0, "fail": 0}
+    # Date coverage only summarizes dates that were actually observed in loaded rows, so
+    # fully missing dates are surfaced through ticker failures/load warnings rather than a
+    # separate date-level fail bucket.
+    coverage_date_counts = {"pass": 0, "warn": 0}
+    coverage_ticker_counts = {"pass": 0, "warn": 0, "fail": 0}
     for item in family_status_summaries:
         counts[item.status] += 1
+    for item in coverage_by_date:
+        coverage_date_counts[item.status] += 1
+    for item in coverage_by_ticker:
+        coverage_ticker_counts[item.status] += 1
     spot_check_counts = summarize_market_feature_spot_checks(spot_check_records)
     return {
         "rows_loaded": len(selection_rows),
+        "coverage_date_pass_count": coverage_date_counts["pass"],
+        "coverage_date_warn_count": coverage_date_counts["warn"],
+        "coverage_ticker_pass_count": coverage_ticker_counts["pass"],
+        "coverage_ticker_warn_count": coverage_ticker_counts["warn"],
+        "coverage_ticker_fail_count": coverage_ticker_counts["fail"],
         "load_warning_count": len(load_warnings),
         "family_pass_count": counts["pass"],
         "family_warn_count": counts["warn"],
