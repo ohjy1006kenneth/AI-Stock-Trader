@@ -502,6 +502,8 @@ def build_layer1_output_prefixes(processed_dates: Sequence[str]) -> dict[str, st
     prefix_date = latest_date or "2000-01-01"
     prefixes = {
         "layer1_history": _prefix_for_key(layer1_ticker_history_path("<TICKER>")),
+        # Keep the more explicit names as transition aliases for report consumers that now
+        # distinguish canonical per-ticker histories from dated shards.
         "layer1_canonical_history": _prefix_for_key(layer1_ticker_history_path("<TICKER>")),
         "layer1_daily_shards": _prefix_for_key(layer1_feature_path(prefix_date, "<TICKER>")),
         "layer1_dated_shards": _prefix_for_key(layer1_feature_path(prefix_date, "<TICKER>")),
@@ -745,6 +747,13 @@ def _inspect_archive_layout(
 
     expected_tickers = sorted(expected_dates_by_ticker)
     expected_ticker_set = set(expected_tickers)
+    # The original operator report referenced an AAPL-only console view; keep AAPL as the
+    # preferred contrast anchor when it is part of the requested universe, otherwise fall
+    # back to the first expected ticker so the diagnostic still highlights "other ticker"
+    # dated shards in narrower windows.
+    dated_shard_example_anchor = "AAPL" if "AAPL" in expected_ticker_set else None
+    if dated_shard_example_anchor is None and expected_tickers:
+        dated_shard_example_anchor = expected_tickers[0]
     expected_tickers_by_date = {
         as_of_date: {_normalize_ticker(ticker) for ticker in tickers}
         for as_of_date, tickers in universe.items()
@@ -784,7 +793,7 @@ def _inspect_archive_layout(
                     dated_shard_present_tickers_by_date.setdefault(date_text, set()).add(ticker)
             if ticker in dated_shard_counts_by_ticker:
                 dated_shard_counts_by_ticker[ticker] += 1
-            if ticker != "AAPL" and len(dated_shard_non_aapl_examples) < 20:
+            if ticker != dated_shard_example_anchor and len(dated_shard_non_aapl_examples) < 20:
                 dated_shard_non_aapl_examples.append(key)
             continue
 

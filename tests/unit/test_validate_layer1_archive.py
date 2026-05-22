@@ -504,6 +504,34 @@ def test_validate_layer1_archive_warns_when_dated_shards_are_partial_but_histori
     assert report.dated_shard_non_aapl_examples == []
 
 
+def test_validate_layer1_archive_uses_non_aapl_examples_for_expected_anchor_ticker() -> None:
+    """Dated-shard diagnostics still show contrast examples when AAPL is not requested."""
+    universe = {"2024-01-02": ["MSFT", "NVDA"]}
+    reader = _Reader(
+        {
+            layer1_ticker_history_path("MSFT"): _history_bytes("MSFT", ["2024-01-02"]),
+            layer1_ticker_history_path("NVDA"): _history_bytes("NVDA", ["2024-01-02"]),
+            "features/layer1/2024-01-02/MSFT.parquet": feature_records_to_parquet_bytes(
+                [FeatureRecord(date="2024-01-02", ticker="MSFT", features={"returns_1d": 0.01})]
+            ),
+            "features/layer1/2024-01-02/NVDA.parquet": feature_records_to_parquet_bytes(
+                [FeatureRecord(date="2024-01-02", ticker="NVDA", features={"returns_1d": 0.02})]
+            ),
+        }
+    )
+
+    report = validate_layer1_archive(
+        run_id="layer1-non-aapl-dated-shards",
+        from_date="2024-01-02",
+        to_date="2024-01-02",
+        universe=universe,
+        reader=reader,
+    )
+
+    assert report.ready_for_layer2 is True
+    assert report.dated_shard_non_aapl_examples == ["features/layer1/2024-01-02/NVDA.parquet"]
+
+
 def test_validate_layer1_archive_fails_when_canonical_histories_are_not_listable() -> None:
     """Readiness fails when canonical histories exist but are not discoverable by listing."""
     reader = _HiddenHistoryListingReader(
@@ -751,7 +779,9 @@ def test_build_layer1_output_prefixes_includes_validation_and_history_layouts() 
     prefixes = build_layer1_output_prefixes(["2024-01-02", "2024-01-03"])
 
     assert prefixes["layer1_history"] == "features/layer1/"
+    assert prefixes["layer1_canonical_history"] == prefixes["layer1_history"]
     assert prefixes["layer1_daily_shards"] == "features/layer1/2024-01-03/"
+    assert prefixes["layer1_dated_shards"] == prefixes["layer1_daily_shards"]
     assert prefixes["regime_outputs"] == "features/layer1_5/regime/"
     assert prefixes["layer1_manifests"] == "artifacts/manifests/layer1/"
     assert prefixes["validation_reports"] == "artifacts/reports/integration/"

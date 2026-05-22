@@ -34,6 +34,7 @@ def test_build_layer1_audit_dashboard_report_builds_visualization_inputs(
     assert report.rows_loaded == 6
     assert report.summary["coverage_date_pass_count"] == 3
     assert report.summary["coverage_date_warn_count"] == 0
+    assert "coverage_date_fail_count" not in report.summary
     assert report.summary["coverage_ticker_pass_count"] == 2
     assert report.summary["coverage_ticker_warn_count"] == 0
     assert report.summary["family_fail_count"] >= 1
@@ -151,10 +152,12 @@ def test_build_layer1_audit_dashboard_report_surfaces_partial_coverage(
     coverage_by_ticker = {item["ticker"]: item for item in report.coverage_by_ticker}
 
     assert report.summary["coverage_date_warn_count"] == 1
+    assert "coverage_date_fail_count" not in report.summary
     assert report.summary["coverage_ticker_warn_count"] == 1
     assert coverage_by_date["2024-05-06"]["status"] == "warn"
     assert coverage_by_date["2024-05-06"]["missing_tickers"] == ["MSFT"]
     assert coverage_by_ticker["MSFT"]["status"] == "warn"
     assert coverage_by_ticker["MSFT"]["missing_dates"] == ["2024-05-06"]
+    assert "dates PASS=2 WARN=1; tickers PASS=1 WARN=1 FAIL=0" in summary
     assert "Partial Date Coverage" in summary
     assert "Partial Ticker Coverage" in summary

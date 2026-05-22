@@ -407,8 +407,7 @@ def render_layer1_audit_dashboard_summary(report: Layer1AuditDashboardReport) ->
         (
             "Coverage: "
             f"dates PASS={report.summary.get('coverage_date_pass_count', 0)} "
-            f"WARN={report.summary.get('coverage_date_warn_count', 0)} "
-            f"FAIL={report.summary.get('coverage_date_fail_count', 0)}; "
+            f"WARN={report.summary.get('coverage_date_warn_count', 0)}; "
             f"tickers PASS={report.summary.get('coverage_ticker_pass_count', 0)} "
             f"WARN={report.summary.get('coverage_ticker_warn_count', 0)} "
             f"FAIL={report.summary.get('coverage_ticker_fail_count', 0)}"
@@ -870,7 +869,10 @@ def _build_dashboard_summary(
     spot_check_records: Sequence[MarketFeatureSpotCheckRecord],
 ) -> dict[str, int]:
     counts = {"pass": 0, "warn": 0, "fail": 0}
-    coverage_date_counts = {"pass": 0, "warn": 0, "fail": 0}
+    # Date coverage only summarizes dates that were actually observed in loaded rows, so
+    # fully missing dates are surfaced through ticker failures/load warnings rather than a
+    # separate date-level fail bucket.
+    coverage_date_counts = {"pass": 0, "warn": 0}
     coverage_ticker_counts = {"pass": 0, "warn": 0, "fail": 0}
     for item in family_status_summaries:
         counts[item.status] += 1
@@ -883,7 +885,6 @@ def _build_dashboard_summary(
         "rows_loaded": len(selection_rows),
         "coverage_date_pass_count": coverage_date_counts["pass"],
         "coverage_date_warn_count": coverage_date_counts["warn"],
-        "coverage_date_fail_count": coverage_date_counts["fail"],
         "coverage_ticker_pass_count": coverage_ticker_counts["pass"],
         "coverage_ticker_warn_count": coverage_ticker_counts["warn"],
         "coverage_ticker_fail_count": coverage_ticker_counts["fail"],
