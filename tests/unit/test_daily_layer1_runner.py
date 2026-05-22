@@ -29,7 +29,9 @@ from app.lab.data_pipelines.run_text_topics import TEXT_TOPICS_STAGE
 from app.lab.data_pipelines.validate_layer1_archive import Layer1ValidationReport
 from core.contracts.schemas import PipelineManifestRecord, RunStatus
 from core.features.io import feature_records_to_parquet_bytes, read_feature_records
+from core.features.sector_features import SectorEtfConfig
 from services.order_book.config import OrderBookFeatureConfig
+from services.r2.client import CloudflareR2Client
 from services.r2.paths import (
     layer1_regime_path,
     layer1_sentiment_feature_path,
@@ -238,6 +240,81 @@ def test_run_daily_layer1_adds_optional_order_book_features_without_breaking_mis
     assert manifest.metadata["order_book_enabled"] is True
     assert manifest.metadata["order_book_provider"] == "alpaca"
     assert manifest.metadata["order_book_missing_dates"] == ["2024-01-04"]
+
+
+def test_run_daily_layer1_treats_r2_nosuchkey_sector_etf_archives_as_optional(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Real-R2 missing sector ETF objects should degrade to null features, not crash the run."""
+    writer = local_writer(tmp_path, monkeypatch)
+    seed_layer0_archives(
+        writer,
+        dates=["2024-01-03"],
+        tickers=["AAPL"],
+        layer0_run_ids=("layer1-sector-r2-missing",),
+    )
+    monkeypatch.setattr(
+        daily_layer1_module,
+        "load_sector_etf_config",
+        lambda: SectorEtfConfig(
+            sector_field_names=("sector",),
+            sector_aliases={},
+            sector_to_etf={"information technology": "XLK"},
+        ),
+    )
+
+    class _MissingR2ObjectError(Exception):
+        def __init__(self, key: str) -> None:
+            super().__init__(f"missing {key}")
+            self.response = {"Error": {"Code": "NoSuchKey", "Message": key}}
+
+    class _MissingGetClient:
+        def get_object(self, **kwargs: str) -> dict[str, object]:
+            raise _MissingR2ObjectError(kwargs["Key"])
+
+    class _R2StyleMissingSectorWriter:
+        def __init__(self, backing_writer: R2Writer) -> None:
+            self._backing_writer = backing_writer
+            self._missing_reader = CloudflareR2Client(
+                bucket_name="bucket-name",
+                s3_client=_MissingGetClient(),
+            )
+
+        def put_object(self, key: str, data: bytes | str) -> None:
+            self._backing_writer.put_object(key, data)
+
+        def get_object(self, key: str) -> bytes:
+            if key == raw_price_path("XLK"):
+                return self._missing_reader.get_object(key)
+            return self._backing_writer.get_object(key)
+
+        def list_keys(self, prefix: str) -> list[str]:
+            return self._backing_writer.list_keys(prefix)
+
+        def exists(self, key: str) -> bool:
+            return self._backing_writer.exists(key)
+
+    result = run_daily_layer1(
+        Layer1DailyConfig(
+            run_id="layer1-sector-r2-missing",
+            from_date="2024-01-03",
+            to_date="2024-01-03",
+        ),
+        writer=_R2StyleMissingSectorWriter(writer),
+        news_runner=fake_news_runner(writer, ["AAPL"]),
+        text_topic_runner=fake_topic_runner(writer, ["AAPL"]),
+        finbert_runner=fake_sentiment_runner(writer, ["AAPL"]),
+        regime_runner=fake_regime_runner(writer),
+        validation_output_dir=tmp_path / "reports",
+        now=datetime(2024, 1, 4, 12, 0, tzinfo=UTC),
+    )
+
+    history = read_feature_records("AAPL", writer=writer)
+
+    assert result.ready_for_layer2 is True
+    assert history[0].features["sector_etf_ret"] is None
+    assert history[0].features["stock_vs_sector"] is None
 
 
 def test_run_daily_layer1_surfaces_regime_warmup_as_validation_warning(
