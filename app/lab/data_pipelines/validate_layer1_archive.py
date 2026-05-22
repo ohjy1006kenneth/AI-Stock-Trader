@@ -47,7 +47,11 @@ def _resolve_repo_root() -> Path:
 _REPO_ROOT = _resolve_repo_root()
 sys.path.insert(0, str(_REPO_ROOT))
 
-from core.contracts.schemas import FeatureRecord  # noqa: E402
+from core.contracts.schemas import (  # noqa: E402
+    FeatureRecord,
+    PipelineManifestRecord,
+    RunStatus,
+)
 from core.features.io import parquet_bytes_to_feature_records  # noqa: E402
 from core.features.regime_detection import (  # noqa: E402
     HMM_REGIME_COLUMNS,
@@ -162,6 +166,8 @@ class Layer1ValidationReport:
     layer2_regime_required_dates: list[str] = field(default_factory=list)
     layer2_regime_optional_dates: list[str] = field(default_factory=list)
     regime_diagnostics_by_date: dict[str, dict[str, object]] = field(default_factory=dict)
+    regime_feature_coverage_by_date: dict[str, dict[str, object]] = field(default_factory=dict)
+    regime_window_summary: dict[str, object] = field(default_factory=dict)
     regime_failures: list[dict[str, object]] = field(default_factory=list)
     regime_warnings: list[dict[str, object]] = field(default_factory=list)
     ready_for_layer2: bool = False
@@ -357,6 +363,8 @@ def validate_layer1_archive(
         layer2_regime_required_dates,
         layer2_regime_optional_dates,
         regime_diagnostics_by_date,
+        regime_feature_coverage_by_date,
+        regime_window_summary,
         regime_failures,
         regime_warnings,
     ) = _validate_regime_handoff(
@@ -445,6 +453,8 @@ def validate_layer1_archive(
         layer2_regime_required_dates=layer2_regime_required_dates,
         layer2_regime_optional_dates=layer2_regime_optional_dates,
         regime_diagnostics_by_date=regime_diagnostics_by_date,
+        regime_feature_coverage_by_date=regime_feature_coverage_by_date,
+        regime_window_summary=regime_window_summary,
         regime_failures=regime_failures,
         regime_warnings=regime_warnings,
         ready_for_layer2=ready,
@@ -520,6 +530,9 @@ def build_layer1_output_prefixes(processed_dates: Sequence[str]) -> dict[str, st
             layer1_sentiment_feature_path(prefix_date, "<RUN_ID>")
         ),
         "regime_outputs": _prefix_for_key(layer1_regime_path("<RUN_ID>")),
+        "regime_manifests": _prefix_for_key(
+            pipeline_manifest_path("layer1_5_regime", "<RUN_ID>")
+        ),
         "layer1_manifests": _prefix_for_key(pipeline_manifest_path("layer1", "<RUN_ID>")),
         "validation_reports": _prefix_for_key(
             layer1_validation_report_path("<RUN_ID>", prefix_date, prefix_date)
@@ -956,42 +969,96 @@ def _validate_regime_handoff(
     list[str],
     list[str],
     dict[str, dict[str, object]],
+    dict[str, dict[str, object]],
+    dict[str, object],
     list[dict[str, object]],
     list[dict[str, object]],
 ]:
     """Validate Layer 1 regime completeness against Layer 1.5 diagnostics."""
-    if not _has_regime_validation_evidence(
-        run_id=run_id,
-        universe=universe,
-        feature_rows_by_ticker_date=feature_rows_by_ticker_date,
-        reader=reader,
-    ):
-        return ("not_checked", [], [], {}, [], [])
+    if not universe:
+        return ("not_checked", [], [], {}, {}, _empty_regime_window_summary(), [], [])
     diagnostics_by_date: dict[str, dict[str, object]] = {}
+    coverage_by_date: dict[str, dict[str, object]] = {}
     regime_failures: list[dict[str, object]] = []
     regime_warnings: list[dict[str, object]] = []
     required_dates: list[str] = []
     optional_dates: list[str] = []
 
     for date_text, tickers in sorted(universe.items()):
+        normalized_tickers = sorted({_normalize_ticker(value) for value in tickers})
         diagnostic = _load_regime_diagnostic(run_id=run_id, date_text=date_text, reader=reader)
         diagnostics_by_date[date_text] = diagnostic
         if bool(diagnostic.get("required_for_layer2")):
             required_dates.append(date_text)
         else:
             optional_dates.append(date_text)
+        label_distribution: dict[str, int] = {}
+        sample_rows: list[dict[str, object]] = []
+        coverage = {
+            "expected_ticker_rows": len(normalized_tickers),
+            "present_history_rows": 0,
+            "full_feature_rows": 0,
+            "explicit_null_rows": 0,
+            "partial_feature_rows": 0,
+            "rows_missing_feature_keys": 0,
+            "invalid_value_rows": 0,
+            "coverage_rate": None,
+            "explicit_null_rate": None,
+            "missing_or_partial_rate": None,
+            "label_distribution": label_distribution,
+            "confidence_min": None,
+            "confidence_max": None,
+            "probability_sum_min": None,
+            "probability_sum_max": None,
+            "required_for_layer2": bool(diagnostic.get("required_for_layer2")),
+            "artifact_status": diagnostic.get("status"),
+            "artifact_reason": diagnostic.get("reason"),
+            "output_key": diagnostic.get("output_key"),
+            "output_present": bool(diagnostic.get("output_present")),
+            "manifest_key": diagnostic.get("manifest_key"),
+            "manifest_present": bool(diagnostic.get("manifest_present")),
+            "manifest_status": diagnostic.get("manifest_status"),
+            "sample_rows": sample_rows,
+        }
         if diagnostic["status"] == "failure":
+            coverage_by_date[date_text] = _finalize_regime_coverage(coverage)
             regime_failures.append(diagnostic)
             continue
 
         explicit_null_tickers: list[str] = []
-        for ticker in sorted({_normalize_ticker(value) for value in tickers}):
+        for ticker in normalized_tickers:
             record = feature_rows_by_ticker_date.get((ticker, date_text))
             if record is None:
                 continue
+            coverage["present_history_rows"] = int(coverage["present_history_rows"]) + 1
             presence = _inspect_regime_feature_presence(record.features)
+            label = _normalize_optional_value(record.features.get("regime_label"))
+            confidence = _safe_float(record.features.get("regime_confidence"))
+            probability_sum = _regime_probability_sum(record.features)
+            if len(sample_rows) < 3:
+                sample_rows.append(
+                    {
+                        "ticker": ticker,
+                        "state": presence["state"],
+                        "regime_label": label,
+                        "regime_confidence": confidence,
+                        "probability_sum": probability_sum,
+                    }
+                )
             if diagnostic["status"] == "ready":
                 if presence["state"] != "full":
+                    if presence["state"] == "missing":
+                        coverage["rows_missing_feature_keys"] = (
+                            int(coverage["rows_missing_feature_keys"]) + 1
+                        )
+                    elif presence["state"] == "partial":
+                        coverage["partial_feature_rows"] = (
+                            int(coverage["partial_feature_rows"]) + 1
+                        )
+                    else:
+                        coverage["explicit_null_rows"] = (
+                            int(coverage["explicit_null_rows"]) + 1
+                        )
                     regime_failures.append(
                         {
                             "date": date_text,
@@ -1003,12 +1070,14 @@ def _validate_regime_handoff(
                         }
                     )
                     continue
+                coverage["full_feature_rows"] = int(coverage["full_feature_rows"]) + 1
                 value_errors = _regime_value_errors(
                     date_text=date_text,
                     ticker=ticker,
                     features=record.features,
                 )
                 if value_errors:
+                    coverage["invalid_value_rows"] = int(coverage["invalid_value_rows"]) + 1
                     regime_failures.append(
                         {
                             "date": date_text,
@@ -1019,8 +1088,22 @@ def _validate_regime_handoff(
                             "errors": value_errors,
                         }
                     )
+                else:
+                    if isinstance(label, str):
+                        normalized_label = label.strip().lower()
+                        label_distribution[normalized_label] = (
+                            label_distribution.get(normalized_label, 0) + 1
+                        )
+                    _update_regime_coverage_ranges(
+                        coverage=coverage,
+                        confidence=confidence,
+                        probability_sum=probability_sum,
+                    )
             else:
                 if presence["missing_keys"]:
+                    coverage["rows_missing_feature_keys"] = (
+                        int(coverage["rows_missing_feature_keys"]) + 1
+                    )
                     regime_failures.append(
                         {
                             "date": date_text,
@@ -1033,6 +1116,7 @@ def _validate_regime_handoff(
                     )
                     continue
                 if presence["state"] == "partial":
+                    coverage["partial_feature_rows"] = int(coverage["partial_feature_rows"]) + 1
                     regime_failures.append(
                         {
                             "date": date_text,
@@ -1044,6 +1128,8 @@ def _validate_regime_handoff(
                     )
                     continue
                 if presence["state"] == "full":
+                    coverage["full_feature_rows"] = int(coverage["full_feature_rows"]) + 1
+                    coverage["invalid_value_rows"] = int(coverage["invalid_value_rows"]) + 1
                     regime_failures.append(
                         {
                             "date": date_text,
@@ -1054,6 +1140,7 @@ def _validate_regime_handoff(
                         }
                     )
                     continue
+                coverage["explicit_null_rows"] = int(coverage["explicit_null_rows"]) + 1
                 explicit_null_tickers.append(ticker)
         if diagnostic["status"] == "warning" and explicit_null_tickers:
             regime_warnings.append(
@@ -1069,37 +1156,29 @@ def _validate_regime_handoff(
                     "missing_features": diagnostic.get("missing_features"),
                 }
             )
+        coverage_by_date[date_text] = _finalize_regime_coverage(coverage)
 
     status = "completed"
     if regime_failures:
         status = "failed"
     elif regime_warnings:
         status = "warning"
+    regime_window_summary = _summarize_regime_window(
+        required_dates=required_dates,
+        optional_dates=optional_dates,
+        diagnostics_by_date=diagnostics_by_date,
+        coverage_by_date=coverage_by_date,
+    )
     return (
         status,
         required_dates,
         optional_dates,
         diagnostics_by_date,
+        coverage_by_date,
+        regime_window_summary,
         regime_failures,
         regime_warnings,
     )
-
-
-def _has_regime_validation_evidence(
-    *,
-    run_id: str,
-    universe: Mapping[str, Sequence[str]],
-    feature_rows_by_ticker_date: Mapping[tuple[str, str], FeatureRecord],
-    reader: ArchiveReader,
-) -> bool:
-    """Return True when the archive contains regime artifacts or regime feature keys."""
-    for record in feature_rows_by_ticker_date.values():
-        if any(name in record.features for name in HMM_REGIME_COLUMNS[1:]):
-            return True
-    for date_text in universe:
-        if reader.exists(layer1_regime_path(f"{run_id}-{date_text}")):
-            return True
-    return False
 
 
 def _load_regime_diagnostic(
@@ -1118,12 +1197,56 @@ def _load_regime_diagnostic(
         "reason": "missing_regime_output",
         "required_for_layer2": False,
         "output_key": output_key,
+        "output_present": False,
         "manifest_key": manifest_key,
+        "manifest_present": False,
+        "manifest_status": None,
     }
+    if not reader.exists(manifest_key):
+        diagnostic["reason"] = "missing_regime_manifest"
+        diagnostic["output_present"] = reader.exists(output_key)
+        return diagnostic
+    diagnostic["manifest_present"] = True
+    try:
+        manifest = PipelineManifestRecord.model_validate_json(reader.get_object(manifest_key))
+    except Exception as exc:  # noqa: BLE001
+        diagnostic["reason"] = "invalid_regime_manifest"
+        diagnostic["manifest_error"] = str(exc)
+        diagnostic["output_present"] = reader.exists(output_key)
+        return diagnostic
+    diagnostic["manifest_status"] = str(manifest.status)
+    if manifest.stage != "layer1_5_regime":
+        diagnostic["reason"] = "regime_manifest_stage_mismatch"
+        diagnostic["manifest_stage"] = manifest.stage
+        diagnostic["output_present"] = reader.exists(output_key)
+        return diagnostic
+    if manifest.status is not RunStatus.COMPLETED:
+        diagnostic["reason"] = "regime_manifest_not_completed"
+        diagnostic["output_present"] = reader.exists(output_key)
+        return diagnostic
+    if manifest.output_path != output_key:
+        diagnostic["reason"] = "regime_manifest_output_mismatch"
+        diagnostic["manifest_output_path"] = manifest.output_path
+        diagnostic["output_present"] = reader.exists(output_key)
+        return diagnostic
+    inference_dates = manifest.metadata.get("inference_dates")
+    if isinstance(inference_dates, list):
+        normalized_dates = [str(value) for value in inference_dates]
+        diagnostic["manifest_inference_dates"] = normalized_dates
+        if date_text not in normalized_dates:
+            diagnostic["reason"] = "regime_manifest_missing_inference_date"
+            diagnostic["output_present"] = reader.exists(output_key)
+            return diagnostic
     if not reader.exists(output_key):
         return diagnostic
+    diagnostic["output_present"] = True
 
-    frame = _read_parquet_frame(reader.get_object(output_key))
+    try:
+        frame = _read_parquet_frame(reader.get_object(output_key))
+    except Exception as exc:  # noqa: BLE001
+        diagnostic["reason"] = "regime_output_unreadable"
+        diagnostic["output_error"] = str(exc)
+        return diagnostic
     missing = sorted(set(HMM_REGIME_COLUMNS) - set(frame.columns))
     if missing:
         diagnostic["reason"] = "regime_output_missing_columns"
@@ -1157,6 +1280,211 @@ def _load_regime_diagnostic(
         diagnostic["status"] = "failure"
         diagnostic["reason"] = "required_regime_output_is_null"
     return diagnostic
+
+
+def _empty_regime_window_summary() -> dict[str, object]:
+    """Return the default Layer 1.5 readiness summary for empty validations."""
+    return {
+        "expected_dates": 0,
+        "output_dates_present": [],
+        "output_dates_missing": [],
+        "manifest_dates_present": [],
+        "manifest_dates_missing": [],
+        "required_dates": [],
+        "optional_dates": [],
+        "ready_dates": [],
+        "warning_dates": [],
+        "failure_dates": [],
+        "expected_ticker_rows": 0,
+        "present_history_rows": 0,
+        "full_feature_rows": 0,
+        "explicit_null_rows": 0,
+        "partial_feature_rows": 0,
+        "rows_missing_feature_keys": 0,
+        "invalid_value_rows": 0,
+        "coverage_rate": None,
+        "explicit_null_rate": None,
+        "missing_or_partial_rate": None,
+        "label_distribution": {},
+        "confidence_min": None,
+        "confidence_max": None,
+        "probability_sum_min": None,
+        "probability_sum_max": None,
+        "sample_rows": [],
+    }
+
+
+def _finalize_regime_coverage(coverage: dict[str, object]) -> dict[str, object]:
+    """Attach derived ratio fields to one date-level regime coverage summary."""
+    expected = int(coverage["expected_ticker_rows"])
+    full_rows = int(coverage["full_feature_rows"])
+    explicit_null_rows = int(coverage["explicit_null_rows"])
+    partial_rows = int(coverage["partial_feature_rows"])
+    missing_rows = int(coverage["rows_missing_feature_keys"])
+    coverage["coverage_rate"] = _safe_ratio(full_rows, expected)
+    coverage["explicit_null_rate"] = _safe_ratio(explicit_null_rows, expected)
+    coverage["missing_or_partial_rate"] = _safe_ratio(partial_rows + missing_rows, expected)
+    coverage["label_distribution"] = dict(
+        sorted(
+            {
+                str(label): int(count)
+                for label, count in dict(coverage["label_distribution"]).items()
+            }.items()
+        )
+    )
+    return coverage
+
+
+def _summarize_regime_window(
+    *,
+    required_dates: Sequence[str],
+    optional_dates: Sequence[str],
+    diagnostics_by_date: Mapping[str, Mapping[str, object]],
+    coverage_by_date: Mapping[str, Mapping[str, object]],
+) -> dict[str, object]:
+    """Summarize Layer 1.5 archive coverage across the validated readiness window."""
+    summary = _empty_regime_window_summary()
+    summary["expected_dates"] = len(diagnostics_by_date)
+    summary["required_dates"] = list(required_dates)
+    summary["optional_dates"] = list(optional_dates)
+    output_dates_present: list[str] = []
+    output_dates_missing: list[str] = []
+    manifest_dates_present: list[str] = []
+    manifest_dates_missing: list[str] = []
+    ready_dates: list[str] = []
+    warning_dates: list[str] = []
+    failure_dates: list[str] = []
+    label_distribution: dict[str, int] = {}
+    sample_rows: list[dict[str, object]] = []
+
+    for date_text, diagnostic in sorted(diagnostics_by_date.items()):
+        if bool(diagnostic.get("output_present")):
+            output_dates_present.append(date_text)
+        else:
+            output_dates_missing.append(date_text)
+        if bool(diagnostic.get("manifest_present")):
+            manifest_dates_present.append(date_text)
+        else:
+            manifest_dates_missing.append(date_text)
+        status = str(diagnostic.get("status") or "")
+        if status == "ready":
+            ready_dates.append(date_text)
+        elif status == "warning":
+            warning_dates.append(date_text)
+        else:
+            failure_dates.append(date_text)
+
+        coverage = coverage_by_date.get(date_text, {})
+        summary["expected_ticker_rows"] = int(summary["expected_ticker_rows"]) + int(
+            coverage.get("expected_ticker_rows", 0)
+        )
+        summary["present_history_rows"] = int(summary["present_history_rows"]) + int(
+            coverage.get("present_history_rows", 0)
+        )
+        summary["full_feature_rows"] = int(summary["full_feature_rows"]) + int(
+            coverage.get("full_feature_rows", 0)
+        )
+        summary["explicit_null_rows"] = int(summary["explicit_null_rows"]) + int(
+            coverage.get("explicit_null_rows", 0)
+        )
+        summary["partial_feature_rows"] = int(summary["partial_feature_rows"]) + int(
+            coverage.get("partial_feature_rows", 0)
+        )
+        summary["rows_missing_feature_keys"] = int(
+            summary["rows_missing_feature_keys"]
+        ) + int(coverage.get("rows_missing_feature_keys", 0))
+        summary["invalid_value_rows"] = int(summary["invalid_value_rows"]) + int(
+            coverage.get("invalid_value_rows", 0)
+        )
+        for label, count in dict(coverage.get("label_distribution", {})).items():
+            normalized_label = str(label).strip().lower()
+            if not normalized_label:
+                continue
+            label_distribution[normalized_label] = (
+                label_distribution.get(normalized_label, 0) + int(count)
+            )
+        _update_regime_coverage_ranges(
+            coverage=summary,
+            confidence=_safe_float(coverage.get("confidence_min")),
+            probability_sum=_safe_float(coverage.get("probability_sum_min")),
+        )
+        _update_regime_coverage_ranges(
+            coverage=summary,
+            confidence=_safe_float(coverage.get("confidence_max")),
+            probability_sum=_safe_float(coverage.get("probability_sum_max")),
+        )
+        for sample in coverage.get("sample_rows", []):
+            if len(sample_rows) >= 10:
+                break
+            if isinstance(sample, dict):
+                sample_rows.append({"date": date_text, **sample})
+
+    summary["output_dates_present"] = output_dates_present
+    summary["output_dates_missing"] = output_dates_missing
+    summary["manifest_dates_present"] = manifest_dates_present
+    summary["manifest_dates_missing"] = manifest_dates_missing
+    summary["ready_dates"] = ready_dates
+    summary["warning_dates"] = warning_dates
+    summary["failure_dates"] = failure_dates
+    summary["label_distribution"] = dict(sorted(label_distribution.items()))
+    summary["sample_rows"] = sample_rows
+    summary["coverage_rate"] = _safe_ratio(
+        int(summary["full_feature_rows"]),
+        int(summary["expected_ticker_rows"]),
+    )
+    summary["explicit_null_rate"] = _safe_ratio(
+        int(summary["explicit_null_rows"]),
+        int(summary["expected_ticker_rows"]),
+    )
+    summary["missing_or_partial_rate"] = _safe_ratio(
+        int(summary["partial_feature_rows"]) + int(summary["rows_missing_feature_keys"]),
+        int(summary["expected_ticker_rows"]),
+    )
+    return summary
+
+
+def _update_regime_coverage_ranges(
+    *,
+    coverage: dict[str, object],
+    confidence: float | None,
+    probability_sum: float | None,
+) -> None:
+    """Update min/max regime confidence and probability-sum bounds in place."""
+    if confidence is not None:
+        existing_min = _safe_float(coverage.get("confidence_min"))
+        existing_max = _safe_float(coverage.get("confidence_max"))
+        coverage["confidence_min"] = (
+            confidence if existing_min is None else min(existing_min, confidence)
+        )
+        coverage["confidence_max"] = (
+            confidence if existing_max is None else max(existing_max, confidence)
+        )
+    if probability_sum is not None:
+        existing_min = _safe_float(coverage.get("probability_sum_min"))
+        existing_max = _safe_float(coverage.get("probability_sum_max"))
+        coverage["probability_sum_min"] = (
+            probability_sum if existing_min is None else min(existing_min, probability_sum)
+        )
+        coverage["probability_sum_max"] = (
+            probability_sum if existing_max is None else max(existing_max, probability_sum)
+        )
+
+
+def _safe_ratio(numerator: int, denominator: int) -> float | None:
+    """Return a rounded ratio when the denominator is non-zero."""
+    if denominator <= 0:
+        return None
+    return numerator / denominator
+
+
+def _regime_probability_sum(features: Mapping[str, object]) -> float | None:
+    """Return the probability sum for one FeatureRecord's regime fields."""
+    probabilities = [
+        _safe_float(features.get(column_name)) for column_name in REGIME_PROBABILITY_COLUMNS
+    ]
+    if any(value is None for value in probabilities):
+        return None
+    return float(sum(value for value in probabilities if value is not None))
 
 
 def _inspect_regime_feature_presence(features: Mapping[str, object]) -> dict[str, object]:

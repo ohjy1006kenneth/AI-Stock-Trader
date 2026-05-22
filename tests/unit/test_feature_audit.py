@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import io
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 from core.features.audit import (
@@ -10,7 +12,7 @@ from core.features.audit import (
     write_audit_report,
 )
 from core.features.io import feature_records_to_parquet_bytes
-from services.r2.paths import layer1_ticker_history_path, raw_news_path
+from services.r2.paths import layer1_regime_path, layer1_ticker_history_path, raw_news_path
 from tests.fixtures.layer1_audit_support import local_writer, seed_layer1_audit_fixture
 
 
@@ -184,5 +186,60 @@ def test_audit_layer1_features_flags_nan_feature_values(
         finding["status"] == "fail"
         and finding["category"] == "catalog"
         and "returns_1d" in str(finding["details"])
+        for finding in report.findings
+    )
+
+
+def test_audit_layer1_features_flags_invalid_regime_probabilities(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regime audit fails when the stored artifact probabilities are incoherent."""
+    writer = local_writer(tmp_path, monkeypatch)
+    fixture = seed_layer1_audit_fixture(writer)
+    regime_key = layer1_regime_path("audit-regime")
+    buffer = io.BytesIO()
+    pd.DataFrame(
+        [
+            {
+                "date": str(fixture["as_of_date"]),
+                "regime_label": "bull",
+                "regime_confidence": 0.7,
+                "regime_prob_bear": 0.1,
+                "regime_prob_sideways": 0.1,
+                "regime_prob_bull": 0.8,
+            }
+        ]
+    ).to_parquet(buffer, index=False)
+    writer.put_object(
+        regime_key,
+        buffer.getvalue(),
+    )
+    history_record = fixture["history_record"].model_copy(
+        update={
+            "features": {
+                **fixture["history_record"].features,
+                "regime_confidence": 0.7,
+            }
+        }
+    )
+    writer.put_object(
+        layer1_ticker_history_path(str(fixture["ticker"])),
+        feature_records_to_parquet_bytes([history_record]),
+    )
+
+    report = audit_layer1_features(
+        run_id="audit-bad-regime",
+        as_of_date=str(fixture["as_of_date"]),
+        tickers=[str(fixture["ticker"])],
+        benchmark_ticker=str(fixture["benchmark_ticker"]),
+        writer=writer,
+    )
+
+    assert report.summary["fail"] > 0
+    assert any(
+        finding["status"] == "fail"
+        and finding["category"] == "regime"
+        and "probabilities are not internally coherent" in finding["message"]
         for finding in report.findings
     )

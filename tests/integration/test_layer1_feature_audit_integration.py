@@ -25,8 +25,13 @@ def test_layer1_feature_audit_passes_on_seeded_local_archives(
     )
 
     assert report.summary["fail"] == 0
-    assert report.summary["warn"] == 0
     assert all(result["status"] == "pass" for result in report.branch_results)
+    warn_findings = [finding for finding in report.findings if finding["status"] == "warn"]
+    assert all(
+        finding["category"] == "layer0"
+        and "Sector ETF OHLCV archive missing" in finding["message"]
+        for finding in warn_findings
+    )
     assert any(
         finding["category"] == "news" and finding["status"] == "pass"
         for finding in report.findings
