@@ -3,6 +3,8 @@ from __future__ import annotations
 from io import BytesIO
 from pathlib import Path
 
+import pytest
+
 from services.r2.client import (
     R2_ACCESS_KEY_ENV,
     R2_BUCKET_ENV,
@@ -31,12 +33,19 @@ class FakePaginator:
 class FakeS3Client:
     """Small boto3 client stub for unit tests."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        missing_get_keys: set[str] | None = None,
+        get_error_code: str = "NoSuchKey",
+    ) -> None:
         """Initialize empty call tracking."""
         self.put_calls: list[dict[str, object]] = []
         self.get_calls: list[dict[str, str]] = []
         self.delete_calls: list[dict[str, str]] = []
         self.head_calls: list[dict[str, str]] = []
+        self.missing_get_keys = missing_get_keys or set()
+        self.get_error_code = get_error_code
         self.paginator = FakePaginator(
             pages=[
                 {"Contents": [{"Key": "raw/prices/AAPL.parquet"}]},
@@ -51,6 +60,9 @@ class FakeS3Client:
     def get_object(self, **kwargs: str) -> dict[str, BytesIO]:
         """Return a stub get_object response."""
         self.get_calls.append(kwargs)
+        key = kwargs.get("Key", "")
+        if key in self.missing_get_keys:
+            raise _object_store_error(self.get_error_code, "GetObject")
         return {"Body": BytesIO(b"payload")}
 
     def delete_object(self, **kwargs: str) -> None:
@@ -69,16 +81,7 @@ class FakeS3Client:
                     known_keys.add(str(k))
         if key in known_keys:
             return {"ContentLength": 0}
-        try:
-            from botocore.exceptions import ClientError
-        except ModuleNotFoundError:
-            error = Exception("Not Found")
-            error.response = {"Error": {"Code": "404", "Message": "Not Found"}}  # type: ignore[attr-defined]
-            raise error
-        raise ClientError(
-            {"Error": {"Code": "404", "Message": "Not Found"}},
-            "HeadObject",
-        )
+        raise _object_store_error("404", "HeadObject")
 
     def get_paginator(self, operation_name: str) -> FakePaginator:
         """Return the list_objects_v2 paginator stub."""
@@ -225,6 +228,28 @@ def test_cloudflare_r2_client_exists_uses_head_object() -> None:
     assert fake_client.paginator.calls == []
 
 
+def test_cloudflare_r2_client_get_object_maps_missing_key_to_file_not_found() -> None:
+    """Missing R2 objects should present the same contract as the local mock backend."""
+    fake_client = FakeS3Client(missing_get_keys={"raw/prices/XLB.parquet"})
+    client = CloudflareR2Client(bucket_name="bucket-name", s3_client=fake_client)
+
+    with pytest.raises(FileNotFoundError, match="raw/prices/XLB.parquet"):
+        client.get_object("raw/prices/XLB.parquet")
+
+
+def test_cloudflare_r2_client_get_object_preserves_non_missing_errors() -> None:
+    """Only missing-object responses should be translated to FileNotFoundError."""
+    fake_client = FakeS3Client(
+        missing_get_keys={"raw/prices/PRIVATE.parquet"},
+        get_error_code="AccessDenied",
+    )
+    client = CloudflareR2Client(bucket_name="bucket-name", s3_client=fake_client)
+    expected_error = _object_store_error("AccessDenied", "GetObject")
+
+    with pytest.raises(type(expected_error), match="AccessDenied"):
+        client.get_object("raw/prices/PRIVATE.parquet")
+
+
 def test_has_required_r2_env_vars_checks_full_set(monkeypatch) -> None:
     """has_required_r2_env_vars should only return True when every env var exists."""
     monkeypatch.setattr("services.r2.client.R2_ENV_FILE", Path("/tmp/does-not-exist-r2.env"))
@@ -262,6 +287,23 @@ def test_has_required_r2_env_vars_loads_local_config_file(
     monkeypatch.setattr("services.r2.client.R2_ENV_FILE", env_file)
 
     assert has_required_r2_env_vars() is True
+
+
+class _ObjectStoreError(Exception):
+    """Exception stub that mimics boto-style `.response` payloads."""
+
+    def __init__(self, code: str, operation: str) -> None:
+        super().__init__(f"{operation} failed with {code}")
+        self.response = {"Error": {"Code": code, "Message": code}}
+
+
+def _object_store_error(code: str, operation: str) -> Exception:
+    """Return a missing/error response object without requiring botocore."""
+    try:
+        from botocore.exceptions import ClientError
+    except ModuleNotFoundError:
+        return _ObjectStoreError(code, operation)
+    return ClientError({"Error": {"Code": code, "Message": code}}, operation)
 
 
 def test_local_r2_client_round_trips_objects(tmp_path: Path) -> None:

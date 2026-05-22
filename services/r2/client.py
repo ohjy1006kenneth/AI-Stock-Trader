@@ -18,6 +18,7 @@ REQUIRED_R2_ENV_VARS = (
     R2_BUCKET_ENV,
 )
 R2_ENV_FILE = Path(__file__).resolve().parents[2] / "config" / "r2.env"
+_MISSING_OBJECT_ERROR_CODES = frozenset({"404", "NoSuchKey", "NotFound"})
 
 
 class ReadableBody(Protocol):
@@ -58,7 +59,12 @@ class CloudflareR2Client:
 
     def get_object(self, key: str) -> bytes:
         """Read an object from the configured bucket."""
-        response = self._client.get_object(Bucket=self.bucket_name, Key=key)
+        try:
+            response = self._client.get_object(Bucket=self.bucket_name, Key=key)
+        except Exception as exc:
+            if _is_missing_object_error(exc):
+                raise FileNotFoundError(key) from exc
+            raise
         body = response["Body"]
         if isinstance(body, BytesIO):
             return body.getvalue()
@@ -71,20 +77,11 @@ class CloudflareR2Client:
     def exists(self, key: str) -> bool:
         """Return True when an object key already exists in the bucket."""
         try:
-            from botocore.exceptions import ClientError
-        except ModuleNotFoundError:
-            client_error_type: type[BaseException] = Exception
-        else:
-            client_error_type = ClientError
-        try:
             self._client.head_object(Bucket=self.bucket_name, Key=key)
             return True
-        except client_error_type as exc:
-            error_response = getattr(exc, "response", None)
-            if isinstance(error_response, dict):
-                code = error_response.get("Error", {}).get("Code", "")
-                if code in ("404", "NoSuchKey"):
-                    return False
+        except Exception as exc:
+            if _is_missing_object_error(exc):
+                return False
             raise
 
     def list_keys(self, prefix: str) -> list[str]:
@@ -115,6 +112,15 @@ def _coerce_bytes(data: bytes | str) -> bytes:
 def _read_body(body: ReadableBody) -> bytes:
     """Read a boto-style streaming body object."""
     return body.read()
+
+
+def _is_missing_object_error(exc: BaseException) -> bool:
+    """Return True when an object-store exception means the key is absent."""
+    error_response = getattr(exc, "response", None)
+    if not isinstance(error_response, dict):
+        return False
+    code = str(error_response.get("Error", {}).get("Code", "")).strip()
+    return code in _MISSING_OBJECT_ERROR_CODES
 
 
 def _load_local_r2_env_file() -> None:
