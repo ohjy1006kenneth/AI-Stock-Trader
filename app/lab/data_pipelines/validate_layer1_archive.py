@@ -73,6 +73,20 @@ from services.r2.paths import (  # noqa: E402
 DEFAULT_REPORT_DIR = Path("artifacts/reports/integration")
 LAYER1_MANIFEST_PREFIX = "artifacts/manifests/layer1/"
 _RUN_ID_VERSION_RE = re.compile(r"^(?P<family>.+)-v(?P<version>\d+)$")
+_LAYER1_CANONICAL_HISTORY_KEY_RE = re.compile(
+    r"^features/layer1/(?P<ticker>[^/]+)\.parquet$"
+)
+_LAYER1_DATED_SHARD_KEY_RE = re.compile(
+    r"^features/layer1/(?P<date>\d{4}-\d{2}-\d{2})/(?P<ticker>[^/]+)\.parquet$"
+)
+_LAYER1_INTERMEDIATE_PREFIXES = (
+    "news_sentiment",
+    "text_embeddings",
+    "topic_labels",
+    "topic_features",
+    "news_sentiment_scored",
+    "sentiment_features",
+)
 
 
 class ArchiveReader(Protocol):
@@ -114,13 +128,34 @@ class Layer1ValidationReport:
     row_count_failure_keys: list[str] = field(default_factory=list)
     requested_dates: list[str] = field(default_factory=list)
     universe_counts_by_date: dict[str, int] = field(default_factory=dict)
+    present_ticker_counts_by_date: dict[str, int] = field(default_factory=dict)
     present_rows_by_ticker: dict[str, int] = field(default_factory=dict)
+    missing_tickers_by_date: dict[str, list[str]] = field(default_factory=dict)
     missing_ticker_dates: dict[str, list[str]] = field(default_factory=dict)
+    unexpected_tickers_by_date: dict[str, list[str]] = field(default_factory=dict)
     unexpected_ticker_dates: dict[str, list[str]] = field(default_factory=dict)
+    duplicate_tickers_by_date: dict[str, list[str]] = field(default_factory=dict)
     duplicate_ticker_dates: dict[str, list[str]] = field(default_factory=dict)
     foreign_ticker_rows: dict[str, list[str]] = field(default_factory=dict)
     skipped_tickers: list[dict[str, object]] = field(default_factory=list)
     skipped_dates: list[dict[str, object]] = field(default_factory=list)
+    archive_layout_failures: list[str] = field(default_factory=list)
+    archive_layout_warnings: list[str] = field(default_factory=list)
+    canonical_history_key_count: int = 0
+    canonical_history_ticker_count: int = 0
+    listed_expected_history_ticker_count: int = 0
+    canonical_history_sample_keys: list[str] = field(default_factory=list)
+    missing_listed_expected_tickers: list[str] = field(default_factory=list)
+    dated_shard_key_count: int = 0
+    dated_shard_unique_date_count: int = 0
+    dated_shard_unique_ticker_count: int = 0
+    dated_shard_date_samples: list[str] = field(default_factory=list)
+    dated_shard_ticker_samples: list[str] = field(default_factory=list)
+    dated_shard_counts_by_date: dict[str, int] = field(default_factory=dict)
+    dated_shard_counts_by_ticker: dict[str, int] = field(default_factory=dict)
+    dated_shard_missing_tickers_by_date: dict[str, list[str]] = field(default_factory=dict)
+    dated_shard_non_aapl_examples: list[str] = field(default_factory=list)
+    intermediate_prefix_counts: dict[str, int] = field(default_factory=dict)
     output_prefixes: dict[str, str] = field(default_factory=dict)
     leakage_spot_checks: list[dict[str, object]] = field(default_factory=list)
     regime_validation_status: str = "not_checked"
@@ -188,6 +223,7 @@ def validate_layer1_archive(
     skipped_tickers: list[dict[str, object]] = []
     skipped_dates: list[dict[str, object]] = []
     feature_rows_by_ticker_date: dict[tuple[str, str], FeatureRecord] = {}
+    actual_dates_by_ticker: dict[str, set[str]] = {}
 
     for ticker, expected_dates in sorted(expected_dates_by_ticker.items()):
         key = layer1_ticker_history_path(ticker)
@@ -228,22 +264,26 @@ def validate_layer1_archive(
             continue
 
         ticker_dates: list[str] = []
-        date_counts: dict[str, int] = {}
+        window_dates: list[str] = []
+        expected_date_counts: dict[str, int] = {}
         foreign_rows: list[str] = []
         for record in records:
             if record.ticker != ticker:
                 foreign_rows.append(f"{record.date}/{record.ticker}")
                 continue
+            if record.date in requested_dates:
+                window_dates.append(record.date)
             if record.date in expected_dates:
                 ticker_dates.append(record.date)
-                date_counts[record.date] = date_counts.get(record.date, 0) + 1
+                expected_date_counts[record.date] = expected_date_counts.get(record.date, 0) + 1
                 feature_rows_by_ticker_date.setdefault((ticker, record.date), record)
 
         actual_dates = set(ticker_dates)
+        actual_dates_by_ticker[ticker] = actual_dates
         missing_dates = sorted(expected_dates - actual_dates)
-        unexpected_dates = sorted(actual_dates - expected_dates)
+        unexpected_dates = sorted(set(window_dates) - expected_dates)
         duplicate_dates = sorted(
-            date_text for date_text, count in date_counts.items() if count > 1
+            date_text for date_text, count in expected_date_counts.items() if count > 1
         )
         present_rows_by_ticker[ticker] = len(ticker_dates)
         present_rows += len(ticker_dates)
@@ -286,6 +326,25 @@ def validate_layer1_archive(
     expected_files = len(expected_dates_by_ticker)
     expected_rows = sum(len(dates) for dates in expected_dates_by_ticker.values())
     ready = expected_rows > 0 and not missing and not schema_failures and not row_count_failures
+    (
+        present_ticker_counts_by_date,
+        missing_tickers_by_date,
+        unexpected_tickers_by_date,
+        duplicate_tickers_by_date,
+    ) = _summarize_date_level_coverage(
+        universe=universe,
+        actual_dates_by_ticker=actual_dates_by_ticker,
+        unexpected_ticker_dates=unexpected_ticker_dates,
+        duplicate_ticker_dates=duplicate_ticker_dates,
+    )
+    archive_layout = _inspect_archive_layout(
+        reader=reader,
+        expected_dates_by_ticker=expected_dates_by_ticker,
+        universe=universe,
+        requested_dates=requested_dates,
+    )
+    if archive_layout.failures:
+        ready = False
     leakage_spot_checks = _build_leakage_spot_checks(
         reader=reader,
         expected_dates_by_ticker=expected_dates_by_ticker,
@@ -352,13 +411,34 @@ def validate_layer1_archive(
         row_count_failure_keys=row_count_failures,
         requested_dates=requested_dates,
         universe_counts_by_date=universe_counts_by_date,
+        present_ticker_counts_by_date=present_ticker_counts_by_date,
         present_rows_by_ticker=present_rows_by_ticker,
+        missing_tickers_by_date=missing_tickers_by_date,
         missing_ticker_dates=missing_ticker_dates,
+        unexpected_tickers_by_date=unexpected_tickers_by_date,
         unexpected_ticker_dates=unexpected_ticker_dates,
+        duplicate_tickers_by_date=duplicate_tickers_by_date,
         duplicate_ticker_dates=duplicate_ticker_dates,
         foreign_ticker_rows=foreign_ticker_rows,
         skipped_tickers=skipped_tickers,
         skipped_dates=skipped_dates,
+        archive_layout_failures=archive_layout.failures,
+        archive_layout_warnings=archive_layout.warnings,
+        canonical_history_key_count=archive_layout.canonical_history_key_count,
+        canonical_history_ticker_count=archive_layout.canonical_history_ticker_count,
+        listed_expected_history_ticker_count=archive_layout.listed_expected_history_ticker_count,
+        canonical_history_sample_keys=archive_layout.canonical_history_sample_keys,
+        missing_listed_expected_tickers=archive_layout.missing_listed_expected_tickers,
+        dated_shard_key_count=archive_layout.dated_shard_key_count,
+        dated_shard_unique_date_count=archive_layout.dated_shard_unique_date_count,
+        dated_shard_unique_ticker_count=archive_layout.dated_shard_unique_ticker_count,
+        dated_shard_date_samples=archive_layout.dated_shard_date_samples,
+        dated_shard_ticker_samples=archive_layout.dated_shard_ticker_samples,
+        dated_shard_counts_by_date=archive_layout.dated_shard_counts_by_date,
+        dated_shard_counts_by_ticker=archive_layout.dated_shard_counts_by_ticker,
+        dated_shard_missing_tickers_by_date=archive_layout.dated_shard_missing_tickers_by_date,
+        dated_shard_non_aapl_examples=archive_layout.dated_shard_non_aapl_examples,
+        intermediate_prefix_counts=archive_layout.intermediate_prefix_counts,
         output_prefixes=dict(output_prefixes or {}),
         leakage_spot_checks=leakage_spot_checks,
         regime_validation_status=regime_status,
@@ -382,6 +462,29 @@ class ManifestInspectionResult:
     stale_manifest_keys: list[str]
 
 
+@dataclass(frozen=True)
+class ArchiveLayoutInspectionResult:
+    """Archive-layout summary used to explain canonical versus intermediate outputs."""
+
+    failures: list[str]
+    warnings: list[str]
+    canonical_history_key_count: int
+    canonical_history_ticker_count: int
+    listed_expected_history_ticker_count: int
+    canonical_history_sample_keys: list[str]
+    missing_listed_expected_tickers: list[str]
+    dated_shard_key_count: int
+    dated_shard_unique_date_count: int
+    dated_shard_unique_ticker_count: int
+    dated_shard_date_samples: list[str]
+    dated_shard_ticker_samples: list[str]
+    dated_shard_counts_by_date: dict[str, int]
+    dated_shard_counts_by_ticker: dict[str, int]
+    dated_shard_missing_tickers_by_date: dict[str, list[str]]
+    dated_shard_non_aapl_examples: list[str]
+    intermediate_prefix_counts: dict[str, int]
+
+
 def _empty_manifest_inspection() -> ManifestInspectionResult:
     """Return the default manifest summary for validations that skip inspection."""
     return ManifestInspectionResult(
@@ -399,7 +502,9 @@ def build_layer1_output_prefixes(processed_dates: Sequence[str]) -> dict[str, st
     prefix_date = latest_date or "2000-01-01"
     prefixes = {
         "layer1_history": _prefix_for_key(layer1_ticker_history_path("<TICKER>")),
+        "layer1_canonical_history": _prefix_for_key(layer1_ticker_history_path("<TICKER>")),
         "layer1_daily_shards": _prefix_for_key(layer1_feature_path(prefix_date, "<TICKER>")),
+        "layer1_dated_shards": _prefix_for_key(layer1_feature_path(prefix_date, "<TICKER>")),
         "news_sentiment": _prefix_for_key(
             layer1_news_preprocessing_path(prefix_date, "<RUN_ID>")
         ),
@@ -505,6 +610,67 @@ def load_universe_mapping_from_r2(
     return universe
 
 
+def _summarize_date_level_coverage(
+    *,
+    universe: Mapping[str, Sequence[str]],
+    actual_dates_by_ticker: Mapping[str, set[str]],
+    unexpected_ticker_dates: Mapping[str, list[str]],
+    duplicate_ticker_dates: Mapping[str, list[str]],
+) -> tuple[
+    dict[str, int],
+    dict[str, list[str]],
+    dict[str, list[str]],
+    dict[str, list[str]],
+]:
+    """Invert ticker-level validation details into operator-facing date summaries."""
+    expected_tickers_by_date = {
+        as_of_date: {_normalize_ticker(ticker) for ticker in tickers}
+        for as_of_date, tickers in universe.items()
+    }
+    present_tickers_by_date: dict[str, set[str]] = {
+        as_of_date: set() for as_of_date in expected_tickers_by_date
+    }
+    unexpected_tickers_by_date: dict[str, set[str]] = {}
+    duplicate_tickers_by_date: dict[str, set[str]] = {}
+
+    for ticker, dates in actual_dates_by_ticker.items():
+        for date_text in sorted(dates):
+            if date_text in present_tickers_by_date:
+                present_tickers_by_date[date_text].add(ticker)
+    for ticker, dates in unexpected_ticker_dates.items():
+        for date_text in dates:
+            unexpected_tickers_by_date.setdefault(date_text, set()).add(ticker)
+    for ticker, dates in duplicate_ticker_dates.items():
+        for date_text in dates:
+            duplicate_tickers_by_date.setdefault(date_text, set()).add(ticker)
+
+    present_ticker_counts_by_date = {
+        as_of_date: len(present_tickers_by_date.get(as_of_date, set()))
+        for as_of_date in sorted(expected_tickers_by_date)
+    }
+    missing_tickers_by_date = {
+        as_of_date: sorted(
+            expected_tickers_by_date.get(as_of_date, set())
+            - present_tickers_by_date.get(as_of_date, set())
+        )
+        for as_of_date in sorted(expected_tickers_by_date)
+        if expected_tickers_by_date.get(as_of_date, set())
+        - present_tickers_by_date.get(as_of_date, set())
+    }
+    return (
+        present_ticker_counts_by_date,
+        missing_tickers_by_date,
+        {
+            as_of_date: sorted(tickers)
+            for as_of_date, tickers in sorted(unexpected_tickers_by_date.items())
+        },
+        {
+            as_of_date: sorted(tickers)
+            for as_of_date, tickers in sorted(duplicate_tickers_by_date.items())
+        },
+    )
+
+
 def _expected_dates_by_ticker(
     universe: Mapping[str, Sequence[str]],
 ) -> dict[str, set[str]]:
@@ -542,6 +708,139 @@ def _normalize_ticker(ticker: str) -> str:
     if not normalized:
         raise ValueError("ticker entries must be non-empty strings")
     return normalized
+
+
+def _inspect_archive_layout(
+    *,
+    reader: ArchiveReader,
+    expected_dates_by_ticker: Mapping[str, set[str]],
+    universe: Mapping[str, Sequence[str]],
+    requested_dates: Sequence[str],
+) -> ArchiveLayoutInspectionResult:
+    """Inspect Layer 1 key layout so operators can distinguish canonical from legacy views."""
+    failures: list[str] = []
+    warnings: list[str] = []
+    try:
+        keys = reader.list_keys("features/layer1/")
+    except Exception as exc:  # noqa: BLE001
+        return ArchiveLayoutInspectionResult(
+            failures=[f"archive_listing_failed:{exc}"],
+            warnings=[],
+            canonical_history_key_count=0,
+            canonical_history_ticker_count=0,
+            listed_expected_history_ticker_count=0,
+            canonical_history_sample_keys=[],
+            missing_listed_expected_tickers=sorted(expected_dates_by_ticker),
+            dated_shard_key_count=0,
+            dated_shard_unique_date_count=0,
+            dated_shard_unique_ticker_count=0,
+            dated_shard_date_samples=[],
+            dated_shard_ticker_samples=[],
+            dated_shard_counts_by_date={},
+            dated_shard_counts_by_ticker={},
+            dated_shard_missing_tickers_by_date={},
+            dated_shard_non_aapl_examples=[],
+            intermediate_prefix_counts={prefix: 0 for prefix in _LAYER1_INTERMEDIATE_PREFIXES},
+        )
+
+    expected_tickers = sorted(expected_dates_by_ticker)
+    expected_ticker_set = set(expected_tickers)
+    expected_tickers_by_date = {
+        as_of_date: {_normalize_ticker(ticker) for ticker in tickers}
+        for as_of_date, tickers in universe.items()
+    }
+    canonical_history_keys: list[str] = []
+    canonical_history_tickers: set[str] = set()
+    dated_shard_keys: list[str] = []
+    dated_shard_dates: set[str] = set()
+    dated_shard_tickers: set[str] = set()
+    dated_shard_counts_by_date: dict[str, int] = {date_text: 0 for date_text in requested_dates}
+    dated_shard_counts_by_ticker: dict[str, int] = {ticker: 0 for ticker in expected_tickers}
+    dated_shard_present_tickers_by_date: dict[str, set[str]] = {
+        date_text: set() for date_text in requested_dates
+    }
+    dated_shard_non_aapl_examples: list[str] = []
+    intermediate_prefix_counts = {
+        prefix: 0 for prefix in _LAYER1_INTERMEDIATE_PREFIXES
+    }
+
+    for key in keys:
+        canonical_match = _LAYER1_CANONICAL_HISTORY_KEY_RE.fullmatch(key)
+        if canonical_match is not None:
+            canonical_history_keys.append(key)
+            canonical_history_tickers.add(_normalize_ticker(canonical_match.group("ticker")))
+            continue
+
+        dated_match = _LAYER1_DATED_SHARD_KEY_RE.fullmatch(key)
+        if dated_match is not None:
+            dated_shard_keys.append(key)
+            date_text = dated_match.group("date")
+            ticker = _normalize_ticker(dated_match.group("ticker"))
+            dated_shard_dates.add(date_text)
+            dated_shard_tickers.add(ticker)
+            if date_text in dated_shard_counts_by_date:
+                dated_shard_counts_by_date[date_text] += 1
+                if ticker in expected_tickers_by_date.get(date_text, set()):
+                    dated_shard_present_tickers_by_date.setdefault(date_text, set()).add(ticker)
+            if ticker in dated_shard_counts_by_ticker:
+                dated_shard_counts_by_ticker[ticker] += 1
+            if ticker != "AAPL" and len(dated_shard_non_aapl_examples) < 20:
+                dated_shard_non_aapl_examples.append(key)
+            continue
+
+        for prefix in _LAYER1_INTERMEDIATE_PREFIXES:
+            if key.startswith(f"features/layer1/{prefix}/"):
+                intermediate_prefix_counts[prefix] += 1
+                break
+
+    listed_expected_history_tickers = sorted(expected_ticker_set & canonical_history_tickers)
+    missing_listed_expected_tickers = sorted(expected_ticker_set - canonical_history_tickers)
+    if missing_listed_expected_tickers:
+        failures.append("canonical_history_listing_incomplete")
+    if len(listed_expected_history_tickers) == 1 and len(expected_tickers) > 1:
+        failures.append("single_ticker_canonical_history_listing")
+
+    dated_shard_missing_tickers_by_date = {
+        date_text: sorted(
+            expected_tickers_by_date.get(date_text, set())
+            - dated_shard_present_tickers_by_date.get(date_text, set())
+        )
+        for date_text in requested_dates
+        if expected_tickers_by_date.get(date_text, set())
+        - dated_shard_present_tickers_by_date.get(date_text, set())
+    }
+    if dated_shard_missing_tickers_by_date:
+        warnings.append("dated_shards_partial_non_authoritative")
+
+    return ArchiveLayoutInspectionResult(
+        failures=failures,
+        warnings=warnings,
+        canonical_history_key_count=len(canonical_history_keys),
+        canonical_history_ticker_count=len(canonical_history_tickers),
+        listed_expected_history_ticker_count=len(listed_expected_history_tickers),
+        canonical_history_sample_keys=canonical_history_keys[:20],
+        missing_listed_expected_tickers=missing_listed_expected_tickers,
+        dated_shard_key_count=len(dated_shard_keys),
+        dated_shard_unique_date_count=len(dated_shard_dates),
+        dated_shard_unique_ticker_count=len(dated_shard_tickers),
+        dated_shard_date_samples=_sample_sorted(dated_shard_dates),
+        dated_shard_ticker_samples=_sample_sorted(dated_shard_tickers),
+        dated_shard_counts_by_date={
+            date_text: count
+            for date_text, count in sorted(dated_shard_counts_by_date.items())
+        },
+        dated_shard_counts_by_ticker={
+            ticker: count for ticker, count in sorted(dated_shard_counts_by_ticker.items())
+        },
+        dated_shard_missing_tickers_by_date=dated_shard_missing_tickers_by_date,
+        dated_shard_non_aapl_examples=dated_shard_non_aapl_examples,
+        intermediate_prefix_counts=intermediate_prefix_counts,
+    )
+
+
+def _sample_sorted(values: set[str], *, limit: int = 20) -> list[str]:
+    """Return a deterministic bounded sample from a set of strings."""
+    return sorted(values)[:limit]
 
 
 def _build_leakage_spot_checks(
@@ -614,17 +913,24 @@ def _build_leakage_spot_checks(
                 }
             )
 
+    hard_failures = [
+        failure for failure in failures if failure.get("reason") != "missing_daily_shard"
+    ]
+    if not seen_daily_shard:
+        status = "skipped"
+    elif hard_failures:
+        status = "fail"
+    elif failures:
+        status = "warning"
+    else:
+        status = "pass"
     return [
         {
             "name": "daily_shard_identity_alignment",
             "sampled_pairs": [
                 {"date": date_text, "ticker": ticker} for date_text, ticker in sampled_pairs
             ],
-            "status": (
-                "skipped"
-                if not seen_daily_shard
-                else ("pass" if not failures else "fail")
-            ),
+            "status": status,
             "failures": failures,
         }
     ]
