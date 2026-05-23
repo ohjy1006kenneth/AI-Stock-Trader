@@ -154,6 +154,45 @@ def test_inspect_hmm_regime_readiness_marks_short_history_not_trainable() -> Non
     assert readiness.complete_inference_dates == (inference_date,)
 
 
+def test_emit_hmm_regime_features_uses_active_feature_subset_for_inference_rows() -> None:
+    """Inference scoring should use the fitted feature subset, not stale is_complete flags."""
+    training = _synthetic_training_frame()
+    training["high_yield_spread"] = float("nan")
+    training["is_complete"] = False
+    train_end_date = str(training.loc[100, "date"])
+    inference_date = str(training.loc[110, "date"])
+
+    readiness = inspect_hmm_regime_readiness(
+        training,
+        train_end_date=train_end_date,
+        inference_dates=[inference_date],
+        config=HMMRegimeConfig(min_training_rows=90, max_iterations=20),
+    )
+    model = fit_hmm_regime_model(
+        training,
+        train_end_date=train_end_date,
+        config=HMMRegimeConfig(min_training_rows=90, max_iterations=20),
+    )
+    features = emit_hmm_regime_features(
+        training,
+        model=model,
+        inference_dates=[inference_date],
+    )
+
+    assert readiness.can_fit_model is True
+    assert readiness.complete_inference_dates == (inference_date,)
+    assert "high_yield_spread" not in model.feature_columns
+    assert features.loc[0, "date"] == inference_date
+    assert features.loc[0, "regime_label"] in {"bear", "sideways", "bull"}
+    assert features.loc[0, "regime_confidence"] == pytest.approx(
+        max(
+            features.loc[0, "regime_prob_bear"],
+            features.loc[0, "regime_prob_sideways"],
+            features.loc[0, "regime_prob_bull"],
+        )
+    )
+
+
 def test_validate_hmm_regime_probabilities_rejects_bad_probability_sums() -> None:
     """Populated regime rows must stay normalized and internally consistent."""
     features = pd.DataFrame(

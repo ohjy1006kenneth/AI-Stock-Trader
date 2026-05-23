@@ -122,6 +122,67 @@ def test_run_hmm_regime_detection_emits_warning_rows_for_short_history(
     assert manifest["metadata"]["regime_layer2_ready"] is False
 
 
+def test_run_hmm_regime_detection_scores_inference_rows_when_only_dropped_features_are_null(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Runner emits non-null output when readiness is satisfied on the active feature subset."""
+    writer = _local_writer(tmp_path, monkeypatch)
+    bars = _benchmark_bars(130)
+    macro = _macro_archive(150)
+    _write_parquet(writer, raw_price_path("SPY"), bars)
+    _write_parquet(writer, raw_macro_path("2023-01-02"), macro)
+
+    dates = pd.bdate_range("2024-01-02", periods=135)
+    training_rows: list[dict[str, object]] = []
+    for index, date in enumerate(dates):
+        training_rows.append(
+            {
+                "date": date.date().isoformat(),
+                "spy_log_return_1d": 0.01 + index * 0.0001,
+                "spy_return_5d": 0.03,
+                "spy_realized_vol_21d": 0.12,
+                "spy_realized_vol_63d": 0.10,
+                "spy_vol_ratio_21_63": 1.2,
+                "spy_drawdown_63d": -0.02,
+                "vix_level": 16.0,
+                "vix_change_5d": -0.1,
+                "yield_curve_slope_10y_2y": 0.3,
+                "yield_curve_slope_10y_3m": 0.4,
+                "high_yield_spread": float("nan"),
+                "is_complete": False,
+            }
+        )
+    synthetic_training = pd.DataFrame(training_rows)
+    monkeypatch.setattr(
+        "app.lab.data_pipelines.run_hmm_regime_detection.build_hmm_training_frame",
+        lambda benchmark, macro: synthetic_training,
+    )
+
+    inference_date = str(dates[110].date())
+    result = run_hmm_regime_detection(
+        HMMRegimePipelineConfig(
+            run_id="hmm-dropped-feature-ready",
+            train_end_date=str(dates[100].date()),
+            inference_dates=(inference_date,),
+            min_training_rows=90,
+            max_iterations=20,
+        ),
+        writer=writer,
+    )
+
+    output = pd.read_parquet(io.BytesIO(writer.get_object(result.output_key)))
+    manifest = json.loads(writer.get_object(result.manifest_key))
+
+    assert output.loc[0, "date"] == inference_date
+    assert output.loc[0, "regime_label"] in {"bear", "sideways", "bull"}
+    assert output.loc[0, "regime_readiness_status"] == "ready"
+    assert bool(output.loc[0, "regime_required_for_layer2"]) is True
+    assert output["regime_confidence"].notna().all()
+    assert manifest["status"] == RunStatus.COMPLETED
+    assert manifest["metadata"]["regime_layer2_ready"] is True
+
+
 def test_load_modal_runtime_config_reads_repo_config() -> None:
     """Modal app and secret names live in config rather than code constants."""
     config = load_modal_runtime_config()
