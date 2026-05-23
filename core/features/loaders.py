@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import importlib
 import io
-from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any
 
 from core.data.macro_archive import (
