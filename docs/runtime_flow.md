@@ -169,6 +169,9 @@ python app/lab/data_pipelines/validate_layer1_archive.py \
 
 3. **Layer 1.5 regime detection** (Modal)
    - Read recent SPY returns, VIX, and FRED macro regime inputs from R2
+   - When orchestration does not pass an explicit `hmm_train_start_date`, use the configured
+     bounded HMM train lookback from `config/modal.json` so catch-up runs do not refetch the
+     full macro archive for every single-date regime inference
    - Run HMM to classify current regime (bull / bear / sideways)
    - Write market-wide regime probabilities to `features/layer1_5/regime/{run_id}.parquet`
    - Write `PipelineManifestRecord` (stage=layer1_5_regime)

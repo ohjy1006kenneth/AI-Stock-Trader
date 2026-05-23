@@ -140,8 +140,9 @@ Config ownership:
   fine-tuning runs.
 - `config/modal.json` owns the Pi-triggered daily Layer 1 app name and poll settings, the
   single-date Layer 1 timeout, dedicated batched Layer 1 timeout, the batched Layer 1
-  `T4` GPU cap, Layer 1 backfill and HMM regime app names, their timeouts, and shared
-  Modal image settings.
+  `T4` GPU cap, Layer 1 backfill and HMM regime app names, their timeouts, the default
+  bounded HMM train lookback used when orchestration does not pass an explicit
+  `hmm_train_start_date`, and shared Modal image settings.
 
 Offline FinBERT evaluation/fine-tuning command:
 

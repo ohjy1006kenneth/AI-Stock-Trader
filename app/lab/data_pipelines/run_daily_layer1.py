@@ -281,6 +281,7 @@ class ModalRuntimeConfig:
     timeout_seconds: int
     batch_timeout_seconds: int
     batch_gpu_type: str | None
+    hmm_train_lookback_bdays: int | None
     python_version: str
     requirements_path: str
 
@@ -562,6 +563,14 @@ def load_modal_runtime_config(path: Path = MODAL_CONFIG_PATH) -> ModalRuntimeCon
     timeout_seconds = int(payload["timeout_seconds"])
     batch_gpu_type = payload.get("layer1_batch_gpu_type")
     normalized_batch_gpu = None if batch_gpu_type in (None, "") else str(batch_gpu_type)
+    hmm_train_lookback_bdays = payload.get("hmm_regime_train_lookback_bdays")
+    normalized_hmm_lookback = (
+        None
+        if hmm_train_lookback_bdays in (None, "")
+        else int(hmm_train_lookback_bdays)
+    )
+    if normalized_hmm_lookback is not None and normalized_hmm_lookback <= 0:
+        raise ValueError("hmm_regime_train_lookback_bdays must be positive when configured")
     return ModalRuntimeConfig(
         app_name=str(payload["layer1_daily_app_name"]),
         r2_secret_name=str(payload["r2_secret_name"]),
@@ -570,6 +579,7 @@ def load_modal_runtime_config(path: Path = MODAL_CONFIG_PATH) -> ModalRuntimeCon
             payload.get("layer1_batch_timeout_seconds", timeout_seconds)
         ),
         batch_gpu_type=normalized_batch_gpu,
+        hmm_train_lookback_bdays=normalized_hmm_lookback,
         python_version=str(payload.get("python_version", "3.11")),
         requirements_path=str(payload.get("requirements_path", "requirements/modal.txt")),
     )
@@ -1467,6 +1477,19 @@ def _previous_business_day(date_text: str) -> str:
     return current.isoformat()
 
 
+def _subtract_business_days(date_text: str, count: int) -> str:
+    """Return the ISO date that is `count` business days before `date_text`."""
+    if count < 0:
+        raise ValueError("count must be non-negative")
+    current = Date.fromisoformat(date_text)
+    remaining = count
+    while remaining > 0:
+        current -= timedelta(days=1)
+        if current.weekday() < 5:
+            remaining -= 1
+    return current.isoformat()
+
+
 def _truthy(value: str | None, *, default: bool = False) -> bool:
     """Return True for common CSV boolean values."""
     if value is None:
@@ -1598,6 +1621,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0 if result.ready_for_layer2 else 1
 
 
+def _resolve_hmm_train_start_date(
+    explicit_train_start_date: str | None,
+    *,
+    reference_date: str,
+) -> str | None:
+    """Resolve the effective bounded HMM train start date for Modal runs."""
+    if explicit_train_start_date is not None:
+        return explicit_train_start_date
+
+    runtime = load_modal_runtime_config()
+    lookback_bdays = runtime.hmm_train_lookback_bdays
+    if lookback_bdays is None:
+        return None
+    train_end_date = _previous_business_day(reference_date)
+    return _subtract_business_days(train_end_date, lookback_bdays)
+
+
 def modal_range_main(
     run_id: str,
     from_date: str,
@@ -1615,6 +1655,10 @@ def modal_range_main(
         raise RuntimeError(
             "Batched Modal app is unavailable because the modal package is not installed"
         )
+    resolved_hmm_train_start_date = _resolve_hmm_train_start_date(
+        hmm_train_start_date,
+        reference_date=from_date,
+    )
     result = _run_modal_remote_function(
         _modal_run_batched_layer1,
         owning_app=app,
@@ -1625,7 +1669,7 @@ def modal_range_main(
         benchmark_ticker=benchmark_ticker.strip().upper(),
         allow_layer0_manifest_date_range=allow_layer0_manifest_date_range,
         min_sentence_chars=min_sentence_chars,
-        hmm_train_start_date=hmm_train_start_date,
+        hmm_train_start_date=resolved_hmm_train_start_date,
         hmm_max_iterations=hmm_max_iterations,
         hmm_min_training_rows=hmm_min_training_rows,
     )
@@ -1660,6 +1704,10 @@ def modal_main(
             "allow_layer0_manifest_date_range=True is intended for historical readiness runs "
             "only and must not be used on the Pi daily path"
         )
+    resolved_hmm_train_start_date = _resolve_hmm_train_start_date(
+        hmm_train_start_date,
+        reference_date=as_of_date,
+    )
     stage_run_id = _stage_run_id(run_id, as_of_date)
     news_result = _run_module_modal_remote(
         news_module,
@@ -1690,7 +1738,7 @@ def modal_main(
         regime_module,
         "modal_run_hmm_regime_detection",
         run_id=stage_run_id,
-        train_start_date=hmm_train_start_date,
+        train_start_date=resolved_hmm_train_start_date,
         train_end_date=_previous_business_day(as_of_date),
         inference_dates=as_of_date,
         benchmark_ticker=benchmark_ticker.strip().upper(),
@@ -1706,7 +1754,7 @@ def modal_main(
         benchmark_ticker=benchmark_ticker.strip().upper(),
         allow_layer0_manifest_date_range=allow_layer0_manifest_date_range,
         min_sentence_chars=min_sentence_chars,
-        hmm_train_start_date=hmm_train_start_date,
+        hmm_train_start_date=resolved_hmm_train_start_date,
         hmm_max_iterations=hmm_max_iterations,
         hmm_min_training_rows=hmm_min_training_rows,
         preprocessed_news_key=preprocessed_news_key,
