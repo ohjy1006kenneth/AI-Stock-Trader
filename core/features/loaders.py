@@ -9,6 +9,7 @@ from __future__ import annotations
 import importlib
 import io
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any
 
 from core.data.macro_archive import (
@@ -26,6 +27,20 @@ from services.r2.writer import R2Writer
 
 if TYPE_CHECKING:
     import pandas as pd
+
+MACRO_PARQUET_LOAD_MAX_WORKERS = 32
+_EMPTY_MACRO_COLUMNS: tuple[str, ...] = (
+    "source",
+    "series_id",
+    MACRO_SNAPSHOT_DATE_COLUMN,
+    "observation_date",
+    "realtime_start",
+    "realtime_end",
+    "retrieved_at",
+    "value",
+    "is_missing",
+    "raw",
+)
 
 
 def load_ohlcv_frame(
@@ -69,41 +84,44 @@ def load_fundamentals_frame(
 
 def load_macro_frame(
     writer: R2Writer | None = None,
+    *,
+    start_date: str | None = None,
+    end_date: str | None = None,
 ) -> pd.DataFrame:
     """Return concatenated Layer 0 FRED macro shards sorted point-in-time safely.
 
     Reads all `raw/macro/YYYY-MM-DD.parquet` shards through the active R2 (or
-    local mock) backend. Layer 1 callers pass the resulting frame to
+    local mock) backend. Optional date bounds restrict the run-date shard range
+    before any object fetches happen, which keeps Modal catch-up runs from
+    serially downloading the entire archive when only a bounded HMM window is
+    needed. Layer 1 callers pass the resulting frame to
     `compute_macro_features`; no external data-provider calls are made here.
     """
     pd = _require_pandas()
     active_writer = writer or R2Writer()
     keys = sorted(
-        key for key in active_writer.list_keys("raw/macro/") if is_canonical_raw_macro_key(key)
+        key
+        for key in active_writer.list_keys("raw/macro/")
+        if is_canonical_raw_macro_key(key)
+        and (start_date is None or raw_macro_date_from_key(key) >= start_date)
+        and (end_date is None or raw_macro_date_from_key(key) <= end_date)
     )
     if not keys:
-        return pd.DataFrame(
-            columns=[
-                "source",
-                "series_id",
-                MACRO_SNAPSHOT_DATE_COLUMN,
-                "observation_date",
-                "realtime_start",
-                "realtime_end",
-                "retrieved_at",
-                "value",
-                "is_missing",
-                "raw",
-            ]
-        )
+        return pd.DataFrame(columns=list(_EMPTY_MACRO_COLUMNS))
 
-    frames = []
-    for key in keys:
+    def _load_one_macro_shard(key: str) -> pd.DataFrame:
         payload = active_writer.get_object(key)
         frame = pd.read_parquet(io.BytesIO(payload))
         if MACRO_SNAPSHOT_DATE_COLUMN not in frame.columns:
             frame[MACRO_SNAPSHOT_DATE_COLUMN] = raw_macro_date_from_key(key)
-        frames.append(frame)
+        return frame
+
+    max_workers = min(MACRO_PARQUET_LOAD_MAX_WORKERS, len(keys))
+    if max_workers <= 1:
+        frames = [_load_one_macro_shard(key) for key in keys]
+    else:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            frames = list(executor.map(_load_one_macro_shard, keys))
     frame = pd.concat(frames, ignore_index=True)
     identity_columns = [
         column

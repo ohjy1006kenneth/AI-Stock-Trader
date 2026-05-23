@@ -9,7 +9,8 @@
   "layer1_poll_interval_seconds": 5,
   "layer1_poll_timeout_seconds": 7200,
   "layer1_backfill_timeout_seconds": 5400,
-  "hmm_regime_timeout_seconds": 1800,
+  "hmm_regime_timeout_seconds": 3600,
+  "hmm_regime_train_lookback_bdays": 756,
   "python_version": "3.11",
   "requirements_path": "requirements/modal.txt"
 }

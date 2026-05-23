@@ -183,6 +183,54 @@ def test_run_hmm_regime_detection_scores_inference_rows_when_only_dropped_featur
     assert manifest["metadata"]["regime_layer2_ready"] is True
 
 
+def test_run_hmm_regime_detection_bounds_macro_load_to_train_and_inference_window(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Runner should date-bound macro archive reads before fitting the HMM."""
+    writer = _local_writer(tmp_path, monkeypatch)
+    bars = _benchmark_bars(700)
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        "app.lab.data_pipelines.run_hmm_regime_detection.load_ohlcv_frame",
+        lambda ticker, writer=None: bars,
+    )
+
+    def _fake_load_macro_frame(*, writer=None, start_date=None, end_date=None):
+        captured["start_date"] = start_date
+        captured["end_date"] = end_date
+        return _macro_archive(900)
+
+    monkeypatch.setattr(
+        "app.lab.data_pipelines.run_hmm_regime_detection.load_macro_frame",
+        _fake_load_macro_frame,
+    )
+
+    train_start_date = str(bars.loc[400, "date"])
+    train_end_date = str(bars.loc[500, "date"])
+    inference_date = str(bars.loc[501, "date"])
+
+    result = run_hmm_regime_detection(
+        HMMRegimePipelineConfig(
+            run_id="hmm-bounded-macro-window",
+            train_start_date=train_start_date,
+            train_end_date=train_end_date,
+            inference_dates=(inference_date,),
+            min_training_rows=30,
+            max_iterations=20,
+        ),
+        writer=writer,
+    )
+
+    manifest = json.loads(writer.get_object(result.manifest_key))
+
+    assert captured["start_date"] == str(bars.loc[148, "date"])
+    assert captured["end_date"] == inference_date
+    assert manifest["metadata"]["macro_load_start_date"] == str(bars.loc[148, "date"])
+    assert manifest["metadata"]["macro_load_end_date"] == inference_date
+
+
 def test_load_modal_runtime_config_reads_repo_config() -> None:
     """Modal app and secret names live in config rather than code constants."""
     config = load_modal_runtime_config()

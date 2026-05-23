@@ -58,6 +58,7 @@ from services.r2.writer import R2Writer  # noqa: E402
 MODAL_CONFIG_PATH = _REPO_ROOT / "config" / "modal.json"
 REGIME_STAGE = "layer1_5_regime"
 MODAL_REPO_ROOT = "/workspace/AI-Stock-Trader"
+HMM_MACRO_CONTEXT_LOOKBACK_BDAYS = 252
 
 
 class ObjectStore(Protocol):
@@ -161,8 +162,20 @@ def run_hmm_regime_detection(
     }
 
     try:
-        benchmark = load_ohlcv_frame(config.benchmark_ticker, writer=active_writer)  # type: ignore[arg-type]
-        macro = load_macro_frame(writer=active_writer)  # type: ignore[arg-type]
+        benchmark = load_ohlcv_frame(
+            config.benchmark_ticker,
+            writer=active_writer,  # type: ignore[arg-type]
+        )
+        macro_start_date = _macro_context_start_date(
+            benchmark,
+            train_start_date=config.train_start_date,
+        )
+        macro_end_date = max(config.inference_dates)
+        macro = load_macro_frame(  # type: ignore[arg-type]
+            writer=active_writer,
+            start_date=macro_start_date,
+            end_date=macro_end_date,
+        )
         training_frame = build_hmm_training_frame(benchmark, macro)
         hmm_config = HMMRegimeConfig(
             max_iterations=config.max_iterations,
@@ -197,6 +210,8 @@ def run_hmm_regime_detection(
             {
                 "training_rows": readiness.training_rows,
                 "complete_training_rows": readiness.complete_training_rows,
+                "macro_load_start_date": macro_start_date,
+                "macro_load_end_date": macro_end_date,
                 "dropped_feature_columns": list(readiness.dropped_feature_columns),
                 "ready_inference_dates": list(readiness.complete_inference_dates),
                 "inference_feature_gaps": {
@@ -249,6 +264,31 @@ def run_hmm_regime_detection(
         )
         logger.exception("Layer 1.5 HMM regime run failed")
         raise
+
+
+def _macro_context_start_date(
+    benchmark: pd.DataFrame,
+    *,
+    train_start_date: str | None,
+) -> str | None:
+    """Return the earliest macro snapshot date needed for one HMM window.
+
+    The HMM training rows are optionally bounded by `train_start_date`, but the
+    macro feature family also needs an extra one-year business-day context to
+    compute lagged change features such as CPI year-over-year safely.
+    """
+    if train_start_date is None or len(benchmark.index) == 0:
+        return None
+
+    date_values = benchmark["date"].astype(str).tolist()
+    try:
+        anchor_index = next(
+            index for index, date_text in enumerate(date_values) if date_text >= train_start_date
+        )
+    except StopIteration:
+        return date_values[0]
+    start_index = max(0, anchor_index - HMM_MACRO_CONTEXT_LOOKBACK_BDAYS)
+    return date_values[start_index]
 
 
 def hmm_regime_output_path(run_id: str) -> str:

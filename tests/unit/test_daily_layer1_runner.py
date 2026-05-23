@@ -1012,6 +1012,72 @@ def test_main_single_date_delegates_to_modal_orchestration_when_available(
     ]
 
 
+def test_modal_main_uses_configured_hmm_train_lookback_when_no_explicit_date_is_given(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Single-date Modal orchestration should derive a bounded HMM train window."""
+    regime_calls: list[dict[str, object]] = []
+    final_calls: list[dict[str, object]] = []
+
+    monkeypatch.setattr(daily_layer1_module, "_modal_run_daily_layer1", object())
+    monkeypatch.setattr(
+        daily_layer1_module,
+        "load_modal_runtime_config",
+        lambda: daily_layer1_module.ModalRuntimeConfig(
+            app_name="layer1",
+            r2_secret_name="secret",
+            timeout_seconds=10,
+            batch_timeout_seconds=10,
+            batch_gpu_type="T4",
+            hmm_train_lookback_bdays=5,
+            python_version="3.11",
+            requirements_path="requirements/modal.txt",
+        ),
+    )
+
+    def _fake_stage_runner(
+        module: object,
+        attribute_name: str,
+        **kwargs: object,
+    ) -> dict[str, object]:
+        if attribute_name == "modal_run_news_preprocessing":
+            return {"output_key": "news"}
+        if attribute_name == "modal_run_text_topics":
+            return {"topic_feature_key": "topics"}
+        if attribute_name == "modal_run_finbert_sentiment":
+            return {"sentiment_feature_key": "sentiment"}
+        if attribute_name == "modal_run_hmm_regime_detection":
+            regime_calls.append(kwargs)
+            return {"output_key": "regime"}
+        raise AssertionError(f"unexpected stage: {attribute_name}")
+
+    monkeypatch.setattr(daily_layer1_module, "_run_module_modal_remote", _fake_stage_runner)
+    monkeypatch.setattr(
+        daily_layer1_module,
+        "_run_modal_remote_function",
+        lambda remote_function, owning_app=None, **kwargs: final_calls.append(kwargs) or {},
+    )
+
+    daily_layer1_module.modal_main(
+        run_id="layer1-single-day",
+        as_of_date="2024-01-10",
+        layer0_run_id="layer0-daily-2024-01-10",
+    )
+
+    assert regime_calls == [
+        {
+            "run_id": "layer1-single-day-2024-01-10",
+            "train_start_date": "2024-01-02",
+            "train_end_date": "2024-01-09",
+            "inference_dates": "2024-01-10",
+            "benchmark_ticker": "SPY",
+            "max_iterations": 100,
+            "min_training_rows": 30,
+        }
+    ]
+    assert final_calls[0]["hmm_train_start_date"] == "2024-01-02"
+
+
 def test_main_multi_date_delegates_to_batched_modal_orchestration_when_available(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
