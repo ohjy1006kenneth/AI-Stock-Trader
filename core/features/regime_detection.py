@@ -239,7 +239,7 @@ def emit_hmm_regime_features(
     if len(infer_rows) == 0:
         return pd.DataFrame(columns=list(HMM_REGIME_COLUMNS))
 
-    complete_mask = infer_rows["is_complete"].astype(bool)
+    complete_mask = _complete_row_mask(infer_rows, model.feature_columns)
     result = pd.DataFrame({"date": infer_rows["date"].tolist()})
     result["regime_label"] = None
     for column in HMM_REGIME_FEATURE_COLUMNS[1:]:
