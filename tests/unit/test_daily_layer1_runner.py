@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import pickle
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -954,6 +955,31 @@ def test_main_returns_nonzero_when_validation_is_not_ready(
 
     assert exit_code == 1
     assert logged_messages == [str(error)]
+
+
+def test_layer1_validation_error_round_trips_through_pickle(tmp_path: Path) -> None:
+    """Validation errors should preserve their structured state across pickling."""
+    report = Layer1ValidationReport(
+        run_id="layer1-cli-fail",
+        from_date="2024-01-03",
+        to_date="2024-01-03",
+        validation_status="failed",
+        expected_ticker_files=1,
+        present_ticker_files=0,
+        expected_rows=1,
+        present_rows=0,
+        schema_failures=0,
+        row_count_failures=0,
+        ready_for_layer2=False,
+    )
+    error = Layer1ValidationError(report, tmp_path / "report.json")
+
+    restored = pickle.loads(pickle.dumps(error))
+
+    assert str(restored) == str(error)
+    assert restored.report is not None
+    assert restored.report.run_id == report.run_id
+    assert restored.report_path == tmp_path / "report.json"
 
 
 def test_main_single_date_delegates_to_modal_orchestration_when_available(

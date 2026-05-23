@@ -310,14 +310,43 @@ class OptionalOrderBookBranch:
 class Layer1ValidationError(RuntimeError):
     """Raised when Layer 1 validation completes but is not ready for Layer 2."""
 
-    def __init__(self, report: Layer1ValidationReport, report_path: Path) -> None:
+    def __init__(
+        self,
+        report: Layer1ValidationReport | str,
+        report_path: Path | str | None = None,
+    ) -> None:
         """Capture the failing validation report."""
-        summary = _validation_failure_summary(report)
-        super().__init__(
-            f"Layer 1 validation failed: {summary} (report={report_path})"
+        resolved_report: Layer1ValidationReport | None
+        resolved_report_path = (
+            Path(report_path) if isinstance(report_path, str) else report_path
         )
-        self.report = report
-        self.report_path = report_path
+        if isinstance(report, Layer1ValidationReport):
+            summary = _validation_failure_summary(report)
+            message = f"Layer 1 validation failed: {summary}"
+            if resolved_report_path is not None:
+                message += f" (report={resolved_report_path})"
+            resolved_report = report
+        else:
+            message = str(report)
+            resolved_report = None
+        super().__init__(message)
+        self.report = resolved_report
+        self.report_path = resolved_report_path
+
+    def __reduce__(
+        self,
+    ) -> tuple[
+        type[Layer1ValidationError],
+        tuple[Layer1ValidationReport | str, Path | None],
+    ]:
+        """Preserve structured report context across remote exception serialization."""
+        return (
+            type(self),
+            (
+                self.report if self.report is not None else str(self),
+                self.report_path,
+            ),
+        )
 
 
 def run_daily_layer1(
