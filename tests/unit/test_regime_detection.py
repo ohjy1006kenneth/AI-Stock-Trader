@@ -193,6 +193,29 @@ def test_emit_hmm_regime_features_uses_active_feature_subset_for_inference_rows(
     )
 
 
+def test_inspect_hmm_regime_readiness_drops_sparse_late_starting_features() -> None:
+    """A newly sparse macro feature should not collapse an otherwise ready train window."""
+    training = _synthetic_training_frame()
+    training["high_yield_spread"] = float("nan")
+    train_end_date = str(training.loc[100, "date"])
+    inference_date = str(training.loc[110, "date"])
+    training.loc[99, "high_yield_spread"] = 3.2
+    training.loc[110, "high_yield_spread"] = 3.3
+
+    readiness = inspect_hmm_regime_readiness(
+        training,
+        train_end_date=train_end_date,
+        inference_dates=[inference_date],
+        config=HMMRegimeConfig(min_training_rows=90, max_iterations=20),
+    )
+
+    assert readiness.can_fit_model is True
+    assert readiness.complete_training_rows == 100
+    assert readiness.complete_inference_dates == (inference_date,)
+    assert "high_yield_spread" not in readiness.feature_columns
+    assert "high_yield_spread" in readiness.dropped_feature_columns
+
+
 def test_validate_hmm_regime_probabilities_rejects_bad_probability_sums() -> None:
     """Populated regime rows must stay normalized and internally consistent."""
     features = pd.DataFrame(

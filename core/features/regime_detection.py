@@ -4,6 +4,7 @@ from __future__ import annotations
 import importlib
 import math
 from dataclasses import dataclass
+from itertools import combinations
 from typing import TYPE_CHECKING, Any
 
 from core.contracts.schemas import FeatureRecord
@@ -119,6 +120,7 @@ def fit_hmm_regime_model(
         feature_columns=feature_columns,
         train_start_date=train_start_date,
         train_end_date=train_end_date,
+        min_training_rows=active_config.min_training_rows,
     )
     if not active_feature_columns:
         raise ValueError("HMM training window has no usable feature columns")
@@ -172,6 +174,7 @@ def inspect_hmm_regime_readiness(
         feature_columns=feature_columns,
         train_start_date=train_start_date,
         train_end_date=train_end_date,
+        min_training_rows=active_config.min_training_rows,
     )
     dropped_feature_columns = tuple(
         column for column in feature_columns if column not in active_feature_columns
@@ -642,17 +645,49 @@ def _active_feature_columns(
     feature_columns: tuple[str, ...],
     train_start_date: str | None,
     train_end_date: str,
+    min_training_rows: int,
 ) -> tuple[str, ...]:
-    """Return feature columns with at least one usable value inside the train window."""
+    """Return the broadest usable feature subset for the bounded train window."""
     rows = training_frame.copy()
     if train_start_date is not None:
         rows = rows[rows["date"] >= train_start_date]
     rows = rows[rows["date"] < train_end_date]
-    active: list[str] = []
-    for column in feature_columns:
-        if column in rows and _series_has_finite_value(rows[column]):
-            active.append(column)
-    return tuple(active)
+    candidates = tuple(
+        column
+        for column in feature_columns
+        if column in rows and _series_has_finite_value(rows[column])
+    )
+    if not candidates:
+        return ()
+
+    fallback_subset = candidates[:1]
+    fallback_complete_rows = _complete_row_count(rows, fallback_subset)
+    for subset_size in range(len(candidates), 0, -1):
+        best_subset_for_size: tuple[str, ...] | None = None
+        best_complete_rows_for_size = -1
+        for subset in combinations(candidates, subset_size):
+            complete_rows = _complete_row_count(rows, subset)
+            if complete_rows > fallback_complete_rows:
+                fallback_subset = subset
+                fallback_complete_rows = complete_rows
+            if complete_rows < min_training_rows:
+                continue
+            if complete_rows > best_complete_rows_for_size:
+                best_subset_for_size = subset
+                best_complete_rows_for_size = complete_rows
+        if best_subset_for_size is not None:
+            return best_subset_for_size
+    return fallback_subset
+
+
+def _complete_row_count(
+    frame: pd.DataFrame,
+    feature_columns: tuple[str, ...],
+) -> int:
+    """Return the number of fully populated rows for one feature subset."""
+    if not feature_columns:
+        return len(frame.index)
+    return int(_complete_row_mask(frame, feature_columns).sum())
 
 
 def _complete_row_mask(frame: pd.DataFrame, feature_columns: tuple[str, ...]):
