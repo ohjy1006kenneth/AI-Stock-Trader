@@ -1738,42 +1738,77 @@ def modal_main(
         reference_date=as_of_date,
     )
     stage_run_id = _stage_run_id(run_id, as_of_date)
-    news_result = _run_module_modal_remote(
-        news_module,
-        "modal_run_news_preprocessing",
+    writer = R2Writer()
+    preprocessed_news_key = _load_completed_stage_output(
+        writer=writer,
+        stage=NLP_PREPROCESSING_STAGE,
         run_id=stage_run_id,
         as_of_date=as_of_date,
-        min_sentence_chars=min_sentence_chars,
     )
-    preprocessed_news_key = _require_result_key(news_result, "output_key")
+    if preprocessed_news_key is None:
+        news_result = _run_module_modal_remote(
+            news_module,
+            "modal_run_news_preprocessing",
+            run_id=stage_run_id,
+            as_of_date=as_of_date,
+            min_sentence_chars=min_sentence_chars,
+        )
+        preprocessed_news_key = _require_result_key(news_result, "output_key")
     # Keep stage dispatch synchronous here. In production readiness runs, `.spawn()`
     # against imported stage apps can leave the daily manifest stuck in `running`
     # without ever producing downstream stage manifests.
-    topic_result = _run_module_modal_remote(
-        text_topics_module,
-        "modal_run_text_topics",
+    topic_feature_key = _load_completed_stage_output(
+        writer=writer,
+        stage=TEXT_TOPICS_STAGE,
         run_id=stage_run_id,
         as_of_date=as_of_date,
-        preprocessed_news_key=preprocessed_news_key,
     )
-    sentiment_result = _run_module_modal_remote(
-        finbert_module,
-        "modal_run_finbert_sentiment",
+    if topic_feature_key is None:
+        topic_result = _run_module_modal_remote(
+            text_topics_module,
+            "modal_run_text_topics",
+            run_id=stage_run_id,
+            as_of_date=as_of_date,
+            preprocessed_news_key=preprocessed_news_key,
+        )
+        topic_feature_key = _require_result_key(topic_result, "topic_feature_key")
+    sentiment_feature_key = _load_completed_stage_output(
+        writer=writer,
+        stage=FINBERT_SENTIMENT_STAGE,
         run_id=stage_run_id,
         as_of_date=as_of_date,
-        preprocessed_news_key=preprocessed_news_key,
     )
-    regime_result = _run_module_modal_remote(
-        regime_module,
-        "modal_run_hmm_regime_detection",
+    if sentiment_feature_key is None:
+        sentiment_result = _run_module_modal_remote(
+            finbert_module,
+            "modal_run_finbert_sentiment",
+            run_id=stage_run_id,
+            as_of_date=as_of_date,
+            preprocessed_news_key=preprocessed_news_key,
+        )
+        sentiment_feature_key = _require_result_key(
+            sentiment_result,
+            "sentiment_feature_key",
+        )
+    regime_output_key = _load_completed_stage_output(
+        writer=writer,
+        stage=REGIME_STAGE,
         run_id=stage_run_id,
-        train_start_date=resolved_hmm_train_start_date,
-        train_end_date=_previous_business_day(as_of_date),
-        inference_dates=as_of_date,
-        benchmark_ticker=benchmark_ticker.strip().upper(),
-        max_iterations=hmm_max_iterations,
-        min_training_rows=hmm_min_training_rows,
+        as_of_date=as_of_date,
     )
+    if regime_output_key is None:
+        regime_result = _run_module_modal_remote(
+            regime_module,
+            "modal_run_hmm_regime_detection",
+            run_id=stage_run_id,
+            train_start_date=resolved_hmm_train_start_date,
+            train_end_date=_previous_business_day(as_of_date),
+            inference_dates=as_of_date,
+            benchmark_ticker=benchmark_ticker.strip().upper(),
+            max_iterations=hmm_max_iterations,
+            min_training_rows=hmm_min_training_rows,
+        )
+        regime_output_key = _require_result_key(regime_result, "output_key")
     _run_modal_remote_function(
         _modal_run_daily_layer1,
         owning_app=app,
@@ -1787,9 +1822,9 @@ def modal_main(
         hmm_max_iterations=hmm_max_iterations,
         hmm_min_training_rows=hmm_min_training_rows,
         preprocessed_news_key=preprocessed_news_key,
-        topic_feature_key=_require_result_key(topic_result, "topic_feature_key"),
-        sentiment_feature_key=_require_result_key(sentiment_result, "sentiment_feature_key"),
-        regime_output_key=_require_result_key(regime_result, "output_key"),
+        topic_feature_key=topic_feature_key,
+        sentiment_feature_key=sentiment_feature_key,
+        regime_output_key=regime_output_key,
     )
 
 
@@ -2042,6 +2077,35 @@ def _require_result_key(result: Mapping[str, object], field_name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise RuntimeError(f"Stage result is missing required field {field_name!r}: {result!r}")
     return value
+
+
+def _load_completed_stage_output(
+    *,
+    writer: ObjectStore,
+    stage: str,
+    run_id: str,
+    as_of_date: str,
+) -> str | None:
+    """Return a completed stage output key when an exact single-date stage already succeeded."""
+    manifest_key = pipeline_manifest_path(stage, run_id)
+    if not writer.exists(manifest_key):
+        return None
+    try:
+        manifest = PipelineManifestRecord.model_validate_json(writer.get_object(manifest_key))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Ignoring unreadable stage manifest {}: {}", manifest_key, exc)
+        return None
+    if manifest.status is not RunStatus.COMPLETED:
+        return None
+    manifest_date = str(manifest.metadata.get("as_of_date", "")).strip()
+    if manifest_date and manifest_date != as_of_date:
+        return None
+    if manifest.output_path is None or not manifest.output_path.strip():
+        return None
+    if not writer.exists(manifest.output_path):
+        return None
+    logger.info("Reusing completed {} artifact for {}: {}", stage, as_of_date, manifest.output_path)
+    return manifest.output_path
 
 
 def _existing_news_runner(

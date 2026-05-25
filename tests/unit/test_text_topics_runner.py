@@ -129,6 +129,9 @@ def test_load_text_model_runtime_config_reads_repo_config() -> None:
     assert config.embedding_config.model_revision
     assert config.embedding_config.embedding_dimension == 768
     assert config.topic_config.model_name == "BERTopic"
+    assert config.embedding_batch_size == 2048
+    assert config.topic_batch_size == 2000
+    assert config.max_document_characters == 4096
 
 
 def _local_writer(tmp_path: Path, monkeypatch) -> R2Writer:

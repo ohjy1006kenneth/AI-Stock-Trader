@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 
 import pytest
 
@@ -396,6 +397,15 @@ def test_daily_layer1_modal_main_orchestrates_stage_apps_before_final_assembly(
     )
 
     monkeypatch.setattr(run_daily_layer1, "_modal_run_daily_layer1", final_remote)
+    monkeypatch.setattr(
+        run_daily_layer1,
+        "R2Writer",
+        lambda: type(
+            "_MissingWriter",
+            (),
+            {"exists": staticmethod(lambda key: False), "get_object": staticmethod(lambda key: b"")},
+        )(),
+    )
     monkeypatch.setattr(run_daily_layer1.news_module, "modal_run_news_preprocessing", news_remote)
     monkeypatch.setattr(run_daily_layer1.text_topics_module, "modal_run_text_topics", topics_remote)
     monkeypatch.setattr(
@@ -482,6 +492,132 @@ def test_daily_layer1_modal_main_orchestrates_stage_apps_before_final_assembly(
             "regime_output_key": "features/layer1_5/regime/smoke-daily-2024-01-02.parquet",
         }
     ]
+
+
+def test_daily_layer1_modal_main_reuses_completed_stage_outputs_when_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The daily local entrypoint should resume from completed stage artifacts when possible."""
+
+    class _FakeStageRemote:
+        def __init__(self, payload: dict[str, object]) -> None:
+            self.payload = payload
+            self.remote_calls: list[dict[str, object]] = []
+
+        def remote(self, **kwargs: object) -> dict[str, object]:
+            self.remote_calls.append(kwargs)
+            return dict(self.payload)
+
+    class _ExistingWriter:
+        def __init__(self) -> None:
+            self._payloads = {
+                run_daily_layer1.pipeline_manifest_path(
+                    run_daily_layer1.NLP_PREPROCESSING_STAGE,
+                    "resume-daily-2024-01-02",
+                ): run_daily_layer1.PipelineManifestRecord(
+                    run_id="resume-daily-2024-01-02",
+                    stage=run_daily_layer1.NLP_PREPROCESSING_STAGE,
+                    status=run_daily_layer1.RunStatus.COMPLETED,
+                    started_at=datetime.now(UTC),
+                    finished_at=datetime.now(UTC),
+                    input_path="raw/news/2024-01-02.jsonl",
+                    output_path="features/layer1/news_sentiment/2024-01-02/resume.parquet",
+                    metadata={"as_of_date": "2024-01-02"},
+                ).model_dump_json().encode("utf-8"),
+                run_daily_layer1.pipeline_manifest_path(
+                    run_daily_layer1.TEXT_TOPICS_STAGE,
+                    "resume-daily-2024-01-02",
+                ): run_daily_layer1.PipelineManifestRecord(
+                    run_id="resume-daily-2024-01-02",
+                    stage=run_daily_layer1.TEXT_TOPICS_STAGE,
+                    status=run_daily_layer1.RunStatus.COMPLETED,
+                    started_at=datetime.now(UTC),
+                    finished_at=datetime.now(UTC),
+                    input_path="features/layer1/news_sentiment/2024-01-02/resume.parquet",
+                    output_path="features/layer1/topic_features/2024-01-02/resume.parquet",
+                    metadata={"as_of_date": "2024-01-02"},
+                ).model_dump_json().encode("utf-8"),
+                "features/layer1/news_sentiment/2024-01-02/resume.parquet": b"news",
+                "features/layer1/topic_features/2024-01-02/resume.parquet": b"topics",
+            }
+
+        def exists(self, key: str) -> bool:
+            return key in self._payloads
+
+        def get_object(self, key: str) -> bytes:
+            return self._payloads[key]
+
+    final_remote = _FakeRegisteredFunction(name="modal_run_daily_layer1", options={})
+    news_remote = _FakeStageRemote({"output_key": "unexpected-news"})
+    topics_remote = _FakeStageRemote({"topic_feature_key": "unexpected-topics"})
+    finbert_remote = _FakeStageRemote(
+        {"sentiment_feature_key": "features/layer1/sentiment_features/2024-01-02/resume.parquet"}
+    )
+    regime_remote = _FakeStageRemote(
+        {"output_key": "features/layer1_5/regime/resume-daily-2024-01-02.parquet"}
+    )
+
+    monkeypatch.setattr(run_daily_layer1, "_modal_run_daily_layer1", final_remote)
+    monkeypatch.setattr(run_daily_layer1, "R2Writer", _ExistingWriter)
+    monkeypatch.setattr(
+        run_daily_layer1,
+        "load_modal_runtime_config",
+        lambda: run_daily_layer1.ModalRuntimeConfig(
+            app_name="layer1",
+            r2_secret_name="secret",
+            timeout_seconds=10,
+            batch_timeout_seconds=10,
+            batch_gpu_type="T4",
+            hmm_train_lookback_bdays=None,
+            python_version="3.11",
+            requirements_path="requirements/modal.txt",
+        ),
+    )
+    monkeypatch.setattr(run_daily_layer1.news_module, "modal_run_news_preprocessing", news_remote)
+    monkeypatch.setattr(run_daily_layer1.text_topics_module, "modal_run_text_topics", topics_remote)
+    monkeypatch.setattr(
+        run_daily_layer1.finbert_module,
+        "modal_run_finbert_sentiment",
+        finbert_remote,
+    )
+    monkeypatch.setattr(
+        run_daily_layer1.regime_module,
+        "modal_run_hmm_regime_detection",
+        regime_remote,
+    )
+
+    run_daily_layer1.modal_main(
+        "resume-daily",
+        "2024-01-02",
+        "layer0-daily-2024-01-02",
+    )
+
+    assert news_remote.remote_calls == []
+    assert topics_remote.remote_calls == []
+    assert finbert_remote.remote_calls == [
+        {
+            "run_id": "resume-daily-2024-01-02",
+            "as_of_date": "2024-01-02",
+            "preprocessed_news_key": "features/layer1/news_sentiment/2024-01-02/resume.parquet",
+        }
+    ]
+    assert regime_remote.remote_calls == [
+        {
+            "run_id": "resume-daily-2024-01-02",
+            "train_start_date": None,
+            "train_end_date": "2024-01-01",
+            "inference_dates": "2024-01-02",
+            "benchmark_ticker": "SPY",
+            "max_iterations": 100,
+            "min_training_rows": 30,
+        }
+    ]
+    assert final_remote.remote_calls[0]["preprocessed_news_key"] == (
+        "features/layer1/news_sentiment/2024-01-02/resume.parquet"
+    )
+    assert final_remote.remote_calls[0]["topic_feature_key"] == (
+        "features/layer1/topic_features/2024-01-02/resume.parquet"
+    )
 
 
 def test_daily_layer1_modal_range_main_dispatches_batched_remote_call(

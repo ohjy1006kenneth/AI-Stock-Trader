@@ -1,7 +1,7 @@
 {
   "app_name": "ai-stock-trader-text-topics",
   "r2_secret_name": "ai-stock-trader-r2",
-  "timeout_seconds": 3600,
+  "timeout_seconds": 7200,
   "python_version": "3.11",
   "requirements_path": "requirements/modal.txt",
   "embedding_model_name": "sentence-transformers/all-mpnet-base-v2",
@@ -9,5 +9,8 @@
   "embedding_dimension": 768,
   "topic_model_name": "BERTopic",
   "topic_model_version": "bertopic-0.16.x",
-  "min_topic_size": 15
+  "min_topic_size": 15,
+  "embedding_batch_size": 2048,
+  "topic_batch_size": 2000,
+  "max_document_characters": 4096
 }
