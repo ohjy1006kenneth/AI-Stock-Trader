@@ -41,6 +41,30 @@ class _FakeTopicLabeler:
         return [index % 2 for index, _ in enumerate(documents)], [0.8, 0.6][: len(documents)]
 
 
+class _RecordingEmbedder:
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+
+    def encode(self, sentences: Sequence[str]) -> Sequence[Sequence[float]]:
+        batch = list(sentences)
+        self.calls.append(batch)
+        return [[float(index), float(len(sentence))] for index, sentence in enumerate(batch)]
+
+
+class _ResettingTopicLabeler:
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+
+    def fit_transform(
+        self,
+        documents: Sequence[str],
+        embeddings: Sequence[Sequence[float]],
+    ) -> tuple[Sequence[int], Sequence[float]]:
+        batch = list(documents)
+        self.calls.append(batch)
+        return [0 for _ in batch], [0.75 for _ in batch]
+
+
 def test_compute_text_topics_caches_unique_sentence_embeddings_and_topic_features() -> None:
     """Sentence embeddings are cached once while topic labels remain ticker-specific."""
     records = [
@@ -115,6 +139,46 @@ def test_compute_topic_labels_rejects_missing_embedding_cache_row() -> None:
             topic_labeler=_FakeTopicLabeler(),
             config=_topic_config(),
         )
+
+
+def test_compute_text_topics_batches_and_offsets_topic_ids() -> None:
+    """Positive batch-local topic ids are offset so merged features do not collide."""
+    labeler = _ResettingTopicLabeler()
+    result = compute_text_topics(
+        [
+            _record(text="Alpha.", sentence_index=0),
+            _record(text="Beta.", sentence_index=1),
+            _record(text="Gamma.", sentence_index=2),
+            _record(text="Delta.", sentence_index=3),
+        ],
+        embedder=_FakeEmbedder(),
+        topic_labeler=labeler,
+        embedding_config=_embedding_config(),
+        topic_config=_topic_config(),
+        topic_batch_size=2,
+    )
+
+    assert labeler.calls == [["Alpha.", "Beta."], ["Gamma.", "Delta."]]
+    assert result.topic_labels["topic_id"].tolist() == [0, 0, 1, 1]
+    assert result.feature_records[0].features["nlp_topic_count"] == 2
+
+
+def test_compute_text_topics_truncates_documents_before_embedding_and_topic_labeling() -> None:
+    """Configured document truncation is applied consistently to embeddings and topic labels."""
+    embedder = _RecordingEmbedder()
+    labeler = _ResettingTopicLabeler()
+
+    compute_text_topics(
+        [_record(text="ABCDEFGHIJ", sentence_index=0)],
+        embedder=embedder,
+        topic_labeler=labeler,
+        embedding_config=_embedding_config(),
+        topic_config=_topic_config(),
+        max_document_characters=5,
+    )
+
+    assert embedder.calls == [["ABCDE"]]
+    assert labeler.calls == [["ABCDE"]]
 
 
 def test_topic_labels_to_feature_records_rejects_missing_columns() -> None:

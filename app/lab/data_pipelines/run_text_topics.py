@@ -93,6 +93,9 @@ class TextModelRuntimeConfig:
     embedding_config: TextEmbeddingConfig
     topic_config: TopicModelConfig
     min_topic_size: int
+    embedding_batch_size: int | None = None
+    topic_batch_size: int | None = None
+    max_document_characters: int | None = None
 
     def __post_init__(self) -> None:
         """Validate runtime topic-model settings."""
@@ -108,6 +111,12 @@ class TextModelRuntimeConfig:
             raise ValueError("requirements_path cannot be empty")
         if self.min_topic_size <= 0:
             raise ValueError("min_topic_size must be positive")
+        if self.embedding_batch_size is not None and self.embedding_batch_size <= 0:
+            raise ValueError("embedding_batch_size must be positive when provided")
+        if self.topic_batch_size is not None and self.topic_batch_size <= 0:
+            raise ValueError("topic_batch_size must be positive when provided")
+        if self.max_document_characters is not None and self.max_document_characters <= 0:
+            raise ValueError("max_document_characters must be positive when provided")
 
 
 @dataclass(frozen=True)
@@ -154,6 +163,9 @@ def run_text_topics(
         "embedding_revision": runtime.embedding_config.model_revision,
         "topic_model": runtime.topic_config.model_name,
         "topic_model_version": runtime.topic_config.model_version,
+        "embedding_batch_size": runtime.embedding_batch_size,
+        "topic_batch_size": runtime.topic_batch_size,
+        "max_document_characters": runtime.max_document_characters,
     }
 
     try:
@@ -164,6 +176,9 @@ def run_text_topics(
             topic_labeler=active_labeler,
             embedding_config=runtime.embedding_config,
             topic_config=runtime.topic_config,
+            embedding_batch_size=runtime.embedding_batch_size,
+            topic_batch_size=runtime.topic_batch_size,
+            max_document_characters=runtime.max_document_characters,
         )
         active_writer.put_object(embedding_key, _frame_to_parquet_bytes(result.embeddings))
         active_writer.put_object(topic_label_key, _frame_to_parquet_bytes(result.topic_labels))
@@ -280,6 +295,21 @@ def load_text_model_runtime_config(path: Path = TEXT_MODEL_CONFIG_PATH) -> TextM
             model_version=str(payload["topic_model_version"]),
         ),
         min_topic_size=int(payload["min_topic_size"]),
+        embedding_batch_size=(
+            int(payload["embedding_batch_size"])
+            if payload.get("embedding_batch_size") is not None
+            else None
+        ),
+        topic_batch_size=(
+            int(payload["topic_batch_size"])
+            if payload.get("topic_batch_size") is not None
+            else None
+        ),
+        max_document_characters=(
+            int(payload["max_document_characters"])
+            if payload.get("max_document_characters") is not None
+            else None
+        ),
     )
 
 

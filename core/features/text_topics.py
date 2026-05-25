@@ -111,18 +111,25 @@ def compute_text_topics(
     topic_labeler: TopicLabeler,
     embedding_config: TextEmbeddingConfig,
     topic_config: TopicModelConfig,
+    embedding_batch_size: int | None = None,
+    topic_batch_size: int | None = None,
+    max_document_characters: int | None = None,
 ) -> TextTopicResult:
     """Compute sentence embeddings, topic labels, and ticker-day topic features."""
     embeddings = compute_sentence_embeddings(
         records,
         embedder=embedder,
         config=embedding_config,
+        batch_size=embedding_batch_size,
+        max_document_characters=max_document_characters,
     )
     topic_labels = compute_topic_labels(
         records,
         embeddings,
         topic_labeler=topic_labeler,
         config=topic_config,
+        batch_size=topic_batch_size,
+        max_document_characters=max_document_characters,
     )
     return TextTopicResult(
         embeddings=embeddings,
@@ -136,33 +143,47 @@ def compute_sentence_embeddings(
     *,
     embedder: SentenceEmbedder,
     config: TextEmbeddingConfig,
+    batch_size: int | None = None,
+    max_document_characters: int | None = None,
 ) -> Any:
     """Return a deterministic embedding-cache DataFrame for unique sentence records."""
     pd = _require_pandas()
+    _validate_optional_positive(batch_size, field_name="batch_size")
+    _validate_optional_positive(
+        max_document_characters,
+        field_name="max_document_characters",
+    )
     sentence_records = _unique_sentence_records(records)
     if not sentence_records:
         return pd.DataFrame(columns=list(EMBEDDING_COLUMNS))
 
-    texts = [str(record.text) for record in sentence_records]
-    vectors = embedder.encode(texts)
-    if len(vectors) != len(sentence_records):
-        raise ValueError("Embedder returned a different number of vectors than input texts")
-
     rows: list[dict[str, object]] = []
-    for record, vector in zip(sentence_records, vectors, strict=True):
-        normalized_vector = _validate_embedding_vector(vector, config=config)
-        rows.append(
-            {
-                "date": record.date,
-                "article_id": _stable_article_id(record),
-                "sentence_index": record.sentence_index,
-                "text": record.text,
-                "embedding_model": config.model_name,
-                "embedding_revision": config.model_revision,
-                "embedding_cache_key": embedding_cache_key(record, config=config),
-                "embedding_json": json.dumps(normalized_vector, separators=(",", ":")),
-            }
-        )
+    for batch_records in _batched_records(sentence_records, batch_size):
+        texts = [
+            _prepare_document_text(
+                record.text,
+                max_document_characters=max_document_characters,
+            )
+            for record in batch_records
+        ]
+        vectors = embedder.encode(texts)
+        if len(vectors) != len(batch_records):
+            raise ValueError("Embedder returned a different number of vectors than input texts")
+
+        for record, vector in zip(batch_records, vectors, strict=True):
+            normalized_vector = _validate_embedding_vector(vector, config=config)
+            rows.append(
+                {
+                    "date": record.date,
+                    "article_id": _stable_article_id(record),
+                    "sentence_index": record.sentence_index,
+                    "text": record.text,
+                    "embedding_model": config.model_name,
+                    "embedding_revision": config.model_revision,
+                    "embedding_cache_key": embedding_cache_key(record, config=config),
+                    "embedding_json": json.dumps(normalized_vector, separators=(",", ":")),
+                }
+            )
     return pd.DataFrame(rows, columns=list(EMBEDDING_COLUMNS))
 
 
@@ -172,9 +193,16 @@ def compute_topic_labels(
     *,
     topic_labeler: TopicLabeler,
     config: TopicModelConfig,
+    batch_size: int | None = None,
+    max_document_characters: int | None = None,
 ) -> Any:
     """Return per-record BERTopic-style topic labels using the embedding cache."""
     pd = _require_pandas()
+    _validate_optional_positive(batch_size, field_name="batch_size")
+    _validate_optional_positive(
+        max_document_characters,
+        field_name="max_document_characters",
+    )
     if len(records) == 0:
         return pd.DataFrame(columns=list(TOPIC_LABEL_COLUMNS))
 
@@ -186,32 +214,44 @@ def compute_topic_labels(
     if not unique_records:
         return pd.DataFrame(columns=list(TOPIC_LABEL_COLUMNS))
 
-    documents: list[str] = []
-    vectors: list[list[float]] = []
-    for record in unique_records:
-        key = _embedding_cache_key_from_frame(record, embeddings)
-        if key not in embedding_by_key:
-            raise ValueError(f"Missing embedding cache row for sentence key {key}")
-        documents.append(str(record.text))
-        vectors.append(embedding_by_key[key])
+    topic_by_sentence: dict[str, tuple[int, float, str]] = {}
+    next_topic_offset = 0
+    for batch_records in _batched_records(unique_records, batch_size):
+        documents: list[str] = []
+        vectors: list[list[float]] = []
+        cache_keys: list[str] = []
+        for record in batch_records:
+            key = _embedding_cache_key_from_frame(record, embeddings)
+            if key not in embedding_by_key:
+                raise ValueError(f"Missing embedding cache row for sentence key {key}")
+            documents.append(
+                _prepare_document_text(
+                    record.text,
+                    max_document_characters=max_document_characters,
+                )
+            )
+            vectors.append(embedding_by_key[key])
+            cache_keys.append(key)
 
-    topics, probabilities = topic_labeler.fit_transform(documents, vectors)
-    if len(topics) != len(unique_records) or len(probabilities) != len(unique_records):
-        raise ValueError("Topic labeler returned a different number of labels than input texts")
-
-    topic_by_sentence = {
-        sentence_identity(record): (
-            int(topic),
-            _validate_probability(probability),
-            _embedding_cache_key_from_frame(record, embeddings),
-        )
-        for record, topic, probability in zip(
-            unique_records,
+        topics, probabilities = topic_labeler.fit_transform(documents, vectors)
+        if len(topics) != len(batch_records) or len(probabilities) != len(batch_records):
+            raise ValueError("Topic labeler returned a different number of labels than input texts")
+        adjusted_topics, next_topic_offset = _offset_batch_topic_ids(
             topics,
-            probabilities,
-            strict=True,
+            starting_offset=next_topic_offset,
         )
-    }
+        for record, topic, probability, cache_key in zip(
+            batch_records,
+            adjusted_topics,
+            probabilities,
+            cache_keys,
+            strict=True,
+        ):
+            topic_by_sentence[sentence_identity(record)] = (
+                int(topic),
+                _validate_probability(probability),
+                cache_key,
+            )
 
     rows: list[dict[str, object]] = []
     for record in records:
@@ -349,6 +389,52 @@ def _embedding_cache_key_from_frame(record: NewsSentimentRecord, embeddings: Any
     raise ValueError(f"Missing embedding cache key for sentence identity {identity}")
 
 
+def _batched_records(
+    records: Sequence[NewsSentimentRecord],
+    batch_size: int | None,
+) -> list[Sequence[NewsSentimentRecord]]:
+    """Split sentence records into deterministic batches when configured."""
+    if batch_size is None or batch_size >= len(records):
+        return [records]
+    return [records[index : index + batch_size] for index in range(0, len(records), batch_size)]
+
+
+def _prepare_document_text(
+    text: str | None,
+    *,
+    max_document_characters: int | None,
+) -> str:
+    """Trim one document to a configured character budget for embedding/topic work."""
+    value = str(text or "")
+    if max_document_characters is None or len(value) <= max_document_characters:
+        return value
+    return value[:max_document_characters]
+
+
+def _offset_batch_topic_ids(
+    topics: Sequence[int],
+    *,
+    starting_offset: int,
+) -> tuple[list[int], int]:
+    """Offset positive batch-local topic ids so merged aggregates do not collide across batches."""
+    adjusted_topics: list[int] = []
+    max_positive_topic: int | None = None
+    for topic in topics:
+        normalized = int(topic)
+        if normalized < 0:
+            adjusted_topics.append(normalized)
+            continue
+        adjusted_topics.append(normalized + starting_offset)
+        max_positive_topic = (
+            normalized
+            if max_positive_topic is None
+            else max(max_positive_topic, normalized)
+        )
+    if max_positive_topic is None:
+        return adjusted_topics, starting_offset
+    return adjusted_topics, starting_offset + max_positive_topic + 1
+
+
 def _stable_article_id(record: NewsSentimentRecord) -> str:
     """Return an article id or a deterministic fallback from sentence text."""
     if record.article_id:
@@ -371,6 +457,12 @@ def _validate_embedding_vector(
     if any(math.isnan(value) or math.isinf(value) for value in values):
         raise ValueError("Embedding vectors must contain only finite numeric values")
     return values
+
+
+def _validate_optional_positive(value: int | None, *, field_name: str) -> None:
+    """Require positive integers for optional batching and truncation settings."""
+    if value is not None and value <= 0:
+        raise ValueError(f"{field_name} must be positive when provided")
 
 
 def _embedding_from_json(value: object) -> list[float]:
