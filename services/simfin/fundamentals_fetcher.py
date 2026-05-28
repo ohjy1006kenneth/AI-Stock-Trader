@@ -11,8 +11,9 @@ from pathlib import Path
 from typing import Any
 
 import requests
-from dotenv import load_dotenv
 from loguru import logger
+
+from core.common.env_files import populate_env_from_file
 
 SIMFIN_API_KEY_ENV = "SIMFIN_API_KEY"
 SIMFIN_BASE_URL_ENV = "SIMFIN_BASE_URL"
@@ -24,6 +25,11 @@ DEFAULT_SIMFIN_TICKER_BATCH_SIZE = 50
 DEFAULT_SIMFIN_STATEMENTS = ("pl", "bs", "cf", "derived")
 DEFAULT_SIMFIN_PERIODS = ("q1", "q2", "q3", "q4", "fy")
 SIMFIN_ENV_FILE = Path(__file__).resolve().parents[2] / "config" / "simfin.env"
+SIMFIN_ENV_KEYS = (
+    SIMFIN_API_KEY_ENV,
+    SIMFIN_BASE_URL_ENV,
+    SEC_USER_AGENT_ENV,
+)
 SEC_COMPANY_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 SEC_COMPANYFACTS_URL_TEMPLATE = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
 _SEC_ALLOWED_FORMS = frozenset({"10-K", "10-K/A", "10-Q", "10-Q/A", "20-F", "20-F/A", "40-F"})
@@ -745,6 +751,7 @@ def _tickers_without_rows(
 
 def _required_sec_user_agent() -> str:
     """Return the configured SEC EDGAR user-agent or fail closed when absent."""
+    _load_local_simfin_env_file()
     configured = (os.getenv(SEC_USER_AGENT_ENV) or "").strip()
     if not configured:
         raise ValueError(
@@ -1134,4 +1141,9 @@ def _is_retryable_error(error: requests.RequestException) -> bool:
 
 def _load_local_simfin_env_file() -> None:
     """Load local SimFin settings from config/simfin.env when the file exists."""
-    load_dotenv(dotenv_path=SIMFIN_ENV_FILE, override=False)
+    populate_env_from_file(
+        keys=SIMFIN_ENV_KEYS,
+        env_file=SIMFIN_ENV_FILE,
+        override=False,
+        override_blank=True,
+    )

@@ -48,6 +48,11 @@ from core.features.regime_detection import (  # noqa: E402
     validate_hmm_regime_probabilities,
 )
 from core.features.regime_training import build_hmm_training_frame  # noqa: E402
+from services.modal.secrets import (  # noqa: E402
+    SIMFIN_MODAL_ENV_FILE,
+    SIMFIN_MODAL_ENV_KEYS,
+    build_modal_secrets,
+)
 from services.r2.paths import (  # noqa: E402
     layer1_regime_path,
     pipeline_manifest_path,
@@ -560,10 +565,16 @@ def _define_modal_app() -> object | None:
     runtime = load_modal_runtime_config()
     image = _build_modal_image(modal, runtime)
     app = modal.App(runtime.hmm_regime_app_name)
+    secrets = build_modal_secrets(
+        modal,
+        named_secret_names=(runtime.r2_secret_name,),
+        env_file=SIMFIN_MODAL_ENV_FILE,
+        env_keys=SIMFIN_MODAL_ENV_KEYS,
+    )
 
     modal_run_hmm_regime_detection = app.function(
         image=image,
-        secrets=[modal.Secret.from_name(runtime.r2_secret_name)],
+        secrets=secrets,
         timeout=runtime.timeout_seconds,
     )(_modal_run_hmm_regime_detection_entry)
 
