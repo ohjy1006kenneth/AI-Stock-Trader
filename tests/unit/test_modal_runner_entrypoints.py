@@ -15,6 +15,7 @@ from app.lab.data_pipelines import (
     run_text_topics,
 )
 from app.lab.training import run_finbert_finetuning
+from services.modal.secrets import SIMFIN_MODAL_ENV_KEYS
 
 _WORKSPACE_IMAGE_MODULES = {
     run_news_preprocessing,
@@ -71,7 +72,8 @@ class _FakeImage:
 class _FakeSecretRef:
     """Modal secret reference stub."""
 
-    name: str
+    name: str | None = None
+    payload: dict[str, str] = field(default_factory=dict)
 
 
 class _FakeSecret:
@@ -81,6 +83,11 @@ class _FakeSecret:
     def from_name(name: str) -> _FakeSecretRef:
         """Return a fake Modal secret reference."""
         return _FakeSecretRef(name=name)
+
+    @staticmethod
+    def from_dict(payload: dict[str, str]) -> _FakeSecretRef:
+        """Return a fake Modal secret reference created from raw key/value pairs."""
+        return _FakeSecretRef(payload=dict(payload))
 
 
 @dataclass
@@ -159,6 +166,14 @@ def _install_fake_modal(monkeypatch: pytest.MonkeyPatch) -> _FakeModal:
 
     monkeypatch.setattr(importlib, "import_module", _fake_import_module)
     return fake_modal
+
+
+@pytest.fixture(autouse=True)
+def _set_simfin_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Force Modal app-construction tests to use synthetic SimFin/SEC values."""
+    monkeypatch.setenv("SIMFIN_API_KEY", "modal-test-key")
+    monkeypatch.setenv("SIMFIN_BASE_URL", "https://example.simfin.test/api/v3")
+    monkeypatch.setenv("SEC_USER_AGENT", "AI Stock Trader modal-tests@test.invalid")
 
 
 @pytest.mark.parametrize(
@@ -327,7 +342,14 @@ def test_modal_runner_entrypoints_build_apps_and_dispatch_remote_calls(
         assert "serialized" not in registered.options
     else:
         assert registered.options["serialized"] is True
-    assert registered.options["secrets"][0].name == runtime.r2_secret_name
+    secrets = registered.options["secrets"]
+    assert secrets[0].name == runtime.r2_secret_name
+    assert secrets[1].payload == {
+        "SIMFIN_API_KEY": "modal-test-key",
+        "SIMFIN_BASE_URL": "https://example.simfin.test/api/v3",
+        "SEC_USER_AGENT": "AI Stock Trader modal-tests@test.invalid",
+    }
+    assert tuple(secrets[1].payload) == SIMFIN_MODAL_ENV_KEYS
     if getattr(runtime, "gpu_type", None):
         assert registered.options["gpu"] == runtime.gpu_type
 
@@ -362,9 +384,13 @@ def test_daily_layer1_modal_app_builds_workspace_image(
     ]
     assert registered.options["timeout"] == runtime.timeout_seconds
     assert registered.options["secrets"][0].name == runtime.r2_secret_name
+    assert registered.options["secrets"][1].payload["SEC_USER_AGENT"] == (
+        "AI Stock Trader modal-tests@test.invalid"
+    )
     assert batched_registered.options["image"] is image
     assert batched_registered.options["timeout"] == runtime.batch_timeout_seconds
     assert batched_registered.options["secrets"][0].name == runtime.r2_secret_name
+    assert batched_registered.options["secrets"][1].payload["SIMFIN_API_KEY"] == "modal-test-key"
     assert batched_registered.options["gpu"] == runtime.batch_gpu_type
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
@@ -254,6 +255,34 @@ def test_client_config_from_env_rejects_missing_key(monkeypatch: pytest.MonkeyPa
 
     with pytest.raises(ValueError, match="SIMFIN_API_KEY"):
         SimFinClientConfig.from_env()
+
+
+def test_client_config_from_env_uses_env_file_for_blank_values(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Blank runtime env vars are repopulated from config/simfin.env."""
+    env_file = tmp_path / "simfin.env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "SIMFIN_API_KEY=file-key",
+                "SIMFIN_BASE_URL=https://example.simfin.test/api/v3",
+                "SEC_USER_AGENT=AI Stock Trader env-file@test.invalid",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("services.simfin.fundamentals_fetcher.SIMFIN_ENV_FILE", env_file)
+    monkeypatch.setenv("SIMFIN_API_KEY", "")
+    monkeypatch.setenv("SIMFIN_BASE_URL", "")
+    monkeypatch.setenv("SEC_USER_AGENT", "")
+
+    config = SimFinClientConfig.from_env()
+
+    assert config.api_key == "file-key"
+    assert config.base_url == "https://example.simfin.test/api/v3"
+    assert os.environ["SEC_USER_AGENT"] == "AI Stock Trader env-file@test.invalid"
 
 
 def test_fetch_statement_rows_calls_compact_endpoint_and_normalizes_rows() -> None:
@@ -771,6 +800,10 @@ def test_fetch_all_fundamentals_requires_sec_user_agent_for_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """SEC fallback fails closed when no EDGAR user-agent is configured."""
+    monkeypatch.setattr(
+        "services.simfin.fundamentals_fetcher.SIMFIN_ENV_FILE",
+        Path("/tmp/does-not-exist.env"),
+    )
     monkeypatch.delenv("SEC_USER_AGENT", raising=False)
     session = _FakeSession([_FakeResponse({"data": []})])
     fetcher = SimFinFundamentalsFetcher(

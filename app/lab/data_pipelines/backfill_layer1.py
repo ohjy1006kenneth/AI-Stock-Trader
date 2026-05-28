@@ -68,6 +68,11 @@ from core.features.sector_features import (  # noqa: E402
     sector_features_to_records,
 )
 from services.order_book.config import load_order_book_feature_config  # noqa: E402
+from services.modal.secrets import (  # noqa: E402
+    SIMFIN_MODAL_ENV_FILE,
+    SIMFIN_MODAL_ENV_KEYS,
+    build_modal_secrets,
+)
 from services.r2.paths import (  # noqa: E402
     build_r2_key,
     layer1_regime_path,
@@ -1080,10 +1085,16 @@ def _define_modal_app() -> object | None:
         python_version=runtime.python_version
     ).pip_install_from_requirements(runtime.requirements_path)
     app = modal.App(runtime.app_name)
+    secrets = build_modal_secrets(
+        modal,
+        named_secret_names=(runtime.r2_secret_name,),
+        env_file=SIMFIN_MODAL_ENV_FILE,
+        env_keys=SIMFIN_MODAL_ENV_KEYS,
+    )
 
     @app.function(
         image=image,
-        secrets=[modal.Secret.from_name(runtime.r2_secret_name)],
+        secrets=secrets,
         timeout=runtime.timeout_seconds,
         serialized=True,
     )

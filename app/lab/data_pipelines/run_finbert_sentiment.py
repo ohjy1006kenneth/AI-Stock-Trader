@@ -41,6 +41,11 @@ from core.features.sentiment_features import (  # noqa: E402
     sentiment_feature_records_from_scored_news,
     sentiment_feature_records_to_frame,
 )
+from services.modal.secrets import (  # noqa: E402
+    SIMFIN_MODAL_ENV_FILE,
+    SIMFIN_MODAL_ENV_KEYS,
+    build_modal_secrets,
+)
 from services.r2.paths import (  # noqa: E402
     layer1_sentiment_feature_path,
     layer1_sentiment_score_path,
@@ -437,10 +442,16 @@ def _define_modal_app() -> object | None:
     runtime = load_finbert_runtime_config()
     image = _build_modal_image(modal, runtime)
     app = modal.App(runtime.app_name)
+    secrets = build_modal_secrets(
+        modal,
+        named_secret_names=(runtime.r2_secret_name,),
+        env_file=SIMFIN_MODAL_ENV_FILE,
+        env_keys=SIMFIN_MODAL_ENV_KEYS,
+    )
 
     modal_run_finbert_sentiment = app.function(
         image=image,
-        secrets=[modal.Secret.from_name(runtime.r2_secret_name)],
+        secrets=secrets,
         timeout=runtime.timeout_seconds,
     )(_modal_run_finbert_sentiment_entry)
 

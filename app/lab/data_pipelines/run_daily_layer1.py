@@ -108,6 +108,11 @@ from core.features.sector_features import (  # noqa: E402
     sector_features_to_records,
 )
 from services.order_book.config import load_order_book_feature_config  # noqa: E402
+from services.modal.secrets import (  # noqa: E402
+    SIMFIN_MODAL_ENV_FILE,
+    SIMFIN_MODAL_ENV_KEYS,
+    build_modal_secrets,
+)
 from services.r2.paths import (  # noqa: E402
     layer1_ticker_history_path,
     pipeline_manifest_path,
@@ -1977,14 +1982,20 @@ def _define_modal_app() -> object | None:
     runtime = load_modal_runtime_config()
     image = _build_modal_image(modal, runtime)
     app = modal.App(runtime.app_name)
+    secrets = build_modal_secrets(
+        modal,
+        named_secret_names=(runtime.r2_secret_name,),
+        env_file=SIMFIN_MODAL_ENV_FILE,
+        env_keys=SIMFIN_MODAL_ENV_KEYS,
+    )
     modal_run_daily_layer1 = app.function(
         image=image,
-        secrets=[modal.Secret.from_name(runtime.r2_secret_name)],
+        secrets=secrets,
         timeout=runtime.timeout_seconds,
     )(_modal_run_daily_layer1_entry)
     batched_options: dict[str, object] = {
         "image": image,
-        "secrets": [modal.Secret.from_name(runtime.r2_secret_name)],
+        "secrets": secrets,
         "timeout": runtime.batch_timeout_seconds,
     }
     if runtime.batch_gpu_type is not None:
