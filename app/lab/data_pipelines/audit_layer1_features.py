@@ -39,6 +39,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Optional audit run identifier used in output filenames.",
     )
     parser.add_argument(
+        "--layer1-run-id",
+        default=None,
+        help=(
+            "Optional authoritative Layer 1 run identifier. When provided, the regime audit "
+            "loads the exact per-date Layer 1.5 manifest for that parent run."
+        ),
+    )
+    parser.add_argument(
         "--as-of-date",
         required=True,
         help="Audit date in YYYY-MM-DD format.",
@@ -69,6 +77,9 @@ def main(argv: list[str] | None = None) -> int:
     run_id = args.run_id or f"layer1-audit-{args.as_of_date}"
     report = audit_layer1_features(
         run_id=run_id,
+        layer1_run_id=(
+            str(args.layer1_run_id).strip() if args.layer1_run_id is not None else None
+        ),
         as_of_date=str(args.as_of_date),
         tickers=tickers,
         benchmark_ticker=str(args.benchmark_ticker),

@@ -21,7 +21,6 @@ from core.features.news_preprocessing import (
     preprocess_news_articles,
     records_to_news_sentiment_frame,
 )
-from core.features.regime_detection import HMM_REGIME_COLUMNS
 from core.features.sector_features import compute_sector_features, sector_features_to_records
 from core.features.sentiment_features import sentiment_feature_records_from_scored_news
 from core.features.text_topics import TOPIC_LABEL_COLUMNS, topic_labels_to_feature_records
@@ -174,9 +173,16 @@ def seed_layer1_audit_fixture(
                 "regime_prob_bear": 0.1,
                 "regime_prob_sideways": 0.1,
                 "regime_prob_bull": 0.8,
+                "regime_required_for_layer2": True,
+                "regime_readiness_status": "ready",
+                "regime_readiness_reason": "ready",
+                "regime_missing_features": "",
+                "regime_probability_sum": 1.0,
+                "training_rows": 80,
+                "complete_training_rows": 80,
+                "min_training_rows": 30,
             }
-        ],
-        columns=list(HMM_REGIME_COLUMNS),
+        ]
     )
     _write_parquet(writer, regime_key, regime_output)
     _write_manifest(
@@ -187,6 +193,15 @@ def seed_layer1_audit_fixture(
         metadata={
             "train_end_date": "2024-05-03",
             "inference_dates": [as_of_date],
+            "regime_readiness_by_date": {
+                as_of_date: {
+                    "status": "ready",
+                    "reason": "ready",
+                    "required_for_layer2": True,
+                    "missing_features": [],
+                    "probability_sum": 1.0,
+                }
+            },
         },
     )
 

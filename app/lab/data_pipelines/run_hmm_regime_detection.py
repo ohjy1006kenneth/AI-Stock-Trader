@@ -220,6 +220,7 @@ def run_hmm_regime_detection(
                         readiness.incomplete_inference_feature_gaps.items()
                     )
                 },
+                "regime_readiness_by_date": _regime_readiness_by_date(regime_frame),
                 "warning_inference_dates": [
                     date_text
                     for date_text in readiness.inference_dates
@@ -381,6 +382,33 @@ def _with_regime_readiness_columns(
         if all(value is not None and not pd.isna(value) for value in probability_values):
             annotated.loc[index, "regime_probability_sum"] = float(sum(probability_values))
     return annotated
+
+
+def _regime_readiness_by_date(frame: pd.DataFrame) -> dict[str, dict[str, object]]:
+    """Return manifest-ready per-date readiness metadata for one regime artifact."""
+    pandas_module = importlib.import_module("pandas")
+    if not isinstance(frame, pandas_module.DataFrame):
+        raise TypeError("frame must be a pandas DataFrame")
+
+    readiness_by_date: dict[str, dict[str, object]] = {}
+    for row in frame.to_dict(orient="records"):
+        date_text = str(row["date"])
+        readiness_by_date[date_text] = {
+            "status": str(row.get("regime_readiness_status") or ""),
+            "reason": str(row.get("regime_readiness_reason") or ""),
+            "required_for_layer2": bool(row.get("regime_required_for_layer2")),
+            "missing_features": [
+                item
+                for item in str(row.get("regime_missing_features") or "").split(",")
+                if item
+            ],
+            "probability_sum": (
+                None
+                if pandas_module.isna(row.get("regime_probability_sum"))
+                else float(row["regime_probability_sum"])
+            ),
+        }
+    return readiness_by_date
 
 
 def _frame_to_parquet_bytes(frame: object) -> bytes:

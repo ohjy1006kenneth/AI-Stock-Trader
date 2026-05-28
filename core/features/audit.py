@@ -56,6 +56,7 @@ from core.features.sentiment_features import (
 from core.features.text_topics import TOPIC_FEATURE_COLUMNS, topic_labels_to_feature_records
 from services.r2.paths import (
     layer1_ticker_history_path,
+    pipeline_manifest_path,
     raw_news_path,
     raw_universe_path,
 )
@@ -120,6 +121,7 @@ class Layer1FeatureAuditReport:
     """Durable Layer 1 audit report for one date/ticker sample."""
 
     run_id: str
+    layer1_run_id: str | None
     as_of_date: str
     benchmark_ticker: str
     tickers: tuple[str, ...]
@@ -147,6 +149,7 @@ class AuditOutputPaths:
 def audit_layer1_features(
     *,
     run_id: str,
+    layer1_run_id: str | None = None,
     as_of_date: str,
     tickers: Sequence[str],
     benchmark_ticker: str = "SPY",
@@ -186,7 +189,14 @@ def audit_layer1_features(
         stage="layer1_finbert_sentiment",
         as_of_date=as_of_date,
     )
-    regime_artifact = _load_regime_manifest(writer=active_writer, as_of_date=as_of_date)
+    if layer1_run_id is not None:
+        regime_artifact = _load_regime_manifest(
+            writer=active_writer,
+            as_of_date=as_of_date,
+            layer1_run_id=layer1_run_id,
+        )
+    else:
+        regime_artifact = _load_regime_manifest(writer=active_writer, as_of_date=as_of_date)
 
     catalog_summary = _validate_catalog(
         history_rows=history_rows,
@@ -416,6 +426,7 @@ def audit_layer1_features(
     summary = _summarize_findings(all_findings)
     return Layer1FeatureAuditReport(
         run_id=run_id,
+        layer1_run_id=layer1_run_id,
         as_of_date=as_of_date,
         benchmark_ticker=benchmark_ticker,
         tickers=normalized_tickers,
@@ -463,6 +474,11 @@ def render_audit_summary(report: Layer1FeatureAuditReport) -> str:
     lines = [
         "Layer 1 Feature Audit",
         f"Run ID: {report.run_id}",
+        (
+            f"Layer 1 Run ID: {report.layer1_run_id}"
+            if report.layer1_run_id is not None
+            else "Layer 1 Run ID: auto-select latest completed branch manifests"
+        ),
         f"As-of date: {report.as_of_date}",
         f"Tickers: {', '.join(report.tickers)}",
         f"Benchmark: {report.benchmark_ticker}",
@@ -948,6 +964,24 @@ def _audit_regime_branch(
             )
         )
         return {}
+    regime_row = _frame_row_for_date(frame, as_of_date)
+    readiness_errors = _regime_audit_readiness_errors(
+        row=regime_row,
+        as_of_date=as_of_date,
+    )
+    if readiness_errors:
+        findings.append(
+            AuditFinding(
+                status="fail",
+                category="regime",
+                subject=artifact.run_id,
+                message="Regime artifact readiness/null-state metadata is inconsistent.",
+                details={
+                    "artifact_key": artifact.output_path,
+                    "errors": readiness_errors,
+                },
+            )
+        )
     train_end_date = _manifest_metadata_str(artifact, "train_end_date")
     if train_end_date is not None and train_end_date >= as_of_date:
         leakage_checks.append(
@@ -967,6 +1001,24 @@ def _audit_regime_branch(
                 subject="regime training window",
                 message="Regime manifest train_end_date is strictly before the audited date.",
                 details={"train_end_date": train_end_date, "as_of_date": as_of_date},
+            )
+        )
+    manifest_readiness_errors = _regime_manifest_readiness_errors(
+        manifest=artifact,
+        row=regime_row,
+        as_of_date=as_of_date,
+    )
+    if manifest_readiness_errors:
+        findings.append(
+            AuditFinding(
+                status="fail",
+                category="regime",
+                subject=artifact.run_id,
+                message="Regime manifest readiness metadata does not match the parquet row.",
+                details={
+                    "artifact_key": artifact.output_path,
+                    "errors": manifest_readiness_errors,
+                },
             )
         )
     regime_values = {
@@ -1208,7 +1260,17 @@ def _load_regime_manifest(
     *,
     writer: AuditReader,
     as_of_date: str,
+    layer1_run_id: str | None = None,
 ) -> PipelineManifestRecord | None:
+    if layer1_run_id is not None:
+        manifest_key = pipeline_manifest_path(
+            "layer1_5_regime",
+            f"{layer1_run_id}-{as_of_date}",
+        )
+        if not writer.exists(manifest_key):
+            return None
+        manifest = PipelineManifestRecord.model_validate_json(writer.get_object(manifest_key))
+        return manifest if manifest.status is RunStatus.COMPLETED else None
     selected: PipelineManifestRecord | None = None
     for manifest in _completed_manifests(writer=writer, stage="layer1_5_regime"):
         inference_dates = manifest.metadata.get("inference_dates")
@@ -1251,6 +1313,150 @@ def _manifest_metadata_str(
     if not isinstance(raw_value, str):
         raise ValueError(f"manifest {manifest.run_id} metadata[{field_name!r}] must be a string")
     return raw_value
+
+
+def _frame_row_for_date(frame: Any, as_of_date: str) -> Mapping[str, object]:
+    """Return the single parquet row for `as_of_date` as a mapping."""
+    rows = frame[frame["date"].astype(str) == as_of_date].reset_index(drop=True)
+    if len(rows) != 1:
+        raise ValueError(f"Expected exactly one regime row for {as_of_date}, found {len(rows)}")
+    return rows.iloc[0].to_dict()
+
+
+def _regime_audit_readiness_errors(
+    *,
+    row: Mapping[str, object],
+    as_of_date: str,
+) -> list[str]:
+    """Return regime-readiness consistency errors for one parquet row."""
+    errors: list[str] = []
+    required_for_layer2 = _coerce_bool(row.get("regime_required_for_layer2"))
+    readiness_status = _optional_normalized_string(row.get("regime_readiness_status"))
+    readiness_reason = _optional_normalized_string(row.get("regime_readiness_reason"))
+    probability_sum = to_float_or_none(row.get("regime_probability_sum"))
+    feature_values = [
+        to_float_or_none(row.get("regime_confidence")),
+        to_float_or_none(row.get("regime_prob_bear")),
+        to_float_or_none(row.get("regime_prob_sideways")),
+        to_float_or_none(row.get("regime_prob_bull")),
+    ]
+    label = _optional_normalized_string(row.get("regime_label"))
+    fully_null = label is None and all(value is None for value in feature_values)
+    fully_populated = label is not None and all(value is not None for value in feature_values)
+    if not fully_null and not fully_populated:
+        errors.append(f"{as_of_date}: regime row must be fully populated or fully null")
+    if readiness_status not in {None, "ready", "warning"}:
+        errors.append(f"{as_of_date}: invalid regime_readiness_status={readiness_status!r}")
+    if readiness_reason is None:
+        errors.append(f"{as_of_date}: regime_readiness_reason must be non-empty")
+    if required_for_layer2:
+        if readiness_status not in {None, "ready"}:
+            errors.append(f"{as_of_date}: required regime row must use readiness_status='ready'")
+        if not fully_populated:
+            errors.append(f"{as_of_date}: required regime row cannot use null placeholders")
+        if probability_sum is None:
+            errors.append(f"{as_of_date}: required regime row must record regime_probability_sum")
+    else:
+        if readiness_status not in {None, "warning"}:
+            errors.append(
+                f"{as_of_date}: warning regime row must use readiness_status='warning'"
+            )
+        if not fully_null:
+            errors.append(f"{as_of_date}: warning regime row must use explicit null placeholders")
+        if probability_sum is not None:
+            errors.append(f"{as_of_date}: warning regime row must not record probability_sum")
+    return errors
+
+
+def _regime_manifest_readiness_errors(
+    *,
+    manifest: PipelineManifestRecord,
+    row: Mapping[str, object],
+    as_of_date: str,
+) -> list[str]:
+    """Return errors when manifest readiness metadata conflicts with the parquet row."""
+    payload = manifest.metadata.get("regime_readiness_by_date")
+    if not isinstance(payload, Mapping):
+        return []
+    date_payload = payload.get(as_of_date)
+    if not isinstance(date_payload, Mapping):
+        return [f"{as_of_date}: manifest metadata missing regime_readiness_by_date entry"]
+
+    errors: list[str] = []
+    expected_status = _optional_normalized_string(date_payload.get("status"))
+    expected_reason = _optional_normalized_string(date_payload.get("reason"))
+    expected_required = _coerce_bool(date_payload.get("required_for_layer2"))
+    expected_missing = sorted(_normalize_str_list(date_payload.get("missing_features")))
+    expected_probability_sum = to_float_or_none(date_payload.get("probability_sum"))
+
+    actual_status = _optional_normalized_string(row.get("regime_readiness_status"))
+    actual_reason = _optional_normalized_string(row.get("regime_readiness_reason"))
+    actual_required = _coerce_bool(row.get("regime_required_for_layer2"))
+    actual_missing = sorted(
+        item
+        for item in str(row.get("regime_missing_features") or "").split(",")
+        if item
+    )
+    actual_probability_sum = to_float_or_none(row.get("regime_probability_sum"))
+
+    if expected_status != actual_status:
+        errors.append(
+            f"{as_of_date}: manifest status {expected_status!r} != row status {actual_status!r}"
+        )
+    if expected_reason != actual_reason:
+        errors.append(
+            f"{as_of_date}: manifest reason {expected_reason!r} != row reason {actual_reason!r}"
+        )
+    if expected_required != actual_required:
+        errors.append(
+            f"{as_of_date}: manifest required_for_layer2={expected_required} "
+            f"!= row {actual_required}"
+        )
+    if expected_missing != actual_missing:
+        errors.append(
+            f"{as_of_date}: manifest missing_features {expected_missing!r} "
+            f"!= row {actual_missing!r}"
+        )
+    if not _float_match(expected_probability_sum, actual_probability_sum):
+        errors.append(
+            f"{as_of_date}: manifest probability_sum={expected_probability_sum!r} "
+            f"!= row {actual_probability_sum!r}"
+        )
+    return errors
+
+
+def _optional_normalized_string(value: object) -> str | None:
+    """Return a stripped string or None for null-like values."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _coerce_bool(value: object) -> bool:
+    """Return a boolean for common manifest/row encodings."""
+    if isinstance(value, bool):
+        return value
+    text = _optional_normalized_string(value)
+    return text == "True" or text == "true" or text == "1"
+
+
+def _normalize_str_list(value: object) -> list[str]:
+    """Normalize common list-like manifest payloads into strings."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [item for item in value.split(",") if item]
+    if isinstance(value, Sequence):
+        return [str(item) for item in value if str(item)]
+    return [str(value)]
+
+
+def _float_match(left: float | None, right: float | None, *, tolerance: float = 1e-9) -> bool:
+    """Return True when two optional floats match within tolerance."""
+    if left is None or right is None:
+        return left is None and right is None
+    return math.isclose(left, right, rel_tol=tolerance, abs_tol=tolerance)
 
 
 def _record_for_date(
