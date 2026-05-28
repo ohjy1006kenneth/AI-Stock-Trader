@@ -107,12 +107,12 @@ from core.features.sector_features import (  # noqa: E402
     load_sector_etf_config,
     sector_features_to_records,
 )
-from services.order_book.config import load_order_book_feature_config  # noqa: E402
 from services.modal.secrets import (  # noqa: E402
     SIMFIN_MODAL_ENV_FILE,
     SIMFIN_MODAL_ENV_KEYS,
     build_modal_secrets,
 )
+from services.order_book.config import load_order_book_feature_config  # noqa: E402
 from services.r2.paths import (  # noqa: E402
     layer1_ticker_history_path,
     pipeline_manifest_path,
