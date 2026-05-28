@@ -21,7 +21,6 @@ from core.features.news_preprocessing import (
     preprocess_news_articles,
     records_to_news_sentiment_frame,
 )
-from core.features.regime_detection import HMM_REGIME_COLUMNS
 from core.features.sector_features import compute_sector_features, sector_features_to_records
 from core.features.sentiment_features import sentiment_feature_records_from_scored_news
 from core.features.text_topics import TOPIC_LABEL_COLUMNS, topic_labels_to_feature_records
