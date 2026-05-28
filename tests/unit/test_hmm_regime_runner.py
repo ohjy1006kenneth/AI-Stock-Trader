@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from app.lab.data_pipelines.run_hmm_regime_detection import (
     REGIME_STAGE,
@@ -61,6 +62,13 @@ def test_run_hmm_regime_detection_reads_r2_and_writes_outputs(
     assert manifest["stage"] == REGIME_STAGE
     assert manifest["output_path"] == result.output_key
     assert manifest["metadata"]["regime_rows"] == len(inference_dates)
+    assert manifest["metadata"]["regime_readiness_by_date"][inference_dates[0]] == {
+        "status": "ready",
+        "reason": "ready",
+        "required_for_layer2": True,
+        "missing_features": [],
+        "probability_sum": pytest.approx(1.0),
+    }
 
 
 def test_run_hmm_regime_detection_writes_failure_manifest(
@@ -120,6 +128,13 @@ def test_run_hmm_regime_detection_emits_warning_rows_for_short_history(
     assert output.loc[0, "regime_readiness_reason"] == "insufficient_training_history"
     assert manifest["status"] == RunStatus.COMPLETED
     assert manifest["metadata"]["regime_layer2_ready"] is False
+    assert manifest["metadata"]["regime_readiness_by_date"][str(bars.loc[25, "date"])] == {
+        "status": "warning",
+        "reason": "insufficient_training_history",
+        "required_for_layer2": False,
+        "missing_features": [],
+        "probability_sum": None,
+    }
 
 
 def test_run_hmm_regime_detection_scores_inference_rows_when_only_dropped_features_are_null(

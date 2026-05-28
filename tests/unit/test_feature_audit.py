@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -38,6 +39,7 @@ def test_write_audit_report_writes_json_and_summary(
     assert output_paths.summary_path.exists()
     assert '"run_id": "audit-unit"' in output_paths.json_path.read_text(encoding="utf-8")
     assert "Layer 1 Feature Audit" in summary
+    assert "Layer 1 Run ID: auto-select latest completed branch manifests" in summary
     assert "AAPL" in summary
 
 
@@ -243,3 +245,110 @@ def test_audit_layer1_features_flags_invalid_regime_probabilities(
         and "probabilities are not internally coherent" in finding["message"]
         for finding in report.findings
     )
+
+
+def test_audit_layer1_features_uses_exact_layer1_run_id_for_regime_selection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An explicit Layer 1 run id should resolve the matching per-date regime manifest."""
+    writer = local_writer(tmp_path, monkeypatch)
+    fixture = seed_layer1_audit_fixture(writer)
+    as_of_date = str(fixture["as_of_date"])
+
+    stale_regime_key = layer1_regime_path("stale-layer1-2024-05-06")
+    buffer = io.BytesIO()
+    pd.DataFrame(
+        [
+            {
+                "date": as_of_date,
+                "regime_label": "bear",
+                "regime_confidence": 0.9,
+                "regime_prob_bear": 0.9,
+                "regime_prob_sideways": 0.05,
+                "regime_prob_bull": 0.05,
+                "regime_required_for_layer2": True,
+                "regime_readiness_status": "ready",
+                "regime_readiness_reason": "ready",
+                "regime_missing_features": "",
+                "regime_probability_sum": 1.0,
+            }
+        ]
+    ).to_parquet(buffer, index=False)
+    writer.put_object(stale_regime_key, buffer.getvalue())
+    writer.put_object(
+        "artifacts/manifests/layer1_5_regime/stale-layer1-2024-05-06.json",
+        json.dumps(
+            {
+                "run_id": "stale-layer1-2024-05-06",
+                "stage": "layer1_5_regime",
+                "status": "completed",
+                "started_at": "2024-05-06T12:00:00Z",
+                "finished_at": "2024-05-06T12:05:00Z",
+                "input_path": "raw/prices/SPY.parquet,raw/macro/",
+                "output_path": stale_regime_key,
+                "metadata": {
+                    "train_end_date": "2024-05-03",
+                    "inference_dates": [as_of_date],
+                    "regime_readiness_by_date": {
+                        as_of_date: {
+                            "status": "ready",
+                            "reason": "ready",
+                            "required_for_layer2": True,
+                            "missing_features": [],
+                            "probability_sum": 1.0,
+                        }
+                    },
+                },
+            }
+        ),
+    )
+
+    exact_run_id = "layer1-current"
+    exact_stage_run_id = f"{exact_run_id}-{as_of_date}"
+    exact_regime_key = layer1_regime_path(exact_stage_run_id)
+    writer.put_object(exact_regime_key, writer.get_object(layer1_regime_path("audit-regime")))
+    writer.put_object(
+        f"artifacts/manifests/layer1_5_regime/{exact_stage_run_id}.json",
+        json.dumps(
+            {
+                "run_id": exact_stage_run_id,
+                "stage": "layer1_5_regime",
+                "status": "completed",
+                "started_at": "2024-05-06T12:10:00Z",
+                "finished_at": "2024-05-06T12:15:00Z",
+                "input_path": "raw/prices/SPY.parquet,raw/macro/",
+                "output_path": exact_regime_key,
+                "metadata": {
+                    "train_end_date": "2024-05-03",
+                    "inference_dates": [as_of_date],
+                    "regime_readiness_by_date": {
+                        as_of_date: {
+                            "status": "ready",
+                            "reason": "ready",
+                            "required_for_layer2": True,
+                            "missing_features": [],
+                            "probability_sum": 1.0,
+                        }
+                    },
+                },
+            }
+        ),
+    )
+
+    report = audit_layer1_features(
+        run_id="audit-exact-layer1-run",
+        layer1_run_id=exact_run_id,
+        as_of_date=as_of_date,
+        tickers=[str(fixture["ticker"])],
+        benchmark_ticker=str(fixture["benchmark_ticker"]),
+        writer=writer,
+    )
+
+    assert report.layer1_run_id == exact_run_id
+    regime_result = next(
+        result for result in report.branch_results if result["branch"] == "regime"
+    )
+    assert regime_result["status"] == "pass"
+    summary = render_audit_summary(report)
+    assert f"Layer 1 Run ID: {exact_run_id}" in summary
