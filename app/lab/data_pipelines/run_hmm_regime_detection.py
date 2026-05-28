@@ -386,13 +386,8 @@ def _with_regime_readiness_columns(
 
 def _regime_readiness_by_date(frame: pd.DataFrame) -> dict[str, dict[str, object]]:
     """Return manifest-ready per-date readiness metadata for one regime artifact."""
-    try:
-        import pandas as pd
-    except ModuleNotFoundError as exc:
-        raise ModuleNotFoundError(
-            "pandas and pyarrow are required to write HMM regime outputs."
-        ) from exc
-    if not isinstance(frame, pd.DataFrame):
+    pandas_module = importlib.import_module("pandas")
+    if not isinstance(frame, pandas_module.DataFrame):
         raise TypeError("frame must be a pandas DataFrame")
 
     readiness_by_date: dict[str, dict[str, object]] = {}
@@ -409,7 +404,7 @@ def _regime_readiness_by_date(frame: pd.DataFrame) -> dict[str, dict[str, object
             ],
             "probability_sum": (
                 None
-                if pd.isna(row.get("regime_probability_sum"))
+                if pandas_module.isna(row.get("regime_probability_sum"))
                 else float(row["regime_probability_sum"])
             ),
         }

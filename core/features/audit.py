@@ -189,7 +189,6 @@ def audit_layer1_features(
         stage="layer1_finbert_sentiment",
         as_of_date=as_of_date,
     )
-    regime_artifact = _load_regime_manifest(writer=active_writer, as_of_date=as_of_date)
     if layer1_run_id is not None:
         regime_artifact = _load_regime_manifest(
             writer=active_writer,
