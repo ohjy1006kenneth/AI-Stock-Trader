@@ -1116,6 +1116,7 @@ def _write_fundamentals_archive(
     ]
 
     for batch_index, batch in enumerate(batches, start=1):
+        aliased_in_batch = 0
         if not overwrite:
             for ticker in batch:
                 target_key = raw_fundamentals_path(ticker)
@@ -1137,6 +1138,7 @@ def _write_fundamentals_archive(
                 output_keys.append(target_key)
                 written += 1
                 total_rows += len(aliased_rows)
+                aliased_in_batch += 1
                 aliased_tickers.append(ticker)
                 logger.info(
                     "Seeded fundamentals archive for {} from alias {}",
@@ -1150,7 +1152,7 @@ def _write_fundamentals_archive(
             if overwrite or not writer.exists(raw_fundamentals_path(ticker))
         ]
         if not remaining:
-            skipped += len(batch)
+            skipped += len(batch) - aliased_in_batch
             logger.info(
                 "SimFin batch {}/{} fully cached — skipping",
                 batch_index,
@@ -1179,7 +1181,7 @@ def _write_fundamentals_archive(
             ticker = _canonicalize_ticker(str(row.get("ticker") or ""))
             if ticker in rows_by_ticker:
                 rows_by_ticker[ticker].append(row)
-        skipped += len(batch) - len(remaining)
+        skipped += len(batch) - len(remaining) - aliased_in_batch
         for ticker in remaining:
             ticker_rows = _sort_raw_rows(rows_by_ticker.get(ticker, []), ("report_date",))
             if not ticker_rows:

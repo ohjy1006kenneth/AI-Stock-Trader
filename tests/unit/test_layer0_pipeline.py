@@ -1142,6 +1142,78 @@ def test_historical_layer0_backfill_seeds_missing_canonical_fundamentals_from_al
     manifest = _manifest(writer, "test-bny-alias-fundamentals")
     assert manifest["metadata"]["fundamentals"]["aliased_tickers"] == ["BNY"]
     assert manifest["metadata"]["fundamentals"]["missing_tickers"] == []
+    assert manifest["metadata"]["fundamentals"]["written"] == 1
+    assert manifest["metadata"]["fundamentals"]["skipped"] == 0
+    assert manifest["metadata"]["fundamentals"]["empty"] == 0
+    assert (
+        manifest["metadata"]["fundamentals"]["written"]
+        + manifest["metadata"]["fundamentals"]["skipped"]
+        + manifest["metadata"]["fundamentals"]["empty"]
+        == manifest["metadata"]["fundamentals"]["requested_tickers"]
+    )
+
+
+def test_daily_layer0_incremental_seeds_missing_canonical_fundamentals_from_alias() -> None:
+    writer = _Writer()
+    writer.put_object(
+        raw_fundamentals_path("BK"),
+        _bytes_serializer(
+            [
+                {
+                    "ticker": "BK",
+                    "report_date": "2024-03-31",
+                    "availability_date": "2024-05-01",
+                    "raw": {"ticker": "BK", "Revenue": 1},
+                }
+            ]
+        ),
+    )
+    fundamentals_fetcher = _EmptyFundamentalsFetcher()
+
+    run_daily_layer0_incremental(
+        config=DailyLayer0Config(
+            as_of_date=date(2024, 5, 2),
+            tickers=("BNY",),
+            fred_series_ids=("DGS10",),
+            run_id="test-daily-bny-alias-fundamentals",
+            quality_config=QualityFilterConfig(rolling_window_days=1),
+        ),
+        live_price_fetcher=_LivePriceFetcher(),
+        news_fetcher=_NewsFetcher(),
+        fundamentals_fetcher=fundamentals_fetcher,
+        macro_fetcher=_MacroFetcher(),
+        writer=writer,
+        price_serializer=_bytes_serializer,
+        price_deserializer=_bytes_deserializer,
+        news_serializer=_bytes_serializer,
+        fundamentals_serializer=_bytes_serializer,
+        fundamentals_deserializer=_raw_rows_deserializer,
+        macro_serializer=_bytes_serializer,
+        universe_serializer=_universe_serializer,
+    )
+
+    bny_rows = _raw_rows_deserializer(writer.objects[raw_fundamentals_path("BNY")])
+    assert bny_rows == [
+        {
+            "ticker": "BNY",
+            "report_date": "2024-03-31",
+            "availability_date": "2024-05-01",
+            "raw": {"ticker": "BNY", "Revenue": 1},
+        }
+    ]
+    assert fundamentals_fetcher.calls == []
+    manifest = _manifest(writer, "test-daily-bny-alias-fundamentals")
+    assert manifest["metadata"]["fundamentals"]["aliased_tickers"] == ["BNY"]
+    assert manifest["metadata"]["fundamentals"]["missing_tickers"] == []
+    assert manifest["metadata"]["fundamentals"]["written"] == 1
+    assert manifest["metadata"]["fundamentals"]["skipped"] == 0
+    assert manifest["metadata"]["fundamentals"]["empty"] == 0
+    assert (
+        manifest["metadata"]["fundamentals"]["written"]
+        + manifest["metadata"]["fundamentals"]["skipped"]
+        + manifest["metadata"]["fundamentals"]["empty"]
+        == manifest["metadata"]["fundamentals"]["requested_tickers"]
+    )
 
 
 def test_daily_layer0_incremental_repairs_missing_target_date_and_rewrites_universe_mask() -> None:
