@@ -83,12 +83,29 @@ class _UniverseProvider:
         return {"AAPL", "MSFT"}
 
 
+class _BnyUniverseProvider:
+    def get_constituents(self, as_of_date: str) -> list[str]:
+        return ["BNY"]
+
+    def get_historical_tickers(self, from_date: str, to_date: str) -> set[str]:
+        return {"BNY"}
+
+
 class _SecurityMaster:
     def resolve_all(self, ticker: str) -> list[_Security]:
         if ticker == "AAPL":
             return [_Security(ticker="AAPL", security_id="perm-aapl", start_date="2020-01-01")]
         if ticker == "MSFT":
             return [_Security(ticker="MSFT", security_id="perm-msft", start_date="2020-01-01")]
+        if ticker == "SPY":
+            return [_Security(ticker="SPY", security_id="perm-spy", start_date="2020-01-01")]
+        raise KeyError(ticker)
+
+
+class _BnySecurityMaster:
+    def resolve_all(self, ticker: str) -> list[_Security]:
+        if ticker == "BNY":
+            return [_Security(ticker="BNY", security_id="perm-bny", start_date="2020-01-01")]
         if ticker == "SPY":
             return [_Security(ticker="SPY", security_id="perm-spy", start_date="2020-01-01")]
         raise KeyError(ticker)
@@ -182,6 +199,9 @@ class _FundamentalsFetcher:
 
 
 class _EmptyFundamentalsFetcher:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
     def fetch_all_fundamentals(
         self,
         *,
@@ -193,6 +213,17 @@ class _EmptyFundamentalsFetcher:
         retrieved_at: datetime | None,
         limit: int,
     ) -> list[dict[str, object]]:
+        self.calls.append(
+            {
+                "tickers": tuple(tickers),
+                "start_date": start_date,
+                "end_date": end_date,
+                "statements": tuple(statements),
+                "periods": tuple(periods),
+                "retrieved_at": retrieved_at,
+                "limit": limit,
+            }
+        )
         return []
 
 
@@ -1056,6 +1087,61 @@ def test_daily_layer0_incremental_skips_new_empty_fundamentals_archives() -> Non
     manifest = _manifest(writer, "test-empty-fundamentals")
     assert manifest["metadata"]["fundamentals"]["empty"] == 1
     assert manifest["metadata"]["fundamentals"]["missing_tickers"] == ["AAPL"]
+
+
+def test_historical_layer0_backfill_seeds_missing_canonical_fundamentals_from_alias() -> None:
+    writer = _Writer()
+    writer.put_object(
+        raw_fundamentals_path("BK"),
+        _bytes_serializer(
+            [
+                {
+                    "ticker": "BK",
+                    "report_date": "2024-03-31",
+                    "availability_date": "2024-05-01",
+                    "raw": {"ticker": "BK", "Revenue": 1},
+                }
+            ]
+        ),
+    )
+    fundamentals_fetcher = _EmptyFundamentalsFetcher()
+
+    run_historical_layer0_backfill(
+        config=HistoricalLayer0Config(
+            from_date=date(2024, 5, 2),
+            to_date=date(2024, 5, 2),
+            fred_series_ids=("DGS10",),
+            run_id="test-bny-alias-fundamentals",
+            quality_config=QualityFilterConfig(rolling_window_days=1),
+        ),
+        universe_provider=_BnyUniverseProvider(),
+        price_fetcher=_HistoricalPriceFetcher(),
+        security_master=_BnySecurityMaster(),
+        news_fetcher=_NewsFetcher(),
+        fundamentals_fetcher=fundamentals_fetcher,
+        macro_fetcher=_MacroFetcher(),
+        writer=writer,
+        price_serializer=_bytes_serializer,
+        price_deserializer=_bytes_deserializer,
+        news_serializer=_bytes_serializer,
+        fundamentals_serializer=_bytes_serializer,
+        fundamentals_deserializer=_raw_rows_deserializer,
+        macro_serializer=_bytes_serializer,
+    )
+
+    bny_rows = _raw_rows_deserializer(writer.objects[raw_fundamentals_path("BNY")])
+    assert bny_rows == [
+        {
+            "ticker": "BNY",
+            "report_date": "2024-03-31",
+            "availability_date": "2024-05-01",
+            "raw": {"ticker": "BNY", "Revenue": 1},
+        }
+    ]
+    assert fundamentals_fetcher.calls == []
+    manifest = _manifest(writer, "test-bny-alias-fundamentals")
+    assert manifest["metadata"]["fundamentals"]["aliased_tickers"] == ["BNY"]
+    assert manifest["metadata"]["fundamentals"]["missing_tickers"] == []
 
 
 def test_daily_layer0_incremental_repairs_missing_target_date_and_rewrites_universe_mask() -> None:

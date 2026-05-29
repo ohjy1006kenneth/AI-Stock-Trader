@@ -34,6 +34,7 @@ SEC_COMPANY_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 SEC_COMPANYFACTS_URL_TEMPLATE = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
 _SEC_ALLOWED_FORMS = frozenset({"10-K", "10-K/A", "10-Q", "10-Q/A", "20-F", "20-F/A", "40-F"})
 _SIMFIN_REQUEST_TICKER_OVERRIDES: dict[str, str] = {
+    "BNY": "BK",
     # Current S&P 500 ticker aliases that SimFin still serves under an older
     # vendor symbol or the economic share-class peer with identical company fundamentals.
     "CPAY": "FLT",
@@ -995,6 +996,11 @@ def _simfin_vendor_ticker(ticker: str) -> str:
     """Return the normalized SimFin vendor symbol for one canonical archive ticker."""
     normalized = _normalize_ticker(ticker)
     return _SIMFIN_REQUEST_TICKER_OVERRIDES.get(normalized, normalized)
+
+
+def canonical_fundamentals_source_ticker(ticker: str) -> str:
+    """Return the archive ticker that can seed one canonical fundamentals history."""
+    return _simfin_vendor_ticker(ticker)
 
 
 def _normalize_tokens(values: Sequence[str], field_name: str) -> tuple[str, ...]:

@@ -26,6 +26,7 @@ from services.simfin.fundamentals_fetcher import (
     DEFAULT_SIMFIN_STATEMENTS,
     SimFinClientConfig,
     SimFinFundamentalsFetcher,
+    canonical_fundamentals_source_ticker,
     normalize_simfin_fundamental_rows,
 )
 
@@ -735,6 +736,42 @@ def test_fetch_statement_rows_maps_provider_rename_aliases_back_to_canonical_tic
 
     assert session.calls[0]["params"]["ticker"] == "FLT"
     assert [row["ticker"] for row in page.rows] == ["CPAY"]
+
+
+def test_canonical_fundamentals_source_ticker_uses_vendor_alias_for_bny() -> None:
+    """Canonical fundamentals archives can seed BNY from the existing BK history."""
+    assert canonical_fundamentals_source_ticker("BNY") == "BK"
+
+
+def test_fetch_statement_rows_maps_bny_vendor_alias_back_to_canonical_ticker() -> None:
+    """BNY requests use BK upstream but archive rows stay canonicalized as BNY."""
+    payload = [
+        {
+            "ticker": "BK",
+            "currency": "USD",
+            "statements": [
+                {
+                    "statement": "PL",
+                    "columns": ["Fiscal Period", "Fiscal Year", "Report Date", "Publish Date"],
+                    "data": [["Q1", 2024, "2024-03-31", "2024-05-03"]],
+                }
+            ],
+        }
+    ]
+    session = _FakeSession([_FakeResponse(payload)])
+    fetcher = SimFinFundamentalsFetcher(
+        SimFinClientConfig(api_key="test-key", retry_sleep_seconds=0),
+        session=session,  # type: ignore[arg-type]
+    )
+
+    page = fetcher.fetch_statement_rows(
+        tickers=["BNY"],
+        start_date="2024-01-01",
+        end_date="2024-12-31",
+    )
+
+    assert session.calls[0]["params"]["ticker"] == "BK"
+    assert [row["ticker"] for row in page.rows] == ["BNY"]
 
 
 def test_fetch_all_fundamentals_uses_sec_companyfacts_fallback_for_missing_ticker(
