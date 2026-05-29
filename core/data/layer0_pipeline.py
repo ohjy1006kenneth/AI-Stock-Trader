@@ -35,6 +35,7 @@ from services.r2.paths import (
     raw_security_master_path,
     raw_universe_path,
 )
+from services.simfin.fundamentals_fetcher import canonical_fundamentals_source_ticker
 
 
 class ObjectWriter(Protocol):
@@ -421,6 +422,7 @@ def run_historical_layer0_backfill(
             fetcher=fundamentals_fetcher,
             writer=cached_writer,
             serializer=fundamentals_serializer or _raw_rows_to_parquet_bytes,
+            deserializer=fundamentals_deserializer or _parquet_bytes_to_raw_rows,
         )
         output_keys.extend(fundamentals_result.output_keys)
         metadata["fundamentals"] = fundamentals_result.metadata
@@ -611,6 +613,7 @@ def run_daily_layer0_incremental(
             fetcher=fundamentals_fetcher,
             writer=writer,
             serializer=fundamentals_serializer or _raw_rows_to_parquet_bytes,
+            deserializer=fundamentals_deserializer or _parquet_bytes_to_raw_rows,
         )
         output_keys.extend(fundamentals_result.output_keys)
         metadata["fundamentals"] = fundamentals_result.metadata
@@ -1094,6 +1097,7 @@ def _write_fundamentals_archive(
     fetcher: FundamentalsFetcher,
     writer: ObjectWriter,
     serializer: RawRowSerializer,
+    deserializer: RawRowsDeserializer,
 ) -> _WriteResult:
     """Fetch and persist SimFin fundamentals per-ticker so partial progress survives failures."""
     normalized_tickers = [_canonicalize_ticker(ticker) for ticker in tickers]
@@ -1103,6 +1107,7 @@ def _write_fundamentals_archive(
     empty = 0
     total_rows = 0
     missing_tickers: list[str] = []
+    aliased_tickers: list[str] = []
     retrieved_at = datetime.now(UTC)
     batch_size = 50
     batches = [
@@ -1111,13 +1116,43 @@ def _write_fundamentals_archive(
     ]
 
     for batch_index, batch in enumerate(batches, start=1):
+        aliased_in_batch = 0
+        if not overwrite:
+            for ticker in batch:
+                target_key = raw_fundamentals_path(ticker)
+                if writer.exists(target_key):
+                    continue
+                source_ticker = canonical_fundamentals_source_ticker(ticker)
+                if source_ticker == ticker:
+                    continue
+                source_key = raw_fundamentals_path(source_ticker)
+                if not writer.exists(source_key):
+                    continue
+                aliased_rows = _rewrite_fundamentals_alias_rows(
+                    deserializer(writer.get_object(source_key)),
+                    target_ticker=ticker,
+                )
+                if not aliased_rows:
+                    continue
+                writer.put_object(target_key, serializer(aliased_rows))
+                output_keys.append(target_key)
+                written += 1
+                total_rows += len(aliased_rows)
+                aliased_in_batch += 1
+                aliased_tickers.append(ticker)
+                logger.info(
+                    "Seeded fundamentals archive for {} from alias {}",
+                    ticker,
+                    source_ticker,
+                )
+
         remaining = [
             ticker
             for ticker in batch
             if overwrite or not writer.exists(raw_fundamentals_path(ticker))
         ]
         if not remaining:
-            skipped += len(batch)
+            skipped += len(batch) - aliased_in_batch
             logger.info(
                 "SimFin batch {}/{} fully cached — skipping",
                 batch_index,
@@ -1146,7 +1181,7 @@ def _write_fundamentals_archive(
             ticker = _canonicalize_ticker(str(row.get("ticker") or ""))
             if ticker in rows_by_ticker:
                 rows_by_ticker[ticker].append(row)
-        skipped += len(batch) - len(remaining)
+        skipped += len(batch) - len(remaining) - aliased_in_batch
         for ticker in remaining:
             ticker_rows = _sort_raw_rows(rows_by_ticker.get(ticker, []), ("report_date",))
             if not ticker_rows:
@@ -1175,9 +1210,31 @@ def _write_fundamentals_archive(
             "empty": empty,
             "missing_tickers": missing_tickers,
             "total_rows": total_rows,
+            "aliased_tickers": aliased_tickers,
             "output_keys": output_keys,
         },
     )
+
+
+def _rewrite_fundamentals_alias_rows(
+    rows: Sequence[Mapping[str, object]],
+    *,
+    target_ticker: str,
+) -> list[dict[str, object]]:
+    """Rewrite one existing fundamentals archive onto the canonical target ticker."""
+    rewritten: list[dict[str, object]] = []
+    for row in rows:
+        updated_row = dict(row)
+        updated_row["ticker"] = target_ticker
+        raw_payload = updated_row.get("raw")
+        if isinstance(raw_payload, Mapping):
+            updated_raw = dict(raw_payload)
+            for key in ("ticker", "Ticker", "symbol", "Symbol"):
+                if key in updated_raw:
+                    updated_raw[key] = target_ticker
+            updated_row["raw"] = updated_raw
+        rewritten.append(updated_row)
+    return rewritten
 
 
 def _write_macro_archive(
