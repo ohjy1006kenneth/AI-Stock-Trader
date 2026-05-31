@@ -1058,10 +1058,18 @@ def _load_feature_records_by_key(
     writer: ObjectStore,
     keys_by_date: Mapping[str, str],
 ) -> dict[str, list[FeatureRecord]]:
-    """Load ticker-day feature records from existing branch output parquet objects."""
+    """Load ticker-day feature records from existing branch output parquet objects.
+
+    Some branch outputs may include historical carry-forward rows in addition to the
+    requested target date. Only keep rows matching the date encoded by the caller's
+    `keys_by_date` mapping so multi-date assembly does not re-ingest earlier dates from
+    later branch outputs.
+    """
     grouped: dict[str, list[FeatureRecord]] = {}
-    for key in keys_by_date.values():
+    for date_text, key in keys_by_date.items():
         for record in parquet_bytes_to_feature_records(writer.get_object(key)):
+            if record.date != date_text:
+                continue
             grouped.setdefault(record.ticker, []).append(record)
     return grouped
 

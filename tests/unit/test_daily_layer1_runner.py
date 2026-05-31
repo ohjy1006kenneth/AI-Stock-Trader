@@ -686,6 +686,69 @@ def test_run_daily_layer1_rerun_replaces_target_dates_without_duplicates(
     assert second_history == first_history
 
 
+def test_run_daily_layer1_filters_carry_forward_rows_from_branch_outputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Per-date branch outputs only contribute rows for their requested target date."""
+    writer = local_writer(tmp_path, monkeypatch)
+    seed_layer0_archives(
+        writer,
+        dates=["2024-01-03", "2024-01-04"],
+        tickers=["AAPL"],
+        layer0_run_ids=("layer1-carry-forward",),
+    )
+    seen_dates: list[str] = []
+
+    def cumulative_sentiment_runner(config, *, writer: R2Writer):
+        seen_dates.append(config.as_of_date)
+        output_key = layer1_sentiment_feature_path(config.as_of_date, config.run_id)
+        records = [
+            daily_layer1_module.FeatureRecord(
+                date=date_text,
+                ticker="AAPL",
+                features={
+                    "nlp_sentiment_score": 0.25 if date_text == "2024-01-03" else 0.5,
+                    "nlp_article_count": 1,
+                    "nlp_sentence_count": 1,
+                },
+            )
+            for date_text in seen_dates
+        ]
+        writer.put_object(output_key, feature_records_to_parquet_bytes(records))
+        return daily_layer1_module.FinBERTPipelineResult(
+            run_id=config.run_id,
+            scored_news_key="unused",
+            sentiment_feature_key=output_key,
+            manifest_key=pipeline_manifest_path("layer1_finbert_sentiment", config.run_id),
+            input_rows=len(records),
+            scored_rows=len(records),
+            feature_rows=len(records),
+        )
+
+    result = run_daily_layer1(
+        Layer1DailyConfig(
+            run_id="layer1-carry-forward",
+            from_date="2024-01-03",
+            to_date="2024-01-04",
+        ),
+        writer=writer,
+        news_runner=fake_news_runner(writer, ["AAPL"]),
+        text_topic_runner=fake_topic_runner(writer, ["AAPL"]),
+        finbert_runner=cumulative_sentiment_runner,
+        regime_runner=fake_regime_runner(writer),
+        validation_output_dir=tmp_path / "reports",
+        now=datetime(2024, 1, 5, 12, 0, tzinfo=UTC),
+    )
+
+    history = read_feature_records("AAPL", writer=writer)
+
+    assert result.ready_for_layer2 is True
+    assert [record.date for record in history] == ["2024-01-03", "2024-01-04"]
+    assert history[0].features["nlp_sentiment_score"] == pytest.approx(0.25)
+    assert history[1].features["nlp_sentiment_score"] == pytest.approx(0.5)
+
+
 def test_run_daily_layer1_reuses_completed_branch_outputs_when_precomputed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
