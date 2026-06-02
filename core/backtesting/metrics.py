@@ -19,8 +19,12 @@ def sharpe_ratio(daily_returns: list[float], annual_factor: float = 252.0) -> fl
         return 0.0
     mean = sum(daily_returns) / n
     variance = sum((r - mean) ** 2 for r in daily_returns) / (n - 1)
-    stdev = math.sqrt(variance)
+    stdev = math.sqrt(max(variance, 0.0))
     if stdev == 0.0:
+        return 0.0
+    # Suppress near-zero variance caused by floating-point accumulation on
+    # constant return streams (coefficient of variation below machine-noise floor).
+    if abs(mean) > 0.0 and stdev / abs(mean) < 1e-9:
         return 0.0
     return (mean / stdev) * math.sqrt(annual_factor)
 
