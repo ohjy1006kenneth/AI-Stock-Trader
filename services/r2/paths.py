@@ -225,6 +225,24 @@ def layer1_label_path(as_of_date: str | Date | datetime, ticker: str) -> str:
     return build_r2_key("labels", "layer1", _format_date(as_of_date), f"{safe_ticker}.parquet")
 
 
+def layer2_model_path(model_version: str) -> str:
+    """Return the canonical Layer 2 model artifact path for one version."""
+    safe_version = _validate_key_part(model_version)
+    return build_r2_key("models", "layer2", f"{safe_version}.pkl")
+
+
+def layer2_model_manifest_path(model_version: str) -> str:
+    """Return the canonical Layer 2 model manifest path for one version."""
+    safe_version = _validate_key_part(model_version)
+    return build_r2_key("models", "layer2", f"{safe_version}_manifest.json")
+
+
+def backtest_report_path(report_id: str) -> str:
+    """Return the canonical backtest report path for one run."""
+    safe_id = _validate_key_part(report_id)
+    return build_r2_key("artifacts", "reports", "backtests", f"{safe_id}.json")
+
+
 def pipeline_manifest_path(stage: str, run_id: str) -> str:
     """Return the canonical pipeline manifest path for one stage/run pair."""
     safe_stage = _validate_key_part(stage)
