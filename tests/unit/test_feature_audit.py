@@ -199,7 +199,7 @@ def test_audit_layer1_features_flags_invalid_regime_probabilities(
     """Regime audit fails when the stored artifact probabilities are incoherent."""
     writer = local_writer(tmp_path, monkeypatch)
     fixture = seed_layer1_audit_fixture(writer)
-    regime_key = layer1_regime_path("audit-regime")
+    regime_key = layer1_regime_path(str(fixture["as_of_date"]), "audit-regime")
     buffer = io.BytesIO()
     pd.DataFrame(
         [
@@ -256,7 +256,7 @@ def test_audit_layer1_features_uses_exact_layer1_run_id_for_regime_selection(
     fixture = seed_layer1_audit_fixture(writer)
     as_of_date = str(fixture["as_of_date"])
 
-    stale_regime_key = layer1_regime_path("stale-layer1-2024-05-06")
+    stale_regime_key = layer1_regime_path(as_of_date, "stale-layer1-2024-05-06")
     buffer = io.BytesIO()
     pd.DataFrame(
         [
@@ -306,8 +306,11 @@ def test_audit_layer1_features_uses_exact_layer1_run_id_for_regime_selection(
 
     exact_run_id = "layer1-current"
     exact_stage_run_id = f"{exact_run_id}-{as_of_date}"
-    exact_regime_key = layer1_regime_path(exact_stage_run_id)
-    writer.put_object(exact_regime_key, writer.get_object(layer1_regime_path("audit-regime")))
+    exact_regime_key = layer1_regime_path(as_of_date, exact_stage_run_id)
+    writer.put_object(
+        exact_regime_key,
+        writer.get_object(layer1_regime_path(as_of_date, "audit-regime")),
+    )
     writer.put_object(
         f"artifacts/manifests/layer1_5_regime/{exact_stage_run_id}.json",
         json.dumps(

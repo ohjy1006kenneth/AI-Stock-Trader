@@ -203,14 +203,15 @@ r2/
     order_book/       # Optional provider-normalized pre-open Level 2 snapshots
     reference/        # Symbol/security-reference snapshots
   features/
-    layer1/           # Layer 1 feature histories as Parquet (one file per ticker)
+    YYYY-MM-DD/       # Canonical date-first Layer 1 feature partition
+      TICKER.parquet  # Complete FeatureRecord shard for one date/ticker
+      regime/         # Colocated Layer 1.5 regime artifacts for the date
       news_sentiment/ # Sentence-level NewsSentimentRecord rows from Modal preprocessing
       text_embeddings/# Sentence embedding cache keyed by pinned model/version
       topic_labels/   # Sentence-level BERTopic labels from Modal
       topic_features/ # Ticker-day FeatureRecord topic summaries
       news_sentiment_scored/ # Sentence-level NewsSentimentRecord rows scored by FinBERT
       sentiment_features/ # Ticker-day FeatureRecord sentiment summaries
-    layer1_5/         # Market-wide regime features from Modal HMM jobs
   processed/
     scores/           # Layer 2 score outputs as Parquet
     orders/           # Approved order proposals as CSV
@@ -348,10 +349,11 @@ All features must satisfy: **a feature value used on date T can only use informa
 before market open on date T.** Any violation is lookahead bias.
 
 Final feature table shape: `(N_dates × N_tickers)` rows × `M_features` columns.
-Historical backfills persist this table as one full-history Parquet file per ticker under
-`features/layer1/{ticker}.parquet`; daily incremental writers may still emit a single
-`features/layer1/{date}/{ticker}.parquet` shard for the current run before that ticker's
-history file is refreshed.
+Production Layer 1 archives are date-first: each complete feature row is stored at
+`features/{date}/{ticker}.parquet`, and each date partition must contain the complete
+point-in-time universe for that date. Legacy per-ticker histories under
+`features/layer1/{ticker}.parquet` may exist temporarily as compatibility artifacts or
+migration inputs, but they are not the authoritative production handoff path.
 
 #### Text / NLP branch
 
@@ -362,7 +364,7 @@ RAW ARTICLES (Alpaca news)
   → Step 1: Preprocessing
       Read raw/news and raw/universe from R2, split into sentences, tag
       point-in-time tickers, write NewsSentimentRecord rows to
-      features/layer1/news_sentiment/{date}/{run_id}.parquet
+      features/{date}/news_sentiment/{run_id}.parquet
   → Step 2a: Sentence Transformers (per article)
       Model: all-mpnet-base-v2
       Output: pinned-version sentence embedding cache in R2

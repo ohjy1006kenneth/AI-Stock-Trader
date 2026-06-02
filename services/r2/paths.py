@@ -108,91 +108,96 @@ def raw_security_master_path(as_of_date: str | Date | datetime) -> str:
 
 
 def layer1_feature_path(as_of_date: str | Date | datetime, ticker: str) -> str:
-    """Return the canonical Layer 1 feature-shard Parquet path for one date/ticker pair."""
+    """Return the canonical date-first Layer 1 feature-shard path."""
     safe_ticker = _validate_key_part(ticker)
-    return build_r2_key("features", "layer1", _format_date(as_of_date), f"{safe_ticker}.parquet")
+    return build_r2_key("features", _format_date(as_of_date), f"{safe_ticker}.parquet")
 
 
 def layer1_ticker_history_path(ticker: str) -> str:
-    """Return the canonical Layer 1 full-history Parquet path for one ticker."""
+    """Return the legacy Layer 1 full-history Parquet path for one ticker."""
     safe_ticker = _validate_key_part(ticker)
     return build_r2_key("features", "layer1", f"{safe_ticker}.parquet")
 
 
 def layer1_news_preprocessing_path(as_of_date: str | Date | datetime, run_id: str) -> str:
-    """Return the canonical Layer 1 preprocessed-news parquet path."""
+    """Return the canonical date-first Layer 1 preprocessed-news parquet path."""
     safe_run_id = _validate_key_part(run_id)
     return build_r2_key(
         "features",
-        "layer1",
-        "news_sentiment",
         _format_date(as_of_date),
+        "news_sentiment",
         f"{safe_run_id}.parquet",
     )
 
 
 def layer1_text_embedding_path(as_of_date: str | Date | datetime, run_id: str) -> str:
-    """Return the canonical Layer 1 sentence-embedding cache path."""
+    """Return the canonical date-first Layer 1 sentence-embedding cache path."""
     safe_run_id = _validate_key_part(run_id)
     return build_r2_key(
         "features",
-        "layer1",
-        "text_embeddings",
         _format_date(as_of_date),
+        "text_embeddings",
         f"{safe_run_id}.parquet",
     )
 
 
 def layer1_topic_label_path(as_of_date: str | Date | datetime, run_id: str) -> str:
-    """Return the canonical Layer 1 sentence-topic label path."""
+    """Return the canonical date-first Layer 1 sentence-topic label path."""
     safe_run_id = _validate_key_part(run_id)
     return build_r2_key(
         "features",
-        "layer1",
-        "topic_labels",
         _format_date(as_of_date),
+        "topic_labels",
         f"{safe_run_id}.parquet",
     )
 
 
 def layer1_topic_feature_path(as_of_date: str | Date | datetime, run_id: str) -> str:
-    """Return the canonical Layer 1 ticker-day topic feature path."""
+    """Return the canonical date-first Layer 1 ticker-day topic feature path."""
     safe_run_id = _validate_key_part(run_id)
     return build_r2_key(
         "features",
-        "layer1",
-        "topic_features",
         _format_date(as_of_date),
+        "topic_features",
         f"{safe_run_id}.parquet",
     )
 
 
 def layer1_sentiment_score_path(as_of_date: str | Date | datetime, run_id: str) -> str:
-    """Return the canonical Layer 1 scored FinBERT news path."""
+    """Return the canonical date-first Layer 1 scored FinBERT news path."""
     safe_run_id = _validate_key_part(run_id)
     return build_r2_key(
         "features",
-        "layer1",
-        "news_sentiment_scored",
         _format_date(as_of_date),
+        "news_sentiment_scored",
         f"{safe_run_id}.parquet",
     )
 
 
 def layer1_sentiment_feature_path(as_of_date: str | Date | datetime, run_id: str) -> str:
-    """Return the canonical Layer 1 ticker-day sentiment feature path."""
+    """Return the canonical date-first Layer 1 ticker-day sentiment feature path."""
     safe_run_id = _validate_key_part(run_id)
     return build_r2_key(
         "features",
-        "layer1",
-        "sentiment_features",
         _format_date(as_of_date),
+        "sentiment_features",
         f"{safe_run_id}.parquet",
     )
 
 
-def layer1_regime_path(run_id: str) -> str:
-    """Return the canonical Layer 1.5 regime-feature path for one run."""
+def layer1_regime_path(as_of_date: str | Date | datetime, run_id: str) -> str:
+    """Return the canonical date-first Layer 1.5 regime-feature path for one date/run."""
+    safe_run_id = _validate_key_part(run_id)
+    return build_r2_key(
+        "features",
+        _format_date(as_of_date),
+        "regime",
+        f"{safe_run_id}.parquet",
+    )
+
+
+def legacy_layer1_regime_path(run_id: str) -> str:
+    """Return the legacy Layer 1.5 regime-feature path for compatibility reads."""
     safe_run_id = _validate_key_part(run_id)
     return build_r2_key("features", "layer1_5", "regime", f"{safe_run_id}.parquet")
 

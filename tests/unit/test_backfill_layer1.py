@@ -165,7 +165,7 @@ def _write_regime_artifact(
     """Persist one completed regime artifact plus its manifest."""
     buffer = io.BytesIO()
     pd.DataFrame(rows).to_parquet(buffer, index=False)
-    output_key = layer1_regime_path(run_id)
+    output_key = layer1_regime_path(inference_dates[0], run_id)
     writer.put_object(output_key, buffer.getvalue())
     manifest = PipelineManifestRecord(
         run_id=run_id,

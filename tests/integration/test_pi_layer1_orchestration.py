@@ -56,7 +56,7 @@ def test_pi_runtime_waits_for_layer1_manifest_with_mocked_modal_trigger() -> Non
             status=RunStatus.COMPLETED,
             started_at=datetime(2026, 4, 6, tzinfo=UTC),
             finished_at=datetime(2026, 4, 6, 0, 0, 1, tzinfo=UTC),
-            output_path="features/layer1",
+            output_path="features/",
             metadata={
                 "as_of_date": config.as_of_date,
                 "layer0_run_id": config.layer0_run_id,

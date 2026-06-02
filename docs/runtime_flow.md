@@ -116,17 +116,18 @@ Execution chain:
    - Derive the ticker scope from Layer 0 universe masks; optional ticker filters may only
      narrow that scope, never replace it with a hand-maintained production list
    - Preprocess news into sentence-level `NewsSentimentRecord` rows at
-     `features/layer1/news_sentiment/{YYYY-MM-DD}/{run_id}.parquet`
+     `features/{YYYY-MM-DD}/news_sentiment/{run_id}.parquet`
    - Compute pinned-model sentence embeddings and BERTopic labels into
-     `features/layer1/text_embeddings/`, `features/layer1/topic_labels/`, and
-     `features/layer1/topic_features/`
+     `features/{YYYY-MM-DD}/text_embeddings/`, `features/{YYYY-MM-DD}/topic_labels/`, and
+     `features/{YYYY-MM-DD}/topic_features/`
    - Score preprocessed news with FinBERT into
-     `features/layer1/news_sentiment_scored/{YYYY-MM-DD}/{run_id}.parquet` and aggregate
+     `features/{YYYY-MM-DD}/news_sentiment_scored/{run_id}.parquet` and aggregate
      ticker-day sentiment FeatureRecords into
-     `features/layer1/sentiment_features/{YYYY-MM-DD}/{run_id}.parquet`
+     `features/{YYYY-MM-DD}/sentiment_features/{run_id}.parquet`
    - Compute market, NLP, context, and optional order-book spread / imbalance features for today
-   - Refresh aligned per-ticker feature histories at `features/layer1/TICKER.parquet` in R2
-     while preserving daily single-record shard support for incremental runs
+   - Write authoritative date-first feature shards at `features/{YYYY-MM-DD}/{TICKER}.parquet`
+     for every ticker in the point-in-time universe; legacy per-ticker histories under
+     `features/layer1/TICKER.parquet` may be refreshed only as compatibility artifacts
    - Run final archive validation, persist the JSON report under
      `artifacts/reports/integration/layer1_archive_validation_{run_id}_{from}_to_{to}.json`,
      and return nonzero unless `ready_for_layer2=true`
@@ -173,7 +174,8 @@ python app/lab/data_pipelines/validate_layer1_archive.py \
      bounded HMM train lookback from `config/modal.json` so catch-up runs do not refetch the
      full macro archive for every single-date regime inference
    - Run HMM to classify current regime (bull / bear / sideways)
-   - Write market-wide regime probabilities to `features/layer1_5/regime/{run_id}.parquet`
+   - Write market-wide regime probabilities to
+     `features/{YYYY-MM-DD}/regime/{run_id}.parquet`
    - Write `PipelineManifestRecord` (stage=layer1_5_regime)
    - If the bounded HMM train window is too short or the inference row is still incomplete,
      write explicit warning diagnostics plus null regime placeholders rather than failing

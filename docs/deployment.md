@@ -202,8 +202,10 @@ Inspect R2 outputs via:
 - `artifacts/manifests/layer1_5_regime/{run_id}-{date}.json`
 - `artifacts/manifests/layer1/{run_id}.json`
 - `artifacts/reports/integration/layer1_archive_validation_{run_id}_{from}_to_{to}.json`
-- `features/layer1/`, `features/layer1/news_sentiment/`, `features/layer1/topic_features/`,
-  `features/layer1/sentiment_features/`, and `features/layer1_5/regime/`
+- `features/{YYYY-MM-DD}/`, `features/{YYYY-MM-DD}/news_sentiment/`,
+  `features/{YYYY-MM-DD}/topic_features/`,
+  `features/{YYYY-MM-DD}/sentiment_features/`, and
+  `features/{YYYY-MM-DD}/regime/`
 
 For a targeted correctness audit on a sample of stored Layer 1 histories, run:
 
@@ -229,8 +231,9 @@ For the read-only dashboard backend payload used by the Layer 0/1 audit UI, run:
     --output-dir artifacts/reports/diagnostics
 ```
 
-This command reads stored `features/layer1/{TICKER}.parquet` histories and writes
-local JSON/text report artifacts only. It does not modify R2 objects. See
+This command reads stored Layer 1 feature histories and writes local JSON/text report
+artifacts only. Legacy `features/layer1/{TICKER}.parquet` histories may be used by this
+audit surface until it is fully migrated to date-first reads. It does not modify R2. See
 `docs/layer1_feature_audit_dashboard.md` for the heatmap, family-status,
 raw-vs-computed spot-check, formula-card, null-rate, and outlier payload
 details.

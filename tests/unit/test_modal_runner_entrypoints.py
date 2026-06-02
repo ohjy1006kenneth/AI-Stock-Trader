@@ -209,12 +209,12 @@ def _set_simfin_env(monkeypatch: pytest.MonkeyPatch) -> None:
             (
                 "smoke-topics",
                 "2024-01-02",
-                "features/layer1/news_sentiment/2024-01-02/smoke.parquet",
+                "features/2024-01-02/news_sentiment/smoke.parquet",
             ),
             {
                 "run_id": "smoke-topics",
                 "as_of_date": "2024-01-02",
-                "preprocessed_news_key": "features/layer1/news_sentiment/2024-01-02/smoke.parquet",
+                "preprocessed_news_key": "features/2024-01-02/news_sentiment/smoke.parquet",
             },
         ),
         (
@@ -226,12 +226,12 @@ def _set_simfin_env(monkeypatch: pytest.MonkeyPatch) -> None:
             (
                 "smoke-finbert",
                 "2024-01-02",
-                "features/layer1/news_sentiment/2024-01-02/smoke.parquet",
+                "features/2024-01-02/news_sentiment/smoke.parquet",
             ),
             {
                 "run_id": "smoke-finbert",
                 "as_of_date": "2024-01-02",
-                "preprocessed_news_key": "features/layer1/news_sentiment/2024-01-02/smoke.parquet",
+                "preprocessed_news_key": "features/2024-01-02/news_sentiment/smoke.parquet",
             },
         ),
         (
@@ -410,16 +410,16 @@ def test_daily_layer1_modal_main_orchestrates_stage_apps_before_final_assembly(
 
     final_remote = _FakeRegisteredFunction(name="modal_run_daily_layer1", options={})
     news_remote = _FakeStageRemote(
-        {"output_key": "features/layer1/news_sentiment/2024-01-02/smoke.parquet"}
+        {"output_key": "features/2024-01-02/news_sentiment/smoke.parquet"}
     )
     topics_remote = _FakeStageRemote(
-        {"topic_feature_key": "features/layer1/topic_features/2024-01-02/smoke.parquet"}
+        {"topic_feature_key": "features/2024-01-02/topic_features/smoke.parquet"}
     )
     finbert_remote = _FakeStageRemote(
-        {"sentiment_feature_key": "features/layer1/sentiment_features/2024-01-02/smoke.parquet"}
+        {"sentiment_feature_key": "features/2024-01-02/sentiment_features/smoke.parquet"}
     )
     regime_remote = _FakeStageRemote(
-        {"output_key": "features/layer1_5/regime/smoke-daily-2024-01-02.parquet"}
+        {"output_key": "features/2024-01-02/regime/smoke-daily-2024-01-02.parquet"}
     )
 
     monkeypatch.setattr(run_daily_layer1, "_modal_run_daily_layer1", final_remote)
@@ -480,14 +480,14 @@ def test_daily_layer1_modal_main_orchestrates_stage_apps_before_final_assembly(
         {
             "run_id": "smoke-daily-2024-01-02",
             "as_of_date": "2024-01-02",
-            "preprocessed_news_key": "features/layer1/news_sentiment/2024-01-02/smoke.parquet",
+            "preprocessed_news_key": "features/2024-01-02/news_sentiment/smoke.parquet",
         }
     ]
     assert finbert_remote.remote_calls == [
         {
             "run_id": "smoke-daily-2024-01-02",
             "as_of_date": "2024-01-02",
-            "preprocessed_news_key": "features/layer1/news_sentiment/2024-01-02/smoke.parquet",
+            "preprocessed_news_key": "features/2024-01-02/news_sentiment/smoke.parquet",
         }
     ]
     assert regime_remote.remote_calls == [
@@ -512,10 +512,10 @@ def test_daily_layer1_modal_main_orchestrates_stage_apps_before_final_assembly(
             "hmm_train_start_date": "2023-10-01",
             "hmm_max_iterations": 77,
             "hmm_min_training_rows": 11,
-            "preprocessed_news_key": "features/layer1/news_sentiment/2024-01-02/smoke.parquet",
-            "topic_feature_key": "features/layer1/topic_features/2024-01-02/smoke.parquet",
-            "sentiment_feature_key": "features/layer1/sentiment_features/2024-01-02/smoke.parquet",
-            "regime_output_key": "features/layer1_5/regime/smoke-daily-2024-01-02.parquet",
+            "preprocessed_news_key": "features/2024-01-02/news_sentiment/smoke.parquet",
+            "topic_feature_key": "features/2024-01-02/topic_features/smoke.parquet",
+            "sentiment_feature_key": "features/2024-01-02/sentiment_features/smoke.parquet",
+            "regime_output_key": "features/2024-01-02/regime/smoke-daily-2024-01-02.parquet",
         }
     ]
 
@@ -547,7 +547,7 @@ def test_daily_layer1_modal_main_reuses_completed_stage_outputs_when_present(
                     started_at=datetime.now(UTC),
                     finished_at=datetime.now(UTC),
                     input_path="raw/news/2024-01-02.jsonl",
-                    output_path="features/layer1/news_sentiment/2024-01-02/resume.parquet",
+                    output_path="features/2024-01-02/news_sentiment/resume.parquet",
                     metadata={"as_of_date": "2024-01-02"},
                 ).model_dump_json().encode("utf-8"),
                 run_daily_layer1.pipeline_manifest_path(
@@ -559,12 +559,12 @@ def test_daily_layer1_modal_main_reuses_completed_stage_outputs_when_present(
                     status=run_daily_layer1.RunStatus.COMPLETED,
                     started_at=datetime.now(UTC),
                     finished_at=datetime.now(UTC),
-                    input_path="features/layer1/news_sentiment/2024-01-02/resume.parquet",
-                    output_path="features/layer1/topic_features/2024-01-02/resume.parquet",
+                    input_path="features/2024-01-02/news_sentiment/resume.parquet",
+                    output_path="features/2024-01-02/topic_features/resume.parquet",
                     metadata={"as_of_date": "2024-01-02"},
                 ).model_dump_json().encode("utf-8"),
-                "features/layer1/news_sentiment/2024-01-02/resume.parquet": b"news",
-                "features/layer1/topic_features/2024-01-02/resume.parquet": b"topics",
+                "features/2024-01-02/news_sentiment/resume.parquet": b"news",
+                "features/2024-01-02/topic_features/resume.parquet": b"topics",
             }
 
         def exists(self, key: str) -> bool:
@@ -577,10 +577,10 @@ def test_daily_layer1_modal_main_reuses_completed_stage_outputs_when_present(
     news_remote = _FakeStageRemote({"output_key": "unexpected-news"})
     topics_remote = _FakeStageRemote({"topic_feature_key": "unexpected-topics"})
     finbert_remote = _FakeStageRemote(
-        {"sentiment_feature_key": "features/layer1/sentiment_features/2024-01-02/resume.parquet"}
+        {"sentiment_feature_key": "features/2024-01-02/sentiment_features/resume.parquet"}
     )
     regime_remote = _FakeStageRemote(
-        {"output_key": "features/layer1_5/regime/resume-daily-2024-01-02.parquet"}
+        {"output_key": "features/2024-01-02/regime/resume-daily-2024-01-02.parquet"}
     )
 
     monkeypatch.setattr(run_daily_layer1, "_modal_run_daily_layer1", final_remote)
@@ -624,7 +624,7 @@ def test_daily_layer1_modal_main_reuses_completed_stage_outputs_when_present(
         {
             "run_id": "resume-daily-2024-01-02",
             "as_of_date": "2024-01-02",
-            "preprocessed_news_key": "features/layer1/news_sentiment/2024-01-02/resume.parquet",
+            "preprocessed_news_key": "features/2024-01-02/news_sentiment/resume.parquet",
         }
     ]
     assert regime_remote.remote_calls == [
@@ -639,10 +639,10 @@ def test_daily_layer1_modal_main_reuses_completed_stage_outputs_when_present(
         }
     ]
     assert final_remote.remote_calls[0]["preprocessed_news_key"] == (
-        "features/layer1/news_sentiment/2024-01-02/resume.parquet"
+        "features/2024-01-02/news_sentiment/resume.parquet"
     )
     assert final_remote.remote_calls[0]["topic_feature_key"] == (
-        "features/layer1/topic_features/2024-01-02/resume.parquet"
+        "features/2024-01-02/topic_features/resume.parquet"
     )
 
 

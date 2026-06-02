@@ -51,10 +51,15 @@ def test_run_hmm_regime_detection_reads_r2_and_writes_outputs(
         writer=writer,
     )
 
-    output = pd.read_parquet(io.BytesIO(writer.get_object(result.output_key)))
     manifest = json.loads(writer.get_object(result.manifest_key))
+    output_keys_by_date = manifest["metadata"]["output_keys_by_date"]
+    outputs = [
+        pd.read_parquet(io.BytesIO(writer.get_object(output_keys_by_date[date_text])))
+        for date_text in inference_dates
+    ]
+    output = pd.concat(outputs, ignore_index=True)
 
-    assert result.output_key == hmm_regime_output_path("hmm-test-run")
+    assert result.output_key == hmm_regime_output_path("hmm-test-run", inference_dates[0])
     assert result.manifest_key == pipeline_manifest_path(REGIME_STAGE, "hmm-test-run")
     assert output["date"].tolist() == list(inference_dates)
     assert output["regime_confidence"].notna().all()
