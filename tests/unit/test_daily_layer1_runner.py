@@ -95,7 +95,7 @@ def test_run_daily_layer1_happy_path_writes_history_and_completed_manifest(
     assert "sector_etf_ret" in history[0].features
     assert "l2_bid_ask_spread" not in history[0].features
     assert history[0].features["sector_relative_strength"] is None
-    assert writer.exists("features/layer1/2024-01-03/AAPL.parquet") is True
+    assert writer.exists("features/2024-01-03/AAPL.parquet") is True
     assert writer.exists(
         layer1_validation_report_path("layer1-daily", "2024-01-03", "2024-01-04")
     ) is True
@@ -332,7 +332,7 @@ def test_run_daily_layer1_surfaces_regime_warmup_as_validation_warning(
     )
 
     def warning_regime_runner(config, *, writer: R2Writer):
-        output_key = layer1_regime_path(config.run_id)
+        output_key = layer1_regime_path(config.inference_dates[0], config.run_id)
         manifest_key = pipeline_manifest_path("layer1_5_regime", config.run_id)
         frame = pd.DataFrame(
             [
@@ -869,7 +869,7 @@ def test_run_daily_layer1_marks_stale_sibling_manifests_in_report_and_metadata(
             stage=LAYER1_DAILY_STAGE,
             status=RunStatus.RUNNING,
             started_at=datetime(2024, 1, 3, 12, 0, tzinfo=UTC),
-            output_path="features/layer1/",
+            output_path="features/",
         ).model_dump_json(),
     )
 
@@ -1232,7 +1232,7 @@ def test_existing_regime_runner_rejects_empty_inference_dates(
 ) -> None:
     """Precomputed regime reuse requires at least one requested inference date."""
     writer = local_writer(tmp_path, monkeypatch)
-    runner = _existing_regime_runner({"2024-01-03": "features/layer1_5/regime/run.parquet"})
+    runner = _existing_regime_runner({"2024-01-03": "features/2024-01-03/regime/run.parquet"})
 
     with pytest.raises(ValueError, match="inference_dates must not be empty"):
         runner(

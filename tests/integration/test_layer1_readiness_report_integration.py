@@ -87,7 +87,7 @@ def test_layer1_readiness_report_accepts_historical_layer0_manifest_window(
     assert report["present_rows_by_ticker"] == {"AAPL": 1}
     assert report["missing_ticker_dates"] == {}
     assert report["output_prefixes"]["layer1_history"] == "features/layer1/"
-    assert report["output_prefixes"]["regime_outputs"] == "features/layer1_5/regime/"
+    assert report["output_prefixes"]["regime_outputs"] == "features/2024-01-03/regime/"
     assert report["output_prefixes"]["regime_manifests"] == "artifacts/manifests/layer1_5_regime/"
     assert report["regime_window_summary"]["output_dates_present"] == ["2024-01-03"]
     assert report["regime_window_summary"]["coverage_rate"] == pytest.approx(1.0)

@@ -205,7 +205,7 @@ def fake_regime_runner(writer: R2Writer):
     """Return a deterministic HMM regime runner for orchestrator tests."""
 
     def _runner(config: HMMRegimePipelineConfig, *, writer: R2Writer):
-        output_key = layer1_regime_path(config.run_id)
+        output_key = layer1_regime_path(config.inference_dates[0], config.run_id)
         frame = pd.DataFrame(
             [
                 {

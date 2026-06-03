@@ -97,7 +97,7 @@ def test_run_text_topics_writes_failure_manifest(
             TextTopicPipelineConfig(
                 run_id="text-topics-fail",
                 as_of_date="2024-01-02",
-                preprocessed_news_key="features/layer1/news_sentiment/missing.parquet",
+                preprocessed_news_key="features/2024-01-02/news_sentiment/missing.parquet",
             ),
             writer=writer,
             embedder=_FakeEmbedder(),

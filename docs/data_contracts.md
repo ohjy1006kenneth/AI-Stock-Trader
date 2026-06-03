@@ -274,9 +274,12 @@ Input note:
 - the current baseline defines no Layer 0 raw options-chain archive and no Layer 1
   options-derived feature branch, so `iv_rank`, `put_call_ratio`, and `iv_skew` are not
   expected FeatureRecord keys
-- historical backfills store FeatureRecord rows as one per-ticker Parquet history under
-  `features/layer1/{ticker}.parquet`; daily incremental paths may still address a single
-  `(date, ticker)` row through `features/layer1/{date}/{ticker}.parquet`
+- canonical production archives store each FeatureRecord row at
+  `features/{date}/{ticker}.parquet`; every date partition must contain the complete
+  point-in-time universe for that date before the archive is ready for Layer 2
+- legacy per-ticker histories under `features/layer1/{ticker}.parquet` may remain as
+  compatibility artifacts or migration inputs, but they are not the authoritative production
+  handoff path
 - regime features (`regime_label`, `regime_confidence`, `regime_prob_bear`,
   `regime_prob_sideways`, `regime_prob_bull`) follow a two-tier rule:
   when the bounded HMM train window has enough complete history and the target-date

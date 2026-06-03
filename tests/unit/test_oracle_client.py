@@ -121,7 +121,7 @@ def test_wait_for_layer1_manifest_returns_completed_manifest() -> None:
     )
 
     assert manifest.status == RunStatus.COMPLETED
-    assert manifest.output_path == "features/layer1"
+    assert manifest.output_path == "features/"
 
 
 def test_wait_for_layer1_manifest_rejects_stale_manifest() -> None:
@@ -260,7 +260,7 @@ def _manifest_payload(
         status=status,
         started_at=datetime(2026, 4, 6, tzinfo=UTC),
         finished_at=datetime(2026, 4, 6, 0, 0, 1, tzinfo=UTC),
-        output_path="features/layer1",
+        output_path="features/",
         metadata=metadata,
     )
     return manifest.model_dump_json().encode("utf-8")

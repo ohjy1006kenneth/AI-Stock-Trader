@@ -163,7 +163,7 @@ def seed_layer1_audit_fixture(
         },
     )
 
-    regime_key = layer1_regime_path("audit-regime")
+    regime_key = layer1_regime_path(as_of_date, "audit-regime")
     regime_output = pd.DataFrame(
         [
             {

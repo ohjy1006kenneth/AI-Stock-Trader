@@ -14,6 +14,7 @@ from app.lab.data_pipelines.backfill_layer1 import (
     REGIME_STAGE,
     TEXT_TOPICS_STAGE,
     Layer1BackfillConfig,
+    _manifest_regime_output_paths,
     _resolve_tickers,
     backfill_layer1,
     load_modal_runtime_config,
@@ -165,7 +166,7 @@ def _write_regime_artifact(
     """Persist one completed regime artifact plus its manifest."""
     buffer = io.BytesIO()
     pd.DataFrame(rows).to_parquet(buffer, index=False)
-    output_key = layer1_regime_path(run_id)
+    output_key = layer1_regime_path(inference_dates[0], run_id)
     writer.put_object(output_key, buffer.getvalue())
     manifest = PipelineManifestRecord(
         run_id=run_id,
@@ -182,6 +183,34 @@ def _write_regime_artifact(
     writer.put_object(
         pipeline_manifest_path(REGIME_STAGE, run_id),
         manifest.model_dump_json().encode("utf-8"),
+    )
+
+
+def test_manifest_regime_output_paths_ignores_non_string_metadata_values() -> None:
+    """Regime manifest path extraction must not coerce null metadata to string paths."""
+    manifest = PipelineManifestRecord(
+        run_id="regime-null-output-keys",
+        stage=REGIME_STAGE,
+        status=RunStatus.COMPLETED,
+        started_at=datetime(2024, 1, 5, 11, 0, tzinfo=UTC),
+        finished_at=datetime(2024, 1, 5, 11, 30, tzinfo=UTC),
+        output_path=layer1_regime_path("2024-01-02", "regime-null-output-keys"),
+        metadata={
+            "output_keys_by_date": {
+                "2024-01-02": layer1_regime_path(
+                    "2024-01-02",
+                    "regime-null-output-keys",
+                ),
+                "2024-01-03": None,
+                "2024-01-04": "",
+                "2024-01-05": False,
+                "2024-01-06": 0,
+            }
+        },
+    )
+
+    assert _manifest_regime_output_paths(manifest) == (
+        layer1_regime_path("2024-01-02", "regime-null-output-keys"),
     )
 
 

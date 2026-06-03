@@ -301,7 +301,7 @@ def _wait_for_dry_layer1_manifest(config: Layer1WaitConfig) -> PipelineManifestR
         started_at=datetime(2026, 1, 1, tzinfo=UTC),
         finished_at=datetime(2026, 1, 1, 0, 0, 1, tzinfo=UTC),
         input_path=pipeline_manifest_path("layer0", config.layer0_run_id),
-        output_path="features/layer1",
+        output_path="features/",
         metadata={
             "as_of_date": config.as_of_date,
             "layer0_run_id": config.layer0_run_id,

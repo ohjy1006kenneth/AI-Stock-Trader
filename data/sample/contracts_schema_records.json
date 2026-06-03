@@ -87,6 +87,6 @@
     "created_at": "2026-04-06T21:00:00",
     "stage": "validation",
     "bundle_path": "artifacts/bundles/xgb-v1.tar.gz",
-    "schema_version": "1.1.0"
+    "schema_version": "1.2.0"
   }
 }

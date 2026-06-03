@@ -17,8 +17,9 @@ from app.lab.data_pipelines.validate_layer1_archive import (
     write_validation_report,
 )
 from core.contracts.schemas import FeatureRecord, PipelineManifestRecord, RunStatus
-from core.features.io import feature_records_to_parquet_bytes
+from core.features.io import feature_records_to_parquet_bytes, parquet_bytes_to_feature_records
 from services.r2.paths import (
+    layer1_feature_path,
     layer1_regime_path,
     layer1_ticker_history_path,
     layer1_validation_report_path,
@@ -31,6 +32,18 @@ class _Reader:
 
     def __init__(self, objects: dict[str, bytes]) -> None:
         self.objects = dict(objects)
+        for key, payload in list(objects.items()):
+            if not key.startswith("features/layer1/") or not key.endswith(".parquet"):
+                continue
+            try:
+                records = parquet_bytes_to_feature_records(payload)
+            except Exception:  # noqa: BLE001
+                continue
+            for record in records:
+                self.objects.setdefault(
+                    layer1_feature_path(record.date, record.ticker),
+                    feature_records_to_parquet_bytes([record]),
+                )
 
     def exists(self, key: str) -> bool:
         return key in self.objects
@@ -61,10 +74,10 @@ class _ManifestRaceReader(_Reader):
 
 
 class _HiddenHistoryListingReader(_Reader):
-    """Reader that can resolve expected histories but hides them from prefix listing."""
+    """Reader that can resolve expected feature shards but hides them from prefix listing."""
 
     def list_keys(self, prefix: str) -> list[str]:
-        if prefix == "features/layer1/":
+        if prefix == "features/":
             return []
         return super().list_keys(prefix)
 
@@ -136,7 +149,7 @@ def _manifest_bytes(run_id: str, status: RunStatus) -> bytes:
             if status is RunStatus.COMPLETED
             else None
         ),
-        output_path="features/layer1/",
+        output_path="features/",
     ).model_dump_json().encode("utf-8")
 
 
@@ -161,7 +174,7 @@ def _ready_regime_features(
 def _ready_regime_objects(parent_run_id: str, date_text: str) -> dict[str, bytes]:
     """Return a completed per-date Layer 1.5 artifact plus manifest."""
     stage_run_id = f"{parent_run_id}-{date_text}"
-    output_key = layer1_regime_path(stage_run_id)
+    output_key = layer1_regime_path(date_text, stage_run_id)
     return {
         output_key: _regime_artifact_bytes(
             [
@@ -232,8 +245,8 @@ def test_validate_layer1_archive_marks_ready_when_every_history_present() -> Non
         "2024-01-02",
         "2024-01-03",
     )
-    assert report.expected_ticker_files == 2
-    assert report.present_ticker_files == 2
+    assert report.expected_ticker_files == 3
+    assert report.present_ticker_files == 3
     assert report.expected_rows == 3
     assert report.present_rows == 3
     assert report.missing_ticker_files == []
@@ -271,7 +284,7 @@ def test_validate_layer1_archive_reports_missing_histories() -> None:
     assert report.present_ticker_files == 1
     assert report.present_ticker_counts_by_date == {"2024-01-02": 1}
     assert report.missing_tickers_by_date == {"2024-01-02": ["MSFT"]}
-    assert report.missing_ticker_files == [layer1_ticker_history_path("MSFT")]
+    assert report.missing_ticker_files == [layer1_feature_path("2024-01-02", "MSFT")]
 
 
 def test_validate_layer1_archive_flags_corrupt_histories() -> None:
@@ -281,7 +294,7 @@ def test_validate_layer1_archive_flags_corrupt_histories() -> None:
     )
     buffer = io.BytesIO()
     bad_frame.to_parquet(buffer, index=False)
-    reader = _Reader({layer1_ticker_history_path("AAPL"): buffer.getvalue()})
+    reader = _Reader({layer1_feature_path("2024-01-02", "AAPL"): buffer.getvalue()})
 
     report = validate_layer1_archive(
         run_id="layer1-corrupt",
@@ -293,11 +306,11 @@ def test_validate_layer1_archive_flags_corrupt_histories() -> None:
 
     assert report.ready_for_layer2 is False
     assert report.schema_failures == 1
-    assert report.schema_failure_keys == [layer1_ticker_history_path("AAPL")]
+    assert report.schema_failure_keys == [layer1_feature_path("2024-01-02", "AAPL")]
 
 
-def test_validate_layer1_archive_flags_row_count_mismatch() -> None:
-    """History files must contain exactly the dates implied by the universe."""
+def test_validate_layer1_archive_flags_missing_date_first_shard() -> None:
+    """Every universe date/ticker pair must have a date-first feature shard."""
     reader = _Reader(
         {layer1_ticker_history_path("AAPL"): _history_bytes("AAPL", ["2024-01-02"])}
     )
@@ -311,14 +324,14 @@ def test_validate_layer1_archive_flags_row_count_mismatch() -> None:
     )
 
     assert report.ready_for_layer2 is False
-    assert report.row_count_failures == 1
-    assert report.row_count_failure_keys == [layer1_ticker_history_path("AAPL")]
+    assert report.row_count_failures == 0
+    assert report.missing_ticker_files == [layer1_feature_path("2024-01-03", "AAPL")]
 
 
 def test_validate_layer1_archive_marks_short_history_regime_as_warning() -> None:
     """Explicit null regime placeholders become warnings when HMM history is insufficient."""
     run_id = "layer1-warmup-2024-01-03"
-    output_key = layer1_regime_path(run_id)
+    output_key = layer1_regime_path("2024-01-03", run_id)
     reader = _Reader(
         {
             layer1_ticker_history_path("AAPL"): _history_bytes_with_features(
@@ -387,7 +400,7 @@ def test_validate_layer1_archive_marks_short_history_regime_as_warning() -> None
 def test_validate_layer1_archive_fails_when_required_regime_fields_are_missing() -> None:
     """Null or absent regime fields fail readiness once Layer 1.5 says they are required."""
     run_id = "layer1-required-regime-2024-01-03"
-    output_key = layer1_regime_path(run_id)
+    output_key = layer1_regime_path("2024-01-03", run_id)
     reader = _Reader(
         {
             layer1_ticker_history_path("AAPL"): _history_bytes_with_features(
@@ -440,7 +453,7 @@ def test_validate_layer1_archive_fails_when_required_regime_fields_are_missing()
 def test_validate_layer1_archive_fails_when_required_regime_output_uses_nan() -> None:
     """Required Layer 1.5 rows with NaN regime values fail readiness as missing output."""
     run_id = "layer1-required-regime-nan-2024-01-03"
-    output_key = layer1_regime_path(run_id)
+    output_key = layer1_regime_path("2024-01-03", run_id)
     reader = _Reader(
         {
             layer1_ticker_history_path("AAPL"): _history_bytes_with_features(
@@ -540,7 +553,7 @@ def test_validate_layer1_archive_fails_when_regime_output_is_missing_for_request
             "status": "failure",
             "reason": "missing_regime_manifest",
             "required_for_layer2": False,
-            "output_key": layer1_regime_path("layer1-missing-regime-2024-01-03"),
+            "output_key": layer1_regime_path("2024-01-03", "layer1-missing-regime-2024-01-03"),
             "output_present": False,
             "manifest_key": pipeline_manifest_path(
                 "layer1_5_regime",
@@ -557,7 +570,7 @@ def test_validate_layer1_archive_fails_when_regime_output_is_missing_for_request
 def test_validate_layer1_archive_fails_when_regime_manifest_is_not_completed() -> None:
     """Incomplete Layer 1.5 manifests block readiness even when the parquet exists."""
     run_id = "layer1-regime-running-2024-01-03"
-    output_key = layer1_regime_path(run_id)
+    output_key = layer1_regime_path("2024-01-03", run_id)
     reader = _Reader(
         {
             layer1_ticker_history_path("AAPL"): _history_bytes("AAPL", ["2024-01-03"]),
@@ -657,21 +670,19 @@ def test_validate_layer1_archive_samples_daily_shards_deterministically() -> Non
     assert first_sample == second_sample
 
 
-def test_validate_layer1_archive_warns_when_dated_shards_are_partial_but_histories_are_complete() -> None:
-    """Partial dated shards stay non-authoritative and do not block ready histories."""
+def test_validate_layer1_archive_fails_when_date_first_shards_are_partial() -> None:
+    """Partial date-first shards block readiness even if legacy histories exist."""
     universe = {"2024-01-02": ["AAPL", "MSFT"]}
     reader = _Reader(
         {
-            layer1_ticker_history_path("AAPL"): _history_bytes_with_features(
-                "AAPL",
-                [("2024-01-02", {"returns_1d": 0.01, **_ready_regime_features()})],
-            ),
-            layer1_ticker_history_path("MSFT"): _history_bytes_with_features(
-                "MSFT",
-                [("2024-01-02", {"returns_1d": 0.01, **_ready_regime_features()})],
-            ),
-            "features/layer1/2024-01-02/AAPL.parquet": feature_records_to_parquet_bytes(
-                [FeatureRecord(date="2024-01-02", ticker="AAPL", features={"returns_1d": 0.01})]
+            "features/2024-01-02/AAPL.parquet": feature_records_to_parquet_bytes(
+                [
+                    FeatureRecord(
+                        date="2024-01-02",
+                        ticker="AAPL",
+                        features={"returns_1d": 0.01, **_ready_regime_features()},
+                    )
+                ]
             ),
             **_ready_regime_objects("layer1-partial-dated-shards", "2024-01-02"),
         }
@@ -685,9 +696,9 @@ def test_validate_layer1_archive_warns_when_dated_shards_are_partial_but_histori
         reader=reader,
     )
 
-    assert report.ready_for_layer2 is True
-    assert report.archive_layout_failures == []
-    assert report.archive_layout_warnings == ["dated_shards_partial_non_authoritative"]
+    assert report.ready_for_layer2 is False
+    assert report.archive_layout_failures == ["date_first_shards_incomplete"]
+    assert report.archive_layout_warnings == []
     assert report.dated_shard_counts_by_date == {"2024-01-02": 1}
     assert report.dated_shard_counts_by_ticker == {"AAPL": 1, "MSFT": 0}
     assert report.dated_shard_missing_tickers_by_date == {"2024-01-02": ["MSFT"]}
@@ -707,11 +718,23 @@ def test_validate_layer1_archive_uses_non_aapl_examples_for_expected_anchor_tick
                 "NVDA",
                 [("2024-01-02", {"returns_1d": 0.01, **_ready_regime_features()})],
             ),
-            "features/layer1/2024-01-02/MSFT.parquet": feature_records_to_parquet_bytes(
-                [FeatureRecord(date="2024-01-02", ticker="MSFT", features={"returns_1d": 0.01})]
+            "features/2024-01-02/MSFT.parquet": feature_records_to_parquet_bytes(
+                [
+                    FeatureRecord(
+                        date="2024-01-02",
+                        ticker="MSFT",
+                        features={"returns_1d": 0.01, **_ready_regime_features()},
+                    )
+                ]
             ),
-            "features/layer1/2024-01-02/NVDA.parquet": feature_records_to_parquet_bytes(
-                [FeatureRecord(date="2024-01-02", ticker="NVDA", features={"returns_1d": 0.02})]
+            "features/2024-01-02/NVDA.parquet": feature_records_to_parquet_bytes(
+                [
+                    FeatureRecord(
+                        date="2024-01-02",
+                        ticker="NVDA",
+                        features={"returns_1d": 0.02, **_ready_regime_features()},
+                    )
+                ]
             ),
             **_ready_regime_objects("layer1-non-aapl-dated-shards", "2024-01-02"),
         }
@@ -726,11 +749,11 @@ def test_validate_layer1_archive_uses_non_aapl_examples_for_expected_anchor_tick
     )
 
     assert report.ready_for_layer2 is True
-    assert report.dated_shard_non_aapl_examples == ["features/layer1/2024-01-02/NVDA.parquet"]
+    assert report.dated_shard_non_aapl_examples == ["features/2024-01-02/NVDA.parquet"]
 
 
-def test_validate_layer1_archive_fails_when_canonical_histories_are_not_listable() -> None:
-    """Readiness fails when canonical histories exist but are not discoverable by listing."""
+def test_validate_layer1_archive_fails_when_date_first_shards_are_not_listable() -> None:
+    """Readiness fails when canonical shards exist but are not discoverable by listing."""
     reader = _HiddenHistoryListingReader(
         {
             layer1_ticker_history_path("AAPL"): _history_bytes("AAPL", ["2024-01-02"]),
@@ -747,9 +770,9 @@ def test_validate_layer1_archive_fails_when_canonical_histories_are_not_listable
     )
 
     assert report.ready_for_layer2 is False
-    assert report.archive_layout_failures == ["canonical_history_listing_incomplete"]
-    assert report.canonical_history_key_count == 0
-    assert report.missing_listed_expected_tickers == ["AAPL", "MSFT"]
+    assert report.archive_layout_failures == ["date_first_shards_incomplete"]
+    assert report.dated_shard_key_count == 0
+    assert report.dated_shard_missing_tickers_by_date == {"2024-01-02": ["AAPL", "MSFT"]}
 
 
 def test_validate_layer1_archive_skips_manifest_inspection_by_default() -> None:
@@ -986,10 +1009,11 @@ def test_build_layer1_output_prefixes_includes_validation_and_history_layouts() 
     prefixes = build_layer1_output_prefixes(["2024-01-02", "2024-01-03"])
 
     assert prefixes["layer1_history"] == "features/layer1/"
-    assert prefixes["layer1_canonical_history"] == prefixes["layer1_history"]
-    assert prefixes["layer1_daily_shards"] == "features/layer1/2024-01-03/"
+    assert prefixes["layer1_legacy_history"] == "features/layer1/"
+    assert prefixes["layer1_canonical_history"] == "features/2024-01-03/"
+    assert prefixes["layer1_daily_shards"] == "features/2024-01-03/"
     assert prefixes["layer1_dated_shards"] == prefixes["layer1_daily_shards"]
-    assert prefixes["regime_outputs"] == "features/layer1_5/regime/"
+    assert prefixes["regime_outputs"] == "features/2024-01-03/regime/"
     assert prefixes["regime_manifests"] == "artifacts/manifests/layer1_5_regime/"
     assert prefixes["layer1_manifests"] == "artifacts/manifests/layer1/"
     assert prefixes["validation_reports"] == "artifacts/reports/integration/"

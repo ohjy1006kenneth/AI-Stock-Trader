@@ -1469,7 +1469,7 @@ def _write_manifest(
         started_at=started_at,
         finished_at=finished_at,
         input_path="raw/news/,raw/universe/,raw/prices/,raw/fundamentals/,raw/macro/",
-        output_path="features/layer1/",
+        output_path="features/",
         metadata=metadata,
     )
     writer.put_object(key, manifest.model_dump_json(indent=2))

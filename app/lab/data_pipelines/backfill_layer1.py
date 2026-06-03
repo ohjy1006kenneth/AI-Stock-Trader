@@ -76,6 +76,7 @@ from services.order_book.config import load_order_book_feature_config  # noqa: E
 from services.r2.paths import (  # noqa: E402
     build_r2_key,
     layer1_regime_path,
+    legacy_layer1_regime_path,
     pipeline_manifest_path,
     raw_order_book_path,
 )
@@ -529,55 +530,67 @@ def _load_optional_regime_branch(
 
     selected_rows: dict[str, tuple[datetime, str, dict[str, object]]] = {}
     for manifest in manifests:
-        output_path = _manifest_output_path(manifest, branch_name="regime")
-        expected_output_path = layer1_regime_path(manifest.run_id)
-        if output_path != expected_output_path:
-            raise ValueError(
-                f"regime manifest {manifest.run_id} output_path must equal "
-                f"{expected_output_path}, got {output_path}"
-            )
-        try:
-            frame = _parquet_bytes_to_frame(writer.get_object(output_path))
-        except FileNotFoundError:
-            message = f"regime artifact missing for run_id={manifest.run_id}: {output_path}"
-            if require_artifacts:
-                raise FileNotFoundError(message) from None
-            logger.warning(message)
-            continue
+        output_paths = _manifest_regime_output_paths(manifest)
+        legacy_single_output = len(output_paths) == 1
 
-        _require_columns(frame, ("date", *HMM_REGIME_FEATURE_COLUMNS), branch_name="regime")
         expected_dates = _metadata_inference_dates(manifest)
         train_end_date = _metadata_iso_date(manifest, "train_end_date", required=False)
-        seen_dates_in_file: set[str] = set()
         ranking_timestamp = manifest.finished_at or manifest.started_at
 
-        for row in frame.to_dict(orient="records"):
-            date_value = _validated_iso_date(str(row["date"]), label="regime date")
-            if date_value in seen_dates_in_file:
-                raise ValueError(
-                    f"Duplicate regime rows found in artifact {output_path} for date={date_value}"
-                )
-            seen_dates_in_file.add(date_value)
-            if expected_dates is not None and date_value not in expected_dates:
-                raise ValueError(
-                    f"regime artifact {output_path} contains unexpected date={date_value}"
-                )
-            if train_end_date is not None and date_value <= train_end_date:
-                raise ValueError(
-                    f"regime artifact {output_path} contains non-forward date={date_value} "
-                    f"for train_end_date={train_end_date}"
-                )
+        for output_path in output_paths:
+            try:
+                frame = _parquet_bytes_to_frame(writer.get_object(output_path))
+            except FileNotFoundError:
+                message = f"regime artifact missing for run_id={manifest.run_id}: {output_path}"
+                if require_artifacts:
+                    raise FileNotFoundError(message) from None
+                logger.warning(message)
+                continue
 
-            normalized_features = {
-                "regime_label": _optional_string(row.get("regime_label")),
-                "regime_confidence": _optional_numeric(row.get("regime_confidence")),
-                "regime_prob_bear": _optional_numeric(row.get("regime_prob_bear")),
-                "regime_prob_sideways": _optional_numeric(row.get("regime_prob_sideways")),
-                "regime_prob_bull": _optional_numeric(row.get("regime_prob_bull")),
-            }
-            current = selected_rows.get(date_value)
-            if current is None or ranking_timestamp >= current[0]:
-                selected_rows[date_value] = (ranking_timestamp, output_path, normalized_features)
+            _require_columns(frame, ("date", *HMM_REGIME_FEATURE_COLUMNS), branch_name="regime")
+            seen_dates_in_file: set[str] = set()
+            for row in frame.to_dict(orient="records"):
+                date_value = _validated_iso_date(str(row["date"]), label="regime date")
+                expected_output_path = layer1_regime_path(date_value, manifest.run_id)
+                legacy_output_path = legacy_layer1_regime_path(manifest.run_id)
+                if (
+                    output_path not in {expected_output_path, legacy_output_path}
+                    and not legacy_single_output
+                ):
+                    raise ValueError(
+                        f"regime manifest {manifest.run_id} output_path for date={date_value} "
+                        f"must equal {expected_output_path}, got {output_path}"
+                    )
+                if date_value in seen_dates_in_file:
+                    raise ValueError(
+                        f"Duplicate regime rows found in artifact {output_path} "
+                        f"for date={date_value}"
+                    )
+                seen_dates_in_file.add(date_value)
+                if expected_dates is not None and date_value not in expected_dates:
+                    raise ValueError(
+                        f"regime artifact {output_path} contains unexpected date={date_value}"
+                    )
+                if train_end_date is not None and date_value <= train_end_date:
+                    raise ValueError(
+                        f"regime artifact {output_path} contains non-forward date={date_value} "
+                        f"for train_end_date={train_end_date}"
+                    )
+
+                normalized_features = {
+                    "regime_label": _optional_string(row.get("regime_label")),
+                    "regime_confidence": _optional_numeric(row.get("regime_confidence")),
+                    "regime_prob_bear": _optional_numeric(row.get("regime_prob_bear")),
+                    "regime_prob_sideways": _optional_numeric(row.get("regime_prob_sideways")),
+                    "regime_prob_bull": _optional_numeric(row.get("regime_prob_bull")),
+                }
+                current = selected_rows.get(date_value)
+                if current is None or ranking_timestamp >= current[0]:
+                    selected_rows[date_value] = (
+                        ranking_timestamp,
+                        output_path,
+                        normalized_features,
+                    )
 
     if not selected_rows and require_artifacts:
         raise FileNotFoundError(
@@ -625,6 +638,22 @@ def _completed_manifests(
         if manifest.status == RunStatus.COMPLETED:
             manifests.append(manifest)
     return manifests
+
+
+def _manifest_regime_output_paths(manifest: PipelineManifestRecord) -> tuple[str, ...]:
+    """Return regime output paths from new per-date metadata or legacy output_path."""
+    raw_output_keys = manifest.metadata.get("output_keys_by_date")
+    if isinstance(raw_output_keys, dict):
+        paths = tuple(
+            sorted(
+                value
+                for value in raw_output_keys.values()
+                if isinstance(value, str) and value.strip()
+            )
+        )
+        if paths:
+            return paths
+    return (_manifest_output_path(manifest, branch_name="regime"),)
 
 
 def _manifest_output_path(manifest: PipelineManifestRecord, *, branch_name: str) -> str:

@@ -66,16 +66,16 @@ def test_layer1_feature_path_returns_canonical_key() -> None:
     """Daily Layer 1 feature shards should be partitioned by date and ticker."""
     assert (
         layer1_feature_path("2025-01-02", "AAPL")
-        == "features/layer1/2025-01-02/AAPL.parquet"
+        == "features/2025-01-02/AAPL.parquet"
     )
     assert (
         layer1_feature_path(datetime(2025, 1, 2, 15, 30), "MSFT")
-        == "features/layer1/2025-01-02/MSFT.parquet"
+        == "features/2025-01-02/MSFT.parquet"
     )
 
 
-def test_layer1_ticker_history_path_returns_canonical_key() -> None:
-    """Layer 1 historical feature files should be partitioned by ticker only."""
+def test_layer1_ticker_history_path_returns_legacy_key() -> None:
+    """Layer 1 historical feature files remain available as compatibility artifacts."""
     assert layer1_ticker_history_path("AAPL") == "features/layer1/AAPL.parquet"
 
 
@@ -83,29 +83,32 @@ def test_layer1_text_artifact_paths_return_canonical_keys() -> None:
     """Layer 1 text embedding/topic artifacts should be date and run partitioned."""
     assert (
         layer1_news_preprocessing_path("2025-01-02", "run-001")
-        == "features/layer1/news_sentiment/2025-01-02/run-001.parquet"
+        == "features/2025-01-02/news_sentiment/run-001.parquet"
     )
     assert (
         layer1_text_embedding_path("2025-01-02", "run-001")
-        == "features/layer1/text_embeddings/2025-01-02/run-001.parquet"
+        == "features/2025-01-02/text_embeddings/run-001.parquet"
     )
     assert (
         layer1_topic_label_path("2025-01-02", "run-001")
-        == "features/layer1/topic_labels/2025-01-02/run-001.parquet"
+        == "features/2025-01-02/topic_labels/run-001.parquet"
     )
     assert (
         layer1_topic_feature_path("2025-01-02", "run-001")
-        == "features/layer1/topic_features/2025-01-02/run-001.parquet"
+        == "features/2025-01-02/topic_features/run-001.parquet"
     )
     assert (
         layer1_sentiment_score_path("2025-01-02", "run-001")
-        == "features/layer1/news_sentiment_scored/2025-01-02/run-001.parquet"
+        == "features/2025-01-02/news_sentiment_scored/run-001.parquet"
     )
     assert (
         layer1_sentiment_feature_path("2025-01-02", "run-001")
-        == "features/layer1/sentiment_features/2025-01-02/run-001.parquet"
+        == "features/2025-01-02/sentiment_features/run-001.parquet"
     )
-    assert layer1_regime_path("run-001") == "features/layer1_5/regime/run-001.parquet"
+    assert (
+        layer1_regime_path("2025-01-02", "run-001")
+        == "features/2025-01-02/regime/run-001.parquet"
+    )
     assert (
         layer0_ohlcv_provenance_report_path("run-001")
         == "artifacts/reports/integration/layer0_ohlcv_provenance_run-001.json"

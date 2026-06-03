@@ -52,7 +52,10 @@ from core.contracts.schemas import (  # noqa: E402
     PipelineManifestRecord,
     RunStatus,
 )
-from core.features.io import parquet_bytes_to_feature_records  # noqa: E402
+from core.features.io import (  # noqa: E402
+    parquet_bytes_to_feature_record,
+    parquet_bytes_to_feature_records,
+)
 from core.features.regime_detection import (  # noqa: E402
     HMM_REGIME_COLUMNS,
     REGIME_LABELS,
@@ -70,6 +73,7 @@ from services.r2.paths import (  # noqa: E402
     layer1_topic_feature_path,
     layer1_topic_label_path,
     layer1_validation_report_path,
+    legacy_layer1_regime_path,
     pipeline_manifest_path,
     raw_universe_path,
 )
@@ -77,11 +81,11 @@ from services.r2.paths import (  # noqa: E402
 DEFAULT_REPORT_DIR = Path("artifacts/reports/integration")
 LAYER1_MANIFEST_PREFIX = "artifacts/manifests/layer1/"
 _RUN_ID_VERSION_RE = re.compile(r"^(?P<family>.+)-v(?P<version>\d+)$")
-_LAYER1_CANONICAL_HISTORY_KEY_RE = re.compile(
+_LAYER1_LEGACY_HISTORY_KEY_RE = re.compile(
     r"^features/layer1/(?P<ticker>[^/]+)\.parquet$"
 )
 _LAYER1_DATED_SHARD_KEY_RE = re.compile(
-    r"^features/layer1/(?P<date>\d{4}-\d{2}-\d{2})/(?P<ticker>[^/]+)\.parquet$"
+    r"^features/(?P<date>\d{4}-\d{2}-\d{2})/(?P<ticker>[^/]+)\.parquet$"
 )
 _LAYER1_INTERMEDIATE_PREFIXES = (
     "news_sentiment",
@@ -231,106 +235,79 @@ def validate_layer1_archive(
     feature_rows_by_ticker_date: dict[tuple[str, str], FeatureRecord] = {}
     actual_dates_by_ticker: dict[str, set[str]] = {}
 
-    for ticker, expected_dates in sorted(expected_dates_by_ticker.items()):
-        key = layer1_ticker_history_path(ticker)
-        if not reader.exists(key):
-            missing.append(key)
-            expected_window_dates = sorted(expected_dates)
-            missing_ticker_dates[ticker] = expected_window_dates
-            skipped_tickers.append(
-                {
-                    "ticker": ticker,
-                    "reason": "missing_history_file",
-                    "history_key": key,
-                    "expected_dates": expected_window_dates,
-                }
-            )
-            for date_text in expected_window_dates:
+    for date_text, tickers in sorted(universe.items()):
+        expected_tickers = sorted({_normalize_ticker(ticker) for ticker in tickers})
+        for ticker in expected_tickers:
+            key = layer1_feature_path(date_text, ticker)
+            if not reader.exists(key):
+                missing.append(key)
+                missing_ticker_dates.setdefault(ticker, []).append(date_text)
+                skipped_tickers.append(
+                    {
+                        "ticker": ticker,
+                        "reason": "missing_date_first_feature_shard",
+                        "feature_key": key,
+                        "expected_dates": [date_text],
+                    }
+                )
                 skipped_dates.append(
                     {
                         "ticker": ticker,
                         "date": date_text,
-                        "reason": "missing_history_file",
+                        "reason": "missing_date_first_feature_shard",
                     }
                 )
-            continue
-        present_files += 1
-        try:
-            records = parquet_bytes_to_feature_records(reader.get_object(key))
-        except Exception as exc:  # noqa: BLE001 — record any decode failure
-            logger.warning("Layer 1 ticker history {} failed schema check: {}", key, exc)
-            schema_failures.append(key)
-            skipped_tickers.append(
-                {
-                    "ticker": ticker,
-                    "reason": "schema_validation_failed",
-                    "history_key": key,
-                }
-            )
-            continue
-
-        ticker_dates: list[str] = []
-        window_dates: list[str] = []
-        expected_date_counts: dict[str, int] = {}
-        foreign_rows: list[str] = []
-        for record in records:
-            if record.ticker != ticker:
-                foreign_rows.append(f"{record.date}/{record.ticker}")
                 continue
-            if record.date in requested_dates:
-                window_dates.append(record.date)
-            if record.date in expected_dates:
-                ticker_dates.append(record.date)
-                expected_date_counts[record.date] = expected_date_counts.get(record.date, 0) + 1
-                feature_rows_by_ticker_date.setdefault((ticker, record.date), record)
+            present_files += 1
+            try:
+                record = parquet_bytes_to_feature_record(reader.get_object(key))
+            except Exception as exc:  # noqa: BLE001 — record any decode failure
+                logger.warning("Layer 1 feature shard {} failed schema check: {}", key, exc)
+                schema_failures.append(key)
+                skipped_tickers.append(
+                    {
+                        "ticker": ticker,
+                        "reason": "schema_validation_failed",
+                        "feature_key": key,
+                    }
+                )
+                continue
 
-        actual_dates = set(ticker_dates)
-        actual_dates_by_ticker[ticker] = actual_dates
+            if record.date != date_text or record.ticker != ticker:
+                logger.warning(
+                    "Layer 1 feature shard {} identity mismatch expected={}/{} actual={}/{}",
+                    key,
+                    date_text,
+                    ticker,
+                    record.date,
+                    record.ticker,
+                )
+                row_count_failures.append(key)
+                if record.ticker != ticker:
+                    foreign_ticker_rows.setdefault(ticker, []).append(
+                        f"{record.date}/{record.ticker}"
+                    )
+                if record.date != date_text:
+                    unexpected_ticker_dates.setdefault(ticker, []).append(record.date)
+                    missing_ticker_dates.setdefault(ticker, []).append(date_text)
+                continue
+
+            actual_dates_by_ticker.setdefault(ticker, set()).add(date_text)
+            present_rows_by_ticker[ticker] = present_rows_by_ticker.get(ticker, 0) + 1
+            present_rows += 1
+            feature_rows_by_ticker_date[(ticker, date_text)] = record
+
+    for ticker in list(unexpected_ticker_dates):
+        unexpected_ticker_dates[ticker] = sorted(set(unexpected_ticker_dates[ticker]))
+
+    for ticker, expected_dates in sorted(expected_dates_by_ticker.items()):
+        actual_dates = actual_dates_by_ticker.get(ticker, set())
         missing_dates = sorted(expected_dates - actual_dates)
-        unexpected_dates = sorted(set(window_dates) - expected_dates)
-        duplicate_dates = sorted(
-            date_text for date_text, count in expected_date_counts.items() if count > 1
-        )
-        present_rows_by_ticker[ticker] = len(ticker_dates)
-        present_rows += len(ticker_dates)
         if missing_dates:
             missing_ticker_dates[ticker] = missing_dates
-        if unexpected_dates:
-            unexpected_ticker_dates[ticker] = unexpected_dates
-        if duplicate_dates:
-            duplicate_ticker_dates[ticker] = duplicate_dates
-        if foreign_rows:
-            foreign_ticker_rows[ticker] = sorted(foreign_rows)
 
-        if (
-            bool(foreign_rows)
-            or bool(missing_dates)
-            or bool(unexpected_dates)
-            or bool(duplicate_dates)
-        ):
-            logger.warning(
-                "Layer 1 ticker history {} window coverage mismatch expected={} actual={} "
-                "missing={} unexpected={} duplicates={} foreign={}",
-                key,
-                len(expected_dates),
-                len(actual_dates),
-                len(missing_dates),
-                len(unexpected_dates),
-                len(duplicate_dates),
-                bool(foreign_rows),
-            )
-            row_count_failures.append(key)
-            for date_text in missing_dates:
-                skipped_dates.append(
-                    {
-                        "ticker": ticker,
-                        "date": date_text,
-                        "reason": "missing_window_row",
-                    }
-                )
-
-    expected_files = len(expected_dates_by_ticker)
-    expected_rows = sum(len(dates) for dates in expected_dates_by_ticker.values())
+    expected_files = sum(len({_normalize_ticker(ticker) for ticker in tickers}) for tickers in universe.values())
+    expected_rows = expected_files
     ready = expected_rows > 0 and not missing and not schema_failures and not row_count_failures
     (
         present_ticker_counts_by_date,
@@ -461,6 +438,7 @@ def validate_layer1_archive(
     )
 
 
+
 @dataclass(frozen=True)
 class ManifestInspectionResult:
     """Manifest-state summary for one validated Layer 1 run family."""
@@ -512,9 +490,8 @@ def build_layer1_output_prefixes(processed_dates: Sequence[str]) -> dict[str, st
     prefix_date = latest_date or "2000-01-01"
     prefixes = {
         "layer1_history": _prefix_for_key(layer1_ticker_history_path("<TICKER>")),
-        # Keep the more explicit names as transition aliases for report consumers that now
-        # distinguish canonical per-ticker histories from dated shards.
-        "layer1_canonical_history": _prefix_for_key(layer1_ticker_history_path("<TICKER>")),
+        "layer1_legacy_history": _prefix_for_key(layer1_ticker_history_path("<TICKER>")),
+        "layer1_canonical_history": _prefix_for_key(layer1_feature_path(prefix_date, "<TICKER>")),
         "layer1_daily_shards": _prefix_for_key(layer1_feature_path(prefix_date, "<TICKER>")),
         "layer1_dated_shards": _prefix_for_key(layer1_feature_path(prefix_date, "<TICKER>")),
         "news_sentiment": _prefix_for_key(
@@ -529,7 +506,7 @@ def build_layer1_output_prefixes(processed_dates: Sequence[str]) -> dict[str, st
         "sentiment_features": _prefix_for_key(
             layer1_sentiment_feature_path(prefix_date, "<RUN_ID>")
         ),
-        "regime_outputs": _prefix_for_key(layer1_regime_path("<RUN_ID>")),
+        "regime_outputs": _prefix_for_key(layer1_regime_path(prefix_date, "<RUN_ID>")),
         "regime_manifests": _prefix_for_key(
             pipeline_manifest_path("layer1_5_regime", "<RUN_ID>")
         ),
@@ -736,7 +713,7 @@ def _inspect_archive_layout(
     failures: list[str] = []
     warnings: list[str] = []
     try:
-        keys = reader.list_keys("features/layer1/")
+        keys = reader.list_keys("features/")
     except Exception as exc:  # noqa: BLE001
         return ArchiveLayoutInspectionResult(
             failures=[f"archive_listing_failed:{exc}"],
@@ -787,7 +764,7 @@ def _inspect_archive_layout(
     }
 
     for key in keys:
-        canonical_match = _LAYER1_CANONICAL_HISTORY_KEY_RE.fullmatch(key)
+        canonical_match = _LAYER1_LEGACY_HISTORY_KEY_RE.fullmatch(key)
         if canonical_match is not None:
             canonical_history_keys.append(key)
             canonical_history_tickers.add(_normalize_ticker(canonical_match.group("ticker")))
@@ -811,16 +788,15 @@ def _inspect_archive_layout(
             continue
 
         for prefix in _LAYER1_INTERMEDIATE_PREFIXES:
-            if key.startswith(f"features/layer1/{prefix}/"):
+            if re.fullmatch(
+                rf"features/\d{{4}}-\d{{2}}-\d{{2}}/{prefix}/.+",
+                key,
+            ):
                 intermediate_prefix_counts[prefix] += 1
                 break
 
     listed_expected_history_tickers = sorted(expected_ticker_set & canonical_history_tickers)
     missing_listed_expected_tickers = sorted(expected_ticker_set - canonical_history_tickers)
-    if missing_listed_expected_tickers:
-        failures.append("canonical_history_listing_incomplete")
-    if len(listed_expected_history_tickers) == 1 and len(expected_tickers) > 1:
-        failures.append("single_ticker_canonical_history_listing")
 
     dated_shard_missing_tickers_by_date = {
         date_text: sorted(
@@ -832,7 +808,7 @@ def _inspect_archive_layout(
         - dated_shard_present_tickers_by_date.get(date_text, set())
     }
     if dated_shard_missing_tickers_by_date:
-        warnings.append("dated_shards_partial_non_authoritative")
+        failures.append("date_first_shards_incomplete")
 
     return ArchiveLayoutInspectionResult(
         failures=failures,
@@ -1189,7 +1165,8 @@ def _load_regime_diagnostic(
 ) -> dict[str, object]:
     """Load one Layer 1.5 regime artifact row and normalize its readiness diagnostics."""
     stage_run_id = f"{run_id}-{date_text}"
-    output_key = layer1_regime_path(stage_run_id)
+    output_key = layer1_regime_path(date_text, stage_run_id)
+    legacy_output_key = legacy_layer1_regime_path(stage_run_id)
     manifest_key = pipeline_manifest_path("layer1_5_regime", stage_run_id)
     diagnostic: dict[str, object] = {
         "date": date_text,
@@ -1204,7 +1181,9 @@ def _load_regime_diagnostic(
     }
     if not reader.exists(manifest_key):
         diagnostic["reason"] = "missing_regime_manifest"
-        diagnostic["output_present"] = reader.exists(output_key)
+        diagnostic["output_present"] = reader.exists(output_key) or reader.exists(
+            legacy_output_key
+        )
         return diagnostic
     diagnostic["manifest_present"] = True
     try:
@@ -1212,22 +1191,30 @@ def _load_regime_diagnostic(
     except Exception as exc:  # noqa: BLE001
         diagnostic["reason"] = "invalid_regime_manifest"
         diagnostic["manifest_error"] = str(exc)
-        diagnostic["output_present"] = reader.exists(output_key)
+        diagnostic["output_present"] = reader.exists(output_key) or reader.exists(
+            legacy_output_key
+        )
         return diagnostic
     diagnostic["manifest_status"] = str(manifest.status)
     if manifest.stage != "layer1_5_regime":
         diagnostic["reason"] = "regime_manifest_stage_mismatch"
         diagnostic["manifest_stage"] = manifest.stage
-        diagnostic["output_present"] = reader.exists(output_key)
+        diagnostic["output_present"] = reader.exists(output_key) or reader.exists(
+            legacy_output_key
+        )
         return diagnostic
     if manifest.status is not RunStatus.COMPLETED:
         diagnostic["reason"] = "regime_manifest_not_completed"
-        diagnostic["output_present"] = reader.exists(output_key)
+        diagnostic["output_present"] = reader.exists(output_key) or reader.exists(
+            legacy_output_key
+        )
         return diagnostic
-    if manifest.output_path != output_key:
+    if manifest.output_path not in {output_key, legacy_output_key}:
         diagnostic["reason"] = "regime_manifest_output_mismatch"
         diagnostic["manifest_output_path"] = manifest.output_path
-        diagnostic["output_present"] = reader.exists(output_key)
+        diagnostic["output_present"] = reader.exists(output_key) or reader.exists(
+            legacy_output_key
+        )
         return diagnostic
     inference_dates = manifest.metadata.get("inference_dates")
     if isinstance(inference_dates, list):
@@ -1235,14 +1222,17 @@ def _load_regime_diagnostic(
         diagnostic["manifest_inference_dates"] = normalized_dates
         if date_text not in normalized_dates:
             diagnostic["reason"] = "regime_manifest_missing_inference_date"
-            diagnostic["output_present"] = reader.exists(output_key)
+            diagnostic["output_present"] = reader.exists(output_key) or reader.exists(
+                legacy_output_key
+            )
             return diagnostic
-    if not reader.exists(output_key):
+    read_key = output_key if reader.exists(output_key) else legacy_output_key
+    if not reader.exists(read_key):
         return diagnostic
     diagnostic["output_present"] = True
 
     try:
-        frame = _read_parquet_frame(reader.get_object(output_key))
+        frame = _read_parquet_frame(reader.get_object(read_key))
     except Exception as exc:  # noqa: BLE001
         diagnostic["reason"] = "regime_output_unreadable"
         diagnostic["output_error"] = str(exc)

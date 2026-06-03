@@ -79,21 +79,26 @@ def write_feature_records(
     records: Sequence[FeatureRecord | Mapping[str, object]],
     writer: R2Writer | None = None,
 ) -> list[str]:
-    """Validate and persist FeatureRecords as one history file per ticker."""
+    """Validate and persist FeatureRecords to canonical shards plus legacy histories."""
     validated_records = _coerce_feature_records(records)
     grouped_records: dict[str, list[FeatureRecord]] = {}
     for record in validated_records:
         grouped_records.setdefault(record.ticker, []).append(record)
 
     active_writer = writer or R2Writer()
-    written_keys: list[str] = []
+    legacy_history_keys: list[str] = []
     for ticker, ticker_records in sorted(grouped_records.items()):
         sorted_records = sorted(ticker_records, key=lambda record: record.date)
         _validate_unique_dates(ticker, sorted_records)
+        for record in sorted_records:
+            active_writer.put_object(
+                layer1_feature_path(record.date, record.ticker),
+                feature_record_to_parquet_bytes(record),
+            )
         key = layer1_ticker_history_path(ticker)
         active_writer.put_object(key, feature_records_to_parquet_bytes(sorted_records))
-        written_keys.append(key)
-    return written_keys
+        legacy_history_keys.append(key)
+    return legacy_history_keys
 
 
 def read_feature_record(

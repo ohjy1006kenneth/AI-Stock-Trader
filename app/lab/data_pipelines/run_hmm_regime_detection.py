@@ -100,6 +100,8 @@ class HMMRegimePipelineConfig:
             _validate_iso_date(self.train_start_date, "train_start_date")
             if self.train_start_date >= self.train_end_date:
                 raise ValueError("train_start_date must be before train_end_date")
+        if not self.inference_dates:
+            raise ValueError("inference_dates must not be empty")
         for inference_date in self.inference_dates:
             _validate_iso_date(inference_date, "inference_dates")
             if inference_date <= self.train_end_date:
@@ -156,7 +158,11 @@ def run_hmm_regime_detection(
     """Run Layer 1.5 HMM regime detection against R2 archives."""
     active_writer = writer or R2Writer()
     started_at = datetime.now(UTC)
-    output_key = hmm_regime_output_path(config.run_id)
+    output_keys_by_date = {
+        date_text: hmm_regime_output_path(config.run_id, date_text)
+        for date_text in config.inference_dates
+    }
+    output_key = output_keys_by_date[config.inference_dates[0]]
     manifest_key = pipeline_manifest_path(REGIME_STAGE, config.run_id)
     metadata: dict[str, object] = {
         "benchmark_ticker": config.benchmark_ticker.upper(),
@@ -164,6 +170,7 @@ def run_hmm_regime_detection(
         "train_end_date": config.train_end_date,
         "inference_dates": list(config.inference_dates),
         "output_key": output_key,
+        "output_keys_by_date": output_keys_by_date,
     }
 
     try:
@@ -210,7 +217,12 @@ def run_hmm_regime_detection(
                 "Invalid HMM regime probabilities emitted: "
                 + "; ".join(probability_errors[:5])
             )
-        active_writer.put_object(output_key, _frame_to_parquet_bytes(regime_frame))
+        _write_regime_outputs_by_date(
+            writer=active_writer,
+            frame=regime_frame,
+            output_keys_by_date=output_keys_by_date,
+            run_id=config.run_id,
+        )
         metadata.update(
             {
                 "training_rows": readiness.training_rows,
@@ -297,9 +309,26 @@ def _macro_context_start_date(
     return date_values[start_index]
 
 
-def hmm_regime_output_path(run_id: str) -> str:
-    """Return the canonical R2 output key for one HMM regime run."""
-    return layer1_regime_path(run_id)
+def hmm_regime_output_path(run_id: str, as_of_date: str) -> str:
+    """Return the canonical R2 output key for one HMM regime date/run."""
+    return layer1_regime_path(as_of_date, run_id)
+
+
+def _write_regime_outputs_by_date(
+    *,
+    writer: ObjectStore,
+    frame: pd.DataFrame,
+    output_keys_by_date: dict[str, str],
+    run_id: str,
+) -> None:
+    """Write one colocated regime parquet artifact per inference date."""
+    for date_text, output_key in output_keys_by_date.items():
+        date_frame = frame[frame["date"].astype(str) == date_text].reset_index(drop=True)
+        if date_frame.empty:
+            raise ValueError(
+                f"HMM regime run {run_id} produced no rows for inference_date={date_text}"
+            )
+        writer.put_object(output_key, _frame_to_parquet_bytes(date_frame))
 
 
 def load_modal_runtime_config(path: Path = MODAL_CONFIG_PATH) -> ModalRuntimeConfig:

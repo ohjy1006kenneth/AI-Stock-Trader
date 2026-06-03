@@ -30,13 +30,15 @@ def test_write_feature_record_round_trips_through_local_r2(tmp_path: Path) -> No
     key = feature_io.write_feature_record(record, writer=writer)
     loaded_record = feature_io.read_feature_record("2026-04-21", "AAPL", writer=writer)
 
-    assert key == "features/layer1/2026-04-21/AAPL.parquet"
+    assert key == "features/2026-04-21/AAPL.parquet"
     assert writer.exists(key) is True
     assert loaded_record == record
 
 
-def test_write_feature_records_round_trips_per_ticker_history(tmp_path: Path) -> None:
-    """Feature histories should be persisted as one Parquet file per ticker."""
+def test_write_feature_records_round_trips_date_shards_and_legacy_history(
+    tmp_path: Path,
+) -> None:
+    """Feature records should persist canonical shards and compatibility histories."""
     writer = R2Writer(local_root=tmp_path)
     records = [
         FeatureRecord(date="2026-04-22", ticker="AAPL", features={"returns_1d": 0.02}),
@@ -48,6 +50,8 @@ def test_write_feature_records_round_trips_per_ticker_history(tmp_path: Path) ->
 
     assert keys == ["features/layer1/AAPL.parquet"]
     assert writer.exists("features/layer1/AAPL.parquet") is True
+    assert writer.exists("features/2026-04-21/AAPL.parquet") is True
+    assert writer.exists("features/2026-04-22/AAPL.parquet") is True
     assert [record.date for record in loaded_records] == ["2026-04-21", "2026-04-22"]
     assert loaded_records[0].features == {"returns_1d": 0.01}
 
