@@ -12,6 +12,7 @@ from app.lab.data_pipelines.run_hmm_regime_detection import (
     REGIME_STAGE,
     HMMRegimePipelineConfig,
     _config_from_args,
+    _write_regime_outputs_by_date,
     hmm_regime_output_path,
     load_modal_runtime_config,
     run_hmm_regime_detection,
@@ -25,6 +26,28 @@ from services.r2.client import (
 )
 from services.r2.paths import pipeline_manifest_path, raw_macro_path, raw_price_path
 from services.r2.writer import R2Writer
+
+
+class _CaptureWriter:
+    """Minimal writer that records put_object calls."""
+
+    def __init__(self) -> None:
+        self.objects: dict[str, bytes | str] = {}
+
+    def put_object(self, key: str, data: bytes | str) -> None:
+        """Record one object write."""
+        self.objects[key] = data
+
+    def get_object(self, key: str) -> bytes:
+        """Return a recorded object as bytes."""
+        payload = self.objects[key]
+        if isinstance(payload, str):
+            return payload.encode("utf-8")
+        return payload
+
+    def list_keys(self, prefix: str) -> list[str]:
+        """Return recorded keys under a prefix."""
+        return sorted(key for key in self.objects if key.startswith(prefix))
 
 
 def test_run_hmm_regime_detection_reads_r2_and_writes_outputs(
@@ -74,6 +97,39 @@ def test_run_hmm_regime_detection_reads_r2_and_writes_outputs(
         "missing_features": [],
         "probability_sum": pytest.approx(1.0),
     }
+
+
+def test_write_regime_outputs_by_date_rejects_missing_inference_date() -> None:
+    """Per-date regime output writes fail clearly when a requested date has no rows."""
+    writer = _CaptureWriter()
+    frame = pd.DataFrame(
+        [
+            {
+                "date": "2024-01-02",
+                "regime_label": "bull",
+                "regime_confidence": 0.8,
+                "regime_prob_bear": 0.1,
+                "regime_prob_sideways": 0.1,
+                "regime_prob_bull": 0.8,
+            }
+        ]
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="HMM regime run hmm-missing-date produced no rows for inference_date=2024-01-03",
+    ):
+        _write_regime_outputs_by_date(
+            writer=writer,
+            frame=frame,
+            output_keys_by_date={
+                "2024-01-02": "features/2024-01-02/regime/hmm-missing-date.parquet",
+                "2024-01-03": "features/2024-01-03/regime/hmm-missing-date.parquet",
+            },
+            run_id="hmm-missing-date",
+        )
+
+    assert "features/2024-01-03/regime/hmm-missing-date.parquet" not in writer.objects
 
 
 def test_run_hmm_regime_detection_writes_failure_manifest(

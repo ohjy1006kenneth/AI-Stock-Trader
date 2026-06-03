@@ -645,7 +645,11 @@ def _manifest_regime_output_paths(manifest: PipelineManifestRecord) -> tuple[str
     raw_output_keys = manifest.metadata.get("output_keys_by_date")
     if isinstance(raw_output_keys, dict):
         paths = tuple(
-            sorted(str(value) for value in raw_output_keys.values() if str(value).strip())
+            sorted(
+                value
+                for value in raw_output_keys.values()
+                if isinstance(value, str) and value.strip()
+            )
         )
         if paths:
             return paths

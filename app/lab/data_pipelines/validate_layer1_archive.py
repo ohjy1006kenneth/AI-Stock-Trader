@@ -297,8 +297,6 @@ def validate_layer1_archive(
             present_rows += 1
             feature_rows_by_ticker_date[(ticker, date_text)] = record
 
-    for ticker in list(missing_ticker_dates):
-        missing_ticker_dates[ticker] = sorted(set(missing_ticker_dates[ticker]))
     for ticker in list(unexpected_ticker_dates):
         unexpected_ticker_dates[ticker] = sorted(set(unexpected_ticker_dates[ticker]))
 

@@ -221,6 +221,7 @@ def run_hmm_regime_detection(
             writer=active_writer,
             frame=regime_frame,
             output_keys_by_date=output_keys_by_date,
+            run_id=config.run_id,
         )
         metadata.update(
             {
@@ -318,10 +319,15 @@ def _write_regime_outputs_by_date(
     writer: ObjectStore,
     frame: pd.DataFrame,
     output_keys_by_date: dict[str, str],
+    run_id: str,
 ) -> None:
     """Write one colocated regime parquet artifact per inference date."""
     for date_text, output_key in output_keys_by_date.items():
         date_frame = frame[frame["date"].astype(str) == date_text].reset_index(drop=True)
+        if date_frame.empty:
+            raise ValueError(
+                f"HMM regime run {run_id} produced no rows for inference_date={date_text}"
+            )
         writer.put_object(output_key, _frame_to_parquet_bytes(date_frame))
 
 
