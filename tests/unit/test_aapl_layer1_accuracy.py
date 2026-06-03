@@ -17,7 +17,7 @@ from core.features.aapl_accuracy import (
     render_aapl_feature_accuracy_report,
     write_aapl_feature_accuracy_report,
 )
-from services.r2.paths import layer1_aapl_accuracy_report_path
+from services.r2.paths import layer1_aapl_accuracy_report_path, raw_price_path
 from tests.fixtures.layer1_support import (
     fake_news_runner,
     fake_regime_runner,
@@ -188,6 +188,84 @@ def test_build_aapl_feature_accuracy_report_blocks_when_date_first_shard_missing
         "features/2024-01-03/AAPL.parquet",
         "features/2024-01-04/AAPL.parquet",
     ]
+    assert report.recommendation_for_issue_202 == "do_not_proceed"
+
+
+def test_build_aapl_feature_accuracy_report_blocks_when_raw_price_data_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Missing raw AAPL prices produce report evidence instead of an object-read crash."""
+    writer = local_writer(tmp_path, monkeypatch)
+    seed_layer0_archives(
+        writer,
+        dates=["2024-01-03", "2024-01-04", "2024-01-05", "2024-01-08"],
+        tickers=["AAPL"],
+        layer0_run_ids=("layer1-aapl-no-price",),
+    )
+    run_daily_layer1(
+        Layer1DailyConfig(
+            run_id="layer1-aapl-no-price",
+            from_date="2024-01-03",
+            to_date="2024-01-08",
+            tickers=("AAPL",),
+        ),
+        writer=writer,
+        news_runner=fake_news_runner(writer, ["AAPL"]),
+        text_topic_runner=fake_topic_runner(writer, ["AAPL"]),
+        finbert_runner=fake_sentiment_runner(writer, ["AAPL"]),
+        regime_runner=fake_regime_runner(writer),
+        validation_output_dir=tmp_path / "reports",
+        now=datetime(2024, 1, 9, 12, 0, tzinfo=UTC),
+    )
+    writer.delete_object(raw_price_path("AAPL"))
+    config = AAPLFeatureAccuracyConfig(
+        quality_thresholds=AAPLQualityThresholds(
+            min_feature_rows=4,
+            max_required_feature_null_rate=1.0,
+            min_label_pairs=1,
+            min_abs_best_candidate_correlation=0.0,
+        ),
+        market_parameter_candidates=(
+            MarketParameterCandidate(
+                name="short",
+                return_window_days=5,
+                volatility_window_days=5,
+                volume_window_days=5,
+            ),
+        ),
+    )
+
+    report = build_aapl_feature_accuracy_report(
+        run_id="layer1-aapl-no-price",
+        from_date="2024-01-03",
+        to_date="2024-01-08",
+        layer0_run_id="layer1-aapl-no-price",
+        config=config,
+        writer=writer,
+    )
+
+    assert writer.exists(report.report_key) is True
+    assert report.input_evidence["raw_price_key"] == "raw/prices/AAPL.parquet"
+    assert report.input_evidence["raw_price_status"] == "missing"
+    assert report.input_evidence["raw_price_rows"] == 0
+    assert report.output_paths["missing_feature_keys"] == []
+    assert report.optimization_results == [
+        {
+            "name": "short",
+            "status": "insufficient_data",
+            "label_pairs": 0,
+            "abs_correlation_score": None,
+            "parameters": {
+                "name": "short",
+                "return_window_days": 5,
+                "volatility_window_days": 5,
+                "volume_window_days": 5,
+            },
+        }
+    ]
+    assert report.acceptance["checks"]["has_raw_price_data"] is False
+    assert report.acceptance["accepted"] is False
     assert report.recommendation_for_issue_202 == "do_not_proceed"
 
 

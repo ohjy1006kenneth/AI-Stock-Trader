@@ -191,7 +191,7 @@ def build_aapl_feature_accuracy_report(
         ticker=ticker,
     )
     price_key = raw_price_path(ticker)
-    price_frame = _read_parquet_frame(active_writer.get_object(price_key))
+    price_frame, raw_price_status = _load_raw_price_frame(active_writer, price_key)
     feature_quality, catalog_failures = _summarize_feature_quality(feature_records)
     optimization_results = _evaluate_market_parameter_candidates(
         price_frame=price_frame,
@@ -212,6 +212,7 @@ def build_aapl_feature_accuracy_report(
         "layer1_manifest_key": layer1_manifest_key,
         "layer1_manifest_status": _manifest_status(active_writer, layer1_manifest_key),
         "raw_price_key": price_key,
+        "raw_price_status": raw_price_status,
         "raw_price_rows": int(len(price_frame)),
         "universe_keys": [raw_universe_path(date_text) for date_text in dates],
     }
@@ -232,6 +233,7 @@ def build_aapl_feature_accuracy_report(
         feature_quality=feature_quality,
         catalog_failures=catalog_failures,
         best_candidate=best_candidate,
+        raw_price_status=raw_price_status,
         thresholds=active_config.quality_thresholds,
     )
     recommendation = _recommend_issue_202(acceptance)
@@ -306,6 +308,13 @@ def _load_aapl_date_first_features(
             )
         records.append(record)
     return records, missing_keys
+
+
+def _load_raw_price_frame(writer: AAPLAccuracyReader, key: str) -> tuple[Any, str]:
+    """Return the raw price frame and structured availability status for diagnostics."""
+    if not writer.exists(key):
+        return _empty_frame(), "missing"
+    return _read_parquet_frame(writer.get_object(key)), "available"
 
 
 def _summarize_feature_quality(
@@ -453,6 +462,7 @@ def _build_acceptance(
     feature_quality: Mapping[str, object],
     catalog_failures: Sequence[Mapping[str, object]],
     best_candidate: Mapping[str, object] | None,
+    raw_price_status: str,
     thresholds: AAPLQualityThresholds,
 ) -> dict[str, object]:
     required_null_rate = float(feature_quality.get("required_feature_null_rate", 1.0))
@@ -462,6 +472,7 @@ def _build_acceptance(
         else None
     )
     checks = {
+        "has_raw_price_data": raw_price_status == "available",
         "has_min_feature_rows": feature_rows >= thresholds.min_feature_rows,
         "has_no_missing_date_first_shards": len(missing_feature_keys) == 0,
         "required_feature_null_rate_ok": (
@@ -490,6 +501,8 @@ def _recommend_issue_202(acceptance: Mapping[str, object]) -> str:
         return "needs_human_review"
     if bool(acceptance.get("accepted")):
         return "proceed"
+    if not checks.get("has_raw_price_data", False):
+        return "do_not_proceed"
     if not checks.get("has_no_missing_date_first_shards", False):
         return "do_not_proceed"
     if not checks.get("catalog_validation_ok", False):
@@ -567,6 +580,11 @@ def _to_finite_float(value: object) -> float | None:
 def _read_parquet_frame(payload: bytes) -> Any:
     pd = _require_pandas()
     return pd.read_parquet(io.BytesIO(payload))
+
+
+def _empty_frame() -> Any:
+    pd = _require_pandas()
+    return pd.DataFrame()
 
 
 def _validate_iso_date(value: str, field_name: str) -> None:
