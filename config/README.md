@@ -56,4 +56,7 @@ Use an R2 token/access key with read/write access to the bucket. Do not use the 
 - `config/modal.json` controls the Pi-triggered Layer 1 orchestration apps, including the
   dedicated multi-date readiness timeout and the optional `T4` GPU cap for the batched
   Layer 1 runner.
+- `config/layer1_aapl_accuracy.json` controls the AAPL-only Layer 1 accuracy pilot
+  thresholds, target forward-return horizon, and market parameter candidates used before
+  deciding whether to start the broad historical backfill.
 - `config/requirements/` is deprecated; dependency files live under repository-root `requirements/`.

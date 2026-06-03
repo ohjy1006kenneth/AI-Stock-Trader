@@ -1,0 +1,31 @@
+{
+  "ticker": "AAPL",
+  "benchmark_ticker": "SPY",
+  "target_horizon_days": 5,
+  "quality_thresholds": {
+    "min_feature_rows": 1,
+    "max_required_feature_null_rate": 0.35,
+    "min_label_pairs": 3,
+    "min_abs_best_candidate_correlation": 0.0
+  },
+  "market_parameter_candidates": [
+    {
+      "name": "short_momentum",
+      "return_window_days": 5,
+      "volatility_window_days": 5,
+      "volume_window_days": 10
+    },
+    {
+      "name": "baseline_momentum",
+      "return_window_days": 21,
+      "volatility_window_days": 21,
+      "volume_window_days": 20
+    },
+    {
+      "name": "intermediate_momentum",
+      "return_window_days": 63,
+      "volatility_window_days": 21,
+      "volume_window_days": 20
+    }
+  ]
+}

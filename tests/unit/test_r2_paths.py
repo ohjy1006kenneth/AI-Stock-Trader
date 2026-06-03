@@ -10,6 +10,7 @@ from services.r2.paths import (
     is_canonical_raw_price_key,
     is_legacy_raw_price_key,
     layer0_ohlcv_provenance_report_path,
+    layer1_aapl_accuracy_report_path,
     layer1_feature_path,
     layer1_news_preprocessing_path,
     layer1_regime_path,
@@ -117,6 +118,11 @@ def test_layer1_text_artifact_paths_return_canonical_keys() -> None:
         layer1_validation_report_path("run-001", "2025-01-02", "2025-01-03")
         == "artifacts/reports/integration/"
         "layer1_archive_validation_run-001_2025-01-02_to_2025-01-03.json"
+    )
+    assert (
+        layer1_aapl_accuracy_report_path("run-001", "2025-01-02", "2025-01-03")
+        == "artifacts/reports/diagnostics/"
+        "layer1_aapl_feature_accuracy_run-001_2025-01-02_to_2025-01-03.json"
     )
 
 

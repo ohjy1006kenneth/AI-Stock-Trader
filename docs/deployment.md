@@ -207,6 +207,26 @@ Inspect R2 outputs via:
   `features/{YYYY-MM-DD}/sentiment_features/`, and
   `features/{YYYY-MM-DD}/regime/`
 
+Before launching the broad point-in-time historical Layer 1 backfill, run the
+AAPL-only accuracy and parameter-calibration pilot:
+
+```bash
+HOME=/home/juyoungoh ./.venv/bin/python app/lab/data_pipelines/run_aapl_layer1_accuracy.py \
+    --run-id layer1-aapl-accuracy-<window>-v1 \
+    --from-date <from> \
+    --to-date <to> \
+    --layer0-run-id <layer0-run-id> \
+    --allow-layer0-manifest-date-range \
+    --run-layer1
+```
+
+This command is intentionally limited to `AAPL`; it must not be used as the
+full-universe backfill tracked by #202. The durable diagnostic report is written
+to `artifacts/reports/diagnostics/layer1_aapl_feature_accuracy_{run_id}_{from}_to_{to}.json`
+and includes date window, input Layer 0 evidence, date-first feature shard
+examples, parameter candidates, quality diagnostics, and a recommendation for
+whether #202 should proceed.
+
 For a targeted correctness audit on a sample of stored Layer 1 histories, run:
 
 ```bash
