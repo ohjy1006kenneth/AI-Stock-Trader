@@ -62,3 +62,35 @@ Interpretation:
 Exit code:
 - `0` when the audit produced no failures
 - `1` when at least one failure was detected
+
+## AAPL Accuracy Pilot Before Broad Backfill
+
+Before starting the broad point-in-time historical Layer 1 backfill, run the
+AAPL-only accuracy workflow:
+
+```bash
+HOME=/home/juyoungoh ./.venv/bin/python app/lab/data_pipelines/run_aapl_layer1_accuracy.py \
+    --run-id layer1-aapl-accuracy-<window>-v1 \
+    --from-date <from> \
+    --to-date <to> \
+    --layer0-run-id <layer0-run-id> \
+    --allow-layer0-manifest-date-range \
+    --run-layer1
+```
+
+The workflow is intentionally limited to `AAPL`. It validates the date-first
+pilot shards such as `features/{YYYY-MM-DD}/AAPL.parquet`, writes a local JSON
+report under `artifacts/reports/diagnostics/`, and uploads the durable report to:
+
+`artifacts/reports/diagnostics/layer1_aapl_feature_accuracy_{run_id}_{from}_to_{to}.json`
+
+The configurable parameters live in `config/layer1_aapl_accuracy.json`:
+- target forward-return horizon
+- quality thresholds for feature rows, required-feature null rate, label pairs, and
+  candidate correlation
+- market parameter candidates for return, volatility, and volume-ratio windows
+
+Use `recommendation_for_issue_202` in the report as the operator handoff:
+- `proceed`: AAPL pilot evidence is acceptable for starting #202.
+- `needs_human_review`: review the report before deciding whether to tune parameters.
+- `do_not_proceed`: keep #202 blocked until missing shards or catalog failures are fixed.

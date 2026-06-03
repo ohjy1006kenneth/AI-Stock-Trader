@@ -213,6 +213,20 @@ def layer1_validation_report_path(run_id: str, from_date: str, to_date: str) -> 
     )
 
 
+def layer1_aapl_accuracy_report_path(run_id: str, from_date: str, to_date: str) -> str:
+    """Return the durable AAPL-only Layer 1 feature-accuracy report key."""
+    safe_run_id = _validate_key_part(run_id)
+    return build_r2_key(
+        "artifacts",
+        "reports",
+        "diagnostics",
+        (
+            f"layer1_aapl_feature_accuracy_{safe_run_id}_"
+            f"{_format_date(from_date)}_to_{_format_date(to_date)}.json"
+        ),
+    )
+
+
 def layer0_ohlcv_provenance_report_path(run_id: str) -> str:
     """Return the canonical Layer 0 OHLCV adjustment-provenance report key for one run."""
     safe_run_id = _validate_key_part(run_id)

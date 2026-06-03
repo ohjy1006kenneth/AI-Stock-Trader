@@ -19,6 +19,10 @@ This is where news, market, and context inputs are aligned into training-ready t
   GPU worker when the text/FinBERT branches need acceleration.
   The Pi daily runtime invokes the same module through `modal run` for single-date jobs after
   Layer 0 completes, while local/lab runs can use `python ... --from-date/--to-date`.
+- `run_aapl_layer1_accuracy.py` is the pre-backfill AAPL-only pilot workflow. With
+  `--run-layer1`, it narrows Layer 1 generation to `AAPL` and then writes a feature
+  accuracy/parameter-calibration report. Without `--run-layer1`, it audits existing AAPL
+  date-first shards. It is intentionally guarded against non-AAPL ticker scope.
 
 ## Modal entrypoints
 
@@ -31,6 +35,7 @@ python -m pip install -r requirements/modal.txt
 | Runner | Deploy command | Smoke run | Config owner | CPU / GPU expectation |
 |---|---|---|---|---|
 | Daily Layer 1 orchestrator | `modal deploy app/lab/data_pipelines/run_daily_layer1.py` | Pi/Hermes invokes this through `python -m modal run app/lab/data_pipelines/run_daily_layer1.py --run-id <run_id> --as-of-date <YYYY-MM-DD> --layer0-run-id <run_id>` after Layer 0 completes | `config/modal.json` | Cloud-only orchestration entrypoint for single-date Pi-triggered runs |
+| AAPL Layer 1 accuracy pilot | n/a | `python app/lab/data_pipelines/run_aapl_layer1_accuracy.py --run-id layer1-aapl-accuracy-<window>-v1 --from-date <from> --to-date <to> --layer0-run-id <run_id> --run-layer1` | `config/layer1_aapl_accuracy.json` | AAPL-only local/lab pilot; do not use for full-universe backfill |
 | News preprocessing | `modal deploy app/lab/data_pipelines/run_news_preprocessing.py` | `modal run app/lab/data_pipelines/run_news_preprocessing.py --run-id smoke-news --as-of-date 2024-01-02` | `config/news_preprocessing.json` | CPU only |
 | Text topics | `modal deploy app/lab/data_pipelines/run_text_topics.py` | `modal run app/lab/data_pipelines/run_text_topics.py --run-id smoke-topics --as-of-date 2024-01-02 --preprocessed-news-key features/2024-01-02/news_sentiment/smoke-news.parquet` | `config/text_models.json` | Cloud-only embeddings/topic modeling; CPU smoke path, GPU optional for larger historical batches |
 | FinBERT sentiment | `modal deploy app/lab/data_pipelines/run_finbert_sentiment.py` | `modal run app/lab/data_pipelines/run_finbert_sentiment.py --run-id smoke-finbert --as-of-date 2024-01-02 --preprocessed-news-key features/2024-01-02/news_sentiment/smoke-news.parquet` | `config/finbert_sentiment.json` | Cloud-only heavy NLP; CPU smoke path, GPU recommended when throughput matters |
