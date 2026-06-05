@@ -75,6 +75,7 @@ class FinBERTPipelineConfig:
     run_id: str
     as_of_date: str
     preprocessed_news_key: str
+    tickers: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         """Validate run identity and input references."""
@@ -86,6 +87,9 @@ class FinBERTPipelineConfig:
             raise ValueError("as_of_date must be YYYY-MM-DD") from exc
         if not self.preprocessed_news_key.strip():
             raise ValueError("preprocessed_news_key cannot be empty")
+        for ticker in self.tickers:
+            if not ticker.strip():
+                raise ValueError("tickers cannot contain empty strings")
 
 
 @dataclass(frozen=True)
@@ -161,6 +165,7 @@ def run_finbert_sentiment(
     metadata: dict[str, object] = {
         "as_of_date": config.as_of_date,
         "preprocessed_news_key": config.preprocessed_news_key,
+        "requested_tickers": list(config.tickers),
         "scored_news_key": scored_news_key,
         "sentiment_feature_key": sentiment_feature_key,
         "model_name": runtime.model_name,
@@ -170,7 +175,10 @@ def run_finbert_sentiment(
     }
 
     try:
-        records = _load_preprocessed_news_records(active_writer, config.preprocessed_news_key)
+        records = _filter_records_to_tickers(
+            _load_preprocessed_news_records(active_writer, config.preprocessed_news_key),
+            config.tickers,
+        )
         scored_records = score_news_sentiment(
             records,
             scorer=active_scorer,
@@ -330,6 +338,21 @@ def _load_preprocessed_news_records(writer: ObjectStore, key: str) -> list[objec
     return news_sentiment_frame_to_records(frame)
 
 
+def _filter_records_to_tickers(
+    records: Sequence[object],
+    tickers: Sequence[str],
+) -> list[object]:
+    """Return records matching the optional ticker scope."""
+    requested = {ticker.strip().upper() for ticker in tickers if ticker.strip()}
+    if not requested:
+        return list(records)
+    return [
+        record
+        for record in records
+        if str(getattr(record, "ticker", "")).strip().upper() in requested
+    ]
+
+
 def _frame_to_parquet_bytes(frame: object) -> bytes:
     """Serialize a pandas DataFrame to Parquet bytes."""
     try:
@@ -378,7 +401,11 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--as-of-date", required=True, metavar="YYYY-MM-DD")
     parser.add_argument("--preprocessed-news-key", required=True)
-    return parser.parse_args(argv)
+    parser.add_argument("--tickers", nargs="*", default=None)
+    args = parser.parse_args(argv)
+    if args.tickers == []:
+        parser.error("--tickers requires at least one ticker when provided")
+    return args
 
 
 def _config_from_args(args: argparse.Namespace) -> FinBERTPipelineConfig:
@@ -387,6 +414,7 @@ def _config_from_args(args: argparse.Namespace) -> FinBERTPipelineConfig:
         run_id=args.run_id,
         as_of_date=args.as_of_date,
         preprocessed_news_key=args.preprocessed_news_key,
+        tickers=tuple(ticker.strip().upper() for ticker in (args.tickers or [])),
     )
 
 
@@ -397,19 +425,30 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0
 
 
-def modal_main(run_id: str, as_of_date: str, preprocessed_news_key: str) -> None:
+def modal_main(
+    run_id: str,
+    as_of_date: str,
+    preprocessed_news_key: str,
+    tickers: Sequence[str] | None = None,
+) -> None:
     """Submit a FinBERT sentiment run to Modal from the local CLI."""
-    globals()["modal_run_finbert_sentiment"].remote(
-        run_id=run_id,
-        as_of_date=as_of_date,
-        preprocessed_news_key=preprocessed_news_key,
-    )
+    remote_kwargs: dict[str, object] = {
+        "run_id": run_id,
+        "as_of_date": as_of_date,
+        "preprocessed_news_key": preprocessed_news_key,
+    }
+    normalized_tickers = [str(ticker).strip().upper() for ticker in (tickers or ())]
+    normalized_tickers = [ticker for ticker in normalized_tickers if ticker]
+    if normalized_tickers:
+        remote_kwargs["tickers"] = normalized_tickers
+    globals()["modal_run_finbert_sentiment"].remote(**remote_kwargs)
 
 
 def _modal_run_finbert_sentiment_entry(
     run_id: str,
     as_of_date: str,
     preprocessed_news_key: str,
+    tickers: Sequence[str] | None = None,
 ) -> dict[str, object]:
     """Run FinBERT sentiment scoring on Modal."""
     runtime = load_finbert_runtime_config()
@@ -418,6 +457,7 @@ def _modal_run_finbert_sentiment_entry(
             run_id=run_id,
             as_of_date=as_of_date,
             preprocessed_news_key=preprocessed_news_key,
+            tickers=tuple(str(ticker).strip().upper() for ticker in (tickers or ())),
         ),
         runtime_config=runtime,
     )

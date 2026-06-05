@@ -160,6 +160,7 @@ class ModalRemoteFunction(Protocol):
         run_id: str,
         as_of_date: str,
         layer0_run_id: str,
+        tickers: Sequence[str] = (),
         benchmark_ticker: str = "SPY",
         allow_layer0_manifest_date_range: bool = False,
         min_sentence_chars: int = 2,
@@ -184,6 +185,7 @@ class ModalRangeRemoteFunction(Protocol):
         from_date: str,
         to_date: str,
         layer0_run_id: str,
+        tickers: Sequence[str] = (),
         benchmark_ticker: str = "SPY",
         allow_layer0_manifest_date_range: bool = False,
         min_sentence_chars: int = 2,
@@ -650,6 +652,7 @@ def _run_modal_batched_stage_outputs(
             NewsPreprocessingPipelineConfig(
                 run_id=stage_run_id,
                 as_of_date=date_text,
+                tickers=config.tickers,
                 min_sentence_chars=config.min_sentence_chars,
             ),
             writer=writer,
@@ -665,6 +668,7 @@ def _run_modal_batched_stage_outputs(
                 run_id=stage_run_id,
                 as_of_date=date_text,
                 preprocessed_news_key=news_output_keys_by_date[date_text],
+                tickers=config.tickers,
             ),
             writer=writer,
             embedder=embedder,
@@ -682,6 +686,7 @@ def _run_modal_batched_stage_outputs(
                 run_id=stage_run_id,
                 as_of_date=date_text,
                 preprocessed_news_key=news_output_keys_by_date[date_text],
+                tickers=config.tickers,
             ),
             writer=writer,
             scorer=scorer,
@@ -728,6 +733,7 @@ def _run_news_stage(
             NewsPreprocessingPipelineConfig(
                 run_id=stage_run_id,
                 as_of_date=date_text,
+                tickers=config.tickers,
                 min_sentence_chars=config.min_sentence_chars,
             ),
             writer=writer,
@@ -752,6 +758,7 @@ def _run_text_topic_stage(
                 run_id=stage_run_id,
                 as_of_date=date_text,
                 preprocessed_news_key=news_results[date_text].output_key,
+                tickers=config.tickers,
             ),
             writer=writer,
         )
@@ -775,6 +782,7 @@ def _run_finbert_stage(
                 run_id=stage_run_id,
                 as_of_date=date_text,
                 preprocessed_news_key=news_results[date_text].output_key,
+                tickers=config.tickers,
             ),
             writer=writer,
         )
@@ -1610,35 +1618,41 @@ def main(argv: Sequence[str] | None = None) -> int:
     config = _config_from_args(args)
     if args.as_of_date is not None and _modal_run_daily_layer1 is not None:
         try:
-            modal_main(
-                run_id=config.run_id,
-                as_of_date=config.from_date,
-                layer0_run_id=config.layer0_run_id or config.run_id,
-                benchmark_ticker=config.benchmark_ticker,
-                allow_layer0_manifest_date_range=config.allow_layer0_manifest_date_range,
-                min_sentence_chars=config.min_sentence_chars,
-                hmm_train_start_date=config.hmm_train_start_date,
-                hmm_max_iterations=config.hmm_max_iterations,
-                hmm_min_training_rows=config.hmm_min_training_rows,
-            )
+            modal_kwargs: dict[str, object] = {
+                "run_id": config.run_id,
+                "as_of_date": config.from_date,
+                "layer0_run_id": config.layer0_run_id or config.run_id,
+                "benchmark_ticker": config.benchmark_ticker,
+                "allow_layer0_manifest_date_range": config.allow_layer0_manifest_date_range,
+                "min_sentence_chars": config.min_sentence_chars,
+                "hmm_train_start_date": config.hmm_train_start_date,
+                "hmm_max_iterations": config.hmm_max_iterations,
+                "hmm_min_training_rows": config.hmm_min_training_rows,
+            }
+            if config.tickers:
+                modal_kwargs["tickers"] = config.tickers
+            modal_main(**modal_kwargs)
         except Exception as exc:  # noqa: BLE001
             logger.error("Layer 1 Modal orchestration failed: {}", exc)
             return 1
         return 0
     if _single_as_of_date(config) is None and _modal_run_batched_layer1 is not None:
         try:
-            modal_range_main(
-                run_id=config.run_id,
-                from_date=config.from_date,
-                to_date=config.to_date,
-                layer0_run_id=config.layer0_run_id or config.run_id,
-                benchmark_ticker=config.benchmark_ticker,
-                allow_layer0_manifest_date_range=config.allow_layer0_manifest_date_range,
-                min_sentence_chars=config.min_sentence_chars,
-                hmm_train_start_date=config.hmm_train_start_date,
-                hmm_max_iterations=config.hmm_max_iterations,
-                hmm_min_training_rows=config.hmm_min_training_rows,
-            )
+            modal_kwargs = {
+                "run_id": config.run_id,
+                "from_date": config.from_date,
+                "to_date": config.to_date,
+                "layer0_run_id": config.layer0_run_id or config.run_id,
+                "benchmark_ticker": config.benchmark_ticker,
+                "allow_layer0_manifest_date_range": config.allow_layer0_manifest_date_range,
+                "min_sentence_chars": config.min_sentence_chars,
+                "hmm_train_start_date": config.hmm_train_start_date,
+                "hmm_max_iterations": config.hmm_max_iterations,
+                "hmm_min_training_rows": config.hmm_min_training_rows,
+            }
+            if config.tickers:
+                modal_kwargs["tickers"] = config.tickers
+            modal_range_main(**modal_kwargs)
         except Exception as exc:  # noqa: BLE001
             logger.error("Layer 1 batched Modal orchestration failed: {}", exc)
             return 1
@@ -1691,7 +1705,8 @@ def modal_range_main(
     hmm_train_start_date: str | None = None,
     hmm_max_iterations: int = 100,
     hmm_min_training_rows: int = 30,
-) -> None:
+    tickers: Sequence[str] = (),
+) -> dict[str, object]:
     """Submit one multi-date Layer 1 readiness run via the Python entrypoint only."""
     if _modal_run_batched_layer1 is None:
         raise RuntimeError(
@@ -1701,19 +1716,25 @@ def modal_range_main(
         hmm_train_start_date,
         reference_date=from_date,
     )
+    normalized_tickers = _normalize_ticker_scope(tickers)
+    remote_kwargs: dict[str, object] = {
+        "run_id": run_id,
+        "from_date": from_date,
+        "to_date": to_date,
+        "layer0_run_id": layer0_run_id,
+        "benchmark_ticker": benchmark_ticker.strip().upper(),
+        "allow_layer0_manifest_date_range": allow_layer0_manifest_date_range,
+        "min_sentence_chars": min_sentence_chars,
+        "hmm_train_start_date": resolved_hmm_train_start_date,
+        "hmm_max_iterations": hmm_max_iterations,
+        "hmm_min_training_rows": hmm_min_training_rows,
+    }
+    if normalized_tickers:
+        remote_kwargs["tickers"] = list(normalized_tickers)
     result = _run_modal_remote_function(
         _modal_run_batched_layer1,
         owning_app=app,
-        run_id=run_id,
-        from_date=from_date,
-        to_date=to_date,
-        layer0_run_id=layer0_run_id,
-        benchmark_ticker=benchmark_ticker.strip().upper(),
-        allow_layer0_manifest_date_range=allow_layer0_manifest_date_range,
-        min_sentence_chars=min_sentence_chars,
-        hmm_train_start_date=resolved_hmm_train_start_date,
-        hmm_max_iterations=hmm_max_iterations,
-        hmm_min_training_rows=hmm_min_training_rows,
+        **remote_kwargs,
     )
     manifest_key = result.get("manifest_key")
     ready_for_layer2 = result.get("ready_for_layer2")
@@ -1723,6 +1744,7 @@ def modal_range_main(
             manifest_key,
             ready_for_layer2,
         )
+    return result
 
 
 def modal_main(
@@ -1735,7 +1757,8 @@ def modal_main(
     hmm_train_start_date: str | None = None,
     hmm_max_iterations: int = 100,
     hmm_min_training_rows: int = 30,
-) -> None:
+    tickers: Sequence[str] = (),
+) -> dict[str, object]:
     """Submit the single-date Layer 1 flow using stage-specific Modal runners."""
     if _modal_run_daily_layer1 is None:
         raise RuntimeError(
@@ -1750,6 +1773,7 @@ def modal_main(
         hmm_train_start_date,
         reference_date=as_of_date,
     )
+    normalized_tickers = _normalize_ticker_scope(tickers)
     stage_run_id = _stage_run_id(run_id, as_of_date)
     writer = R2Writer()
     preprocessed_news_key = _load_completed_stage_output(
@@ -1757,14 +1781,20 @@ def modal_main(
         stage=NLP_PREPROCESSING_STAGE,
         run_id=stage_run_id,
         as_of_date=as_of_date,
+        expected_tickers=normalized_tickers,
     )
     if preprocessed_news_key is None:
+        news_kwargs: dict[str, object] = {
+            "run_id": stage_run_id,
+            "as_of_date": as_of_date,
+            "min_sentence_chars": min_sentence_chars,
+        }
+        if normalized_tickers:
+            news_kwargs["tickers"] = list(normalized_tickers)
         news_result = _run_module_modal_remote(
             news_module,
             "modal_run_news_preprocessing",
-            run_id=stage_run_id,
-            as_of_date=as_of_date,
-            min_sentence_chars=min_sentence_chars,
+            **news_kwargs,
         )
         preprocessed_news_key = _require_result_key(news_result, "output_key")
     # Keep stage dispatch synchronous here. In production readiness runs, `.spawn()`
@@ -1775,14 +1805,20 @@ def modal_main(
         stage=TEXT_TOPICS_STAGE,
         run_id=stage_run_id,
         as_of_date=as_of_date,
+        expected_tickers=normalized_tickers,
     )
     if topic_feature_key is None:
+        topic_kwargs: dict[str, object] = {
+            "run_id": stage_run_id,
+            "as_of_date": as_of_date,
+            "preprocessed_news_key": preprocessed_news_key,
+        }
+        if normalized_tickers:
+            topic_kwargs["tickers"] = list(normalized_tickers)
         topic_result = _run_module_modal_remote(
             text_topics_module,
             "modal_run_text_topics",
-            run_id=stage_run_id,
-            as_of_date=as_of_date,
-            preprocessed_news_key=preprocessed_news_key,
+            **topic_kwargs,
         )
         topic_feature_key = _require_result_key(topic_result, "topic_feature_key")
     sentiment_feature_key = _load_completed_stage_output(
@@ -1790,14 +1826,20 @@ def modal_main(
         stage=FINBERT_SENTIMENT_STAGE,
         run_id=stage_run_id,
         as_of_date=as_of_date,
+        expected_tickers=normalized_tickers,
     )
     if sentiment_feature_key is None:
+        sentiment_kwargs: dict[str, object] = {
+            "run_id": stage_run_id,
+            "as_of_date": as_of_date,
+            "preprocessed_news_key": preprocessed_news_key,
+        }
+        if normalized_tickers:
+            sentiment_kwargs["tickers"] = list(normalized_tickers)
         sentiment_result = _run_module_modal_remote(
             finbert_module,
             "modal_run_finbert_sentiment",
-            run_id=stage_run_id,
-            as_of_date=as_of_date,
-            preprocessed_news_key=preprocessed_news_key,
+            **sentiment_kwargs,
         )
         sentiment_feature_key = _require_result_key(
             sentiment_result,
@@ -1810,6 +1852,7 @@ def modal_main(
         as_of_date=as_of_date,
     )
     if regime_output_key is None:
+        # Regime detection is market-wide, so ticker scope is intentionally not passed here.
         regime_result = _run_module_modal_remote(
             regime_module,
             "modal_run_hmm_regime_detection",
@@ -1822,23 +1865,29 @@ def modal_main(
             min_training_rows=hmm_min_training_rows,
         )
         regime_output_key = _require_result_key(regime_result, "output_key")
-    _run_modal_remote_function(
+    final_kwargs: dict[str, object] = {
+        "run_id": run_id,
+        "as_of_date": as_of_date,
+        "layer0_run_id": layer0_run_id,
+        "benchmark_ticker": benchmark_ticker.strip().upper(),
+        "allow_layer0_manifest_date_range": allow_layer0_manifest_date_range,
+        "min_sentence_chars": min_sentence_chars,
+        "hmm_train_start_date": resolved_hmm_train_start_date,
+        "hmm_max_iterations": hmm_max_iterations,
+        "hmm_min_training_rows": hmm_min_training_rows,
+        "preprocessed_news_key": preprocessed_news_key,
+        "topic_feature_key": topic_feature_key,
+        "sentiment_feature_key": sentiment_feature_key,
+        "regime_output_key": regime_output_key,
+    }
+    if normalized_tickers:
+        final_kwargs["tickers"] = list(normalized_tickers)
+    result = _run_modal_remote_function(
         _modal_run_daily_layer1,
         owning_app=app,
-        run_id=run_id,
-        as_of_date=as_of_date,
-        layer0_run_id=layer0_run_id,
-        benchmark_ticker=benchmark_ticker.strip().upper(),
-        allow_layer0_manifest_date_range=allow_layer0_manifest_date_range,
-        min_sentence_chars=min_sentence_chars,
-        hmm_train_start_date=resolved_hmm_train_start_date,
-        hmm_max_iterations=hmm_max_iterations,
-        hmm_min_training_rows=hmm_min_training_rows,
-        preprocessed_news_key=preprocessed_news_key,
-        topic_feature_key=topic_feature_key,
-        sentiment_feature_key=sentiment_feature_key,
-        regime_output_key=regime_output_key,
+        **final_kwargs,
     )
+    return result
 
 
 def _modal_run_batched_layer1_entry(
@@ -1846,6 +1895,7 @@ def _modal_run_batched_layer1_entry(
     from_date: str,
     to_date: str,
     layer0_run_id: str,
+    tickers: Sequence[str] | None = None,
     benchmark_ticker: str = "SPY",
     allow_layer0_manifest_date_range: bool = False,
     min_sentence_chars: int = 2,
@@ -1860,6 +1910,7 @@ def _modal_run_batched_layer1_entry(
         from_date=from_date,
         to_date=to_date,
         layer0_run_id=layer0_run_id,
+        tickers=_normalize_ticker_scope(tickers or ()),
         benchmark_ticker=benchmark_ticker.strip().upper(),
         allow_layer0_manifest_date_range=allow_layer0_manifest_date_range,
         min_sentence_chars=min_sentence_chars,
@@ -1889,6 +1940,7 @@ def _modal_run_batched_layer1_entry(
         "from_date": from_date,
         "to_date": to_date,
         "layer0_run_id": layer0_run_id,
+        "tickers": list(_normalize_ticker_scope(tickers or ())),
         "allow_layer0_manifest_date_range": allow_layer0_manifest_date_range,
         "min_sentence_chars": min_sentence_chars,
         "hmm_train_start_date": hmm_train_start_date,
@@ -1905,6 +1957,7 @@ def _modal_run_daily_layer1_entry(
     run_id: str,
     as_of_date: str,
     layer0_run_id: str,
+    tickers: Sequence[str] | None = None,
     benchmark_ticker: str = "SPY",
     allow_layer0_manifest_date_range: bool = False,
     min_sentence_chars: int = 2,
@@ -1943,6 +1996,7 @@ def _modal_run_daily_layer1_entry(
             from_date=as_of_date,
             to_date=as_of_date,
             layer0_run_id=layer0_run_id,
+            tickers=_normalize_ticker_scope(tickers or ()),
             benchmark_ticker=benchmark_ticker.strip().upper(),
             allow_layer0_manifest_date_range=allow_layer0_manifest_date_range,
             min_sentence_chars=min_sentence_chars,
@@ -1966,6 +2020,7 @@ def _modal_run_daily_layer1_entry(
         "ready_for_layer2": result.ready_for_layer2,
         "as_of_date": as_of_date,
         "layer0_run_id": layer0_run_id,
+        "tickers": list(_normalize_ticker_scope(tickers or ())),
         "allow_layer0_manifest_date_range": allow_layer0_manifest_date_range,
         "min_sentence_chars": min_sentence_chars,
         "hmm_train_start_date": hmm_train_start_date,
@@ -2104,6 +2159,7 @@ def _load_completed_stage_output(
     stage: str,
     run_id: str,
     as_of_date: str,
+    expected_tickers: Sequence[str] = (),
 ) -> str | None:
     """Return a completed stage output key when an exact single-date stage already succeeded."""
     manifest_key = pipeline_manifest_path(stage, run_id)
@@ -2119,12 +2175,33 @@ def _load_completed_stage_output(
     manifest_date = str(manifest.metadata.get("as_of_date", "")).strip()
     if manifest_date and manifest_date != as_of_date:
         return None
+    if expected_tickers:
+        manifest_tickers = manifest.metadata.get("requested_tickers")
+        if not isinstance(manifest_tickers, list):
+            return None
+        if _normalize_ticker_scope(manifest_tickers) != _normalize_ticker_scope(
+            expected_tickers
+        ):
+            return None
     if manifest.output_path is None or not manifest.output_path.strip():
         return None
     if not writer.exists(manifest.output_path):
         return None
     logger.info("Reusing completed {} artifact for {}: {}", stage, as_of_date, manifest.output_path)
     return manifest.output_path
+
+
+def _normalize_ticker_scope(tickers: Sequence[object]) -> tuple[str, ...]:
+    """Return sorted uppercase ticker symbols for optional scoped stage runs."""
+    return tuple(
+        sorted(
+            {
+                str(ticker).strip().upper()
+                for ticker in tickers
+                if str(ticker).strip()
+            }
+        )
+    )
 
 
 def _existing_news_runner(

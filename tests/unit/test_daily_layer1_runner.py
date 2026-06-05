@@ -1101,6 +1101,41 @@ def test_main_single_date_delegates_to_modal_orchestration_when_available(
     ]
 
 
+def test_main_single_date_passes_requested_tickers_to_modal_orchestration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Scoped CLI runs carry the ticker filter into the Modal orchestration path."""
+    recorded: list[dict[str, object]] = []
+
+    monkeypatch.setattr(daily_layer1_module, "_modal_run_daily_layer1", object())
+    monkeypatch.setattr(
+        daily_layer1_module,
+        "modal_main",
+        lambda **kwargs: recorded.append(kwargs),
+    )
+    monkeypatch.setattr(
+        daily_layer1_module,
+        "run_daily_layer1",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected local run")),
+    )
+
+    exit_code = main(
+        [
+            "--run-id",
+            "layer1-aapl",
+            "--as-of-date",
+            "2024-01-03",
+            "--layer0-run-id",
+            "layer0-daily-2024-01-03",
+            "--tickers",
+            "aapl",
+        ]
+    )
+
+    assert exit_code == 0
+    assert recorded[0]["tickers"] == ("AAPL",)
+
+
 def test_modal_main_uses_configured_hmm_train_lookback_when_no_explicit_date_is_given(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1165,6 +1200,70 @@ def test_modal_main_uses_configured_hmm_train_lookback_when_no_explicit_date_is_
         }
     ]
     assert final_calls[0]["hmm_train_start_date"] == "2024-01-02"
+
+
+def test_modal_main_passes_ticker_scope_to_heavy_stage_runners(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A scoped single-date Modal flow narrows preprocessing, topics, FinBERT, and assembly."""
+    stage_calls: list[tuple[str, dict[str, object]]] = []
+    final_calls: list[dict[str, object]] = []
+
+    monkeypatch.setattr(daily_layer1_module, "_modal_run_daily_layer1", object())
+    monkeypatch.setattr(
+        daily_layer1_module,
+        "load_modal_runtime_config",
+        lambda: daily_layer1_module.ModalRuntimeConfig(
+            app_name="layer1",
+            r2_secret_name="secret",
+            timeout_seconds=10,
+            batch_timeout_seconds=10,
+            batch_gpu_type="T4",
+            hmm_train_lookback_bdays=None,
+            python_version="3.11",
+            requirements_path="requirements/modal.txt",
+        ),
+    )
+
+    def _fake_stage_runner(
+        module: object,
+        attribute_name: str,
+        **kwargs: object,
+    ) -> dict[str, object]:
+        stage_calls.append((attribute_name, kwargs))
+        if attribute_name == "modal_run_news_preprocessing":
+            return {"output_key": "news"}
+        if attribute_name == "modal_run_text_topics":
+            return {"topic_feature_key": "topics"}
+        if attribute_name == "modal_run_finbert_sentiment":
+            return {"sentiment_feature_key": "sentiment"}
+        if attribute_name == "modal_run_hmm_regime_detection":
+            return {"output_key": "regime"}
+        raise AssertionError(f"unexpected stage: {attribute_name}")
+
+    monkeypatch.setattr(daily_layer1_module, "_run_module_modal_remote", _fake_stage_runner)
+    monkeypatch.setattr(
+        daily_layer1_module,
+        "_run_modal_remote_function",
+        lambda remote_function, owning_app=None, **kwargs: final_calls.append(kwargs) or {},
+    )
+
+    daily_layer1_module.modal_main(
+        run_id="layer1-aapl",
+        as_of_date="2024-01-10",
+        layer0_run_id="layer0-daily-2024-01-10",
+        tickers=("AAPL",),
+    )
+
+    scoped_stage_calls = [
+        call for call in stage_calls if call[0] != "modal_run_hmm_regime_detection"
+    ]
+    assert [call[1]["tickers"] for call in scoped_stage_calls] == [
+        ["AAPL"],
+        ["AAPL"],
+        ["AAPL"],
+    ]
+    assert final_calls[0]["tickers"] == ["AAPL"]
 
 
 def test_main_multi_date_delegates_to_batched_modal_orchestration_when_available(

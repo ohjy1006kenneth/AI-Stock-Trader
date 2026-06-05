@@ -76,6 +76,51 @@ def test_run_news_preprocessing_reads_r2_and_writes_outputs(
     assert manifest["metadata"]["sentence_rows"] == 2
 
 
+def test_run_news_preprocessing_honors_requested_ticker_scope(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """A scoped pilot only writes sentence rows for requested point-in-time tickers."""
+    writer = _local_writer(tmp_path, monkeypatch)
+    _write_jsonl(
+        writer,
+        raw_news_path("2024-01-02"),
+        [
+            {
+                "id": 1001,
+                "headline": "Apple reports earnings.",
+                "summary": "Microsoft also reports.",
+                "created_at": "2024-01-02T12:00:00+00:00",
+                "source": "benzinga",
+                "symbols": ["AAPL", "MSFT"],
+            }
+        ],
+    )
+    _write_universe(
+        writer,
+        raw_universe_path("2024-01-02"),
+        [
+            {"date": "2024-01-02", "ticker": "AAPL", "in_universe": "True"},
+            {"date": "2024-01-02", "ticker": "MSFT", "in_universe": "True"},
+        ],
+    )
+
+    result = run_news_preprocessing(
+        NewsPreprocessingPipelineConfig(
+            run_id="nlp-aapl-run",
+            as_of_date="2024-01-02",
+            tickers=("AAPL",),
+        ),
+        writer=writer,
+    )
+
+    output = pd.read_parquet(io.BytesIO(writer.get_object(result.output_key)))
+    manifest = json.loads(writer.get_object(result.manifest_key))
+
+    assert output["ticker"].unique().tolist() == ["AAPL"]
+    assert manifest["metadata"]["requested_tickers"] == ["AAPL"]
+
+
 def test_run_news_preprocessing_writes_failure_manifest(
     tmp_path: Path,
     monkeypatch,

@@ -85,6 +85,36 @@ def test_run_text_topics_reads_preprocessed_news_and_writes_outputs(
     assert manifest["metadata"]["topic_label_rows"] == 3
 
 
+def test_run_text_topics_honors_requested_ticker_scope(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """A scoped text-topic run ignores rows outside the requested ticker set."""
+    writer = _local_writer(tmp_path, monkeypatch)
+    input_key = news_preprocessing_output_path("nlp-pre-run", "2024-01-02")
+    _write_preprocessed_news(writer, input_key, _records())
+
+    result = run_text_topics(
+        TextTopicPipelineConfig(
+            run_id="text-topics-aapl",
+            as_of_date="2024-01-02",
+            preprocessed_news_key=input_key,
+            tickers=("AAPL",),
+        ),
+        writer=writer,
+        embedder=_FakeEmbedder(),
+        topic_labeler=_FakeTopicLabeler(),
+        runtime_config=_runtime_config(),
+    )
+
+    features = pd.read_parquet(io.BytesIO(writer.get_object(result.topic_feature_key)))
+    manifest = json.loads(writer.get_object(result.manifest_key))
+
+    assert set(features["ticker"]) == {"AAPL"}
+    assert manifest["metadata"]["requested_tickers"] == ["AAPL"]
+    assert manifest["metadata"]["sentence_rows"] == 2
+
+
 def test_run_text_topics_writes_failure_manifest(
     tmp_path: Path,
     monkeypatch,

@@ -117,12 +117,13 @@ Execution chain:
      narrow that scope, never replace it with a hand-maintained production list
    - Preprocess news into sentence-level `NewsSentimentRecord` rows at
      `features/{YYYY-MM-DD}/news_sentiment/{run_id}.parquet`
+     using the same narrowed ticker scope when a readiness pilot requests one
    - Compute pinned-model sentence embeddings and BERTopic labels into
      `features/{YYYY-MM-DD}/text_embeddings/`, `features/{YYYY-MM-DD}/topic_labels/`, and
      `features/{YYYY-MM-DD}/topic_features/`
    - Score preprocessed news with FinBERT into
      `features/{YYYY-MM-DD}/news_sentiment_scored/{run_id}.parquet` and aggregate
-     ticker-day sentiment FeatureRecords into
+     ticker-day sentiment FeatureRecords into the requested ticker scope at
      `features/{YYYY-MM-DD}/sentiment_features/{run_id}.parquet`
    - Compute market, NLP, context, and optional order-book spread / imbalance features for today
    - Write authoritative date-first feature shards at `features/{YYYY-MM-DD}/{TICKER}.parquet`

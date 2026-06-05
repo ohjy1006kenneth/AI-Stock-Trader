@@ -82,6 +82,37 @@ def test_run_finbert_sentiment_reads_preprocessed_news_and_writes_outputs(
     assert manifest["metadata"]["feature_rows"] == 2
 
 
+def test_run_finbert_sentiment_honors_requested_ticker_scope(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """A scoped FinBERT run scores and aggregates only requested tickers."""
+    writer = _local_writer(tmp_path, monkeypatch)
+    input_key = news_preprocessing_output_path("nlp-pre-run", "2024-01-02")
+    _write_preprocessed_news(writer, input_key, _records())
+
+    result = run_finbert_sentiment(
+        FinBERTPipelineConfig(
+            run_id="finbert-aapl",
+            as_of_date="2024-01-02",
+            preprocessed_news_key=input_key,
+            tickers=("AAPL",),
+        ),
+        writer=writer,
+        scorer=_FakeScorer(),
+        runtime_config=_runtime_config(tmp_path),
+    )
+
+    scored = pd.read_parquet(io.BytesIO(writer.get_object(result.scored_news_key)))
+    features = pd.read_parquet(io.BytesIO(writer.get_object(result.sentiment_feature_key)))
+    manifest = json.loads(writer.get_object(result.manifest_key))
+
+    assert set(scored["ticker"]) == {"AAPL"}
+    assert set(features["ticker"]) == {"AAPL"}
+    assert manifest["metadata"]["requested_tickers"] == ["AAPL"]
+    assert manifest["metadata"]["input_rows"] == 2
+
+
 def test_run_finbert_sentiment_writes_failure_manifest(
     tmp_path: Path,
     monkeypatch,
