@@ -13,7 +13,6 @@ Typical usage:
 from __future__ import annotations
 
 import hashlib
-import io
 import json
 import math
 import pickle
@@ -200,12 +199,11 @@ class XGBoostRanker:
         if not self.is_fitted:
             raise RuntimeError("Cannot serialize an unfitted model")
 
-        xgb_buf = io.BytesIO()
-        self._model.save_model(xgb_buf)
-
         bundle = {
             "schema": "xgboost_ranker_v1",
-            "xgb_model_bytes": xgb_buf.getvalue(),
+            "xgb_model_bytes": bytes(
+                self._model.get_booster().save_raw(raw_format="ubj")
+            ),
             "calibrator_pkl": pickle.dumps(self._calibrator, protocol=4),
             "feature_columns": list(self._feature_columns),
             "config": _config_to_dict(self.config),
@@ -222,9 +220,8 @@ class XGBoostRanker:
         if bundle.get("schema") != "xgboost_ranker_v1":
             raise ValueError(f"Unrecognized model bundle schema: {bundle.get('schema')!r}")
 
-        xgb_buf = io.BytesIO(bundle["xgb_model_bytes"])
         model = xgb.XGBRegressor()
-        model.load_model(xgb_buf)
+        model.load_model(bytearray(bundle["xgb_model_bytes"]))
 
         calibrator = pickle.loads(bundle["calibrator_pkl"])  # noqa: S301
 

@@ -221,8 +221,13 @@ HOME=/home/juyoungoh ./.venv/bin/python app/lab/data_pipelines/run_aapl_layer1_a
 ```
 
 This command is intentionally limited to `AAPL`; it must not be used as the
-full-universe backfill tracked by #202. The durable diagnostic report is written
-to `artifacts/reports/diagnostics/layer1_aapl_feature_accuracy_{run_id}_{from}_to_{to}.json`
+full-universe backfill tracked by #202. When `--run-layer1` is supplied, the
+command submits the scoped Layer 1 pilot through the Modal Layer 1 entrypoint
+with `tickers=AAPL`; heavy text-topic and FinBERT work must not run locally on
+the Pi/container path. Use a fresh `run_id` when superseding an interrupted
+attempt so old broad stage artifacts are not treated as the authoritative pilot.
+The durable diagnostic report is written to
+`artifacts/reports/diagnostics/layer1_aapl_feature_accuracy_{run_id}_{from}_to_{to}.json`
 and includes date window, input Layer 0 evidence, date-first feature shard
 examples, parameter candidates, quality diagnostics, and a recommendation for
 whether #202 should proceed.

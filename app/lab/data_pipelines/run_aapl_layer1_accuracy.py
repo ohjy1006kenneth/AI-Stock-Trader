@@ -23,9 +23,9 @@ _REPO_ROOT = _resolve_repo_root()
 sys.path.insert(0, str(_REPO_ROOT))
 
 from app.lab.data_pipelines.run_daily_layer1 import (  # noqa: E402
-    Layer1DailyConfig,
     Layer1ValidationError,
-    run_daily_layer1,
+    modal_main,
+    modal_range_main,
 )
 from core.features.aapl_accuracy import (  # noqa: E402
     DEFAULT_AAPL_ACCURACY_CONFIG_PATH,
@@ -91,31 +91,25 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     if args.run_layer1:
         try:
-            result = run_daily_layer1(
-                Layer1DailyConfig(
-                    run_id=str(args.run_id).strip(),
-                    from_date=str(args.from_date).strip(),
-                    to_date=str(args.to_date).strip(),
-                    layer0_run_id=(
-                        str(args.layer0_run_id).strip()
-                        if args.layer0_run_id is not None
-                        else None
-                    ),
-                    tickers=("AAPL",),
-                    benchmark_ticker=benchmark_ticker,
-                    allow_layer0_manifest_date_range=bool(
-                        args.allow_layer0_manifest_date_range
-                    ),
-                    min_sentence_chars=int(args.min_sentence_chars),
-                    hmm_train_start_date=(
-                        str(args.hmm_train_start_date).strip()
-                        if args.hmm_train_start_date is not None
-                        else None
-                    ),
-                    hmm_max_iterations=int(args.hmm_max_iterations),
-                    hmm_min_training_rows=int(args.hmm_min_training_rows),
+            result = _run_scoped_layer1_on_modal(
+                run_id=str(args.run_id).strip(),
+                from_date=str(args.from_date).strip(),
+                to_date=str(args.to_date).strip(),
+                layer0_run_id=(
+                    str(args.layer0_run_id).strip()
+                    if args.layer0_run_id is not None
+                    else str(args.run_id).strip()
                 ),
-                writer=writer,
+                benchmark_ticker=benchmark_ticker,
+                allow_layer0_manifest_date_range=bool(args.allow_layer0_manifest_date_range),
+                min_sentence_chars=int(args.min_sentence_chars),
+                hmm_train_start_date=(
+                    str(args.hmm_train_start_date).strip()
+                    if args.hmm_train_start_date is not None
+                    else None
+                ),
+                hmm_max_iterations=int(args.hmm_max_iterations),
+                hmm_min_training_rows=int(args.hmm_min_training_rows),
             )
         except Layer1ValidationError as exc:
             logger.error("AAPL Layer 1 pilot validation failed: {}", exc)
@@ -125,8 +119,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 1
         logger.info(
             "AAPL Layer 1 pilot generated manifest={} report={}",
-            result.manifest_key,
-            result.validation_report_key,
+            result.get("manifest_key"),
+            result.get("validation_report_key"),
         )
 
     report = build_aapl_feature_accuracy_report(
@@ -155,6 +149,48 @@ def main(argv: Sequence[str] | None = None) -> int:
         report.recommendation_for_issue_202,
     )
     return 0 if report.acceptance.get("accepted") is True else 1
+
+
+def _run_scoped_layer1_on_modal(
+    *,
+    run_id: str,
+    from_date: str,
+    to_date: str,
+    layer0_run_id: str,
+    benchmark_ticker: str,
+    allow_layer0_manifest_date_range: bool,
+    min_sentence_chars: int,
+    hmm_train_start_date: str | None,
+    hmm_max_iterations: int,
+    hmm_min_training_rows: int,
+) -> dict[str, object]:
+    """Submit the AAPL-only Layer 1 pilot through Modal instead of local heavy NLP."""
+    if from_date == to_date:
+        return modal_main(
+            run_id=run_id,
+            as_of_date=from_date,
+            layer0_run_id=layer0_run_id,
+            tickers=("AAPL",),
+            benchmark_ticker=benchmark_ticker,
+            allow_layer0_manifest_date_range=allow_layer0_manifest_date_range,
+            min_sentence_chars=min_sentence_chars,
+            hmm_train_start_date=hmm_train_start_date,
+            hmm_max_iterations=hmm_max_iterations,
+            hmm_min_training_rows=hmm_min_training_rows,
+        )
+    return modal_range_main(
+        run_id=run_id,
+        from_date=from_date,
+        to_date=to_date,
+        layer0_run_id=layer0_run_id,
+        tickers=("AAPL",),
+        benchmark_ticker=benchmark_ticker,
+        allow_layer0_manifest_date_range=allow_layer0_manifest_date_range,
+        min_sentence_chars=min_sentence_chars,
+        hmm_train_start_date=hmm_train_start_date,
+        hmm_max_iterations=hmm_max_iterations,
+        hmm_min_training_rows=hmm_min_training_rows,
+    )
 
 
 if __name__ == "__main__":

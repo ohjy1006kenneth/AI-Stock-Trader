@@ -69,6 +69,7 @@ class NewsPreprocessingPipelineConfig:
 
     run_id: str
     as_of_date: str
+    tickers: tuple[str, ...] = ()
     min_sentence_chars: int = 2
 
     def __post_init__(self) -> None:
@@ -79,6 +80,9 @@ class NewsPreprocessingPipelineConfig:
             datetime.strptime(self.as_of_date, "%Y-%m-%d")
         except ValueError as exc:
             raise ValueError("as_of_date must be YYYY-MM-DD") from exc
+        for ticker in self.tickers:
+            if not ticker.strip():
+                raise ValueError("tickers cannot contain empty strings")
         if self.min_sentence_chars <= 0:
             raise ValueError("min_sentence_chars must be positive")
 
@@ -117,6 +121,7 @@ def run_news_preprocessing(
     manifest_key = pipeline_manifest_path(NLP_PREPROCESSING_STAGE, config.run_id)
     metadata: dict[str, object] = {
         "as_of_date": config.as_of_date,
+        "requested_tickers": list(config.tickers),
         "raw_news_key": raw_news_path(config.as_of_date),
         "raw_universe_key": raw_universe_path(config.as_of_date),
         "output_key": output_key,
@@ -124,7 +129,11 @@ def run_news_preprocessing(
 
     try:
         articles = _load_raw_news_articles(active_writer, config.as_of_date)
-        tickers = _load_point_in_time_tickers(active_writer, config.as_of_date)
+        tickers = _load_point_in_time_tickers(
+            active_writer,
+            config.as_of_date,
+            requested_tickers=config.tickers,
+        )
         records = preprocess_news_articles(
             articles,
             as_of_date=config.as_of_date,
@@ -196,11 +205,20 @@ def _load_raw_news_articles(writer: ObjectStore, as_of_date: str) -> list[dict[s
     return rows
 
 
-def _load_point_in_time_tickers(writer: ObjectStore, as_of_date: str) -> list[str]:
+def _load_point_in_time_tickers(
+    writer: ObjectStore,
+    as_of_date: str,
+    *,
+    requested_tickers: Sequence[str] = (),
+) -> list[str]:
     """Load tickers eligible for Layer 1 processing from the raw universe mask."""
     payload = writer.get_object(raw_universe_path(as_of_date)).decode("utf-8")
+    requested = {ticker.strip().upper() for ticker in requested_tickers if ticker.strip()}
     tickers: list[str] = []
     for row in csv.DictReader(io.StringIO(payload)):
+        ticker = str(row.get("ticker", "")).strip().upper()
+        if requested and ticker not in requested:
+            continue
         if (
             _truthy(row.get("in_universe"))
             and _truthy(row.get("tradable"), default=True)
@@ -208,7 +226,7 @@ def _load_point_in_time_tickers(writer: ObjectStore, as_of_date: str) -> list[st
             and _truthy(row.get("data_quality_ok"), default=True)
             and not _truthy(row.get("halted"))
         ):
-            tickers.append(str(row["ticker"]))
+            tickers.append(ticker)
     return tickers
 
 
@@ -266,8 +284,12 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run Layer 1 news preprocessing.")
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--as-of-date", required=True, metavar="YYYY-MM-DD")
+    parser.add_argument("--tickers", nargs="*", default=None)
     parser.add_argument("--min-sentence-chars", type=int, default=2)
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.tickers == []:
+        parser.error("--tickers requires at least one ticker when provided")
+    return args
 
 
 def _config_from_args(args: argparse.Namespace) -> NewsPreprocessingPipelineConfig:
@@ -275,6 +297,7 @@ def _config_from_args(args: argparse.Namespace) -> NewsPreprocessingPipelineConf
     return NewsPreprocessingPipelineConfig(
         run_id=args.run_id,
         as_of_date=args.as_of_date,
+        tickers=tuple(ticker.strip().upper() for ticker in (args.tickers or [])),
         min_sentence_chars=args.min_sentence_chars,
     )
 
@@ -286,25 +309,37 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0
 
 
-def modal_main(run_id: str, as_of_date: str, min_sentence_chars: int = 2) -> None:
+def modal_main(
+    run_id: str,
+    as_of_date: str,
+    min_sentence_chars: int = 2,
+    tickers: Sequence[str] | None = None,
+) -> None:
     """Submit a news preprocessing run to Modal from the local CLI."""
-    globals()["modal_run_news_preprocessing"].remote(
-        run_id=run_id,
-        as_of_date=as_of_date,
-        min_sentence_chars=min_sentence_chars,
-    )
+    remote_kwargs: dict[str, object] = {
+        "run_id": run_id,
+        "as_of_date": as_of_date,
+        "min_sentence_chars": min_sentence_chars,
+    }
+    normalized_tickers = [str(ticker).strip().upper() for ticker in (tickers or ())]
+    normalized_tickers = [ticker for ticker in normalized_tickers if ticker]
+    if normalized_tickers:
+        remote_kwargs["tickers"] = normalized_tickers
+    globals()["modal_run_news_preprocessing"].remote(**remote_kwargs)
 
 
 def _modal_run_news_preprocessing_entry(
     run_id: str,
     as_of_date: str,
     min_sentence_chars: int = 2,
+    tickers: Sequence[str] | None = None,
 ) -> dict[str, object]:
     """Run Layer 1 news preprocessing on Modal."""
     result = run_news_preprocessing(
         NewsPreprocessingPipelineConfig(
             run_id=run_id,
             as_of_date=as_of_date,
+            tickers=tuple(str(ticker).strip().upper() for ticker in (tickers or ())),
             min_sentence_chars=min_sentence_chars,
         )
     )

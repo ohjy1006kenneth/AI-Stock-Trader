@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from app.lab.data_pipelines import run_aapl_layer1_accuracy as aapl_runner
 from app.lab.data_pipelines.run_aapl_layer1_accuracy import parse_args
 from app.lab.data_pipelines.run_daily_layer1 import Layer1DailyConfig, run_daily_layer1
 from core.features.aapl_accuracy import (
@@ -284,3 +285,51 @@ def test_parse_args_rejects_non_aapl_ticker() -> None:
                 "2024-01-04",
             ]
         )
+
+
+def test_aapl_run_layer1_helper_submits_scoped_modal_range(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The AAPL Layer 1 pilot delegates date ranges to Modal with an AAPL-only scope."""
+    recorded: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        aapl_runner,
+        "modal_range_main",
+        lambda **kwargs: recorded.append(kwargs) or {"manifest_key": "manifest"},
+    )
+    monkeypatch.setattr(
+        aapl_runner,
+        "modal_main",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("unexpected single-date run")),
+    )
+
+    result = aapl_runner._run_scoped_layer1_on_modal(
+        run_id="layer1-aapl",
+        from_date="2024-01-03",
+        to_date="2024-01-05",
+        layer0_run_id="layer0-range",
+        benchmark_ticker="SPY",
+        allow_layer0_manifest_date_range=True,
+        min_sentence_chars=3,
+        hmm_train_start_date="2023-10-01",
+        hmm_max_iterations=42,
+        hmm_min_training_rows=12,
+    )
+
+    assert result == {"manifest_key": "manifest"}
+    assert recorded == [
+        {
+            "run_id": "layer1-aapl",
+            "from_date": "2024-01-03",
+            "to_date": "2024-01-05",
+            "layer0_run_id": "layer0-range",
+            "tickers": ("AAPL",),
+            "benchmark_ticker": "SPY",
+            "allow_layer0_manifest_date_range": True,
+            "min_sentence_chars": 3,
+            "hmm_train_start_date": "2023-10-01",
+            "hmm_max_iterations": 42,
+            "hmm_min_training_rows": 12,
+        }
+    ]
