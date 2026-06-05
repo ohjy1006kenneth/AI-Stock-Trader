@@ -333,3 +333,50 @@ def test_aapl_run_layer1_helper_submits_scoped_modal_range(
             "hmm_min_training_rows": 12,
         }
     ]
+
+
+def test_aapl_run_layer1_helper_submits_scoped_single_date_modal_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The AAPL Layer 1 pilot delegates single-date runs to Modal with an AAPL-only scope."""
+    recorded: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        aapl_runner,
+        "modal_main",
+        lambda **kwargs: recorded.append(kwargs) or {"manifest_key": "manifest"},
+    )
+    monkeypatch.setattr(
+        aapl_runner,
+        "modal_range_main",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("unexpected range run")),
+    )
+
+    result = aapl_runner._run_scoped_layer1_on_modal(
+        run_id="layer1-aapl",
+        from_date="2024-01-03",
+        to_date="2024-01-03",
+        layer0_run_id="layer0-daily",
+        benchmark_ticker="SPY",
+        allow_layer0_manifest_date_range=True,
+        min_sentence_chars=3,
+        hmm_train_start_date="2023-10-01",
+        hmm_max_iterations=42,
+        hmm_min_training_rows=12,
+    )
+
+    assert result == {"manifest_key": "manifest"}
+    assert recorded == [
+        {
+            "run_id": "layer1-aapl",
+            "as_of_date": "2024-01-03",
+            "layer0_run_id": "layer0-daily",
+            "tickers": ("AAPL",),
+            "benchmark_ticker": "SPY",
+            "allow_layer0_manifest_date_range": True,
+            "min_sentence_chars": 3,
+            "hmm_train_start_date": "2023-10-01",
+            "hmm_max_iterations": 42,
+            "hmm_min_training_rows": 12,
+        }
+    ]

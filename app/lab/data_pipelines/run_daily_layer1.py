@@ -1852,6 +1852,7 @@ def modal_main(
         as_of_date=as_of_date,
     )
     if regime_output_key is None:
+        # Regime detection is market-wide, so ticker scope is intentionally not passed here.
         regime_result = _run_module_modal_remote(
             regime_module,
             "modal_run_hmm_regime_detection",
