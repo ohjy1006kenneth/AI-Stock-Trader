@@ -261,6 +261,107 @@ def build_aapl_feature_accuracy_report(
     return report
 
 
+def build_terminal_aapl_feature_accuracy_report(
+    *,
+    run_id: str,
+    from_date: str,
+    to_date: str,
+    failure_type: str,
+    failure_message: str,
+    rerun_command: str,
+    layer1_run_id: str | None = None,
+    layer0_run_id: str | None = None,
+    config: AAPLFeatureAccuracyConfig | None = None,
+    writer: AAPLAccuracyReader | None = None,
+    now: datetime | None = None,
+) -> AAPLFeatureAccuracyReport:
+    """Build and upload a fail-closed terminal AAPL pilot diagnostic report."""
+    _validate_iso_date(from_date, "from_date")
+    _validate_iso_date(to_date, "to_date")
+    if from_date > to_date:
+        raise ValueError("from_date must be <= to_date")
+    if not run_id.strip():
+        raise ValueError("run_id cannot be empty")
+    if not failure_type.strip():
+        raise ValueError("failure_type cannot be empty")
+    if not failure_message.strip():
+        raise ValueError("failure_message cannot be empty")
+    if not rerun_command.strip():
+        raise ValueError("rerun_command cannot be empty")
+
+    active_config = config or load_aapl_feature_accuracy_config()
+    active_writer = writer or R2Writer()
+    active_layer1_run_id = layer1_run_id or run_id
+    report_key = layer1_aapl_accuracy_report_path(run_id, from_date, to_date)
+    layer1_manifest_key = pipeline_manifest_path("layer1", active_layer1_run_id)
+    layer0_manifest_key = (
+        pipeline_manifest_path("layer0", layer0_run_id) if layer0_run_id is not None else None
+    )
+    terminal_diagnostic = {
+        "status": "terminal_failure",
+        "failure_type": failure_type,
+        "failure_message": failure_message,
+        "fail_closed": True,
+        "issue_202_gate": "closed",
+        "rerun_required": True,
+        "rerun_command": rerun_command,
+    }
+    report = AAPLFeatureAccuracyReport(
+        run_id=run_id,
+        layer1_run_id=active_layer1_run_id,
+        layer0_run_id=layer0_run_id,
+        ticker=active_config.ticker.strip().upper(),
+        benchmark_ticker=active_config.benchmark_ticker.strip().upper(),
+        from_date=from_date,
+        to_date=to_date,
+        generated_at=(now or datetime.now(UTC)).replace(microsecond=0).isoformat(),
+        report_key=report_key,
+        input_evidence={
+            "layer0_manifest_key": layer0_manifest_key,
+            "layer0_manifest_status": _manifest_status(active_writer, layer0_manifest_key),
+            "layer1_manifest_key": layer1_manifest_key,
+            "layer1_manifest_status": _manifest_status(active_writer, layer1_manifest_key),
+            "terminal_diagnostic": terminal_diagnostic,
+        },
+        output_paths={
+            "report_key": report_key,
+            "feature_output_key_examples": [],
+            "missing_feature_keys": [],
+            "r2_output_prefixes": {
+                "date_first_features": "features/{YYYY-MM-DD}/AAPL.parquet",
+                "diagnostic_reports": "artifacts/reports/diagnostics/",
+            },
+        },
+        parameter_config=_config_to_dict(active_config),
+        feature_quality={
+            "feature_rows": 0,
+            "feature_dates": [],
+            "terminal_failure": terminal_diagnostic,
+        },
+        catalog_failures=[
+            {
+                "stage": "layer1_generation",
+                "message": failure_message,
+                "failure_type": failure_type,
+            }
+        ],
+        optimization_results=[],
+        best_parameter_candidate=None,
+        acceptance={
+            "accepted": False,
+            "checks": {
+                "terminal_diagnostic_written": True,
+                "rerun_required": True,
+                "issue_202_gate_closed": True,
+            },
+            "thresholds": asdict(active_config.quality_thresholds),
+        },
+        recommendation_for_issue_202="do_not_proceed",
+    )
+    active_writer.put_object(report_key, render_aapl_feature_accuracy_report(report))
+    return report
+
+
 def write_aapl_feature_accuracy_report(
     report: AAPLFeatureAccuracyReport,
     *,
