@@ -267,42 +267,6 @@ deterministic Layer 0/1 branches from existing archives, validates the feature
 catalog, and writes a local JSON report plus text summary. See
 `docs/layer1_feature_audit.md` for interpretation details.
 
-For the read-only dashboard backend payload used by the Layer 0/1 audit UI, run:
-
-```bash
-./.venv/bin/python app/lab/data_pipelines/build_layer1_feature_audit_dashboard.py \
-    --from-date 2026-04-08 \
-    --to-date 2026-04-10 \
-    --tickers AAPL,MSFT \
-    --output-dir artifacts/reports/diagnostics
-```
-
-This command reads stored Layer 1 feature histories and writes local JSON/text report
-artifacts only. Legacy `features/layer1/{TICKER}.parquet` histories may be used by this
-audit surface until it is fully migrated to date-first reads. It does not modify R2. See
-`docs/layer1_feature_audit_dashboard.md` for the heatmap, family-status,
-raw-vs-computed spot-check, formula-card, null-rate, and outlier payload
-details.
-
-For the live local Layer 0/1 QA dashboard UI itself, run:
-
-```bash
-./.venv/bin/python -m app.lab.feature_audit_dashboard \
-    --from-date 2026-04-08 \
-    --to-date 2026-04-10 \
-    --tickers AAPL,MSFT \
-    --host 127.0.0.1 \
-    --port 8765
-```
-
-Then open `http://127.0.0.1:8765/`. The UI is read-only and limited to Layer 0/1
-QA only; it does not show Layer 2, training, inference, portfolio, risk, or
-execution panels. Real R2 reads require the standard `R2_*` environment
-variables or `config/r2.env`; otherwise the app reads from the default local
-mock store `data/runtime/r2_mock/`. See
-`docs/layer1_feature_audit_dashboard.md` for PASS/WARN/FAIL interpretation and
-panel-specific guidance.
-
 Operational notes for the readiness report:
 - The local validator writes
   `artifacts/reports/integration/layer1_archive_validation_{run_id}_{from}_to_{to}.json`.
