@@ -494,7 +494,7 @@ def test_daily_layer1_modal_main_orchestrates_stage_apps_before_final_assembly(
         {
             "run_id": "smoke-daily-2024-01-02",
             "train_start_date": "2023-10-01",
-            "train_end_date": "2024-01-01",
+            "train_end_date": "2023-12-29",
             "inference_dates": "2024-01-02",
             "benchmark_ticker": "SPY",
             "max_iterations": 77,
@@ -631,7 +631,7 @@ def test_daily_layer1_modal_main_reuses_completed_stage_outputs_when_present(
         {
             "run_id": "resume-daily-2024-01-02",
             "train_start_date": None,
-            "train_end_date": "2024-01-01",
+            "train_end_date": "2023-12-29",
             "inference_dates": "2024-01-02",
             "benchmark_ticker": "SPY",
             "max_iterations": 100,

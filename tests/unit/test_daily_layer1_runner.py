@@ -18,7 +18,9 @@ from app.lab.data_pipelines.run_daily_layer1 import (
     _existing_news_runner,
     _existing_regime_runner,
     _existing_text_topic_runner,
+    _previous_business_day,
     _run_modal_batched_stage_outputs,
+    _trading_dates,
     load_modal_runtime_config,
     main,
     run_daily_layer1,
@@ -51,6 +53,45 @@ from tests.fixtures.layer1_support import (
     local_writer,
     seed_layer0_archives,
 )
+
+
+def _write_raw_price_frame(writer: R2Writer, ticker: str, frame: pd.DataFrame) -> None:
+    """Write a raw price parquet frame to the local object store."""
+    buffer = io.BytesIO()
+    frame.to_parquet(buffer, index=False)
+    writer.put_object(raw_price_path(ticker), buffer.getvalue())
+
+
+def _price_frame_without_memorial_day(
+    ticker: str,
+    *,
+    missing_dates: tuple[str, ...],
+) -> pd.DataFrame:
+    """Return synthetic 2026 price history with Memorial Day absent."""
+    missing = set(missing_dates)
+    rows: list[dict[str, object]] = []
+    close = 100.0 if ticker != "SPY" else 400.0
+    dates = [
+        day.date().isoformat()
+        for day in pd.bdate_range("2026-02-02", "2026-05-26")
+        if day.date().isoformat() != "2026-05-25"
+    ]
+    for index, date_text in enumerate(date for date in dates if date not in missing):
+        close += 0.5
+        rows.append(
+            {
+                "date": date_text,
+                "ticker": ticker,
+                "open": close - 0.25,
+                "high": close + 0.5,
+                "low": close - 0.5,
+                "close": close,
+                "adj_close": close,
+                "volume": 1_000_000 + index,
+                "dollar_volume": close * (1_000_000 + index),
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 def test_run_daily_layer1_happy_path_writes_history_and_completed_manifest(
@@ -566,6 +607,129 @@ def test_run_daily_layer1_fails_closed_when_raw_price_history_misses_target_date
     )
     assert manifest.status is RunStatus.FAILED
     assert "missing target-date coverage" in str(manifest.metadata["error"]["message"])
+
+
+def test_run_daily_layer1_skips_memorial_day_raw_price_requirement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Market holidays inside a requested Layer 1 window are not required price dates."""
+    writer = local_writer(tmp_path, monkeypatch)
+    seed_layer0_archives(
+        writer,
+        dates=["2026-05-22", "2026-05-26"],
+        tickers=["AAPL"],
+        layer0_run_ids=("layer1-aapl-memorial-day",),
+    )
+    _write_raw_price_frame(
+        writer,
+        "AAPL",
+        _price_frame_without_memorial_day("AAPL", missing_dates=()),
+    )
+    _write_raw_price_frame(
+        writer,
+        "SPY",
+        _price_frame_without_memorial_day("SPY", missing_dates=()),
+    )
+
+    result = run_daily_layer1(
+        Layer1DailyConfig(
+            run_id="layer1-aapl-memorial-day",
+            from_date="2026-05-22",
+            to_date="2026-05-26",
+            tickers=("AAPL",),
+        ),
+        writer=writer,
+        news_runner=fake_news_runner(writer, ["AAPL"]),
+        text_topic_runner=fake_topic_runner(writer, ["AAPL"]),
+        finbert_runner=fake_sentiment_runner(writer, ["AAPL"]),
+        regime_runner=fake_regime_runner(writer),
+        validation_output_dir=tmp_path / "reports",
+        now=datetime(2026, 5, 26, 22, 0, tzinfo=UTC),
+    )
+
+    manifest = PipelineManifestRecord.model_validate_json(writer.get_object(result.manifest_key))
+
+    assert _trading_dates("2026-05-22", "2026-05-26") == (
+        "2026-05-22",
+        "2026-05-26",
+    )
+    assert _previous_business_day("2026-05-26") == "2026-05-22"
+    assert result.processed_dates == ("2026-05-22", "2026-05-26")
+    assert manifest.status is RunStatus.COMPLETED
+    assert manifest.metadata["requested_calendar_dates"] == [
+        "2026-05-22",
+        "2026-05-23",
+        "2026-05-24",
+        "2026-05-25",
+        "2026-05-26",
+    ]
+    assert manifest.metadata["skipped_non_trading_dates"] == [
+        "2026-05-23",
+        "2026-05-24",
+        "2026-05-25",
+    ]
+    assert writer.exists("features/2026-05-25/AAPL.parquet") is False
+    assert writer.exists("features/2026-05-26/AAPL.parquet") is True
+
+
+def test_run_daily_layer1_still_fails_when_trading_session_price_is_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Missing AAPL or SPY raw prices on real sessions still fail closed."""
+    writer = local_writer(tmp_path, monkeypatch)
+    seed_layer0_archives(
+        writer,
+        dates=["2026-05-22", "2026-05-26"],
+        tickers=["AAPL"],
+        layer0_run_ids=("layer1-aapl-real-missing-session",),
+    )
+    _write_raw_price_frame(
+        writer,
+        "AAPL",
+        _price_frame_without_memorial_day("AAPL", missing_dates=()),
+    )
+    _write_raw_price_frame(
+        writer,
+        "SPY",
+        _price_frame_without_memorial_day("SPY", missing_dates=("2026-05-26",)),
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        run_daily_layer1(
+            Layer1DailyConfig(
+                run_id="layer1-aapl-real-missing-session",
+                from_date="2026-05-22",
+                to_date="2026-05-26",
+                tickers=("AAPL",),
+            ),
+            writer=writer,
+            news_runner=fake_news_runner(writer, ["AAPL"]),
+            text_topic_runner=fake_topic_runner(writer, ["AAPL"]),
+            finbert_runner=fake_sentiment_runner(writer, ["AAPL"]),
+            regime_runner=fake_regime_runner(writer),
+            validation_output_dir=tmp_path / "reports",
+        )
+
+    manifest = PipelineManifestRecord.model_validate_json(
+        writer.get_object(
+            pipeline_manifest_path(LAYER1_DAILY_STAGE, "layer1-aapl-real-missing-session")
+        )
+    )
+
+    assert "SPY=[2026-05-26]" in str(exc_info.value)
+    assert "2026-05-25" not in str(exc_info.value).split("SPY=[2026-05-26]")[0]
+    assert "skipped_non_trading_dates=[2026-05-23,2026-05-24,2026-05-25]" in str(
+        exc_info.value
+    )
+    assert manifest.status is RunStatus.FAILED
+    assert manifest.metadata["skipped_non_trading_dates"] == [
+        "2026-05-23",
+        "2026-05-24",
+        "2026-05-25",
+    ]
+    assert "SPY=[2026-05-26]" in str(manifest.metadata["error"]["message"])
 
 
 def test_run_daily_layer1_recovers_macro_inputs_without_target_date_snapshot_key(
