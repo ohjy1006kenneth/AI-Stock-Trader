@@ -232,6 +232,27 @@ and includes date window, input Layer 0 evidence, date-first feature shard
 examples, parameter candidates, quality diagnostics, and a recommendation for
 whether #202 should proceed.
 
+Then generate the non-dashboard evidence bundle for objective machine checks and
+separate human semantic review:
+
+```bash
+HOME=/home/juyoungoh ./.venv/bin/python -m app.lab.data_pipelines.verify_aapl_pilot_evidence \
+    --run-id layer1-aapl-accuracy-<window>-v1 \
+    --from-date <from> \
+    --to-date <to> \
+    --layer0-run-id <layer0-run-id> \
+    --write-json artifacts/reports/diagnostics/aapl_pilot_evidence_<run_id>.json \
+    --write-markdown artifacts/reports/diagnostics/aapl_pilot_human_review_<run_id>.md \
+    --write-csv artifacts/reports/diagnostics/aapl_pilot_human_review_rows_<run_id>.csv
+```
+
+The JSON report separates `machine_integrity_status` from
+`human_semantic_review_status`. It can recommend `proceed` for #202 only after
+objective gates pass and a human reruns or records the evidence with
+`--human-semantic-review-status accepted`; otherwise it returns
+`needs_human_review` or `do_not_proceed`. FinBERT/topic/HMM semantic correctness
+must not be silently approved by Codex or Hermes.
+
 For a targeted correctness audit on a sample of stored Layer 1 histories, run:
 
 ```bash

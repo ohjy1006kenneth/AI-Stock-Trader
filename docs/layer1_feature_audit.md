@@ -90,7 +90,30 @@ The configurable parameters live in `config/layer1_aapl_accuracy.json`:
   candidate correlation
 - market parameter candidates for return, volatility, and volume-ratio windows
 
-Use `recommendation_for_issue_202` in the report as the operator handoff:
-- `proceed`: AAPL pilot evidence is acceptable for starting #202.
-- `needs_human_review`: review the report before deciding whether to tune parameters.
-- `do_not_proceed`: keep #202 blocked until missing shards or catalog failures are fixed.
+After the pilot has produced its Layer 1 artifacts and accuracy report, generate the
+non-dashboard evidence bundle:
+
+```bash
+HOME=/home/juyoungoh ./.venv/bin/python -m app.lab.data_pipelines.verify_aapl_pilot_evidence \
+    --run-id layer1-aapl-accuracy-<window>-v1 \
+    --from-date <from> \
+    --to-date <to> \
+    --layer0-run-id <layer0-run-id> \
+    --write-json artifacts/reports/diagnostics/aapl_pilot_evidence_<run_id>.json \
+    --write-markdown artifacts/reports/diagnostics/aapl_pilot_human_review_<run_id>.md \
+    --write-csv artifacts/reports/diagnostics/aapl_pilot_human_review_rows_<run_id>.csv
+```
+
+The evidence JSON verifies objective gates: manifest/report existence, expected artifact
+keys, schema validation, row counts, date/ticker coverage, null rates, finite numeric values,
+FinBERT and regime probability sums, point-in-time timestamp checks, provenance metadata, and
+stale sibling artifacts. The Markdown and CSV files are compact human-review packets with
+raw news evidence, FinBERT probabilities, topic/sentiment features, HMM regime outputs, and
+exact artifact keys for each AAPL pilot date.
+
+FinBERT, topic-model, and HMM semantic correctness is a human decision. The evidence tool
+defaults `human_semantic_review_status` to `pending`, so the recommendation for #202 is:
+- `proceed`: only when machine integrity passes and
+  `--human-semantic-review-status accepted` is supplied after human review.
+- `needs_human_review`: machine integrity passed, but semantic review is still pending.
+- `do_not_proceed`: machine integrity failed or semantic review was explicitly rejected.
