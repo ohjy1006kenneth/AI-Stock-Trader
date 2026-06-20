@@ -209,7 +209,11 @@ def run_hmm_regime_detection(
                 config=hmm_config,
             )
         else:
-            regime_frame = _empty_regime_frame(readiness.inference_dates)
+            regime_frame = _empty_regime_frame(config.inference_dates)
+        regime_frame = _ensure_requested_regime_rows(
+            regime_frame,
+            requested_dates=config.inference_dates,
+        )
         regime_frame = _with_regime_readiness_columns(regime_frame, readiness=readiness)
         probability_errors = validate_hmm_regime_probabilities(regime_frame)
         if probability_errors:
@@ -240,13 +244,13 @@ def run_hmm_regime_detection(
                 "regime_readiness_by_date": _regime_readiness_by_date(regime_frame),
                 "warning_inference_dates": [
                     date_text
-                    for date_text in readiness.inference_dates
+                    for date_text in config.inference_dates
                     if (not readiness.can_fit_model)
-                    or date_text in readiness.incomplete_inference_feature_gaps
+                    or date_text not in readiness.complete_inference_dates
                 ],
                 "regime_layer2_ready": bool(
                     readiness.can_fit_model
-                    and len(readiness.complete_inference_dates) == len(readiness.inference_dates)
+                    and set(readiness.complete_inference_dates) == set(config.inference_dates)
                 ),
                 "regime_rows": len(regime_frame),
             }
@@ -366,6 +370,33 @@ def _empty_regime_frame(inference_dates: Sequence[str]) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=list(HMM_REGIME_COLUMNS))
 
 
+def _ensure_requested_regime_rows(
+    frame: pd.DataFrame,
+    *,
+    requested_dates: Sequence[str],
+) -> pd.DataFrame:
+    """Return regime output with one row for every requested inference date."""
+    try:
+        import pandas as pd
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            "pandas and pyarrow are required to write HMM regime outputs."
+        ) from exc
+    if not isinstance(frame, pd.DataFrame):
+        raise TypeError("frame must be a pandas DataFrame")
+
+    existing_dates = set(frame["date"].astype(str).tolist()) if "date" in frame.columns else set()
+    missing_dates = [date_text for date_text in requested_dates if date_text not in existing_dates]
+    if not missing_dates:
+        return frame.sort_values("date").reset_index(drop=True)
+
+    padded = pd.concat(
+        [frame, _empty_regime_frame(missing_dates)],
+        ignore_index=True,
+    )
+    return padded.sort_values("date").reset_index(drop=True)
+
+
 def _with_regime_readiness_columns(
     frame: pd.DataFrame,
     *,
@@ -396,10 +427,12 @@ def _with_regime_readiness_columns(
         missing_features = readiness.incomplete_inference_feature_gaps.get(date_text, ())
         if not readiness.can_fit_model:
             reason = "insufficient_training_history"
+        elif date_text in readiness.complete_inference_dates:
+            reason = "ready"
         elif missing_features:
             reason = "incomplete_inference_features"
         else:
-            reason = "ready"
+            reason = "missing_inference_row"
         annotated.loc[index, "regime_readiness_reason"] = reason
         annotated.loc[index, "regime_missing_features"] = ",".join(missing_features)
         if reason == "ready":

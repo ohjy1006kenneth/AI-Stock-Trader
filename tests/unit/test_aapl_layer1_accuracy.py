@@ -14,6 +14,7 @@ from core.features.aapl_accuracy import (
     AAPLQualityThresholds,
     MarketParameterCandidate,
     build_aapl_feature_accuracy_report,
+    build_terminal_aapl_feature_accuracy_report,
     load_aapl_feature_accuracy_config,
     render_aapl_feature_accuracy_report,
     write_aapl_feature_accuracy_report,
@@ -268,6 +269,116 @@ def test_build_aapl_feature_accuracy_report_blocks_when_raw_price_data_missing(
     assert report.acceptance["checks"]["has_raw_price_data"] is False
     assert report.acceptance["accepted"] is False
     assert report.recommendation_for_issue_202 == "do_not_proceed"
+
+
+def test_build_terminal_aapl_feature_accuracy_report_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Escaped Layer 1 failures still write the durable #202 gate report."""
+    writer = local_writer(tmp_path, monkeypatch)
+    seed_layer0_archives(
+        writer,
+        dates=["2024-01-03"],
+        tickers=["AAPL"],
+        layer0_run_ids=("layer0-aapl-terminal",),
+    )
+
+    report = build_terminal_aapl_feature_accuracy_report(
+        run_id="layer1-aapl-terminal",
+        from_date="2024-01-03",
+        to_date="2024-01-03",
+        layer0_run_id="layer0-aapl-terminal",
+        failure_type="ValueError",
+        failure_message="HMM regime run produced no rows",
+        rerun_command=(
+            "./.venv/bin/modal run app/lab/data_pipelines/run_aapl_layer1_accuracy.py "
+            "--run-layer1"
+        ),
+        writer=writer,
+        now=datetime(2024, 1, 4, 12, 0, tzinfo=UTC),
+    )
+    payload = json.loads(writer.get_object(report.report_key))
+
+    assert report.recommendation_for_issue_202 == "do_not_proceed"
+    assert report.acceptance["accepted"] is False
+    assert report.input_evidence["terminal_diagnostic"]["fail_closed"] is True
+    assert payload["input_evidence"]["terminal_diagnostic"]["rerun_required"] is True
+    assert payload["acceptance"]["checks"]["issue_202_gate_closed"] is True
+
+
+def test_main_writes_terminal_report_when_scoped_layer1_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The CLI fail-closes with a local and object-store report on Layer 1 exceptions."""
+    writer = local_writer(tmp_path, monkeypatch)
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "ticker": "AAPL",
+                "benchmark_ticker": "SPY",
+                "target_horizon_days": 5,
+                "quality_thresholds": {
+                    "min_feature_rows": 1,
+                    "max_required_feature_null_rate": 1.0,
+                    "min_label_pairs": 1,
+                    "min_abs_best_candidate_correlation": 0.0,
+                },
+                "market_parameter_candidates": [
+                    {
+                        "name": "candidate",
+                        "return_window_days": 5,
+                        "volatility_window_days": 5,
+                        "volume_window_days": 5,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(aapl_runner, "R2Writer", lambda: writer)
+    monkeypatch.setattr(
+        aapl_runner,
+        "_run_scoped_layer1_on_modal",
+        lambda **kwargs: (_ for _ in ()).throw(
+            ValueError("HMM regime run run-id produced no rows for inference_date=2026-05-25")
+        ),
+    )
+
+    exit_code = aapl_runner.main(
+        [
+            "--run-id",
+            "layer1-aapl-terminal-main",
+            "--from-date",
+            "2026-05-25",
+            "--to-date",
+            "2026-05-25",
+            "--layer0-run-id",
+            "layer0-aapl",
+            "--config-path",
+            str(config_path),
+            "--output-dir",
+            str(tmp_path / "out"),
+            "--run-layer1",
+            "--allow-layer0-manifest-date-range",
+        ]
+    )
+
+    report_key = layer1_aapl_accuracy_report_path(
+        "layer1-aapl-terminal-main",
+        "2026-05-25",
+        "2026-05-25",
+    )
+    payload = json.loads(writer.get_object(report_key))
+    local_path = tmp_path / "out" / Path(report_key).name
+
+    assert exit_code == 1
+    assert local_path.exists()
+    assert payload["recommendation_for_issue_202"] == "do_not_proceed"
+    assert payload["input_evidence"]["terminal_diagnostic"]["failure_type"] == "ValueError"
+    assert "--ticker AAPL" in payload["input_evidence"]["terminal_diagnostic"]["rerun_command"]
 
 
 def test_parse_args_rejects_non_aapl_ticker() -> None:

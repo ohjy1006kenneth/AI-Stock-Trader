@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shlex
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -32,6 +33,7 @@ from core.features.aapl_accuracy import (  # noqa: E402
     DEFAULT_AAPL_ACCURACY_OUTPUT_DIR,
     AAPLFeatureAccuracyConfig,
     build_aapl_feature_accuracy_report,
+    build_terminal_aapl_feature_accuracy_report,
     load_aapl_feature_accuracy_config,
     write_aapl_feature_accuracy_report,
 )
@@ -113,9 +115,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         except Layer1ValidationError as exc:
             logger.error("AAPL Layer 1 pilot validation failed: {}", exc)
+            _write_terminal_failure_report(
+                args=args,
+                config=config,
+                writer=writer,
+                failure=exc,
+            )
             return 1
         except Exception as exc:  # noqa: BLE001
             logger.error("AAPL Layer 1 pilot failed: {}", exc)
+            _write_terminal_failure_report(
+                args=args,
+                config=config,
+                writer=writer,
+                failure=exc,
+            )
             return 1
         logger.info(
             "AAPL Layer 1 pilot generated manifest={} report={}",
@@ -149,6 +163,78 @@ def main(argv: Sequence[str] | None = None) -> int:
         report.recommendation_for_issue_202,
     )
     return 0 if report.acceptance.get("accepted") is True else 1
+
+
+def _write_terminal_failure_report(
+    *,
+    args: argparse.Namespace,
+    config: AAPLFeatureAccuracyConfig,
+    writer: R2Writer,
+    failure: BaseException,
+) -> None:
+    """Persist a fail-closed AAPL pilot report for escaped Layer 1 failures."""
+    report = build_terminal_aapl_feature_accuracy_report(
+        run_id=str(args.run_id).strip(),
+        from_date=str(args.from_date).strip(),
+        to_date=str(args.to_date).strip(),
+        layer1_run_id=(
+            str(args.layer1_run_id).strip()
+            if args.layer1_run_id is not None
+            else str(args.run_id).strip()
+        ),
+        layer0_run_id=(
+            str(args.layer0_run_id).strip() if args.layer0_run_id is not None else None
+        ),
+        config=config,
+        writer=writer,
+        failure_type=type(failure).__name__,
+        failure_message=str(failure),
+        rerun_command=_build_rerun_command(args),
+    )
+    local_report_path = write_aapl_feature_accuracy_report(
+        report,
+        output_dir=args.output_dir,
+    )
+    logger.info("AAPL terminal diagnostic report written locally: {}", local_report_path)
+    logger.info("AAPL terminal diagnostic report written to object store: {}", report.report_key)
+    logger.info("Recommendation for #202: {}", report.recommendation_for_issue_202)
+
+
+def _build_rerun_command(args: argparse.Namespace) -> str:
+    """Return a shell command that reruns the same AAPL-only pilot."""
+    command = [
+        "./.venv/bin/modal",
+        "run",
+        "app/lab/data_pipelines/run_aapl_layer1_accuracy.py",
+        "--run-id",
+        str(args.run_id).strip(),
+        "--ticker",
+        "AAPL",
+        "--from-date",
+        str(args.from_date).strip(),
+        "--to-date",
+        str(args.to_date).strip(),
+    ]
+    if args.layer0_run_id is not None:
+        command.extend(["--layer0-run-id", str(args.layer0_run_id).strip()])
+    if args.layer1_run_id is not None:
+        command.extend(["--layer1-run-id", str(args.layer1_run_id).strip()])
+    if args.benchmark_ticker is not None:
+        command.extend(["--benchmark-ticker", str(args.benchmark_ticker).strip()])
+    if args.config_path != DEFAULT_AAPL_ACCURACY_CONFIG_PATH:
+        command.extend(["--config-path", str(args.config_path)])
+    if args.output_dir != DEFAULT_AAPL_ACCURACY_OUTPUT_DIR:
+        command.extend(["--output-dir", str(args.output_dir)])
+    if args.run_layer1:
+        command.append("--run-layer1")
+    if args.allow_layer0_manifest_date_range:
+        command.append("--allow-layer0-manifest-date-range")
+    command.extend(["--min-sentence-chars", str(int(args.min_sentence_chars))])
+    if args.hmm_train_start_date is not None:
+        command.extend(["--hmm-train-start-date", str(args.hmm_train_start_date).strip()])
+    command.extend(["--hmm-max-iterations", str(int(args.hmm_max_iterations))])
+    command.extend(["--hmm-min-training-rows", str(int(args.hmm_min_training_rows))])
+    return " ".join(shlex.quote(part) for part in command)
 
 
 def _run_scoped_layer1_on_modal(
