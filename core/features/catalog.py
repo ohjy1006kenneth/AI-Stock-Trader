@@ -30,7 +30,7 @@ class FeatureRule:
 
 @dataclass(frozen=True)
 class FeatureFamilySpec:
-    """Dashboard-oriented feature family grouping."""
+    """Audit/report-oriented feature family grouping."""
 
     key: str
     label: str
@@ -281,7 +281,7 @@ def feature_catalog() -> dict[str, FeatureRule]:
 
 
 def feature_family_map() -> dict[str, FeatureFamilySpec]:
-    """Return the dashboard family assignment for each cataloged feature name."""
+    """Return the audit/report family assignment for each cataloged feature name."""
     mapping: dict[str, FeatureFamilySpec] = {}
     for spec in FEATURE_FAMILY_SPECS:
         for feature_name in spec.feature_names:
