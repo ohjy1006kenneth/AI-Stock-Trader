@@ -376,11 +376,19 @@ def run_daily_layer1(
     tickers_processed = 0
     history_files_written = 0
     feature_rows_written = 0
-    processed_dates = _business_dates(config.from_date, config.to_date)
+    requested_calendar_dates = _calendar_dates(config.from_date, config.to_date)
+    processed_dates = _trading_dates(config.from_date, config.to_date)
+    skipped_non_trading_dates = tuple(
+        date_text
+        for date_text in requested_calendar_dates
+        if date_text not in set(processed_dates)
+    )
     metadata: dict[str, object] = {
         "from_date": config.from_date,
         "to_date": config.to_date,
+        "requested_calendar_dates": list(requested_calendar_dates),
         "processed_dates": list(processed_dates),
+        "skipped_non_trading_dates": list(skipped_non_trading_dates),
         "layer0_run_id": config.layer0_run_id or config.run_id,
         "benchmark_ticker": config.benchmark_ticker,
         "requested_tickers": list(config.tickers),
@@ -429,6 +437,7 @@ def run_daily_layer1(
             benchmark_ticker=config.benchmark_ticker,
             universe_by_date=universe_by_date,
             required_macro_series=_manifest_fred_series_ids(upstream_manifest),
+            skipped_non_trading_dates=skipped_non_trading_dates,
         )
 
         news_results = _run_news_stage(
@@ -640,7 +649,7 @@ def _run_modal_batched_stage_outputs(
     scorer_factory: Callable[[object], object] = finbert_module.FinBERTScorer,
 ) -> ModalBatchedStageOutputs:
     """Run per-date branches inside one Modal context for a multi-date readiness window."""
-    processed_dates = _business_dates(config.from_date, config.to_date)
+    processed_dates = _trading_dates(config.from_date, config.to_date)
     news_output_keys_by_date: dict[str, str] = {}
     topic_output_keys_by_date: dict[str, str] = {}
     sentiment_output_keys_by_date: dict[str, str] = {}
@@ -1252,6 +1261,7 @@ def _require_upstream_archives(
     benchmark_ticker: str,
     universe_by_date: Mapping[str, Sequence[str]],
     required_macro_series: Sequence[str],
+    skipped_non_trading_dates: Sequence[str] = (),
 ) -> None:
     """Require the Layer 0 archives needed by the daily Layer 1 run."""
     required_keys = [raw_price_path(benchmark_ticker)]
@@ -1287,6 +1297,7 @@ def _require_upstream_archives(
         processed_dates=processed_dates,
         benchmark_ticker=benchmark_ticker,
         universe_by_date=universe_by_date,
+        skipped_non_trading_dates=skipped_non_trading_dates,
     )
 
 
@@ -1311,6 +1322,7 @@ def _require_target_date_price_coverage(
     processed_dates: Sequence[str],
     benchmark_ticker: str,
     universe_by_date: Mapping[str, Sequence[str]],
+    skipped_non_trading_dates: Sequence[str] = (),
 ) -> None:
     """Fail closed when raw price archives exist but miss expected target dates."""
     expected_dates_by_ticker = _expected_dates_by_ticker(universe_by_date)
@@ -1326,9 +1338,17 @@ def _require_target_date_price_coverage(
         if missing_dates:
             missing_coverage[ticker] = missing_dates
     if missing_coverage:
+        skipped_note = ""
+        if skipped_non_trading_dates:
+            skipped_note = (
+                "; skipped_non_trading_dates=["
+                + ",".join(sorted(dict.fromkeys(skipped_non_trading_dates)))
+                + "]"
+            )
         raise RuntimeError(
             "Layer 0 raw price archives missing target-date coverage for Layer 1 run: "
             + _format_ticker_dates(missing_coverage)
+            + skipped_note
         )
 
 
@@ -1506,38 +1526,122 @@ def _single_as_of_date(config: Layer1DailyConfig) -> str | None:
     return None
 
 
-def _business_dates(from_date: str, to_date: str) -> tuple[str, ...]:
-    """Return business dates between two ISO dates, inclusive."""
+def _calendar_dates(from_date: str, to_date: str) -> tuple[str, ...]:
+    """Return calendar dates between two ISO dates, inclusive."""
     start = Date.fromisoformat(from_date)
     end = Date.fromisoformat(to_date)
     dates: list[str] = []
     current = start
     while current <= end:
-        if current.weekday() < 5:
-            dates.append(current.isoformat())
+        dates.append(current.isoformat())
         current += timedelta(days=1)
     return tuple(dates)
 
 
+def _trading_dates(from_date: str, to_date: str) -> tuple[str, ...]:
+    """Return US equity trading sessions between two ISO dates, inclusive."""
+    return tuple(
+        date_text
+        for date_text in _calendar_dates(from_date, to_date)
+        if _is_us_equity_trading_session(Date.fromisoformat(date_text))
+    )
+
+
 def _previous_business_day(date_text: str) -> str:
-    """Return the prior business day for one ISO date."""
+    """Return the prior US equity trading session for one ISO date."""
     current = Date.fromisoformat(date_text) - timedelta(days=1)
-    while current.weekday() >= 5:
+    while not _is_us_equity_trading_session(current):
         current -= timedelta(days=1)
     return current.isoformat()
 
 
 def _subtract_business_days(date_text: str, count: int) -> str:
-    """Return the ISO date that is `count` business days before `date_text`."""
+    """Return the ISO date that is `count` trading sessions before `date_text`."""
     if count < 0:
         raise ValueError("count must be non-negative")
     current = Date.fromisoformat(date_text)
     remaining = count
     while remaining > 0:
         current -= timedelta(days=1)
-        if current.weekday() < 5:
+        if _is_us_equity_trading_session(current):
             remaining -= 1
     return current.isoformat()
+
+
+def _is_us_equity_trading_session(day: Date) -> bool:
+    """Return True when the date is a regular US equity market session."""
+    if day.weekday() >= 5:
+        return False
+    return day not in _us_equity_market_holidays(day.year)
+
+
+def _us_equity_market_holidays(year: int) -> set[Date]:
+    """Return regular full-day US equity market holidays for one year."""
+    holidays = {
+        _observed_fixed_holiday(year, 1, 1),
+        _nth_weekday(year, 1, 0, 3),
+        _nth_weekday(year, 2, 0, 3),
+        _easter_sunday(year) - timedelta(days=2),
+        _last_weekday(year, 5, 0),
+        _observed_fixed_holiday(year, 7, 4),
+        _nth_weekday(year, 9, 0, 1),
+        _nth_weekday(year, 11, 3, 4),
+        _observed_fixed_holiday(year, 12, 25),
+    }
+    if year >= 2022:
+        holidays.add(_observed_fixed_holiday(year, 6, 19))
+    next_new_year_observed = _observed_fixed_holiday(year + 1, 1, 1)
+    if next_new_year_observed.year == year:
+        holidays.add(next_new_year_observed)
+    return holidays
+
+
+def _observed_fixed_holiday(year: int, month: int, day: int) -> Date:
+    """Return the weekday-observed date for one fixed-date market holiday."""
+    holiday = Date(year, month, day)
+    if holiday.weekday() == 5:
+        return holiday - timedelta(days=1)
+    if holiday.weekday() == 6:
+        return holiday + timedelta(days=1)
+    return holiday
+
+
+def _nth_weekday(year: int, month: int, weekday: int, n: int) -> Date:
+    """Return the nth weekday in a month, where Monday is 0."""
+    current = Date(year, month, 1)
+    while current.weekday() != weekday:
+        current += timedelta(days=1)
+    return current + timedelta(days=7 * (n - 1))
+
+
+def _last_weekday(year: int, month: int, weekday: int) -> Date:
+    """Return the last weekday in a month, where Monday is 0."""
+    if month == 12:
+        current = Date(year + 1, 1, 1) - timedelta(days=1)
+    else:
+        current = Date(year, month + 1, 1) - timedelta(days=1)
+    while current.weekday() != weekday:
+        current -= timedelta(days=1)
+    return current
+
+
+def _easter_sunday(year: int) -> Date:
+    """Return Gregorian Easter Sunday for one year."""
+    a = year % 19
+    b = year // 100
+    c = year % 100
+    d = b // 4
+    e = b % 4
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i = c // 4
+    k = c % 4
+    correction = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * correction) // 451
+    month = (h + correction - 7 * m + 114) // 31
+    day = ((h + correction - 7 * m + 114) % 31) + 1
+    return Date(year, month, day)
 
 
 def _truthy(value: str | None, *, default: bool = False) -> bool:
