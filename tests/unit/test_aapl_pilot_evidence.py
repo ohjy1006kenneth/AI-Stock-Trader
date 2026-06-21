@@ -31,6 +31,7 @@ from services.r2.paths import (
     layer1_sentiment_score_path,
     layer1_topic_feature_path,
     pipeline_manifest_path,
+    raw_price_path,
 )
 from services.r2.writer import R2Writer
 from tests.fixtures.layer1_support import (
@@ -88,6 +89,42 @@ def test_build_aapl_pilot_evidence_bundle_allows_proceed_only_after_human_accept
 
     assert bundle.machine_integrity_status == "pass"
     assert bundle.recommendation_for_issue_202 == "proceed"
+
+
+def test_build_aapl_pilot_evidence_bundle_skips_non_trading_dates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AAPL pilot evidence expects artifacts for trading sessions, not market holidays."""
+    writer = _seed_successful_aapl_pilot_holiday_window(tmp_path, monkeypatch)
+
+    bundle = build_aapl_pilot_evidence_bundle(
+        run_id="layer1-aapl-holiday-evidence",
+        layer0_run_id="layer0-aapl-holiday-evidence",
+        from_date="2026-05-22",
+        to_date="2026-05-26",
+        human_semantic_review_status="accepted",
+        writer=writer,
+    )
+    feature_gate = next(gate for gate in bundle.gates if gate.name == "date_first_feature_coverage")
+    missing_gate = next(gate for gate in bundle.gates if gate.name == "expected_artifacts_exist")
+
+    assert bundle.machine_integrity_status == "pass"
+    assert bundle.recommendation_for_issue_202 == "proceed"
+    assert bundle.artifact_keys["expected_trading_dates"] == ["2026-05-22", "2026-05-26"]
+    assert bundle.artifact_keys["skipped_non_trading_dates"] == [
+        "2026-05-23",
+        "2026-05-24",
+        "2026-05-25",
+    ]
+    assert feature_gate.details["expected_trading_dates"] == ["2026-05-22", "2026-05-26"]
+    assert feature_gate.details["skipped_non_trading_dates"] == [
+        "2026-05-23",
+        "2026-05-24",
+        "2026-05-25",
+    ]
+    assert "features/2026-05-25/AAPL.parquet" not in missing_gate.details["missing_keys"]
+    assert [row.date for row in bundle.human_review_rows] == ["2026-05-22", "2026-05-26"]
 
 
 def test_build_aapl_pilot_evidence_bundle_fails_closed_on_missing_sentiment_artifact(
@@ -292,6 +329,128 @@ def _seed_successful_aapl_pilot(
         now=datetime(2024, 1, 8, 13, 0, tzinfo=UTC),
     )
     return writer
+
+
+def _seed_successful_aapl_pilot_holiday_window(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> R2Writer:
+    """Seed a Memorial Day AAPL pilot with only trading-session artifacts."""
+    writer = local_writer(tmp_path, monkeypatch)
+    dates = ["2026-05-22", "2026-05-26"]
+    seed_layer0_archives(
+        writer,
+        dates=dates,
+        tickers=["AAPL"],
+        layer0_run_ids=("layer0-aapl-holiday-evidence",),
+    )
+    _write_memorial_day_price_frame(writer, "AAPL")
+    _write_memorial_day_price_frame(writer, "SPY")
+    run_daily_layer1(
+        Layer1DailyConfig(
+            run_id="layer1-aapl-holiday-evidence",
+            from_date="2026-05-22",
+            to_date="2026-05-26",
+            layer0_run_id="layer0-aapl-holiday-evidence",
+            tickers=("AAPL",),
+            allow_layer0_manifest_date_range=True,
+        ),
+        writer=writer,
+        news_runner=fake_news_runner(writer, ["AAPL"]),
+        text_topic_runner=fake_topic_runner(writer, ["AAPL"]),
+        finbert_runner=fake_sentiment_runner(writer, ["AAPL"]),
+        regime_runner=fake_regime_runner(writer),
+        validation_output_dir=tmp_path / "reports",
+        now=datetime(2026, 5, 26, 22, 0, tzinfo=UTC),
+    )
+    for date_text in dates:
+        stage_run_id = f"layer1-aapl-holiday-evidence-{date_text}"
+        _write_scored_news(writer, date_text, stage_run_id)
+        _write_stage_manifest(
+            writer,
+            stage="layer1_news_preprocessing",
+            run_id=stage_run_id,
+            output_path=layer1_news_preprocessing_path(date_text, stage_run_id),
+            metadata={"as_of_date": date_text, "requested_tickers": ["AAPL"]},
+        )
+        _write_stage_manifest(
+            writer,
+            stage="layer1_text_topics",
+            run_id=stage_run_id,
+            output_path=layer1_topic_feature_path(date_text, stage_run_id),
+            metadata={"as_of_date": date_text, "requested_tickers": ["AAPL"]},
+        )
+        _write_stage_manifest(
+            writer,
+            stage="layer1_finbert_sentiment",
+            run_id=stage_run_id,
+            output_path=layer1_sentiment_feature_path(date_text, stage_run_id),
+            metadata={
+                "as_of_date": date_text,
+                "requested_tickers": ["AAPL"],
+                "scored_news_key": layer1_sentiment_score_path(date_text, stage_run_id),
+            },
+        )
+        _write_stage_manifest(
+            writer,
+            stage="layer1_5_regime",
+            run_id=stage_run_id,
+            output_path=layer1_regime_path(date_text, stage_run_id),
+            metadata={"as_of_date": date_text, "inference_dates": [date_text]},
+        )
+    build_aapl_feature_accuracy_report(
+        run_id="layer1-aapl-holiday-evidence",
+        from_date="2026-05-22",
+        to_date="2026-05-26",
+        layer0_run_id="layer0-aapl-holiday-evidence",
+        config=AAPLFeatureAccuracyConfig(
+            target_horizon_days=1,
+            quality_thresholds=AAPLQualityThresholds(
+                min_feature_rows=2,
+                max_required_feature_null_rate=1.0,
+                min_label_pairs=1,
+                min_abs_best_candidate_correlation=0.0,
+            ),
+            market_parameter_candidates=(
+                MarketParameterCandidate(
+                    name="one_day",
+                    return_window_days=1,
+                    volatility_window_days=1,
+                    volume_window_days=1,
+                ),
+            ),
+        ),
+        writer=writer,
+        now=datetime(2026, 5, 26, 22, 30, tzinfo=UTC),
+    )
+    return writer
+
+
+def _write_memorial_day_price_frame(writer: R2Writer, ticker: str) -> None:
+    """Write synthetic 2026 raw prices with Memorial Day absent."""
+    rows: list[dict[str, object]] = []
+    close = 100.0 if ticker != "SPY" else 400.0
+    dates = [
+        day.date().isoformat()
+        for day in pd.bdate_range("2026-02-02", "2026-05-28")
+        if day.date().isoformat() != "2026-05-25"
+    ]
+    for index, date_text in enumerate(dates):
+        close += 0.5
+        rows.append(
+            {
+                "date": date_text,
+                "ticker": ticker,
+                "open": close - 0.25,
+                "high": close + 0.5,
+                "low": close - 0.5,
+                "close": close,
+                "adj_close": close,
+                "volume": 1_000_000 + index,
+                "dollar_volume": close * (1_000_000 + index),
+            }
+        )
+    _write_parquet(writer, raw_price_path(ticker), pd.DataFrame(rows))
 
 
 def _write_scored_news(writer: R2Writer, date_text: str, stage_run_id: str) -> None:
