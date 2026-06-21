@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import io
 import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 from app.lab.data_pipelines import run_aapl_layer1_accuracy as aapl_runner
 from app.lab.data_pipelines.run_aapl_layer1_accuracy import parse_args
 from app.lab.data_pipelines.run_daily_layer1 import Layer1DailyConfig, run_daily_layer1
+from core.contracts.schemas import FeatureRecord
 from core.features.aapl_accuracy import (
     AAPLFeatureAccuracyConfig,
     AAPLQualityThresholds,
@@ -19,7 +22,13 @@ from core.features.aapl_accuracy import (
     render_aapl_feature_accuracy_report,
     write_aapl_feature_accuracy_report,
 )
-from services.r2.paths import layer1_aapl_accuracy_report_path, raw_price_path
+from core.features.io import feature_records_to_parquet_bytes
+from services.r2.paths import (
+    layer1_aapl_accuracy_report_path,
+    layer1_feature_path,
+    raw_price_path,
+)
+from services.r2.writer import R2Writer
 from tests.fixtures.layer1_support import (
     fake_news_runner,
     fake_regime_runner,
@@ -190,6 +199,140 @@ def test_build_aapl_feature_accuracy_report_blocks_when_date_first_shard_missing
         "features/2024-01-03/AAPL.parquet",
         "features/2024-01-04/AAPL.parquet",
     ]
+    assert report.recommendation_for_issue_202 == "do_not_proceed"
+
+
+def test_build_aapl_feature_accuracy_report_skips_market_holiday_shard_requirement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AAPL accuracy output validation does not require Memorial Day feature shards."""
+    writer = local_writer(tmp_path, monkeypatch)
+    seed_layer0_archives(
+        writer,
+        dates=["2026-05-22", "2026-05-26"],
+        tickers=["AAPL"],
+        layer0_run_ids=("layer1-aapl-holiday",),
+    )
+    _write_minimal_feature_shard(writer, "2026-05-22")
+    _write_minimal_feature_shard(writer, "2026-05-26")
+    _write_price_frame(
+        writer,
+        [
+            "2026-05-20",
+            "2026-05-21",
+            "2026-05-22",
+            "2026-05-26",
+            "2026-05-27",
+            "2026-05-28",
+        ],
+    )
+    config = AAPLFeatureAccuracyConfig(
+        target_horizon_days=1,
+        quality_thresholds=AAPLQualityThresholds(
+            min_feature_rows=2,
+            max_required_feature_null_rate=1.0,
+            min_label_pairs=1,
+            min_abs_best_candidate_correlation=0.0,
+        ),
+        market_parameter_candidates=(
+            MarketParameterCandidate(
+                name="one_day",
+                return_window_days=1,
+                volatility_window_days=1,
+                volume_window_days=1,
+            ),
+        ),
+    )
+
+    report = build_aapl_feature_accuracy_report(
+        run_id="layer1-aapl-holiday",
+        from_date="2026-05-22",
+        to_date="2026-05-26",
+        layer0_run_id="layer1-aapl-holiday",
+        config=config,
+        writer=writer,
+    )
+
+    assert report.output_paths["missing_feature_keys"] == []
+    assert report.output_paths["expected_feature_keys"] == [
+        "features/2026-05-22/AAPL.parquet",
+        "features/2026-05-26/AAPL.parquet",
+    ]
+    assert report.output_paths["skipped_non_trading_feature_keys"] == [
+        {
+            "date": "2026-05-23",
+            "key": "features/2026-05-23/AAPL.parquet",
+            "reason": "non_trading_session",
+        },
+        {
+            "date": "2026-05-24",
+            "key": "features/2026-05-24/AAPL.parquet",
+            "reason": "non_trading_session",
+        },
+        {
+            "date": "2026-05-25",
+            "key": "features/2026-05-25/AAPL.parquet",
+            "reason": "non_trading_session",
+        },
+    ]
+    assert report.input_evidence["expected_trading_dates"] == [
+        "2026-05-22",
+        "2026-05-26",
+    ]
+    assert report.input_evidence["skipped_non_trading_dates"] == [
+        "2026-05-23",
+        "2026-05-24",
+        "2026-05-25",
+    ]
+    assert report.acceptance["checks"]["has_no_missing_date_first_shards"] is True
+
+
+def test_build_aapl_feature_accuracy_report_still_blocks_missing_trading_session_shard(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Missing feature shards for real trading sessions still fail the #202 gate."""
+    writer = local_writer(tmp_path, monkeypatch)
+    seed_layer0_archives(
+        writer,
+        dates=["2026-05-22", "2026-05-26"],
+        tickers=["AAPL"],
+        layer0_run_ids=("layer1-aapl-missing-session",),
+    )
+    _write_minimal_feature_shard(writer, "2026-05-22")
+    _write_price_frame(writer, ["2026-05-22", "2026-05-26", "2026-05-27"])
+    config = AAPLFeatureAccuracyConfig(
+        target_horizon_days=1,
+        quality_thresholds=AAPLQualityThresholds(
+            min_feature_rows=1,
+            max_required_feature_null_rate=1.0,
+            min_label_pairs=1,
+        ),
+        market_parameter_candidates=(
+            MarketParameterCandidate(
+                name="one_day",
+                return_window_days=1,
+                volatility_window_days=1,
+                volume_window_days=1,
+            ),
+        ),
+    )
+
+    report = build_aapl_feature_accuracy_report(
+        run_id="layer1-aapl-missing-session",
+        from_date="2026-05-22",
+        to_date="2026-05-26",
+        layer0_run_id="layer1-aapl-missing-session",
+        config=config,
+        writer=writer,
+    )
+
+    assert report.output_paths["missing_feature_keys"] == [
+        "features/2026-05-26/AAPL.parquet"
+    ]
+    assert "features/2026-05-25/AAPL.parquet" not in report.output_paths["missing_feature_keys"]
+    assert report.acceptance["checks"]["has_no_missing_date_first_shards"] is False
     assert report.recommendation_for_issue_202 == "do_not_proceed"
 
 
@@ -491,3 +634,42 @@ def test_aapl_run_layer1_helper_submits_scoped_single_date_modal_run(
             "hmm_min_training_rows": 12,
         }
     ]
+
+
+def _write_minimal_feature_shard(writer: R2Writer, date_text: str) -> None:
+    """Write one valid minimal AAPL date-first feature shard."""
+    record = FeatureRecord(
+        date=date_text,
+        ticker="AAPL",
+        features={
+            "regime_label": "bull",
+            "regime_confidence": 0.8,
+            "regime_prob_bear": 0.1,
+            "regime_prob_sideways": 0.1,
+            "regime_prob_bull": 0.8,
+        },
+    )
+    writer.put_object(layer1_feature_path(date_text, "AAPL"), feature_records_to_parquet_bytes([record]))
+
+
+def _write_price_frame(writer: R2Writer, dates: list[str]) -> None:
+    """Write a compact AAPL raw price archive for accuracy diagnostics."""
+    rows = []
+    for index, date_text in enumerate(dates):
+        close = 100.0 + index
+        rows.append(
+            {
+                "date": date_text,
+                "ticker": "AAPL",
+                "open": close - 0.25,
+                "high": close + 0.5,
+                "low": close - 0.5,
+                "close": close,
+                "adj_close": close,
+                "volume": 1_000_000 + index,
+                "dollar_volume": close * (1_000_000 + index),
+            }
+        )
+    buffer = io.BytesIO()
+    pd.DataFrame(rows).to_parquet(buffer, index=False)
+    writer.put_object(raw_price_path("AAPL"), buffer.getvalue())

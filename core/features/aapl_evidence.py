@@ -13,6 +13,7 @@ from datetime import date as Date
 from pathlib import Path
 from typing import Any, Protocol
 
+from core.common.trading_calendar import calendar_dates, skipped_non_trading_dates, trading_dates
 from core.contracts.schemas import FeatureRecord, NewsSentimentRecord, PipelineManifestRecord
 from core.features.catalog import feature_catalog, validate_feature_value
 from core.features.io import parquet_bytes_to_feature_record, parquet_bytes_to_feature_records
@@ -169,7 +170,9 @@ def build_aapl_pilot_evidence_bundle(
     )
     active_writer = writer or R2Writer()
     active_layer1_run_id = (layer1_run_id or run_id).strip()
-    dates = _business_dates(from_date, to_date)
+    requested_dates = calendar_dates(from_date, to_date)
+    dates = trading_dates(from_date, to_date)
+    skipped_dates = skipped_non_trading_dates(from_date, to_date)
     stage_run_ids = {date_text: f"{active_layer1_run_id}-{date_text}" for date_text in dates}
 
     artifact_keys = _artifact_keys(
@@ -179,7 +182,9 @@ def build_aapl_pilot_evidence_bundle(
         ticker=ticker,
         from_date=from_date,
         to_date=to_date,
+        requested_dates=requested_dates,
         dates=dates,
+        skipped_dates=skipped_dates,
         stage_run_ids=stage_run_ids,
     )
     loaded = _load_expected_artifacts(
@@ -219,7 +224,7 @@ def build_aapl_pilot_evidence_bundle(
         recommendation_for_issue_202=recommendation,
         gates=tuple(gates),
         artifact_keys=artifact_keys,
-        row_counts=_row_counts(loaded),
+        row_counts=_row_counts(loaded, artifact_keys),
         null_rates=_null_rates(loaded),
         stale_artifacts=_stale_artifacts(active_writer, artifact_keys),
         source_provenance=_source_provenance(loaded, artifact_keys),
@@ -342,11 +347,16 @@ def _artifact_keys(
     ticker: str,
     from_date: str,
     to_date: str,
+    requested_dates: Sequence[str],
     dates: Sequence[str],
+    skipped_dates: Sequence[str],
     stage_run_ids: Mapping[str, str],
 ) -> dict[str, object]:
     return {
         "accuracy_report": layer1_aapl_accuracy_report_path(run_id, from_date, to_date),
+        "requested_calendar_dates": list(requested_dates),
+        "expected_trading_dates": list(dates),
+        "skipped_non_trading_dates": list(skipped_dates),
         "layer0_manifest": pipeline_manifest_path("layer0", layer0_run_id),
         "layer1_manifest": pipeline_manifest_path("layer1", layer1_run_id),
         "raw_price": raw_price_path(ticker),
@@ -606,7 +616,7 @@ def _build_integrity_gates(
         _gate_manifest_completed(loaded, "layer0_manifest"),
         _gate_manifest_completed(loaded, "layer1_manifest"),
         _gate_accuracy_report_available(loaded),
-        _gate_feature_coverage(dates, loaded),
+        _gate_feature_coverage(dates, loaded, artifact_keys),
         _gate_stage_row_coverage(dates, ticker, loaded),
         _gate_catalog_schema(dates, loaded),
         _gate_finite_numeric_values(loaded),
@@ -678,13 +688,20 @@ def _gate_accuracy_report_available(loaded: Mapping[str, object]) -> IntegrityGa
 def _gate_feature_coverage(
     dates: Sequence[str],
     loaded: Mapping[str, object],
+    artifact_keys: Mapping[str, object],
 ) -> IntegrityGate:
     records = _records_by_date(loaded, "feature_records")
     present_dates = sorted(records)
     return IntegrityGate(
         name="date_first_feature_coverage",
         passed=present_dates == list(dates),
-        details={"expected_dates": list(dates), "present_dates": present_dates},
+        details={
+            "expected_trading_dates": list(dates),
+            "present_dates": present_dates,
+            "skipped_non_trading_dates": list(
+                _sequence_artifact_value(artifact_keys, "skipped_non_trading_dates")
+            ),
+        },
     )
 
 
@@ -972,7 +989,10 @@ def _human_review_row(
     )
 
 
-def _row_counts(loaded: Mapping[str, object]) -> dict[str, object]:
+def _row_counts(
+    loaded: Mapping[str, object],
+    artifact_keys: Mapping[str, object],
+) -> dict[str, object]:
     counts: dict[str, object] = {}
     for bucket in (
         "raw_news_rows",
@@ -987,6 +1007,12 @@ def _row_counts(loaded: Mapping[str, object]) -> dict[str, object]:
             for date_text, rows in _records_by_date(loaded, bucket).items()
         }
     counts["feature_records"] = len(_records_by_date(loaded, "feature_records"))
+    counts["expected_trading_dates"] = len(
+        _sequence_artifact_value(artifact_keys, "expected_trading_dates")
+    )
+    counts["skipped_non_trading_dates"] = len(
+        _sequence_artifact_value(artifact_keys, "skipped_non_trading_dates")
+    )
     return counts
 
 
@@ -1043,6 +1069,9 @@ def _source_provenance(
                 }
     return {
         "manifests": manifest_payload,
+        "requested_calendar_dates": artifact_keys["requested_calendar_dates"],
+        "expected_trading_dates": artifact_keys["expected_trading_dates"],
+        "skipped_non_trading_dates": artifact_keys["skipped_non_trading_dates"],
         "raw_price_key": artifact_keys["raw_price"],
         "raw_news_keys": artifact_keys["raw_news"],
         "raw_universe_keys": artifact_keys["raw_universe"],
@@ -1089,6 +1118,16 @@ def _date_key(artifact_keys: Mapping[str, object], family: str, date_text: str) 
     if not isinstance(keys, Mapping):
         raise TypeError(f"{family} is not keyed by date")
     return str(keys[date_text])
+
+
+def _sequence_artifact_value(
+    artifact_keys: Mapping[str, object],
+    family: str,
+) -> tuple[str, ...]:
+    value = artifact_keys.get(family, ())
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        raise TypeError(f"{family} is not a sequence")
+    return tuple(str(item) for item in value)
 
 
 def _stage_manifest_keys(
@@ -1322,12 +1361,5 @@ def _validate_iso_date(value: str, field_name: str) -> None:
 
 
 def _business_dates(from_date: str, to_date: str) -> tuple[str, ...]:
-    start = Date.fromisoformat(from_date)
-    end = Date.fromisoformat(to_date)
-    current = start
-    dates: list[str] = []
-    while current <= end:
-        if current.weekday() < 5:
-            dates.append(current.isoformat())
-        current = current.fromordinal(current.toordinal() + 1)
-    return tuple(dates)
+    """Return regular US equity trading sessions for backward-compatible callers."""
+    return trading_dates(from_date, to_date)

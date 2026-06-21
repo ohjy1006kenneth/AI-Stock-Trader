@@ -12,6 +12,11 @@ from datetime import date as Date
 from pathlib import Path
 from typing import Any, Protocol
 
+from core.common.trading_calendar import (
+    calendar_dates,
+    skipped_non_trading_dates,
+    trading_dates,
+)
 from core.contracts.schemas import FeatureRecord, PipelineManifestRecord
 from core.features.catalog import feature_catalog, feature_family_map, validate_feature_value
 from core.features.io import parquet_bytes_to_feature_record
@@ -184,7 +189,9 @@ def build_aapl_feature_accuracy_report(
     active_writer = writer or R2Writer()
     active_layer1_run_id = layer1_run_id or run_id
     ticker = active_config.ticker.strip().upper()
-    dates = _business_dates(from_date, to_date)
+    requested_dates = calendar_dates(from_date, to_date)
+    dates = trading_dates(from_date, to_date)
+    skipped_dates = skipped_non_trading_dates(from_date, to_date)
     feature_records, missing_feature_keys = _load_aapl_date_first_features(
         writer=active_writer,
         dates=dates,
@@ -214,6 +221,9 @@ def build_aapl_feature_accuracy_report(
         "raw_price_key": price_key,
         "raw_price_status": raw_price_status,
         "raw_price_rows": int(len(price_frame)),
+        "requested_calendar_dates": list(requested_dates),
+        "expected_trading_dates": list(dates),
+        "skipped_non_trading_dates": list(skipped_dates),
         "universe_keys": [raw_universe_path(date_text) for date_text in dates],
     }
     output_paths = {
@@ -221,7 +231,16 @@ def build_aapl_feature_accuracy_report(
         "feature_output_key_examples": [
             layer1_feature_path(record.date, record.ticker) for record in feature_records[:5]
         ],
+        "expected_feature_keys": [layer1_feature_path(date_text, ticker) for date_text in dates],
         "missing_feature_keys": missing_feature_keys,
+        "skipped_non_trading_feature_keys": [
+            {
+                "date": date_text,
+                "key": layer1_feature_path(date_text, ticker),
+                "reason": "non_trading_session",
+            }
+            for date_text in skipped_dates
+        ],
         "r2_output_prefixes": {
             "date_first_features": "features/{YYYY-MM-DD}/AAPL.parquet",
             "diagnostic_reports": "artifacts/reports/diagnostics/",
@@ -229,6 +248,8 @@ def build_aapl_feature_accuracy_report(
     }
     acceptance = _build_acceptance(
         feature_rows=len(feature_records),
+        expected_trading_dates=dates,
+        skipped_non_trading_dates=skipped_dates,
         missing_feature_keys=missing_feature_keys,
         feature_quality=feature_quality,
         catalog_failures=catalog_failures,
@@ -326,7 +347,9 @@ def build_terminal_aapl_feature_accuracy_report(
         output_paths={
             "report_key": report_key,
             "feature_output_key_examples": [],
+            "expected_feature_keys": [],
             "missing_feature_keys": [],
+            "skipped_non_trading_feature_keys": [],
             "r2_output_prefixes": {
                 "date_first_features": "features/{YYYY-MM-DD}/AAPL.parquet",
                 "diagnostic_reports": "artifacts/reports/diagnostics/",
@@ -559,6 +582,8 @@ def _evaluate_market_parameter_candidates(
 def _build_acceptance(
     *,
     feature_rows: int,
+    expected_trading_dates: Sequence[str],
+    skipped_non_trading_dates: Sequence[str],
     missing_feature_keys: Sequence[str],
     feature_quality: Mapping[str, object],
     catalog_failures: Sequence[Mapping[str, object]],
@@ -576,6 +601,7 @@ def _build_acceptance(
         "has_raw_price_data": raw_price_status == "available",
         "has_min_feature_rows": feature_rows >= thresholds.min_feature_rows,
         "has_no_missing_date_first_shards": len(missing_feature_keys) == 0,
+        "skipped_non_trading_dates_not_required": True,
         "required_feature_null_rate_ok": (
             required_null_rate <= thresholds.max_required_feature_null_rate
         ),
@@ -592,6 +618,8 @@ def _build_acceptance(
     return {
         "checks": checks,
         "accepted": all(checks.values()),
+        "expected_trading_dates": list(expected_trading_dates),
+        "skipped_non_trading_dates": list(skipped_non_trading_dates),
         "thresholds": asdict(thresholds),
     }
 
@@ -647,15 +675,8 @@ def _config_to_dict(config: AAPLFeatureAccuracyConfig) -> dict[str, object]:
 
 
 def _business_dates(from_date: str, to_date: str) -> tuple[str, ...]:
-    start = Date.fromisoformat(from_date)
-    end = Date.fromisoformat(to_date)
-    current = start
-    dates: list[str] = []
-    while current <= end:
-        if current.weekday() < 5:
-            dates.append(current.isoformat())
-        current = current.fromordinal(current.toordinal() + 1)
-    return tuple(dates)
+    """Return regular US equity trading sessions for backward-compatible callers."""
+    return trading_dates(from_date, to_date)
 
 
 def _correlation(left: Any, right: Any) -> float | None:
