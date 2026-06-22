@@ -220,7 +220,16 @@ def _load_semantic_review_artifacts(
     )
 
     active_reader = reader
-    if config.use_r2 and active_reader is None:
+    needs_reader = config.use_r2 and active_reader is None and (
+        evidence is None
+        or review_rows is None
+        or (
+            accuracy_report is None
+            and config.from_date is not None
+            and config.to_date is not None
+        )
+    )
+    if needs_reader:
         active_reader = R2Writer(local_root=config.local_r2_root)
     if config.use_r2 and active_reader is not None:
         if evidence is None:

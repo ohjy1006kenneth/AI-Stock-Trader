@@ -37,8 +37,16 @@ def test_build_semantic_review_payload_loads_local_artifacts() -> None:
     assert payload["accuracy_report"]["accepted"] is True
 
 
-def test_build_semantic_review_payload_loads_current_aapl_pilot_bundle() -> None:
+def test_build_semantic_review_payload_loads_current_aapl_pilot_bundle(
+    monkeypatch: Any,
+) -> None:
     """The checked-in current AAPL pilot bundle should load non-empty review rows."""
+
+    def _fail_if_called(*args: object, **kwargs: object) -> None:
+        raise AssertionError("R2Writer should not be constructed for local artifacts")
+
+    monkeypatch.setattr("core.features.semantic_review_dashboard.R2Writer", _fail_if_called)
+
     payload: dict[str, Any] = build_semantic_review_payload(
         SemanticReviewDashboardConfig(
             run_id="layer1-aapl-accuracy-2026-05-06-to-2026-05-28-v4-after-pr221",
