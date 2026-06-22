@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import threading
 from pathlib import Path
+from typing import Any
 from urllib.request import urlopen
 
 from app.lab.semantic_review_dashboard import create_semantic_review_server
@@ -13,6 +14,7 @@ from core.features.semantic_review_dashboard import (
 )
 
 FIXTURE_DIR = Path("tests/fixtures/semantic_review")
+CURRENT_PILOT_DIR = Path("artifacts/reports/diagnostics")
 
 
 def test_build_semantic_review_payload_loads_local_artifacts() -> None:
@@ -35,9 +37,42 @@ def test_build_semantic_review_payload_loads_local_artifacts() -> None:
     assert payload["accuracy_report"]["accepted"] is True
 
 
+def test_build_semantic_review_payload_loads_current_aapl_pilot_bundle() -> None:
+    """The checked-in current AAPL pilot bundle should load non-empty review rows."""
+    payload: dict[str, Any] = build_semantic_review_payload(
+        SemanticReviewDashboardConfig(
+            run_id="layer1-aapl-accuracy-2026-05-06-to-2026-05-28-v4-after-pr221",
+            from_date="2026-05-06",
+            to_date="2026-05-28",
+            ticker="AAPL",
+            artifact_dir=CURRENT_PILOT_DIR,
+        )
+    )
+
+    assert payload["load_status"] == "ok"
+    assert payload["run"]["review_row_count"] == 1571
+    assert payload["run"]["machine_integrity_status"] == "pass"
+    assert payload["run"]["human_semantic_review_status"] == "pending"
+    assert payload["run"]["recommendation_for_issue_202"] == "needs_human_review"
+    assert len(payload["rows"]) == 1571
+    assert payload["source_files"]["evidence_json"] == (
+        "artifacts/reports/diagnostics/"
+        "aapl_pilot_evidence_layer1-aapl-accuracy-2026-05-06-to-2026-05-28-v4-after-pr221.json"
+    )
+    assert payload["source_files"]["review_csv"] == (
+        "artifacts/reports/diagnostics/"
+        "aapl_pilot_human_review_rows_layer1-aapl-accuracy-2026-05-06-to-2026-05-28-v4-after-pr221.csv"
+    )
+    assert payload["source_files"]["accuracy_report"] == (
+        "artifacts/reports/diagnostics/"
+        "layer1_aapl_feature_accuracy_layer1-aapl-accuracy-2026-05-06-to-2026-05-28-v4-after-pr221_"
+        "2026-05-06_to_2026-05-28.json"
+    )
+
+
 def test_build_semantic_review_payload_applies_filters() -> None:
     """Date, ticker, search, and relevance filters narrow review rows."""
-    payload = build_semantic_review_payload(
+    payload: dict[str, Any] = build_semantic_review_payload(
         _fixture_config(),
         filters=SemanticReviewFilters(
             date="2024-01-03",

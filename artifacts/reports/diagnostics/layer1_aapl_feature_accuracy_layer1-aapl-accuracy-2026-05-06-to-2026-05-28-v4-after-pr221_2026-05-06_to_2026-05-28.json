@@ -1,0 +1,366 @@
+{
+  "acceptance": {
+    "accepted": true,
+    "checks": {
+      "best_candidate_correlation_ok": true,
+      "catalog_validation_ok": true,
+      "has_min_feature_rows": true,
+      "has_min_label_pairs": true,
+      "has_no_missing_date_first_shards": true,
+      "has_raw_price_data": true,
+      "required_feature_null_rate_ok": true,
+      "skipped_non_trading_dates_not_required": true
+    },
+    "expected_trading_dates": [
+      "2026-05-06",
+      "2026-05-07",
+      "2026-05-08",
+      "2026-05-11",
+      "2026-05-12",
+      "2026-05-13",
+      "2026-05-14",
+      "2026-05-15",
+      "2026-05-18",
+      "2026-05-19",
+      "2026-05-20",
+      "2026-05-21",
+      "2026-05-22",
+      "2026-05-26",
+      "2026-05-27",
+      "2026-05-28"
+    ],
+    "skipped_non_trading_dates": [
+      "2026-05-09",
+      "2026-05-10",
+      "2026-05-16",
+      "2026-05-17",
+      "2026-05-23",
+      "2026-05-24",
+      "2026-05-25"
+    ],
+    "thresholds": {
+      "max_required_feature_null_rate": 0.35,
+      "min_abs_best_candidate_correlation": 0.0,
+      "min_feature_rows": 1,
+      "min_label_pairs": 3
+    }
+  },
+  "benchmark_ticker": "SPY",
+  "best_parameter_candidate": {
+    "abs_correlation_score": 0.6754811191802079,
+    "correlations": {
+      "candidate_realized_vol": 0.47331836823256734,
+      "candidate_return": 0.04334556332615191,
+      "candidate_volume_ratio": -0.6754811191802079
+    },
+    "label_pairs": 16,
+    "name": "short_momentum",
+    "parameters": {
+      "name": "short_momentum",
+      "return_window_days": 5,
+      "volatility_window_days": 5,
+      "volume_window_days": 10
+    },
+    "status": "completed",
+    "target_label": "forward_return_5d"
+  },
+  "catalog_failures": [],
+  "feature_quality": {
+    "catalog_failure_count": 0,
+    "catalog_required_feature_count": 59,
+    "family_summary": {
+      "fundamentals_earnings": {
+        "finite_numeric": 48,
+        "nulls": 176,
+        "observations": 224
+      },
+      "macro_context": {
+        "finite_numeric": 240,
+        "nulls": 0,
+        "observations": 240
+      },
+      "market": {
+        "finite_numeric": 336,
+        "nulls": 64,
+        "observations": 400
+      },
+      "nlp_topic": {
+        "finite_numeric": 196,
+        "nulls": 12,
+        "observations": 208
+      },
+      "regime": {
+        "finite_numeric": 64,
+        "nulls": 0,
+        "observations": 80
+      }
+    },
+    "feature_dates": [
+      "2026-05-06",
+      "2026-05-07",
+      "2026-05-08",
+      "2026-05-11",
+      "2026-05-12",
+      "2026-05-13",
+      "2026-05-14",
+      "2026-05-15",
+      "2026-05-18",
+      "2026-05-19",
+      "2026-05-20",
+      "2026-05-21",
+      "2026-05-22",
+      "2026-05-26",
+      "2026-05-27",
+      "2026-05-28"
+    ],
+    "feature_rows": 16,
+    "required_feature_null_rate": 0.2542372881355932,
+    "required_feature_nulls": 240,
+    "required_feature_observations": 944
+  },
+  "from_date": "2026-05-06",
+  "generated_at": "2026-06-21T22:51:17+00:00",
+  "input_evidence": {
+    "expected_trading_dates": [
+      "2026-05-06",
+      "2026-05-07",
+      "2026-05-08",
+      "2026-05-11",
+      "2026-05-12",
+      "2026-05-13",
+      "2026-05-14",
+      "2026-05-15",
+      "2026-05-18",
+      "2026-05-19",
+      "2026-05-20",
+      "2026-05-21",
+      "2026-05-22",
+      "2026-05-26",
+      "2026-05-27",
+      "2026-05-28"
+    ],
+    "layer0_manifest_key": "artifacts/manifests/layer0/layer0-readiness-2026-05-06-to-2026-05-28-batch-v1.json",
+    "layer0_manifest_status": "completed",
+    "layer1_manifest_key": "artifacts/manifests/layer1/layer1-aapl-accuracy-2026-05-06-to-2026-05-28-v4-after-pr221.json",
+    "layer1_manifest_status": "completed",
+    "raw_price_key": "raw/prices/AAPL.parquet",
+    "raw_price_rows": 2378,
+    "raw_price_status": "available",
+    "requested_calendar_dates": [
+      "2026-05-06",
+      "2026-05-07",
+      "2026-05-08",
+      "2026-05-09",
+      "2026-05-10",
+      "2026-05-11",
+      "2026-05-12",
+      "2026-05-13",
+      "2026-05-14",
+      "2026-05-15",
+      "2026-05-16",
+      "2026-05-17",
+      "2026-05-18",
+      "2026-05-19",
+      "2026-05-20",
+      "2026-05-21",
+      "2026-05-22",
+      "2026-05-23",
+      "2026-05-24",
+      "2026-05-25",
+      "2026-05-26",
+      "2026-05-27",
+      "2026-05-28"
+    ],
+    "skipped_non_trading_dates": [
+      "2026-05-09",
+      "2026-05-10",
+      "2026-05-16",
+      "2026-05-17",
+      "2026-05-23",
+      "2026-05-24",
+      "2026-05-25"
+    ],
+    "universe_keys": [
+      "raw/universe/2026-05-06.csv",
+      "raw/universe/2026-05-07.csv",
+      "raw/universe/2026-05-08.csv",
+      "raw/universe/2026-05-11.csv",
+      "raw/universe/2026-05-12.csv",
+      "raw/universe/2026-05-13.csv",
+      "raw/universe/2026-05-14.csv",
+      "raw/universe/2026-05-15.csv",
+      "raw/universe/2026-05-18.csv",
+      "raw/universe/2026-05-19.csv",
+      "raw/universe/2026-05-20.csv",
+      "raw/universe/2026-05-21.csv",
+      "raw/universe/2026-05-22.csv",
+      "raw/universe/2026-05-26.csv",
+      "raw/universe/2026-05-27.csv",
+      "raw/universe/2026-05-28.csv"
+    ]
+  },
+  "layer0_run_id": "layer0-readiness-2026-05-06-to-2026-05-28-batch-v1",
+  "layer1_run_id": "layer1-aapl-accuracy-2026-05-06-to-2026-05-28-v4-after-pr221",
+  "optimization_results": [
+    {
+      "abs_correlation_score": 0.6754811191802079,
+      "correlations": {
+        "candidate_realized_vol": 0.47331836823256734,
+        "candidate_return": 0.04334556332615191,
+        "candidate_volume_ratio": -0.6754811191802079
+      },
+      "label_pairs": 16,
+      "name": "short_momentum",
+      "parameters": {
+        "name": "short_momentum",
+        "return_window_days": 5,
+        "volatility_window_days": 5,
+        "volume_window_days": 10
+      },
+      "status": "completed",
+      "target_label": "forward_return_5d"
+    },
+    {
+      "abs_correlation_score": 0.6181554559230655,
+      "correlations": {
+        "candidate_realized_vol": 0.6181554559230655,
+        "candidate_return": -0.4725296343769861,
+        "candidate_volume_ratio": -0.5199439689012424
+      },
+      "label_pairs": 16,
+      "name": "baseline_momentum",
+      "parameters": {
+        "name": "baseline_momentum",
+        "return_window_days": 21,
+        "volatility_window_days": 21,
+        "volume_window_days": 20
+      },
+      "status": "completed",
+      "target_label": "forward_return_5d"
+    },
+    {
+      "abs_correlation_score": 0.6181554559230655,
+      "correlations": {
+        "candidate_realized_vol": 0.6181554559230655,
+        "candidate_return": -0.20464801715252176,
+        "candidate_volume_ratio": -0.5199439689012424
+      },
+      "label_pairs": 16,
+      "name": "intermediate_momentum",
+      "parameters": {
+        "name": "intermediate_momentum",
+        "return_window_days": 63,
+        "volatility_window_days": 21,
+        "volume_window_days": 20
+      },
+      "status": "completed",
+      "target_label": "forward_return_5d"
+    }
+  ],
+  "output_paths": {
+    "expected_feature_keys": [
+      "features/2026-05-06/AAPL.parquet",
+      "features/2026-05-07/AAPL.parquet",
+      "features/2026-05-08/AAPL.parquet",
+      "features/2026-05-11/AAPL.parquet",
+      "features/2026-05-12/AAPL.parquet",
+      "features/2026-05-13/AAPL.parquet",
+      "features/2026-05-14/AAPL.parquet",
+      "features/2026-05-15/AAPL.parquet",
+      "features/2026-05-18/AAPL.parquet",
+      "features/2026-05-19/AAPL.parquet",
+      "features/2026-05-20/AAPL.parquet",
+      "features/2026-05-21/AAPL.parquet",
+      "features/2026-05-22/AAPL.parquet",
+      "features/2026-05-26/AAPL.parquet",
+      "features/2026-05-27/AAPL.parquet",
+      "features/2026-05-28/AAPL.parquet"
+    ],
+    "feature_output_key_examples": [
+      "features/2026-05-06/AAPL.parquet",
+      "features/2026-05-07/AAPL.parquet",
+      "features/2026-05-08/AAPL.parquet",
+      "features/2026-05-11/AAPL.parquet",
+      "features/2026-05-12/AAPL.parquet"
+    ],
+    "missing_feature_keys": [],
+    "r2_output_prefixes": {
+      "date_first_features": "features/{YYYY-MM-DD}/AAPL.parquet",
+      "diagnostic_reports": "artifacts/reports/diagnostics/"
+    },
+    "report_key": "artifacts/reports/diagnostics/layer1_aapl_feature_accuracy_layer1-aapl-accuracy-2026-05-06-to-2026-05-28-v4-after-pr221_2026-05-06_to_2026-05-28.json",
+    "skipped_non_trading_feature_keys": [
+      {
+        "date": "2026-05-09",
+        "key": "features/2026-05-09/AAPL.parquet",
+        "reason": "non_trading_session"
+      },
+      {
+        "date": "2026-05-10",
+        "key": "features/2026-05-10/AAPL.parquet",
+        "reason": "non_trading_session"
+      },
+      {
+        "date": "2026-05-16",
+        "key": "features/2026-05-16/AAPL.parquet",
+        "reason": "non_trading_session"
+      },
+      {
+        "date": "2026-05-17",
+        "key": "features/2026-05-17/AAPL.parquet",
+        "reason": "non_trading_session"
+      },
+      {
+        "date": "2026-05-23",
+        "key": "features/2026-05-23/AAPL.parquet",
+        "reason": "non_trading_session"
+      },
+      {
+        "date": "2026-05-24",
+        "key": "features/2026-05-24/AAPL.parquet",
+        "reason": "non_trading_session"
+      },
+      {
+        "date": "2026-05-25",
+        "key": "features/2026-05-25/AAPL.parquet",
+        "reason": "non_trading_session"
+      }
+    ]
+  },
+  "parameter_config": {
+    "benchmark_ticker": "SPY",
+    "market_parameter_candidates": [
+      {
+        "name": "short_momentum",
+        "return_window_days": 5,
+        "volatility_window_days": 5,
+        "volume_window_days": 10
+      },
+      {
+        "name": "baseline_momentum",
+        "return_window_days": 21,
+        "volatility_window_days": 21,
+        "volume_window_days": 20
+      },
+      {
+        "name": "intermediate_momentum",
+        "return_window_days": 63,
+        "volatility_window_days": 21,
+        "volume_window_days": 20
+      }
+    ],
+    "quality_thresholds": {
+      "max_required_feature_null_rate": 0.35,
+      "min_abs_best_candidate_correlation": 0.0,
+      "min_feature_rows": 1,
+      "min_label_pairs": 3
+    },
+    "target_horizon_days": 5,
+    "ticker": "AAPL"
+  },
+  "recommendation_for_issue_202": "proceed",
+  "report_key": "artifacts/reports/diagnostics/layer1_aapl_feature_accuracy_layer1-aapl-accuracy-2026-05-06-to-2026-05-28-v4-after-pr221_2026-05-06_to_2026-05-28.json",
+  "run_id": "layer1-aapl-accuracy-2026-05-06-to-2026-05-28-v4-after-pr221",
+  "ticker": "AAPL",
+  "to_date": "2026-05-28"
+}

@@ -23,7 +23,7 @@ GitHub issue; the dashboard does not write R2 objects or mutate feature artifact
 From the repository root:
 
 ```bash
-HOME=/home/juyoungoh ./.venv/bin/python -m app.lab.semantic_review_dashboard \
+./.venv/bin/python -m app.lab.semantic_review_dashboard \
   --run-id layer1-aapl-accuracy-2026-05-06-to-2026-05-28-v4-after-pr221 \
   --from-date 2026-05-06 \
   --to-date 2026-05-28 \
@@ -38,29 +38,22 @@ Then open `http://127.0.0.1:8765/` or check:
 curl -fsS http://127.0.0.1:8765/health
 ```
 
-By default, the dashboard first looks for local files under
-`artifacts/reports/diagnostics/`:
-
-- `aapl_pilot_evidence_<run_id>.json`
-- `aapl_pilot_human_review_rows_<run_id>.csv`
-- `layer1_aapl_feature_accuracy_<run_id>_<from>_to_<to>.json`
-
-If those files are not present and R2 credentials are available, `R2Writer()` reads the same
-artifact keys from R2. If no real R2 credentials are configured, the existing local mock R2
-root is used.
+A normal checkout now contains the current pilot diagnostics bundle under
+`artifacts/reports/diagnostics/`, so the command above loads the evidence JSON,
+human-review CSV, and accuracy report without needing a private home-path
+override.
 
 ## Alternate Sources
 
-Use an explicit artifact directory:
+If you copied the bundle elsewhere, point the dashboard at that directory:
 
 ```bash
 ./.venv/bin/python -m app.lab.semantic_review_dashboard \
   --run-id <run_id> \
-  --artifact-dir /path/to/diagnostic-artifacts \
-  --no-r2
+  --artifact-dir /path/to/diagnostic-artifacts
 ```
 
-Use exact file paths:
+Use exact file paths when the artifacts were split apart:
 
 ```bash
 ./.venv/bin/python -m app.lab.semantic_review_dashboard \
@@ -71,7 +64,8 @@ Use exact file paths:
   --no-r2
 ```
 
-Use a local mock R2 tree:
+Use a local mock R2 tree when you want the dashboard to read the mock object-store
+instead of local files:
 
 ```bash
 ./.venv/bin/python -m app.lab.semantic_review_dashboard \
