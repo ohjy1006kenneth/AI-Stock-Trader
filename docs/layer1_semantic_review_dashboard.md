@@ -32,6 +32,10 @@ support is flagged and kept out of the default acceptance path.
 This prevents unrelated or weakly relevant rows from silently dominating the
 review queue.
 
+Upstream preprocessing rows also carry `normalized_headline`, `ticker_mentions`,
+`entity_mentions`, and `source_text_provenance` so the dashboard can explain why
+an article was considered AAPL-relevant before FinBERT scoring.
+
 ## Local run
 
 ```bash
@@ -80,9 +84,14 @@ Each `articles[]` entry contains:
 - `evidence_snippets`
 - `sentence_rows[]`
 
-Each `sentence_rows[]` entry contains:
+Each sentence_rows[] entry contains:
 
 - `sentence_index`
+- `chunk_index`
+- `source_text_field`
+- `source_text_order`
+- `ticker_mentions`
+- `entity_mentions`
 - `text`
 - FinBERT probabilities and score
 - `row_granularity: "sentence-level"`

@@ -206,7 +206,7 @@ r2/
     YYYY-MM-DD/       # Canonical date-first Layer 1 feature partition
       TICKER.parquet  # Complete FeatureRecord shard for one date/ticker
       regime/         # Colocated Layer 1.5 regime artifacts for the date
-      news_sentiment/ # Sentence-level NewsSentimentRecord rows from Modal preprocessing
+      news_sentiment/ # Layer 1 news preprocessing rows with article and chunk provenance
       text_embeddings/# Sentence embedding cache keyed by pinned model/version
       topic_labels/   # Sentence-level BERTopic labels from Modal
       topic_features/ # Ticker-day FeatureRecord topic summaries
@@ -272,7 +272,8 @@ Responsibilities:
 - avoid survivorship bias — use historical constituent lists, never today's index
 - apply daily liquidity and tradeability filters
 - use Alpaca delayed SIP adjusted OHLCV as the canonical historical market data store
-- ingest raw Alpaca news with point-in-time timestamps and raw text
+- ingest raw Alpaca news with point-in-time timestamps and raw text, then convert it into
+  sentence/chunk rows that preserve article provenance and auditable ticker/entity evidence
 - ingest SimFin as-reported fundamentals and earnings dates as point-in-time raw context,
   with public SEC company-facts fallback when SimFin has a provider gap
 - ingest FRED macro and rate series as point-in-time raw context
