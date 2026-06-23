@@ -220,9 +220,16 @@ def _load_semantic_review_artifacts(
     )
 
     active_reader = reader
+    evidence_has_rows = isinstance(evidence, Mapping) and isinstance(
+        evidence.get("human_review_rows"),
+        list,
+    )
     needs_reader = config.use_r2 and active_reader is None and (
         evidence is None
-        or review_rows is None
+        or (
+            review_rows is None
+            and not evidence_has_rows
+        )
         or (
             accuracy_report is None
             and config.from_date is not None
@@ -241,7 +248,11 @@ def _load_semantic_review_artifacts(
                 read_errors=read_errors,
                 label="evidence_json",
             )
-        if review_rows is None:
+            evidence_has_rows = isinstance(evidence, Mapping) and isinstance(
+                evidence.get("human_review_rows"),
+                list,
+            )
+        if review_rows is None and not evidence_has_rows:
             review_rows = _load_r2_csv(
                 active_reader,
                 _review_csv_key(config.run_id),

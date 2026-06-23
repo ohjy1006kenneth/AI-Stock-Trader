@@ -54,6 +54,7 @@ def test_build_semantic_review_payload_loads_current_aapl_pilot_bundle(
             to_date="2026-05-28",
             ticker="AAPL",
             artifact_dir=CURRENT_PILOT_DIR,
+            review_csv_path=CURRENT_PILOT_DIR / "missing-review-csv.csv",
         )
     )
 
@@ -67,15 +68,12 @@ def test_build_semantic_review_payload_loads_current_aapl_pilot_bundle(
         "artifacts/reports/diagnostics/"
         "aapl_pilot_evidence_layer1-aapl-accuracy-2026-05-06-to-2026-05-28-v4-after-pr221.json"
     )
-    assert payload["source_files"]["review_csv"] == (
-        "artifacts/reports/diagnostics/"
-        "aapl_pilot_human_review_rows_layer1-aapl-accuracy-2026-05-06-to-2026-05-28-v4-after-pr221.csv"
-    )
     assert payload["source_files"]["accuracy_report"] == (
         "artifacts/reports/diagnostics/"
         "layer1_aapl_feature_accuracy_layer1-aapl-accuracy-2026-05-06-to-2026-05-28-v4-after-pr221_"
         "2026-05-06_to_2026-05-28.json"
     )
+    assert "review_csv" not in payload["source_files"]
 
 
 def test_build_semantic_review_payload_applies_filters() -> None:
