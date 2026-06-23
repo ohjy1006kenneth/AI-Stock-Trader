@@ -51,7 +51,7 @@ def test_run_text_topics_reads_preprocessed_news_and_writes_outputs(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    """The lab runner writes embeddings, topic labels, topic features, and a manifest."""
+    """The lab runner writes article embeddings, topic labels, topic features, and a manifest."""
     writer = _local_writer(tmp_path, monkeypatch)
     input_key = news_preprocessing_output_path("nlp-pre-run", "2024-01-02")
     _write_preprocessed_news(writer, input_key, _records())
@@ -77,12 +77,14 @@ def test_run_text_topics_reads_preprocessed_news_and_writes_outputs(
     assert result.topic_label_key == layer1_topic_label_path("2024-01-02", "text-topics-run")
     assert result.topic_feature_key == layer1_topic_feature_path("2024-01-02", "text-topics-run")
     assert result.manifest_key == pipeline_manifest_path(TEXT_TOPICS_STAGE, "text-topics-run")
-    assert len(embeddings) == 2
-    assert len(labels) == 3
+    assert len(embeddings) == 1
+    assert len(labels) == 2
     assert set(features["ticker"]) == {"AAPL", "MSFT"}
     assert manifest["status"] == RunStatus.COMPLETED
-    assert manifest["metadata"]["embedding_rows"] == 2
-    assert manifest["metadata"]["topic_label_rows"] == 3
+    assert manifest["metadata"]["preprocessed_rows"] == 3
+    assert manifest["metadata"]["article_rows"] == 1
+    assert manifest["metadata"]["embedding_rows"] == 1
+    assert manifest["metadata"]["topic_label_rows"] == 2
 
 
 def test_run_text_topics_honors_requested_ticker_scope(
@@ -113,6 +115,7 @@ def test_run_text_topics_honors_requested_ticker_scope(
     assert set(features["ticker"]) == {"AAPL"}
     assert manifest["metadata"]["requested_tickers"] == ["AAPL"]
     assert manifest["metadata"]["sentence_rows"] == 2
+    assert manifest["metadata"]["article_rows"] == 1
 
 
 def test_run_text_topics_writes_failure_manifest(
@@ -184,7 +187,7 @@ def _write_preprocessed_news(
 
 
 def _records() -> list[NewsSentimentRecord]:
-    """Return preprocessed sentence-level rows with one duplicated sentence."""
+    """Return preprocessed rows for one multi-ticker article."""
     return [
         _record(ticker="AAPL", text="Apple released results.", sentence_index=0),
         _record(ticker="MSFT", text="Apple released results.", sentence_index=0),
@@ -193,14 +196,17 @@ def _records() -> list[NewsSentimentRecord]:
 
 
 def _record(ticker: str, text: str, sentence_index: int) -> NewsSentimentRecord:
-    """Build one sentence-level news record."""
+    """Build one preprocessed news record."""
     return NewsSentimentRecord(
         date="2024-01-02",
         ticker=ticker,
         headline="Apple released results.",
+        normalized_headline="apple released results.",
         text=text,
         article_id="article-1",
         sentence_index=sentence_index,
+        chunk_index=sentence_index,
+        source_text_order=sentence_index,
         source="benzinga",
         published_at="2024-01-02T12:00:00+00:00",
     )

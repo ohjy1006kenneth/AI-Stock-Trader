@@ -2256,6 +2256,7 @@ def _existing_text_topic_runner(
             topic_feature_key=output_key,
             manifest_key=manifest_key,
             sentence_rows=0,
+            article_rows=0,
             embedding_rows=0,
             topic_label_rows=0,
             topic_feature_rows=0,

@@ -1,4 +1,4 @@
-"""Layer 1 sentence embeddings and topic-label feature helpers."""
+"""Layer 1 article embeddings and topic-label feature helpers."""
 from __future__ import annotations
 
 import hashlib
@@ -14,8 +14,9 @@ from core.contracts.schemas import FeatureRecord, NewsSentimentRecord
 EMBEDDING_COLUMNS: tuple[str, ...] = (
     "date",
     "article_id",
-    "sentence_index",
+    "normalized_headline",
     "text",
+    "article_sentence_count",
     "embedding_model",
     "embedding_revision",
     "embedding_cache_key",
@@ -26,8 +27,9 @@ TOPIC_LABEL_COLUMNS: tuple[str, ...] = (
     "date",
     "ticker",
     "article_id",
-    "sentence_index",
+    "normalized_headline",
     "text",
+    "article_sentence_count",
     "embedding_cache_key",
     "topic_model",
     "topic_model_version",
@@ -36,6 +38,7 @@ TOPIC_LABEL_COLUMNS: tuple[str, ...] = (
 )
 
 TOPIC_FEATURE_COLUMNS: tuple[str, ...] = (
+    "nlp_article_count",
     "nlp_sentence_count",
     "nlp_topic_count",
     "nlp_dominant_topic_id",
@@ -45,10 +48,10 @@ TOPIC_FEATURE_COLUMNS: tuple[str, ...] = (
 
 
 class SentenceEmbedder(Protocol):
-    """Sentence embedding provider used by Layer 1 topic features."""
+    """Article embedding provider used by Layer 1 topic features."""
 
-    def encode(self, sentences: Sequence[str]) -> Sequence[Sequence[float]]:
-        """Return one embedding vector per input sentence."""
+    def encode(self, documents: Sequence[str]) -> Sequence[Sequence[float]]:
+        """Return one embedding vector per input article document."""
 
 
 class TopicLabeler(Protocol):
@@ -64,7 +67,7 @@ class TopicLabeler(Protocol):
 
 @dataclass(frozen=True)
 class TextEmbeddingConfig:
-    """Pinned sentence embedding model identity and shape."""
+    """Pinned article embedding model identity and shape."""
 
     model_name: str
     model_revision: str
@@ -97,11 +100,23 @@ class TopicModelConfig:
 
 @dataclass(frozen=True)
 class TextTopicResult:
-    """Computed embedding cache, topic labels, and ticker-day topic features."""
+    """Computed article embedding cache, topic labels, and ticker-day topic features."""
 
     embeddings: Any
     topic_labels: Any
     feature_records: list[FeatureRecord]
+
+
+@dataclass(frozen=True)
+class _ArticleDocument:
+    """Article-level document derived from one or more preprocessed sentence rows."""
+
+    date: str
+    article_id: str
+    normalized_headline: str | None
+    text: str
+    tickers: tuple[str, ...]
+    sentence_count: int
 
 
 def compute_text_topics(
@@ -115,16 +130,17 @@ def compute_text_topics(
     topic_batch_size: int | None = None,
     max_document_characters: int | None = None,
 ) -> TextTopicResult:
-    """Compute sentence embeddings, topic labels, and ticker-day topic features."""
+    """Compute article embeddings, topic labels, and ticker-day topic features."""
+    articles = _article_documents(records)
     embeddings = compute_sentence_embeddings(
-        records,
+        articles,
         embedder=embedder,
         config=embedding_config,
         batch_size=embedding_batch_size,
         max_document_characters=max_document_characters,
     )
     topic_labels = compute_topic_labels(
-        records,
+        articles,
         embeddings,
         topic_labeler=topic_labeler,
         config=topic_config,
@@ -139,48 +155,49 @@ def compute_text_topics(
 
 
 def compute_sentence_embeddings(
-    records: Sequence[NewsSentimentRecord],
+    records: Sequence[NewsSentimentRecord] | Sequence[_ArticleDocument],
     *,
     embedder: SentenceEmbedder,
     config: TextEmbeddingConfig,
     batch_size: int | None = None,
     max_document_characters: int | None = None,
 ) -> Any:
-    """Return a deterministic embedding-cache DataFrame for unique sentence records."""
+    """Return a deterministic embedding-cache DataFrame for unique article documents."""
     pd = _require_pandas()
     _validate_optional_positive(batch_size, field_name="batch_size")
     _validate_optional_positive(
         max_document_characters,
         field_name="max_document_characters",
     )
-    sentence_records = _unique_sentence_records(records)
-    if not sentence_records:
+    articles = _coerce_article_documents(records)
+    if not articles:
         return pd.DataFrame(columns=list(EMBEDDING_COLUMNS))
 
     rows: list[dict[str, object]] = []
-    for batch_records in _batched_records(sentence_records, batch_size):
+    for batch_records in _batched_articles(articles, batch_size):
         texts = [
             _prepare_document_text(
-                record.text,
+                article.text,
                 max_document_characters=max_document_characters,
             )
-            for record in batch_records
+            for article in batch_records
         ]
         vectors = embedder.encode(texts)
         if len(vectors) != len(batch_records):
             raise ValueError("Embedder returned a different number of vectors than input texts")
 
-        for record, vector in zip(batch_records, vectors, strict=True):
+        for article, vector in zip(batch_records, vectors, strict=True):
             normalized_vector = _validate_embedding_vector(vector, config=config)
             rows.append(
                 {
-                    "date": record.date,
-                    "article_id": _stable_article_id(record),
-                    "sentence_index": record.sentence_index,
-                    "text": record.text,
+                    "date": article.date,
+                    "article_id": article.article_id,
+                    "normalized_headline": article.normalized_headline,
+                    "text": article.text,
+                    "article_sentence_count": article.sentence_count,
                     "embedding_model": config.model_name,
                     "embedding_revision": config.model_revision,
-                    "embedding_cache_key": embedding_cache_key(record, config=config),
+                    "embedding_cache_key": embedding_cache_key(article, config=config),
                     "embedding_json": json.dumps(normalized_vector, separators=(",", ":")),
                 }
             )
@@ -188,7 +205,7 @@ def compute_sentence_embeddings(
 
 
 def compute_topic_labels(
-    records: Sequence[NewsSentimentRecord],
+    records: Sequence[NewsSentimentRecord] | Sequence[_ArticleDocument],
     embeddings: Any,
     *,
     topic_labeler: TopicLabeler,
@@ -196,37 +213,35 @@ def compute_topic_labels(
     batch_size: int | None = None,
     max_document_characters: int | None = None,
 ) -> Any:
-    """Return per-record BERTopic-style topic labels using the embedding cache."""
+    """Return per-article/ticker BERTopic-style topic labels using the embedding cache."""
     pd = _require_pandas()
     _validate_optional_positive(batch_size, field_name="batch_size")
     _validate_optional_positive(
         max_document_characters,
         field_name="max_document_characters",
     )
-    if len(records) == 0:
+    articles = _coerce_article_documents(records)
+    if not articles:
         return pd.DataFrame(columns=list(TOPIC_LABEL_COLUMNS))
 
     embedding_by_key = {
         row["embedding_cache_key"]: _embedding_from_json(row["embedding_json"])
         for row in embeddings.to_dict(orient="records")
     }
-    unique_records = _unique_sentence_records(records)
-    if not unique_records:
-        return pd.DataFrame(columns=list(TOPIC_LABEL_COLUMNS))
 
-    topic_by_sentence: dict[str, tuple[int, float, str]] = {}
+    topic_by_article: dict[str, tuple[int, float, str]] = {}
     next_topic_offset = 0
-    for batch_records in _batched_records(unique_records, batch_size):
+    for batch_records in _batched_articles(articles, batch_size):
         documents: list[str] = []
         vectors: list[list[float]] = []
         cache_keys: list[str] = []
-        for record in batch_records:
-            key = _embedding_cache_key_from_frame(record, embeddings)
+        for article in batch_records:
+            key = _embedding_cache_key_from_frame(article, embeddings)
             if key not in embedding_by_key:
-                raise ValueError(f"Missing embedding cache row for sentence key {key}")
+                raise ValueError(f"Missing embedding cache row for article key {key}")
             documents.append(
                 _prepare_document_text(
-                    record.text,
+                    article.text,
                     max_document_characters=max_document_characters,
                 )
             )
@@ -240,43 +255,43 @@ def compute_topic_labels(
             topics,
             starting_offset=next_topic_offset,
         )
-        for record, topic, probability, cache_key in zip(
+        for article, topic, probability, cache_key in zip(
             batch_records,
             adjusted_topics,
             probabilities,
             cache_keys,
             strict=True,
         ):
-            topic_by_sentence[sentence_identity(record)] = (
+            topic_by_article[article_identity(article)] = (
                 int(topic),
                 _validate_probability(probability),
                 cache_key,
             )
 
     rows: list[dict[str, object]] = []
-    for record in records:
-        if not record.text:
-            continue
-        topic_id, probability, cache_key = topic_by_sentence[sentence_identity(record)]
-        rows.append(
-            {
-                "date": record.date,
-                "ticker": record.ticker,
-                "article_id": _stable_article_id(record),
-                "sentence_index": record.sentence_index,
-                "text": record.text,
-                "embedding_cache_key": cache_key,
-                "topic_model": config.model_name,
-                "topic_model_version": config.model_version,
-                "topic_id": topic_id,
-                "topic_probability": probability,
-            }
-        )
+    for article in articles:
+        topic_id, probability, cache_key = topic_by_article[article_identity(article)]
+        for ticker in article.tickers:
+            rows.append(
+                {
+                    "date": article.date,
+                    "ticker": ticker,
+                    "article_id": article.article_id,
+                    "normalized_headline": article.normalized_headline,
+                    "text": article.text,
+                    "article_sentence_count": article.sentence_count,
+                    "embedding_cache_key": cache_key,
+                    "topic_model": config.model_name,
+                    "topic_model_version": config.model_version,
+                    "topic_id": topic_id,
+                    "topic_probability": probability,
+                }
+            )
     return pd.DataFrame(rows, columns=list(TOPIC_LABEL_COLUMNS))
 
 
 def topic_labels_to_feature_records(topic_labels: Any) -> list[FeatureRecord]:
-    """Aggregate sentence topic labels into validated ticker-day FeatureRecords."""
+    """Aggregate article topic labels into validated ticker-day FeatureRecords."""
     pd = _require_pandas()
     if len(topic_labels) == 0:
         return []
@@ -300,12 +315,14 @@ def topic_labels_to_feature_records(topic_labels: Any) -> list[FeatureRecord]:
             )
 
         mean_probability = frame.loc[group.index, "topic_probability"].map(float).mean()
+        sentence_count = group["article_sentence_count"].map(int).sum()
         records.append(
             FeatureRecord(
                 date=str(date_value),
                 ticker=str(ticker),
                 features={
-                    "nlp_sentence_count": int(len(group)),
+                    "nlp_article_count": int(len(group)),
+                    "nlp_sentence_count": int(sentence_count),
                     "nlp_topic_count": int(valid_topics["topic_id"].nunique()),
                     "nlp_dominant_topic_id": dominant_topic_id,
                     "nlp_dominant_topic_probability": dominant_probability,
@@ -332,11 +349,15 @@ def feature_records_to_frame(records: Sequence[FeatureRecord]) -> Any:
     return pd.DataFrame(rows, columns=["date", "ticker", "features"])
 
 
-def embedding_cache_key(record: NewsSentimentRecord, *, config: TextEmbeddingConfig) -> str:
-    """Return a reproducible cache key for one sentence/model pair."""
+def embedding_cache_key(
+    record: NewsSentimentRecord | _ArticleDocument,
+    *,
+    config: TextEmbeddingConfig,
+) -> str:
+    """Return a reproducible cache key for one article/model pair."""
     payload = "|".join(
         [
-            sentence_identity(record),
+            article_identity(record),
             config.model_name,
             config.model_revision,
             str(config.embedding_dimension),
@@ -358,42 +379,100 @@ def sentence_identity(record: NewsSentimentRecord) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _unique_sentence_records(records: Sequence[NewsSentimentRecord]) -> list[NewsSentimentRecord]:
-    """Return first-seen sentence records with non-empty text."""
-    seen: set[str] = set()
-    unique: list[NewsSentimentRecord] = []
+def article_identity(record: NewsSentimentRecord | _ArticleDocument) -> str:
+    """Return a stable identity for one preprocessed article document."""
+    if isinstance(record, _ArticleDocument):
+        payload = "|".join(
+            [
+                record.date,
+                record.article_id,
+                record.normalized_headline or "",
+                record.text,
+            ]
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    payload = "|".join(
+        [
+            record.date,
+            _stable_article_id(record),
+            record.normalized_headline or "",
+            record.text or "",
+        ]
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _article_documents(records: Sequence[NewsSentimentRecord]) -> list[_ArticleDocument]:
+    """Collapse sentence/chunk rows into deterministic article-level documents."""
+    groups: dict[str, list[NewsSentimentRecord]] = {}
     for record in records:
         if not record.text:
             continue
-        identity = sentence_identity(record)
-        if identity in seen:
-            continue
-        seen.add(identity)
-        unique.append(record)
-    return unique
+        groups.setdefault(_article_group_key(record), []).append(record)
 
-
-def _embedding_cache_key_from_frame(record: NewsSentimentRecord, embeddings: Any) -> str:
-    """Find a sentence embedding cache key in an embedding cache DataFrame."""
-    identity = sentence_identity(record)
-    for row in embeddings.to_dict(orient="records"):
-        candidate = NewsSentimentRecord(
-            date=str(row["date"]),
-            ticker=record.ticker,
-            text=str(row["text"]),
-            article_id=str(row["article_id"]),
-            sentence_index=int(row["sentence_index"]),
+    articles: list[_ArticleDocument] = []
+    for group_records in groups.values():
+        first = sorted(group_records, key=_article_record_sort_key)[0]
+        chunks = _ordered_article_chunks(group_records)
+        tickers = tuple(
+            sorted({record.ticker.strip().upper() for record in group_records if record.ticker})
         )
-        if sentence_identity(candidate) == identity:
+        if not chunks or not tickers:
+            continue
+        articles.append(
+            _ArticleDocument(
+                date=first.date,
+                article_id=_stable_article_id(first),
+                normalized_headline=first.normalized_headline,
+                text=" ".join(chunks),
+                tickers=tickers,
+                sentence_count=len(chunks),
+            )
+        )
+    return sorted(
+        articles,
+        key=lambda article: (article.date, article.article_id, article.text),
+    )
+
+
+def _coerce_article_documents(
+    records: Sequence[NewsSentimentRecord] | Sequence[_ArticleDocument],
+) -> list[_ArticleDocument]:
+    """Return article documents from either preprocessed records or article documents."""
+    if not records:
+        return []
+    first = records[0]
+    if isinstance(first, _ArticleDocument):
+        return list(records)  # type: ignore[arg-type]
+    return _article_documents(records)  # type: ignore[arg-type]
+
+
+def _embedding_cache_key_from_frame(article: _ArticleDocument, embeddings: Any) -> str:
+    """Find an article embedding cache key in an embedding cache DataFrame."""
+    identity = article_identity(article)
+    for row in embeddings.to_dict(orient="records"):
+        candidate = _ArticleDocument(
+            date=str(row["date"]),
+            article_id=str(row["article_id"]),
+            normalized_headline=(
+                None
+                if row.get("normalized_headline") is None
+                else str(row["normalized_headline"])
+            ),
+            text=str(row["text"]),
+            tickers=(),
+            sentence_count=int(row["article_sentence_count"]),
+        )
+        if article_identity(candidate) == identity:
             return str(row["embedding_cache_key"])
-    raise ValueError(f"Missing embedding cache key for sentence identity {identity}")
+    raise ValueError(f"Missing embedding cache key for article identity {identity}")
 
 
-def _batched_records(
-    records: Sequence[NewsSentimentRecord],
+def _batched_articles(
+    records: Sequence[_ArticleDocument],
     batch_size: int | None,
-) -> list[Sequence[NewsSentimentRecord]]:
-    """Split sentence records into deterministic batches when configured."""
+) -> list[Sequence[_ArticleDocument]]:
+    """Split article documents into deterministic batches when configured."""
     if batch_size is None or batch_size >= len(records):
         return [records]
     return [records[index : index + batch_size] for index in range(0, len(records), batch_size)]
@@ -439,8 +518,50 @@ def _stable_article_id(record: NewsSentimentRecord) -> str:
     """Return an article id or a deterministic fallback from sentence text."""
     if record.article_id:
         return record.article_id
-    payload = f"{record.date}|{record.ticker}|{record.text or ''}"
+    payload = "|".join(
+        [
+            record.date,
+            record.normalized_headline or "",
+            str(record.published_at.isoformat() if record.published_at else ""),
+            record.url or "",
+        ]
+    )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def _article_group_key(record: NewsSentimentRecord) -> str:
+    """Return a deterministic grouping key for rows from the same article."""
+    return "|".join(
+        [
+            record.date,
+            _stable_article_id(record),
+            record.normalized_headline or "",
+            str(record.published_at.isoformat() if record.published_at else ""),
+            record.url or "",
+        ]
+    )
+
+
+def _article_record_sort_key(record: NewsSentimentRecord) -> tuple[int, int, str]:
+    """Return source-order sort keys for preprocessed article rows."""
+    source_order = record.source_text_order if record.source_text_order is not None else 0
+    chunk_index = record.chunk_index if record.chunk_index is not None else (
+        record.sentence_index if record.sentence_index is not None else 0
+    )
+    return int(source_order), int(chunk_index), str(record.text or "")
+
+
+def _ordered_article_chunks(records: Sequence[NewsSentimentRecord]) -> list[str]:
+    """Return deduplicated article chunks in preprocessed source order."""
+    seen: set[str] = set()
+    chunks: list[str] = []
+    for record in sorted(records, key=_article_record_sort_key):
+        text = str(record.text or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        chunks.append(text)
+    return chunks
 
 
 def _validate_embedding_vector(

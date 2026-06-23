@@ -55,7 +55,7 @@ modal run app/lab/data_pipelines/backfill_layer1.py \
     --benchmark-ticker SPY
 ```
 
-This keeps feature-history assembly, sentence embeddings, FinBERT scoring, topic modeling,
+This keeps feature-history assembly, article embeddings, FinBERT scoring, topic modeling,
 and HMM regime work off the Pi path. The Pi orchestrator should only trigger Modal jobs and
 consume their R2 outputs.
 
@@ -118,7 +118,7 @@ Execution chain:
    - Preprocess news into sentence-level `NewsSentimentRecord` rows at
      `features/{YYYY-MM-DD}/news_sentiment/{run_id}.parquet`
      using the same narrowed ticker scope when a readiness pilot requests one
-   - Compute pinned-model sentence embeddings and BERTopic labels into
+   - Compute pinned-model article embeddings and BERTopic labels into
      `features/{YYYY-MM-DD}/text_embeddings/`, `features/{YYYY-MM-DD}/topic_labels/`, and
      `features/{YYYY-MM-DD}/topic_features/`
    - Score preprocessed news with FinBERT into

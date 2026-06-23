@@ -65,8 +65,8 @@ class _ResettingTopicLabeler:
         return [0 for _ in batch], [0.75 for _ in batch]
 
 
-def test_compute_text_topics_caches_unique_sentence_embeddings_and_topic_features() -> None:
-    """Sentence embeddings are cached once while topic labels remain ticker-specific."""
+def test_compute_text_topics_caches_article_embeddings_and_topic_features() -> None:
+    """Article embeddings are cached once while topic labels remain ticker-specific."""
     records = [
         _record(ticker="AAPL", text="Apple released results.", sentence_index=0),
         _record(ticker="MSFT", text="Apple released results.", sentence_index=0),
@@ -83,13 +83,15 @@ def test_compute_text_topics_caches_unique_sentence_embeddings_and_topic_feature
 
     assert list(result.embeddings.columns) == list(EMBEDDING_COLUMNS)
     assert list(result.topic_labels.columns) == list(TOPIC_LABEL_COLUMNS)
-    assert len(result.embeddings) == 2
-    assert len(result.topic_labels) == 3
+    assert len(result.embeddings) == 1
+    assert result.embeddings.loc[0, "article_sentence_count"] == 2
+    assert len(result.topic_labels) == 2
     assert {record.ticker for record in result.feature_records} == {"AAPL", "MSFT"}
     assert all(isinstance(record, FeatureRecord) for record in result.feature_records)
     aapl = next(record for record in result.feature_records if record.ticker == "AAPL")
+    assert aapl.features["nlp_article_count"] == 1
     assert aapl.features["nlp_sentence_count"] == 2
-    assert aapl.features["nlp_topic_count"] == 2
+    assert aapl.features["nlp_topic_count"] == 1
 
 
 def test_embedding_cache_key_changes_with_model_revision() -> None:
@@ -103,7 +105,7 @@ def test_embedding_cache_key_changes_with_model_revision() -> None:
 
 
 def test_compute_sentence_embeddings_empty_input_returns_canonical_frame() -> None:
-    """Empty sentence rows return a canonical empty embedding cache."""
+    """Empty article rows return a canonical empty embedding cache."""
     embeddings = compute_sentence_embeddings(
         [],
         embedder=_FakeEmbedder(),
@@ -146,10 +148,10 @@ def test_compute_text_topics_batches_and_offsets_topic_ids() -> None:
     labeler = _ResettingTopicLabeler()
     result = compute_text_topics(
         [
-            _record(text="Alpha.", sentence_index=0),
-            _record(text="Beta.", sentence_index=1),
-            _record(text="Gamma.", sentence_index=2),
-            _record(text="Delta.", sentence_index=3),
+            _record(text="Alpha.", article_id="article-1", sentence_index=0),
+            _record(text="Beta.", article_id="article-2", sentence_index=0),
+            _record(text="Gamma.", article_id="article-3", sentence_index=0),
+            _record(text="Delta.", article_id="article-4", sentence_index=0),
         ],
         embedder=_FakeEmbedder(),
         topic_labeler=labeler,
@@ -210,16 +212,20 @@ def _record(
     date: str = "2024-01-02",
     ticker: str = "AAPL",
     text: str = "Apple released results.",
+    article_id: str = "article-1",
     sentence_index: int = 0,
 ) -> NewsSentimentRecord:
-    """Build one sentence-level news sentiment record."""
+    """Build one preprocessed news sentiment record."""
     return NewsSentimentRecord(
         date=date,
         ticker=ticker,
         headline="Apple released results.",
+        normalized_headline="apple released results.",
         text=text,
-        article_id="article-1",
+        article_id=article_id,
         sentence_index=sentence_index,
+        chunk_index=sentence_index,
+        source_text_order=sentence_index,
         source="benzinga",
         published_at="2024-01-02T12:00:00+00:00",
     )

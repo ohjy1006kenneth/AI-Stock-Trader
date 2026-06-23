@@ -207,8 +207,8 @@ r2/
       TICKER.parquet  # Complete FeatureRecord shard for one date/ticker
       regime/         # Colocated Layer 1.5 regime artifacts for the date
       news_sentiment/ # Layer 1 news preprocessing rows with article and chunk provenance
-      text_embeddings/# Sentence embedding cache keyed by pinned model/version
-      topic_labels/   # Sentence-level BERTopic labels from Modal
+      text_embeddings/# Article embedding cache keyed by pinned model/version
+      topic_labels/   # Article-level BERTopic labels from Modal
       topic_features/ # Ticker-day FeatureRecord topic summaries
       news_sentiment_scored/ # Sentence-level NewsSentimentRecord rows scored by FinBERT
       sentiment_features/ # Ticker-day FeatureRecord sentiment summaries
@@ -368,13 +368,14 @@ RAW ARTICLES (Alpaca news)
       features/{date}/news_sentiment/{run_id}.parquet
   → Step 2a: Sentence Transformers (per article)
       Model: all-mpnet-base-v2
-      Output: pinned-version sentence embedding cache in R2
+      Output: pinned-version article embedding cache in R2
   → Step 2b: BERTopic (across all articles today)
       Input: all articles in the universe today
       Output: topic assignments, probabilities, and ticker-day topic FeatureRecords
       Recommended: 20–50 topics; tune minimum topic size
   → Step 3a: Relevance filter (cosine similarity)
-      Keep only financially relevant articles using reference embeddings
+      Consume article embedding-cache rows and topic-label metadata to keep only
+      financially relevant articles using reference embeddings
       Down-weight articles far from financial-event reference cluster
   → Step 3b: Topic sentiment
       Feed topic-grouped articles into FinBERT to get sentiment per topic
