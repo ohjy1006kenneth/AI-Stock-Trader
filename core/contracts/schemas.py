@@ -6,7 +6,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-SCHEMA_VERSION = "1.2.0"
+SCHEMA_VERSION = "1.3.0"
 
 
 class ActionType(StrEnum):
@@ -67,12 +67,19 @@ class NewsSentimentRecord(BaseModel):
     date: str
     ticker: str
     headline: str | None = None
+    normalized_headline: str | None = None
     text: str | None = None
     article_id: str | None = None
     sentence_index: int | None = Field(default=None, ge=0)
+    chunk_index: int | None = Field(default=None, ge=0)
     source: str | None = None
     url: str | None = None
     published_at: datetime | None = None
+    source_text_field: str | None = None
+    source_text_order: int | None = Field(default=None, ge=0)
+    source_text_provenance: dict[str, Any] = Field(default_factory=dict)
+    ticker_mentions: tuple[str, ...] = Field(default_factory=tuple)
+    entity_mentions: tuple[str, ...] = Field(default_factory=tuple)
     sentiment_positive: float | None = Field(default=None, ge=0.0, le=1.0)
     sentiment_negative: float | None = Field(default=None, ge=0.0, le=1.0)
     sentiment_neutral: float | None = Field(default=None, ge=0.0, le=1.0)

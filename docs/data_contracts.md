@@ -227,12 +227,19 @@ Fields:
 - `date`
 - `ticker`
 - `headline`
+- `normalized_headline`
 - `text`
 - `article_id`
 - `sentence_index`
+- `chunk_index`
 - `source`
 - `url`
 - `published_at`
+- `source_text_field`
+- `source_text_order`
+- `source_text_provenance`
+- `ticker_mentions`
+- `entity_mentions`
 - `sentiment_positive`
 - `sentiment_negative`
 - `sentiment_neutral`
@@ -247,8 +254,12 @@ Use cases:
 
 Input note:
 - generated from Layer 0 raw point-in-time news archives
-- sentence-level preprocessing rows should populate `text`, `article_id`, and
-  `sentence_index`; aggregated ticker-day rows may leave those fields unset
+- preprocessing rows should preserve article provenance in `article_id`, `headline`,
+  `normalized_headline`, `source`, `url`, `published_at`, `source_text_field`,
+  `source_text_order`, and `source_text_provenance`
+- sentence/chunk rows should populate `text`, `sentence_index`, `chunk_index`,
+  `ticker_mentions`, and `entity_mentions`; aggregated ticker-day rows may leave those
+  fields unset
 - `published_at` must preserve the raw article timestamp exactly for downstream leakage checks
 
 ### FeatureRecord
