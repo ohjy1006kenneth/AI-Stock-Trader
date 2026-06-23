@@ -117,3 +117,16 @@ defaults `human_semantic_review_status` to `pending`, so the recommendation for 
   `--human-semantic-review-status accepted` is supplied after human review.
 - `needs_human_review`: machine integrity passed, but semantic review is still pending.
 - `do_not_proceed`: machine integrity failed or semantic review was explicitly rejected.
+
+For repeated browser-based inspection of the same evidence bundle, run the live read-only
+dashboard documented in `docs/layer1_semantic_review_dashboard.md`:
+
+```bash
+HOME=/home/juyoungoh ./.venv/bin/python -m app.lab.semantic_review_dashboard \
+    --run-id layer1-aapl-accuracy-<window>-v1 \
+    --from-date <from> \
+    --to-date <to> \
+    --ticker AAPL \
+    --host 0.0.0.0 \
+    --port 8765
+```

@@ -1,0 +1,111 @@
+{
+  "artifact_keys": {
+    "finbert_scored_news": {
+      "2024-01-03": "features/2024-01-03/news_sentiment_scored/layer1-semantic-fixture-2024-01-03.parquet"
+    },
+    "raw_news": {
+      "2024-01-03": "raw/news/2024-01-03.jsonl"
+    },
+    "regime": {
+      "2024-01-03": "features/2024-01-03/regime/layer1-semantic-fixture-2024-01-03.parquet"
+    }
+  },
+  "from_date": "2024-01-03",
+  "gates": [
+    {
+      "details": {
+        "missing_keys": []
+      },
+      "name": "expected_artifacts_exist",
+      "passed": true
+    },
+    {
+      "details": {
+        "status": "completed"
+      },
+      "name": "layer1_manifest_completed",
+      "passed": true
+    }
+  ],
+  "generated_at": "2024-01-08T12:00:00+00:00",
+  "human_review_rows": [
+    {
+      "date": "2024-01-03",
+      "feature_key": "features/2024-01-03/AAPL.parquet",
+      "finbert_negative": 0.1,
+      "finbert_neutral": 0.2,
+      "finbert_positive": 0.7,
+      "finbert_relevance": 0.92,
+      "finbert_score": 0.6,
+      "finbert_scored_news_key": "features/2024-01-03/news_sentiment_scored/layer1-semantic-fixture-2024-01-03.parquet",
+      "notes": "",
+      "preprocessed_news_key": "features/2024-01-03/news_sentiment/layer1-semantic-fixture-2024-01-03.parquet",
+      "raw_article_id": "article-1",
+      "raw_headline": "Apple supplier demand improves",
+      "raw_news_key": "raw/news/2024-01-03.jsonl",
+      "raw_published_at": "2024-01-03T12:00:00+00:00",
+      "raw_snippet": "Apple supplier checks improved after the holiday quarter.",
+      "raw_source": "benzinga",
+      "regime_confidence": 0.8,
+      "regime_key": "features/2024-01-03/regime/layer1-semantic-fixture-2024-01-03.parquet",
+      "regime_label": "bull",
+      "regime_prob_bear": 0.05,
+      "regime_prob_bull": 0.8,
+      "regime_prob_sideways": 0.15,
+      "review_status": "pending",
+      "sentiment_article_count": 2.0,
+      "sentiment_feature_key": "features/2024-01-03/sentiment_features/layer1-semantic-fixture-2024-01-03.parquet",
+      "sentiment_score": 0.45,
+      "ticker": "AAPL",
+      "topic_count": 3.0,
+      "topic_feature_key": "features/2024-01-03/topic_features/layer1-semantic-fixture-2024-01-03.parquet",
+      "topic_sentence_count": 5.0
+    },
+    {
+      "date": "2024-01-03",
+      "feature_key": "features/2024-01-03/AAPL.parquet",
+      "finbert_negative": 0.6,
+      "finbert_neutral": 0.2,
+      "finbert_positive": 0.2,
+      "finbert_relevance": 0.35,
+      "finbert_score": -0.4,
+      "finbert_scored_news_key": "features/2024-01-03/news_sentiment_scored/layer1-semantic-fixture-2024-01-03.parquet",
+      "notes": "",
+      "preprocessed_news_key": "features/2024-01-03/news_sentiment/layer1-semantic-fixture-2024-01-03.parquet",
+      "raw_article_id": "article-2",
+      "raw_headline": "Apple supplier demand improves",
+      "raw_news_key": "raw/news/2024-01-03.jsonl",
+      "raw_published_at": "2024-01-03T12:30:00+00:00",
+      "raw_snippet": "A duplicated headline carries weaker relevance.",
+      "raw_source": "benzinga",
+      "regime_confidence": 0.8,
+      "regime_key": "features/2024-01-03/regime/layer1-semantic-fixture-2024-01-03.parquet",
+      "regime_label": "bull",
+      "regime_prob_bear": 0.05,
+      "regime_prob_bull": 0.8,
+      "regime_prob_sideways": 0.15,
+      "review_status": "pending",
+      "sentiment_article_count": 2.0,
+      "sentiment_feature_key": "features/2024-01-03/sentiment_features/layer1-semantic-fixture-2024-01-03.parquet",
+      "sentiment_score": 0.45,
+      "ticker": "AAPL",
+      "topic_count": 3.0,
+      "topic_feature_key": "features/2024-01-03/topic_features/layer1-semantic-fixture-2024-01-03.parquet",
+      "topic_sentence_count": 5.0
+    }
+  ],
+  "layer0_run_id": "layer0-semantic-fixture",
+  "layer1_run_id": "layer1-semantic-fixture",
+  "machine_integrity_status": "pass",
+  "null_rates": {},
+  "recommendation_for_issue_202": "needs_human_review",
+  "row_counts": {
+    "expected_trading_dates": 1
+  },
+  "run_id": "layer1-semantic-fixture",
+  "source_provenance": {},
+  "stale_artifacts": {},
+  "ticker": "AAPL",
+  "to_date": "2024-01-03",
+  "human_semantic_review_status": "pending"
+}

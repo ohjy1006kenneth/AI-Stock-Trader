@@ -26,6 +26,10 @@ This is where news, market, and context inputs are aligned into training-ready t
 - `verify_aapl_pilot_evidence.py` builds the non-dashboard AAPL pilot evidence bundle after
   the accuracy pilot: machine-integrity JSON plus human-review Markdown/CSV. It keeps
   FinBERT/topic/HMM semantic correctness as an explicit human review decision.
+- `app.lab.semantic_review_dashboard` serves the same semantic-review evidence as a
+  persistent read-only browser dashboard for repeated local or R2-backed inspection. The
+  checked-in current AAPL pilot bundle lives under `artifacts/reports/diagnostics/` and can
+  also be redirected with `--artifact-dir` when you point at another diagnostics directory.
 
 ## Modal entrypoints
 
