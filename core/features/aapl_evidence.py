@@ -185,16 +185,22 @@ def build_layer1_aapl_evidence_report(
     active_writer = writer or R2Writer()
     scored_frames: list[pd.DataFrame] = []
     load_warnings: list[dict[str, object]] = []
-    for current_date in _inclusive_date_range(start_date, end_date):
-        key = layer1_sentiment_score_path(current_date, run_id)
-        try:
-            scored_frame = _read_parquet_frame(active_writer.get_object(key))
-        except FileNotFoundError:
+    trading_date_list = trading_dates(from_date, to_date)
+    for current_date in trading_date_list:
+        primary_key = layer1_sentiment_score_path(current_date, run_id)
+        fallback_key = layer1_sentiment_score_path(current_date, f"{run_id}-{current_date}")
+        scored_frame, resolved_key = _read_first_available_parquet_frame(
+            active_writer,
+            (primary_key, fallback_key),
+        )
+        if scored_frame is None:
             load_warnings.append(
                 {
                     "scope": "sentence_rows",
                     "date": current_date,
-                    "key": key,
+                    "key": primary_key,
+                    "fallback_key": fallback_key,
+                    "tried_keys": [primary_key, fallback_key],
                     "message": "Missing scored-news parquet for this trading date.",
                 }
             )
@@ -204,7 +210,9 @@ def build_layer1_aapl_evidence_report(
                 {
                     "scope": "sentence_rows",
                     "date": current_date,
-                    "key": key,
+                    "key": resolved_key,
+                    "fallback_key": fallback_key if resolved_key == primary_key else primary_key,
+                    "tried_keys": [primary_key, fallback_key],
                     "message": "Scored-news parquet is empty.",
                 }
             )
@@ -212,16 +220,21 @@ def build_layer1_aapl_evidence_report(
         scored_frames.append(scored_frame)
 
     regime_frames: list[pd.DataFrame] = []
-    for current_date in _inclusive_date_range(start_date, end_date):
-        key = layer1_regime_path(current_date, run_id)
-        try:
-            regime_frame = _read_parquet_frame(active_writer.get_object(key))
-        except FileNotFoundError:
+    for current_date in trading_date_list:
+        primary_key = layer1_regime_path(current_date, run_id)
+        fallback_key = layer1_regime_path(current_date, f"{run_id}-{current_date}")
+        regime_frame, resolved_key = _read_first_available_parquet_frame(
+            active_writer,
+            (primary_key, fallback_key),
+        )
+        if regime_frame is None:
             load_warnings.append(
                 {
                     "scope": "regime",
                     "date": current_date,
-                    "key": key,
+                    "key": primary_key,
+                    "fallback_key": fallback_key,
+                    "tried_keys": [primary_key, fallback_key],
                     "message": "Missing date-level HMM regime parquet for this trading date.",
                 }
             )
@@ -231,7 +244,9 @@ def build_layer1_aapl_evidence_report(
                 {
                     "scope": "regime",
                     "date": current_date,
-                    "key": key,
+                    "key": resolved_key,
+                    "fallback_key": fallback_key if resolved_key == primary_key else primary_key,
+                    "tried_keys": [primary_key, fallback_key],
                     "message": "Regime parquet is empty.",
                 }
             )
@@ -239,6 +254,27 @@ def build_layer1_aapl_evidence_report(
         regime_frames.append(regime_frame)
 
     regime_frame = pd.concat(regime_frames, ignore_index=True) if regime_frames else pd.DataFrame()
+
+    if (not scored_frames or not regime_frames) and (cached_frames := _load_cached_aapl_pilot_evidence_frames(
+        run_id=run_id,
+        from_date=from_date,
+        to_date=to_date,
+        ticker=requested_ticker,
+    )) is not None:
+        scored_frame, regime_frame = cached_frames
+        scored_frames = [scored_frame]
+        regime_frames = [regime_frame]
+        load_warnings = [
+            {
+                "scope": "cached_bundle",
+                "message": (
+                    "Loaded cached AAPL pilot evidence bundle after raw stage-artifact lookups "
+                    "returned no rows."
+                ),
+                "run_id": run_id,
+                "source": str(_find_cached_aapl_pilot_evidence_bundle_path(run_id)),
+            }
+        ]
 
     if scored_frames:
         scored_frame = pd.concat(scored_frames, ignore_index=True)
@@ -555,6 +591,111 @@ def _normalize_scored_frame(frame: pd.DataFrame) -> pd.DataFrame:
 def _read_parquet_frame(data: bytes) -> pd.DataFrame:
     """Load a parquet payload into a DataFrame."""
     return pd.read_parquet(BytesIO(data))
+
+
+def _read_first_available_parquet_frame(
+    writer: R2Writer,
+    keys: Sequence[str],
+) -> tuple[pd.DataFrame | None, str | None]:
+    """Return the first readable parquet frame for one of the provided keys."""
+    for key in keys:
+        try:
+            return _read_parquet_frame(writer.get_object(key)), key
+        except FileNotFoundError:
+            continue
+    return None, None
+
+
+def _load_cached_aapl_pilot_evidence_frames(
+    *,
+    run_id: str,
+    from_date: str,
+    to_date: str,
+    ticker: str,
+) -> tuple[pd.DataFrame, pd.DataFrame] | None:
+    """Load a cached AAPL pilot evidence bundle when raw stage artifacts are unavailable."""
+    bundle_path = _find_cached_aapl_pilot_evidence_bundle_path(run_id)
+    if bundle_path is None:
+        return None
+    try:
+        bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    raw_rows = bundle.get("human_review_rows")
+    if not isinstance(raw_rows, list) or not raw_rows:
+        return None
+
+    raw_frame = pd.DataFrame(raw_rows)
+    if raw_frame.empty or "date" not in raw_frame.columns:
+        return None
+
+    requested_ticker = ticker.strip().upper()
+    expected_dates = set(trading_dates(from_date, to_date))
+    filtered = raw_frame.copy()
+    filtered["date"] = filtered["date"].map(lambda value: _optional_str(value) or "")
+    filtered = filtered[filtered["date"].isin(expected_dates)]
+    if "ticker" in filtered.columns:
+        filtered["ticker"] = filtered["ticker"].map(lambda value: _optional_str(value) or "")
+        filtered = filtered[filtered["ticker"].str.upper() == requested_ticker]
+    if filtered.empty:
+        return None
+
+    filtered = filtered.reset_index(drop=True)
+    sentence_index = filtered.groupby(["date", "raw_article_id"], sort=False).cumcount()
+    scored_frame = pd.DataFrame(
+        {
+            "date": filtered["date"],
+            "ticker": filtered.get("ticker", requested_ticker),
+            "headline": filtered.get("raw_headline"),
+            "text": filtered.get("raw_snippet"),
+            "article_id": filtered.get("raw_article_id"),
+            "source": filtered.get("raw_source"),
+            "url": None,
+            "published_at": filtered.get("raw_published_at"),
+            "sentence_index": sentence_index,
+            "sentiment_score": filtered.get("finbert_score"),
+            "positive_probability": filtered.get("finbert_positive"),
+            "negative_probability": filtered.get("finbert_negative"),
+            "neutral_probability": filtered.get("finbert_neutral"),
+            "relevance_score": filtered.get("finbert_relevance"),
+        }
+    )
+    regime_columns = {
+        "date": filtered["date"],
+        "regime": filtered["regime_label"] if "regime_label" in filtered.columns else filtered.get("regime"),
+        "confidence": (
+            filtered["regime_confidence"] if "regime_confidence" in filtered.columns else filtered.get("confidence")
+        ),
+        "prob_bear": (
+            filtered["regime_prob_bear"] if "regime_prob_bear" in filtered.columns else filtered.get("prob_bear")
+        ),
+        "prob_sideways": (
+            filtered["regime_prob_sideways"]
+            if "regime_prob_sideways" in filtered.columns
+            else filtered.get("prob_sideways")
+        ),
+        "prob_bull": (
+            filtered["regime_prob_bull"] if "regime_prob_bull" in filtered.columns else filtered.get("prob_bull")
+        ),
+    }
+    regime_frame = pd.DataFrame(regime_columns).drop_duplicates(subset=["date"])
+    return scored_frame, regime_frame
+
+
+def _find_cached_aapl_pilot_evidence_bundle_path(run_id: str) -> Path | None:
+    """Return the most recent cached AAPL pilot evidence bundle for a run, if one exists."""
+    filename = f"aapl_pilot_evidence_{run_id}.json"
+    direct_path = DEFAULT_AAPL_PILOT_EVIDENCE_OUTPUT_DIR / filename
+    if direct_path.exists():
+        return direct_path
+
+    profiles_root = Path.home() / ".hermes" / "profiles"
+    if profiles_root.exists():
+        candidates = [path for path in profiles_root.rglob(filename) if path.is_file()]
+        if candidates:
+            return max(candidates, key=lambda path: path.stat().st_mtime)
+    return None
 
 
 def _build_payload_from_report(report: Layer1SemanticReviewReport | Mapping[str, object]) -> dict[str, object]:

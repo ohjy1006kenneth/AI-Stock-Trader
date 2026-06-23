@@ -19,6 +19,7 @@ from core.features.aapl_accuracy import (
 )
 from core.features.aapl_evidence import (
     build_aapl_pilot_evidence_bundle,
+    build_layer1_aapl_evidence_report,
     render_aapl_pilot_human_review_csv,
     render_aapl_pilot_human_review_markdown,
     write_aapl_pilot_evidence_outputs,
@@ -69,6 +70,91 @@ def test_build_aapl_pilot_evidence_bundle_separates_machine_and_human_review(
     assert "FinBERT, topic-model, and HMM semantic correctness is a human decision" in markdown
     assert "Market update." in csv_text
     assert bundle.artifact_keys["raw_price"] == "raw/prices/AAPL.parquet"
+
+
+def test_build_layer1_aapl_evidence_report_loads_cached_bundle_when_stage_artifacts_are_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The report builder can fall back to a cached AAPL pilot evidence bundle."""
+    diagnostics_dir = tmp_path / "artifacts" / "reports" / "diagnostics"
+    diagnostics_dir.mkdir(parents=True)
+    monkeypatch.setattr(
+        "core.features.aapl_evidence.DEFAULT_AAPL_PILOT_EVIDENCE_OUTPUT_DIR",
+        diagnostics_dir,
+    )
+    bundle_path = diagnostics_dir / "aapl_pilot_evidence_cached-run.json"
+    bundle_path.write_text(
+        json.dumps(
+            {
+                "human_review_rows": [
+                    {
+                        "date": "2026-05-21",
+                        "ticker": "AAPL",
+                        "review_status": "pending",
+                        "raw_article_id": "aapl-001",
+                        "raw_headline": "Apple expands AI search in Safari",
+                        "raw_snippet": "Apple expands AI search in Safari and highlights AAPL search demand.",
+                        "raw_source": "benzinga",
+                        "raw_published_at": "2026-05-21T14:00:00Z",
+                        "raw_news_key": "raw/news/2026-05-21.jsonl",
+                        "preprocessed_news_key": "features/2026-05-21/news_sentiment/cached-run-2026-05-21.parquet",
+                        "finbert_scored_news_key": "features/2026-05-21/news_sentiment_scored/cached-run-2026-05-21.parquet",
+                        "finbert_positive": 0.91,
+                        "finbert_negative": 0.03,
+                        "finbert_neutral": 0.06,
+                        "finbert_score": 0.88,
+                        "relevance_score": 0.92,
+                        "regime": "bull",
+                        "regime_confidence": 0.97,
+                        "regime_prob_bear": 0.01,
+                        "regime_prob_sideways": 0.02,
+                        "regime_prob_bull": 0.97,
+                        "notes": "",
+                    },
+                    {
+                        "date": "2026-05-22",
+                        "ticker": "AAPL",
+                        "review_status": "pending",
+                        "raw_article_id": "aapl-002",
+                        "raw_headline": "Apple supplier sees weaker iPhone demand",
+                        "raw_snippet": "Apple supplier commentary suggests weaker iPhone demand and reduced AAPL relevance.",
+                        "raw_source": "reuters",
+                        "raw_published_at": "2026-05-22T14:00:00Z",
+                        "raw_news_key": "raw/news/2026-05-22.jsonl",
+                        "preprocessed_news_key": "features/2026-05-22/news_sentiment/cached-run-2026-05-22.parquet",
+                        "finbert_scored_news_key": "features/2026-05-22/news_sentiment_scored/cached-run-2026-05-22.parquet",
+                        "finbert_positive": 0.18,
+                        "finbert_negative": 0.62,
+                        "finbert_neutral": 0.20,
+                        "finbert_score": -0.44,
+                        "relevance_score": 0.41,
+                        "regime": "sideways",
+                        "regime_confidence": 0.88,
+                        "regime_prob_bear": 0.14,
+                        "regime_prob_sideways": 0.73,
+                        "regime_prob_bull": 0.13,
+                        "notes": "",
+                    },
+                ]
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    report = build_layer1_aapl_evidence_report(
+        run_id="cached-run",
+        from_date="2026-05-21",
+        to_date="2026-05-22",
+        ticker="AAPL",
+        writer=R2Writer(local_root=tmp_path / "empty-r2"),
+    )
+
+    assert report.row_count == 2
+    assert report.article_count == 2
+    assert report.date_count == 2
+    assert report.load_warnings[0]["scope"] == "cached_bundle"
 
 
 def test_build_aapl_pilot_evidence_bundle_allows_proceed_only_after_human_acceptance(

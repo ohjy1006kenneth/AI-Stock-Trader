@@ -7,6 +7,7 @@ from typing import Any, cast
 from app.lab.semantic_review_dashboard import _DashboardDefaults, _render_dashboard_html
 from core.features.aapl_evidence import build_layer1_aapl_evidence_report
 from core.features.semantic_review_dashboard import build_layer1_semantic_review_dashboard_payload
+from services.r2.paths import layer1_regime_path, layer1_sentiment_score_path
 from tests.fixtures.semantic_review_support import seed_semantic_review_fixture
 
 
@@ -44,6 +45,44 @@ def test_semantic_review_report_groups_sentence_rows_and_date_regime(tmp_path: P
     assert regime["applies_to"] == "all sentence rows on the trading date"
     assert regime["regime"] == "sideways"
     assert date_groups["2026-05-21"]["sentence_count"] == 5
+
+
+def test_semantic_review_report_loads_dated_stage_artifacts_for_parent_run_id(tmp_path: Path) -> None:
+    """Parent run ids should resolve dated scored-news and regime stage artifacts."""
+    fixture = seed_semantic_review_fixture(local_root=tmp_path / "r2")
+    writer = fixture["writer"]
+    parent_run_id = "layer1-aapl-accuracy-2026-05-06-to-2026-05-28-v4-after-pr221"
+    stage_run_ids = {
+        "2026-05-21": f"{parent_run_id}-2026-05-21",
+        "2026-05-22": f"{parent_run_id}-2026-05-22",
+    }
+
+    for date_text, stage_run_id in stage_run_ids.items():
+        writer.put_object(
+            layer1_sentiment_score_path(date_text, stage_run_id),
+            writer.get_object(layer1_sentiment_score_path(date_text, fixture["run_id"])),
+        )
+        writer.put_object(
+            layer1_regime_path(date_text, stage_run_id),
+            writer.get_object(layer1_regime_path("2026-05-21", fixture["run_id"])),
+        )
+
+    report = build_layer1_aapl_evidence_report(
+        run_id=parent_run_id,
+        from_date="2026-05-21",
+        to_date="2026-05-25",
+        ticker="AAPL",
+        writer=writer,
+    )
+    report_dict = cast(dict[str, Any], report.to_dict())
+
+    assert report_dict["row_count"] == 8
+    assert report_dict["article_count"] == 4
+    assert report_dict["date_count"] == 2
+    assert report_dict["regime_rows"][0]["date"] == "2026-05-21"
+    assert report_dict["load_warnings"] == []
+
+
 
 
 def test_semantic_review_payload_flags_weak_and_duplicate_articles(tmp_path: Path) -> None:
