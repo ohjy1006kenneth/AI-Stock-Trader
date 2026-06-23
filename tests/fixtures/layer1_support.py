@@ -163,6 +163,7 @@ def fake_topic_runner(writer: R2Writer, tickers: Sequence[str]):
             topic_feature_key=output_key,
             manifest_key=pipeline_manifest_path("layer1_text_topics", config.run_id),
             sentence_rows=1,
+            article_rows=1,
             embedding_rows=1,
             topic_label_rows=1,
             topic_feature_rows=1,

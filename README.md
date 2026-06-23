@@ -42,7 +42,7 @@ This is the current baseline architecture for the repo:
 
 Future work that stays compatible with this baseline:
 - LSTM / GRU sequence models
-- sentence embedding and topic features
+- article embedding and topic features
 - stronger contextual bandits
 - RL only after the simpler stack is proven
 

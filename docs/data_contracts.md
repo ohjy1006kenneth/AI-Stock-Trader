@@ -262,6 +262,40 @@ Input note:
   fields unset
 - `published_at` must preserve the raw article timestamp exactly for downstream leakage checks
 
+### Layer 1 text embeddings and topic labels (non-contract artifacts)
+
+Purpose:
+- cache pinned Sentence Transformer article embeddings for reuse by relevance filtering
+- persist deterministic BERTopic article assignments for audit and ticker-day aggregation
+- keep heavy text-model outputs in R2 without adding a new Pydantic inter-layer contract
+
+Notes:
+- the text-topic stage consumes preprocessed `NewsSentimentRecord` rows from
+  `features/{YYYY-MM-DD}/news_sentiment/{run_id}.parquet`; it does not read raw dashboard
+  rows or raw Layer 0 news directly
+- preprocessed sentence/chunk rows are collapsed into one article document per
+  `(date, article_id/provenance)` before embedding or topic assignment
+- article embeddings are written to
+  `features/{YYYY-MM-DD}/text_embeddings/{run_id}.parquet` with:
+  `date`, `article_id`, `normalized_headline`, `text`, `article_sentence_count`,
+  `embedding_model`, `embedding_revision`, `embedding_cache_key`, and `embedding_json`
+- BERTopic labels are written to
+  `features/{YYYY-MM-DD}/topic_labels/{run_id}.parquet` with:
+  `date`, `ticker`, `article_id`, `normalized_headline`, `text`,
+  `article_sentence_count`, `embedding_cache_key`, `topic_model`,
+  `topic_model_version`, `topic_id`, and `topic_probability`
+- topic labels are article/ticker rows: each unique article is embedded and assigned a topic
+  once, then expanded to each point-in-time ticker tagged by preprocessing for ticker-day
+  feature aggregation
+- ticker-day topic summaries are persisted as `FeatureRecord` rows at
+  `features/{YYYY-MM-DD}/topic_features/{run_id}.parquet`; current summary keys include
+  `nlp_article_count`, `nlp_sentence_count`, `nlp_topic_count`,
+  `nlp_dominant_topic_id`, `nlp_dominant_topic_probability`, and
+  `nlp_mean_topic_probability`
+- downstream relevance filtering should consume `embedding_cache_key`,
+  `embedding_json`, and the article/topic metadata from these artifacts; threshold policy is
+  owned by the relevance-filtering task, not this artifact writer
+
 ### FeatureRecord
 
 Represents one fully aligned feature row for one `(date, ticker)`.

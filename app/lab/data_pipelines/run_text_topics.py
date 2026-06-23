@@ -1,4 +1,4 @@
-"""Modal-ready Layer 1 sentence embeddings and BERTopic label runner."""
+"""Modal-ready Layer 1 article embeddings and BERTopic label runner."""
 from __future__ import annotations
 
 import argparse
@@ -138,6 +138,7 @@ class TextTopicPipelineResult:
     topic_feature_key: str
     manifest_key: str
     sentence_rows: int
+    article_rows: int
     embedding_rows: int
     topic_label_rows: int
     topic_feature_rows: int
@@ -151,7 +152,7 @@ def run_text_topics(
     topic_labeler: TopicLabeler | None = None,
     runtime_config: TextModelRuntimeConfig | None = None,
 ) -> TextTopicPipelineResult:
-    """Run Layer 1 sentence embeddings and BERTopic labels against R2 inputs."""
+    """Run Layer 1 article embeddings and BERTopic labels against R2 inputs."""
     active_writer = writer or R2Writer()
     runtime = runtime_config or load_text_model_runtime_config()
     active_embedder = embedder or SentenceTransformerEmbedder(runtime.embedding_config)
@@ -201,7 +202,9 @@ def run_text_topics(
         )
         metadata.update(
             {
+                "preprocessed_rows": len(records),
                 "sentence_rows": len(records),
+                "article_rows": len(result.embeddings),
                 "embedding_rows": len(result.embeddings),
                 "topic_label_rows": len(result.topic_labels),
                 "topic_feature_rows": len(result.feature_records),
@@ -224,6 +227,7 @@ def run_text_topics(
             topic_feature_key=topic_feature_key,
             manifest_key=manifest_key,
             sentence_rows=len(records),
+            article_rows=len(result.embeddings),
             embedding_rows=len(result.embeddings),
             topic_label_rows=len(result.topic_labels),
             topic_feature_rows=len(result.feature_records),
@@ -244,7 +248,7 @@ def run_text_topics(
 
 
 class SentenceTransformerEmbedder:
-    """SentenceTransformers-backed embedder loaded only in Modal/runtime contexts."""
+    """SentenceTransformers-backed article embedder loaded only in Modal/runtime contexts."""
 
     def __init__(self, config: TextEmbeddingConfig) -> None:
         """Load the configured sentence-transformer model."""
@@ -255,7 +259,7 @@ class SentenceTransformerEmbedder:
         )
 
     def encode(self, sentences: Sequence[str]) -> Sequence[Sequence[float]]:
-        """Return normalized embeddings for the supplied sentences."""
+        """Return normalized embeddings for the supplied article documents."""
         vectors = self._model.encode(
             list(sentences),
             normalize_embeddings=True,
@@ -327,7 +331,7 @@ def load_text_model_runtime_config(path: Path = TEXT_MODEL_CONFIG_PATH) -> TextM
 
 
 def _load_preprocessed_news_records(writer: ObjectStore, key: str) -> list[object]:
-    """Load sentence-level NewsSentimentRecord rows from a preprocessing artifact."""
+    """Load preprocessed NewsSentimentRecord rows from a preprocessing artifact."""
     try:
         import pandas as pd
     except ModuleNotFoundError as exc:
@@ -433,7 +437,7 @@ def _config_from_args(args: argparse.Namespace) -> TextTopicPipelineConfig:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Run text embedding and topic labeling from the local command line."""
+    """Run article embedding and topic labeling from the local command line."""
     result = run_text_topics(_config_from_args(_parse_args(argv)))
     logger.info("Manifest written to {}", result.manifest_key)
     return 0
@@ -482,6 +486,7 @@ def _modal_run_text_topics_entry(
         "topic_feature_key": result.topic_feature_key,
         "manifest_key": result.manifest_key,
         "sentence_rows": result.sentence_rows,
+        "article_rows": result.article_rows,
         "embedding_rows": result.embedding_rows,
         "topic_label_rows": result.topic_label_rows,
         "topic_feature_rows": result.topic_feature_rows,

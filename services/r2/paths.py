@@ -131,7 +131,7 @@ def layer1_news_preprocessing_path(as_of_date: str | Date | datetime, run_id: st
 
 
 def layer1_text_embedding_path(as_of_date: str | Date | datetime, run_id: str) -> str:
-    """Return the canonical date-first Layer 1 sentence-embedding cache path."""
+    """Return the canonical date-first Layer 1 article-embedding cache path."""
     safe_run_id = _validate_key_part(run_id)
     return build_r2_key(
         "features",
@@ -142,7 +142,7 @@ def layer1_text_embedding_path(as_of_date: str | Date | datetime, run_id: str) -
 
 
 def layer1_topic_label_path(as_of_date: str | Date | datetime, run_id: str) -> str:
-    """Return the canonical date-first Layer 1 sentence-topic label path."""
+    """Return the canonical date-first Layer 1 article-topic label path."""
     safe_run_id = _validate_key_part(run_id)
     return build_r2_key(
         "features",
