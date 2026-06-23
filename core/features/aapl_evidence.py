@@ -1,22 +1,46 @@
 """Semantic-review evidence assembly for the Layer 1 AAPL pilot dashboard."""
 from __future__ import annotations
 
+import csv
 import json
 import re
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from datetime import date as Date
-from io import BytesIO
+from io import BytesIO, StringIO
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
-from services.r2.paths import layer1_regime_path, layer1_sentiment_score_path
+from core.common.trading_calendar import skipped_non_trading_dates, trading_dates
+from services.r2.paths import (
+    layer1_feature_path,
+    layer1_news_preprocessing_path,
+    layer1_regime_path,
+    layer1_sentiment_feature_path,
+    layer1_sentiment_score_path,
+    layer1_topic_feature_path,
+    pipeline_manifest_path,
+    raw_price_path,
+)
 from services.r2.writer import R2Writer
 
 DEFAULT_RELEVANCE_THRESHOLD = 0.6
+HUMAN_REVIEW_STATUSES = frozenset({"pending", "accepted", "rejected"})
+DEFAULT_AAPL_PILOT_EVIDENCE_OUTPUT_DIR = Path("artifacts/reports/diagnostics")
+
+
+def default_aapl_pilot_evidence_paths(run_id: str) -> dict[str, Path]:
+    """Return the default JSON, Markdown, and CSV output paths for one AAPL pilot run."""
+    safe_run_id = run_id.strip()
+    return {
+        "json": DEFAULT_AAPL_PILOT_EVIDENCE_OUTPUT_DIR / f"aapl_pilot_evidence_{safe_run_id}.json",
+        "markdown": DEFAULT_AAPL_PILOT_EVIDENCE_OUTPUT_DIR / f"aapl_pilot_evidence_{safe_run_id}.md",
+        "csv": DEFAULT_AAPL_PILOT_EVIDENCE_OUTPUT_DIR / f"aapl_pilot_evidence_{safe_run_id}.csv",
+    }
 
 
 @dataclass(frozen=True)
@@ -187,17 +211,34 @@ def build_layer1_aapl_evidence_report(
             continue
         scored_frames.append(scored_frame)
 
-    try:
-        regime_frame = _read_parquet_frame(active_writer.get_object(layer1_regime_path(run_id)))
-    except FileNotFoundError:
-        regime_frame = pd.DataFrame()
-        load_warnings.append(
-            {
-                "scope": "regime",
-                "key": layer1_regime_path(run_id),
-                "message": "Missing date-level HMM regime parquet for this run.",
-            }
-        )
+    regime_frames: list[pd.DataFrame] = []
+    for current_date in _inclusive_date_range(start_date, end_date):
+        key = layer1_regime_path(current_date, run_id)
+        try:
+            regime_frame = _read_parquet_frame(active_writer.get_object(key))
+        except FileNotFoundError:
+            load_warnings.append(
+                {
+                    "scope": "regime",
+                    "date": current_date,
+                    "key": key,
+                    "message": "Missing date-level HMM regime parquet for this trading date.",
+                }
+            )
+            continue
+        if regime_frame.empty:
+            load_warnings.append(
+                {
+                    "scope": "regime",
+                    "date": current_date,
+                    "key": key,
+                    "message": "Regime parquet is empty.",
+                }
+            )
+            continue
+        regime_frames.append(regime_frame)
+
+    regime_frame = pd.concat(regime_frames, ignore_index=True) if regime_frames else pd.DataFrame()
 
     if scored_frames:
         scored_frame = pd.concat(scored_frames, ignore_index=True)
@@ -726,3 +767,323 @@ def _dedupe_preserve_order(items: Sequence[str]) -> list[str]:
 def _build_payload_from_report_and_json(report_json: str) -> dict[str, object]:
     """Convenience helper for callers that already hold a JSON report string."""
     return _build_payload_from_report(json.loads(report_json))
+
+
+@dataclass(frozen=True)
+class IntegrityGate:
+    """One machine-integrity gate result for the AAPL pilot bundle."""
+
+    name: str
+    passed: bool
+    details: dict[str, object] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, object]:
+        """Return a JSON-serializable gate payload."""
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class HumanReviewRow:
+    """One human-review row summarizing a trading date."""
+
+    date: str
+    ticker: str
+    review_status: str
+    raw_article_id: str | None
+    raw_headline: str | None
+    raw_snippet: str | None
+    raw_source: str | None
+    raw_published_at: str | None
+    raw_news_key: str
+    preprocessed_news_key: str
+    finbert_scored_news_key: str
+    finbert_positive: float | None
+    finbert_negative: float | None
+    finbert_neutral: float | None
+    finbert_score: float | None
+    relevance_score: float | None
+    regime: str | None
+    notes: str | None
+
+    def to_dict(self) -> dict[str, object]:
+        """Return a JSON-serializable row payload."""
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class AAPLPilotEvidenceBundle:
+    """Compact AAPL pilot evidence bundle used by the CLI and tests."""
+
+    run_id: str
+    ticker: str
+    from_date: str
+    to_date: str
+    layer0_run_id: str
+    layer1_run_id: str | None
+    generated_at: str
+    gates: list[IntegrityGate]
+    machine_integrity_status: str
+    human_semantic_review_status: str
+    recommendation_for_issue_202: str
+    human_review_rows: list[HumanReviewRow]
+    artifact_keys: dict[str, object]
+    report: Layer1SemanticReviewReport
+
+    def to_dict(self) -> dict[str, object]:
+        """Return a JSON-serializable bundle payload."""
+        return {
+            "run_id": self.run_id,
+            "ticker": self.ticker,
+            "from_date": self.from_date,
+            "to_date": self.to_date,
+            "layer0_run_id": self.layer0_run_id,
+            "layer1_run_id": self.layer1_run_id,
+            "generated_at": self.generated_at,
+            "gates": [gate.to_dict() for gate in self.gates],
+            "machine_integrity_status": self.machine_integrity_status,
+            "human_semantic_review_status": self.human_semantic_review_status,
+            "recommendation_for_issue_202": self.recommendation_for_issue_202,
+            "human_review_rows": [row.to_dict() for row in self.human_review_rows],
+            "artifact_keys": self.artifact_keys,
+            "report": self.report.to_dict(),
+        }
+
+
+def build_aapl_pilot_evidence_bundle(
+    *,
+    run_id: str,
+    from_date: str,
+    to_date: str,
+    layer0_run_id: str,
+    layer1_run_id: str | None = None,
+    ticker: str = "AAPL",
+    human_semantic_review_status: str = "pending",
+    writer: R2Writer | None = None,
+    now: datetime | None = None,
+) -> AAPLPilotEvidenceBundle:
+    """Build the compact AAPL pilot evidence bundle for the dashboard CLI."""
+    if human_semantic_review_status not in HUMAN_REVIEW_STATUSES:
+        raise ValueError("human_semantic_review_status must be one of the supported statuses")
+
+    active_writer = writer or R2Writer()
+    active_ticker = ticker.strip().upper()
+    report = build_layer1_aapl_evidence_report(
+        run_id=run_id,
+        from_date=from_date,
+        to_date=to_date,
+        ticker=active_ticker,
+        writer=active_writer,
+    )
+    trading_date_list = trading_dates(from_date, to_date)
+    skipped_date_list = list(skipped_non_trading_dates(from_date, to_date))
+    layer1_stage_run_id = (layer1_run_id or run_id).strip()
+    expected_trading_dates = list(trading_date_list)
+    expected_layer1_keys = [layer1_feature_path(date_text, active_ticker) for date_text in expected_trading_dates]
+    expected_score_keys: list[str] = []
+    expected_topic_keys: list[str] = []
+    expected_sentiment_feature_keys: list[str] = []
+    expected_regime_keys: list[str] = []
+    expected_news_preprocessing_keys: list[str] = []
+    missing_keys: list[str] = []
+
+    for date_text in expected_trading_dates:
+        stage_run_id = f"{run_id}-{date_text}"
+        expected_news_preprocessing_keys.append(
+            layer1_news_preprocessing_path(date_text, stage_run_id)
+        )
+        expected_score_keys.append(layer1_sentiment_score_path(date_text, stage_run_id))
+        expected_topic_keys.append(layer1_topic_feature_path(date_text, stage_run_id))
+        expected_sentiment_feature_keys.append(layer1_sentiment_feature_path(date_text, stage_run_id))
+        expected_regime_keys.append(layer1_regime_path(date_text, stage_run_id))
+        for key in (
+            layer1_feature_path(date_text, active_ticker),
+            expected_news_preprocessing_keys[-1],
+            expected_score_keys[-1],
+            expected_topic_keys[-1],
+            expected_sentiment_feature_keys[-1],
+            expected_regime_keys[-1],
+        ):
+            if not active_writer.exists(key):
+                missing_keys.append(key)
+
+    raw_price_key = raw_price_path(active_ticker)
+    if not active_writer.exists(raw_price_key):
+        missing_keys.append(raw_price_key)
+
+    layer0_manifest_key = pipeline_manifest_path("layer0", layer0_run_id)
+    if not active_writer.exists(layer0_manifest_key):
+        missing_keys.append(layer0_manifest_key)
+
+    layer1_manifest_key = pipeline_manifest_path("layer1", layer1_stage_run_id)
+    if not active_writer.exists(layer1_manifest_key):
+        missing_keys.append(layer1_manifest_key)
+
+    date_gate = IntegrityGate(
+        name="date_first_feature_coverage",
+        passed=True,
+        details={
+            "expected_trading_dates": expected_trading_dates,
+            "skipped_non_trading_dates": skipped_date_list,
+            "expected_layer1_feature_keys": expected_layer1_keys,
+        },
+    )
+    artifacts_gate = IntegrityGate(
+        name="expected_artifacts_exist",
+        passed=not missing_keys,
+        details={
+            "missing_keys": missing_keys,
+            "expected_trading_dates": expected_trading_dates,
+        },
+    )
+    machine_passed = date_gate.passed and artifacts_gate.passed
+    machine_status = "pass" if machine_passed else "fail"
+    recommendation = (
+        "proceed"
+        if machine_passed and human_semantic_review_status == "accepted"
+        else ("do_not_proceed" if not machine_passed else "needs_human_review")
+    )
+    human_rows = _build_human_review_rows(
+        active_writer,
+        active_ticker,
+        expected_trading_dates,
+        run_id,
+    )
+    return AAPLPilotEvidenceBundle(
+        run_id=run_id,
+        ticker=active_ticker,
+        from_date=from_date,
+        to_date=to_date,
+        layer0_run_id=layer0_run_id,
+        layer1_run_id=layer1_run_id,
+        generated_at=(now or datetime.now(tz=UTC)).isoformat(),
+        gates=[date_gate, artifacts_gate],
+        machine_integrity_status=machine_status,
+        human_semantic_review_status=human_semantic_review_status,
+        recommendation_for_issue_202=recommendation,
+        human_review_rows=human_rows,
+        artifact_keys={
+            "raw_price": raw_price_key,
+            "layer0_manifest": layer0_manifest_key,
+            "layer1_manifest": layer1_manifest_key,
+            "expected_trading_dates": expected_trading_dates,
+            "skipped_non_trading_dates": skipped_date_list,
+            "expected_layer1_feature_keys": expected_layer1_keys,
+            "expected_news_preprocessing_keys": expected_news_preprocessing_keys,
+            "expected_finbert_score_keys": expected_score_keys,
+            "expected_topic_keys": expected_topic_keys,
+            "expected_sentiment_feature_keys": expected_sentiment_feature_keys,
+            "expected_regime_keys": expected_regime_keys,
+        },
+        report=report,
+    )
+
+
+def render_aapl_pilot_human_review_markdown(bundle: AAPLPilotEvidenceBundle) -> str:
+    """Render the compact human-review markdown summary."""
+    lines = [
+        f"# AAPL Layer 1 pilot evidence for {bundle.run_id}",
+        "FinBERT, topic-model, and HMM semantic correctness is a human decision.",
+        f"Machine integrity: {bundle.machine_integrity_status}",
+        f"Human semantic review: {bundle.human_semantic_review_status}",
+        f"Recommendation for #202: {bundle.recommendation_for_issue_202}",
+        "",
+        "## Human review rows",
+    ]
+    for row in bundle.human_review_rows:
+        headline = row.raw_headline or "(missing headline)"
+        snippet = row.raw_snippet or "(missing snippet)"
+        lines.extend(
+            [
+                f"- {row.date} | {headline} | {snippet}",
+            ]
+        )
+    return "\n".join(lines) + "\n"
+
+
+def render_aapl_pilot_human_review_csv(bundle: AAPLPilotEvidenceBundle) -> str:
+    """Render the compact human-review CSV summary."""
+    buffer = StringIO()
+    fieldnames = [
+        "date",
+        "ticker",
+        "review_status",
+        "raw_article_id",
+        "raw_headline",
+        "raw_snippet",
+        "raw_source",
+        "raw_published_at",
+        "raw_news_key",
+        "preprocessed_news_key",
+        "finbert_scored_news_key",
+        "finbert_positive",
+        "finbert_negative",
+        "finbert_neutral",
+        "finbert_score",
+        "relevance_score",
+        "regime",
+        "notes",
+    ]
+    writer = csv.DictWriter(buffer, fieldnames=fieldnames)
+    writer.writeheader()
+    for row in bundle.human_review_rows:
+        writer.writerow(row.to_dict())
+    return buffer.getvalue()
+
+
+def write_aapl_pilot_evidence_outputs(
+    bundle: AAPLPilotEvidenceBundle,
+    *,
+    json_path: Path,
+    markdown_path: Path,
+    csv_path: Path,
+) -> dict[str, Path]:
+    """Write the AAPL pilot evidence bundle to JSON, Markdown, and CSV."""
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    markdown_path.parent.mkdir(parents=True, exist_ok=True)
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    json_path.write_text(json.dumps(bundle.to_dict(), indent=2, sort_keys=True), encoding="utf-8")
+    markdown_path.write_text(render_aapl_pilot_human_review_markdown(bundle), encoding="utf-8")
+    csv_path.write_text(render_aapl_pilot_human_review_csv(bundle), encoding="utf-8")
+    return {"json": json_path, "markdown": markdown_path, "csv": csv_path}
+
+
+def _build_human_review_rows(
+    writer: R2Writer,
+    ticker: str,
+    trading_date_list: Sequence[str],
+    run_id: str,
+) -> list[HumanReviewRow]:
+    """Build one human-review row per trading date from scored-news artifacts."""
+    rows: list[HumanReviewRow] = []
+    for date_text in trading_date_list:
+        stage_run_id = f"{run_id}-{date_text}"
+        score_key = layer1_sentiment_score_path(date_text, stage_run_id)
+        try:
+            frame = _read_parquet_frame(writer.get_object(score_key))
+        except FileNotFoundError:
+            frame = pd.DataFrame()
+        first_row = frame.iloc[0] if not frame.empty else {}
+        row_source = first_row.to_dict() if hasattr(first_row, "to_dict") else {}
+        rows.append(
+            HumanReviewRow(
+                date=date_text,
+                ticker=ticker,
+                review_status="pending",
+                raw_article_id=_optional_str(row_source.get("article_id")),
+                raw_headline=_optional_str(row_source.get("headline")),
+                raw_snippet=_optional_str(row_source.get("text")),
+                raw_source=_optional_str(row_source.get("source")),
+                raw_published_at=_optional_str(row_source.get("published_at")),
+                raw_news_key=score_key,
+                preprocessed_news_key=layer1_news_preprocessing_path(date_text, stage_run_id),
+                finbert_scored_news_key=score_key,
+                finbert_positive=_maybe_float(row_source.get("sentiment_positive")),
+                finbert_negative=_maybe_float(row_source.get("sentiment_negative")),
+                finbert_neutral=_maybe_float(row_source.get("sentiment_neutral")),
+                finbert_score=_maybe_float(row_source.get("sentiment_score")),
+                relevance_score=_maybe_float(row_source.get("relevance_score")),
+                regime=None,
+                notes="FinBERT, topic-model, and HMM semantic correctness is a human decision.",
+            )
+        )
+    return rows

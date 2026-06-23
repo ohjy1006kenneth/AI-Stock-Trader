@@ -45,7 +45,7 @@ def seed_semantic_review_fixture(
         writer.put_object(layer1_sentiment_score_path(str(date_text), active_run_id), parquet_bytes)
 
     writer.put_object(
-        layer1_regime_path(active_run_id),
+        layer1_regime_path(fixture["regime_rows"][0]["date"], active_run_id),
         _dataframe_to_parquet_bytes(regime_frame),
     )
     return {
