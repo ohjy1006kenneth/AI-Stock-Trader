@@ -1,1365 +1,728 @@
-"""AAPL pilot evidence bundle generation for objective and human review gates."""
+"""Semantic-review evidence assembly for the Layer 1 AAPL pilot dashboard."""
 from __future__ import annotations
 
-import csv
-import importlib
-import io
 import json
-import math
+import re
+from collections import defaultdict
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from datetime import date as Date
-from pathlib import Path
-from typing import Any, Protocol
+from io import BytesIO
+from typing import Any
 
-from core.common.trading_calendar import calendar_dates, skipped_non_trading_dates, trading_dates
-from core.contracts.schemas import FeatureRecord, NewsSentimentRecord, PipelineManifestRecord
-from core.features.catalog import feature_catalog, validate_feature_value
-from core.features.io import parquet_bytes_to_feature_record, parquet_bytes_to_feature_records
-from services.r2.paths import (
-    layer1_aapl_accuracy_report_path,
-    layer1_feature_path,
-    layer1_news_preprocessing_path,
-    layer1_regime_path,
-    layer1_sentiment_feature_path,
-    layer1_sentiment_score_path,
-    layer1_topic_feature_path,
-    pipeline_manifest_path,
-    raw_news_path,
-    raw_price_path,
-    raw_universe_path,
-)
+import pandas as pd
+
+from services.r2.paths import layer1_regime_path, layer1_sentiment_score_path
 from services.r2.writer import R2Writer
 
-DEFAULT_AAPL_EVIDENCE_OUTPUT_DIR = Path("artifacts/reports/diagnostics")
-HUMAN_REVIEW_STATUSES = frozenset({"pending", "accepted", "rejected"})
-
-
-class AAPLEvidenceReader(Protocol):
-    """Object-store operations required by the AAPL pilot evidence verifier."""
-
-    def exists(self, key: str) -> bool:
-        """Return True when an object key exists."""
-
-    def get_object(self, key: str) -> bytes:
-        """Read an object payload by key."""
-
-    def list_keys(self, prefix: str) -> list[str]:
-        """List keys under a prefix."""
+DEFAULT_RELEVANCE_THRESHOLD = 0.6
 
 
 @dataclass(frozen=True)
-class IntegrityGate:
-    """One objective machine-integrity gate result."""
+class SemanticReviewSentenceRow:
+    """Sentence-level FinBERT evidence for one scored-news row."""
 
-    name: str
-    passed: bool
-    details: dict[str, object] = field(default_factory=dict)
+    sentence_index: int | None
+    text: str | None
+    sentiment_score: float | None
+    positive_probability: float | None
+    negative_probability: float | None
+    neutral_probability: float | None
+    relevance_score: float | None
+    row_granularity: str
 
     def to_dict(self) -> dict[str, object]:
-        """Return a JSON-serializable gate payload."""
+        """Return a JSON-serializable representation."""
         return asdict(self)
 
 
 @dataclass(frozen=True)
-class HumanReviewRow:
-    """One compact row for human semantic inspection of AAPL pilot outputs."""
+class SemanticReviewArticleGroup:
+    """Raw-article group that collapses multiple sentence-level FinBERT rows."""
 
+    article_id: str
     date: str
     ticker: str
-    review_status: str
-    raw_article_id: str | None
-    raw_headline: str | None
-    raw_snippet: str | None
-    raw_source: str | None
-    raw_published_at: str | None
-    raw_news_key: str
-    preprocessed_news_key: str
-    finbert_scored_news_key: str
-    finbert_positive: float | None
-    finbert_negative: float | None
-    finbert_neutral: float | None
-    finbert_score: float | None
-    finbert_relevance: float | None
-    topic_feature_key: str
-    topic_count: float | None
-    topic_sentence_count: float | None
-    sentiment_feature_key: str
-    sentiment_score: float | None
-    sentiment_article_count: float | None
-    regime_key: str
-    regime_label: str | None
-    regime_confidence: float | None
-    regime_prob_bear: float | None
-    regime_prob_sideways: float | None
-    regime_prob_bull: float | None
-    feature_key: str
-    notes: str
+    headline: str | None
+    normalized_headline: str
+    source: str | None
+    url: str | None
+    published_at: str | None
+    article_row_count: int
+    sentence_count: int
+    unique_sentence_count: int
+    duplicate_sentence_count: int
+    headline_duplicate_count: int
+    relevance_score: float | None
+    relevance_state: str
+    article_status: str
+    contamination_flags: tuple[str, ...]
+    requested_ticker_terms: tuple[str, ...]
+    requested_ticker_term_hits: tuple[str, ...]
+    evidence_snippets: tuple[str, ...]
+    sentence_rows: list[dict[str, object]]
 
     def to_dict(self) -> dict[str, object]:
-        """Return a JSON-serializable review row."""
+        """Return a JSON-serializable representation."""
+        payload = asdict(self)
+        payload["contamination_flags"] = list(self.contamination_flags)
+        payload["requested_ticker_terms"] = list(self.requested_ticker_terms)
+        payload["requested_ticker_term_hits"] = list(self.requested_ticker_term_hits)
+        payload["evidence_snippets"] = list(self.evidence_snippets)
+        return payload
+
+
+@dataclass(frozen=True)
+class SemanticReviewRegimeRow:
+    """Date-level HMM regime evidence for the review dashboard."""
+
+    date: str
+    regime: str | None
+    confidence: float | None
+    prob_bear: float | None
+    prob_sideways: float | None
+    prob_bull: float | None
+
+    def to_dict(self) -> dict[str, object]:
+        """Return a JSON-serializable representation."""
+        payload = asdict(self)
+        payload["scope"] = "date-level"
+        payload["applies_to"] = "all sentence rows on the trading date"
+        return payload
+
+
+@dataclass(frozen=True)
+class SemanticReviewDateGroup:
+    """One trading-date bucket that contains the date-level regime and article cards."""
+
+    date: str
+    regime: dict[str, object] | None
+    article_count: int
+    accepted_article_count: int
+    flagged_article_count: int
+    sentence_count: int
+    articles: list[dict[str, object]]
+    accepted_articles: list[dict[str, object]]
+    flagged_articles: list[dict[str, object]]
+
+    def to_dict(self) -> dict[str, object]:
+        """Return a JSON-serializable representation."""
         return asdict(self)
 
 
 @dataclass(frozen=True)
-class AAPLPilotEvidenceBundle:
-    """Complete evidence bundle for the AAPL Layer 1 pilot gate."""
+class Layer1SemanticReviewReport:
+    """Read-only payload used by the semantic-review dashboard and API."""
 
     run_id: str
-    layer1_run_id: str
-    layer0_run_id: str
     ticker: str
     from_date: str
     to_date: str
     generated_at: str
-    machine_integrity_status: str
-    human_semantic_review_status: str
-    recommendation_for_issue_202: str
-    gates: tuple[IntegrityGate, ...]
-    artifact_keys: dict[str, object]
-    row_counts: dict[str, object]
-    null_rates: dict[str, object]
-    stale_artifacts: dict[str, list[str]]
-    source_provenance: dict[str, object]
-    human_review_rows: tuple[HumanReviewRow, ...]
+    row_count: int
+    article_count: int
+    date_count: int
+    accepted_article_count: int
+    flagged_article_count: int
+    duplicate_article_count: int
+    repeated_headline_count: int
+    weak_article_count: int
+    sentence_count: int
+    load_warnings: list[dict[str, object]]
+    regime_rows: list[dict[str, object]]
+    article_groups: list[dict[str, object]]
+    date_groups: list[dict[str, object]]
+    summary: dict[str, int]
 
     def to_dict(self) -> dict[str, object]:
-        """Return the evidence bundle as a deterministic JSON-compatible mapping."""
-        return {
-            "run_id": self.run_id,
-            "layer1_run_id": self.layer1_run_id,
-            "layer0_run_id": self.layer0_run_id,
-            "ticker": self.ticker,
-            "from_date": self.from_date,
-            "to_date": self.to_date,
-            "generated_at": self.generated_at,
-            "machine_integrity_status": self.machine_integrity_status,
-            "human_semantic_review_status": self.human_semantic_review_status,
-            "recommendation_for_issue_202": self.recommendation_for_issue_202,
-            "gates": [gate.to_dict() for gate in self.gates],
-            "artifact_keys": self.artifact_keys,
-            "row_counts": self.row_counts,
-            "null_rates": self.null_rates,
-            "stale_artifacts": self.stale_artifacts,
-            "source_provenance": self.source_provenance,
-            "human_review_rows": [row.to_dict() for row in self.human_review_rows],
-        }
+        """Return a JSON-serializable representation."""
+        return asdict(self)
 
 
-def build_aapl_pilot_evidence_bundle(
+def build_layer1_aapl_evidence_report(
     *,
     run_id: str,
     from_date: str,
     to_date: str,
-    layer0_run_id: str,
-    layer1_run_id: str | None = None,
     ticker: str = "AAPL",
-    human_semantic_review_status: str = "pending",
-    writer: AAPLEvidenceReader | None = None,
-    now: datetime | None = None,
-) -> AAPLPilotEvidenceBundle:
-    """Build a fail-closed AAPL pilot evidence bundle from stored Layer 0/1 artifacts."""
-    _validate_inputs(
-        run_id=run_id,
-        from_date=from_date,
-        to_date=to_date,
-        layer0_run_id=layer0_run_id,
-        ticker=ticker,
-        human_semantic_review_status=human_semantic_review_status,
-    )
+    writer: R2Writer | None = None,
+    relevance_threshold: float = DEFAULT_RELEVANCE_THRESHOLD,
+) -> Layer1SemanticReviewReport:
+    """Build the semantic-review evidence report for a Layer 1 run."""
+    start_date = _parse_date(from_date)
+    end_date = _parse_date(to_date)
+    if start_date > end_date:
+        raise ValueError("from_date must be on or before to_date")
+    requested_ticker = ticker.strip().upper()
+    if not requested_ticker:
+        raise ValueError("ticker must be non-empty")
+
     active_writer = writer or R2Writer()
-    active_layer1_run_id = (layer1_run_id or run_id).strip()
-    requested_dates = calendar_dates(from_date, to_date)
-    dates = trading_dates(from_date, to_date)
-    skipped_dates = skipped_non_trading_dates(from_date, to_date)
-    stage_run_ids = {date_text: f"{active_layer1_run_id}-{date_text}" for date_text in dates}
-
-    artifact_keys = _artifact_keys(
-        run_id=run_id,
-        layer0_run_id=layer0_run_id,
-        layer1_run_id=active_layer1_run_id,
-        ticker=ticker,
-        from_date=from_date,
-        to_date=to_date,
-        requested_dates=requested_dates,
-        dates=dates,
-        skipped_dates=skipped_dates,
-        stage_run_ids=stage_run_ids,
-    )
-    loaded = _load_expected_artifacts(
-        writer=active_writer,
-        ticker=ticker,
-        dates=dates,
-        artifact_keys=artifact_keys,
-    )
-    gates = _build_integrity_gates(
-        dates=dates,
-        ticker=ticker,
-        loaded=loaded,
-        artifact_keys=artifact_keys,
-    )
-    machine_status = "pass" if all(gate.passed for gate in gates) else "fail"
-    recommendation = _recommend_issue_202(
-        machine_integrity_status=machine_status,
-        human_semantic_review_status=human_semantic_review_status,
-    )
-    review_rows = _build_human_review_rows(
-        dates=dates,
-        ticker=ticker,
-        human_semantic_review_status=human_semantic_review_status,
-        loaded=loaded,
-        artifact_keys=artifact_keys,
-    )
-    return AAPLPilotEvidenceBundle(
-        run_id=run_id.strip(),
-        layer1_run_id=active_layer1_run_id,
-        layer0_run_id=layer0_run_id.strip(),
-        ticker=ticker.strip().upper(),
-        from_date=from_date,
-        to_date=to_date,
-        generated_at=(now or datetime.now(UTC)).replace(microsecond=0).isoformat(),
-        machine_integrity_status=machine_status,
-        human_semantic_review_status=human_semantic_review_status,
-        recommendation_for_issue_202=recommendation,
-        gates=tuple(gates),
-        artifact_keys=artifact_keys,
-        row_counts=_row_counts(loaded, artifact_keys),
-        null_rates=_null_rates(loaded),
-        stale_artifacts=_stale_artifacts(active_writer, artifact_keys),
-        source_provenance=_source_provenance(loaded, artifact_keys),
-        human_review_rows=tuple(review_rows),
-    )
-
-
-def render_aapl_pilot_evidence_json(bundle: AAPLPilotEvidenceBundle) -> str:
-    """Render the machine-integrity evidence bundle as deterministic JSON."""
-    return json.dumps(bundle.to_dict(), indent=2, sort_keys=True)
-
-
-def render_aapl_pilot_human_review_markdown(bundle: AAPLPilotEvidenceBundle) -> str:
-    """Render a compact Markdown review packet for human semantic approval."""
-    lines = [
-        f"# AAPL Pilot Human Review - {bundle.run_id}",
-        "",
-        f"- Window: `{bundle.from_date}` to `{bundle.to_date}`",
-        f"- Machine integrity: `{bundle.machine_integrity_status}`",
-        f"- Human semantic review: `{bundle.human_semantic_review_status}`",
-        f"- Recommendation for #202: `{bundle.recommendation_for_issue_202}`",
-        "",
-        "FinBERT, topic-model, and HMM semantic correctness is a human decision. "
-        "Mark the semantic review accepted only after inspecting these rows against "
-        "the underlying articles and market context.",
-        "",
-        "| Date | Headline | Source | FinBERT | Topic | Regime | Keys |",
-        "|---|---|---|---|---|---|---|",
-    ]
-    for row in bundle.human_review_rows:
-        sentiment = _format_sentiment(row)
-        topic = _format_optional_number(row.topic_count)
-        regime = _format_regime(row)
-        keys = (
-            f"`{row.raw_news_key}`<br>`{row.finbert_scored_news_key}`"
-            f"<br>`{row.regime_key}`"
-        )
-        lines.append(
-            "| "
-            f"{row.date} | {_markdown_cell(row.raw_headline)} | "
-            f"{_markdown_cell(row.raw_source)} | {sentiment} | {topic} | {regime} | {keys} |"
-        )
-    return "\n".join(lines) + "\n"
-
-
-def render_aapl_pilot_human_review_csv(bundle: AAPLPilotEvidenceBundle) -> str:
-    """Render the human-review rows as CSV text."""
-    buffer = io.StringIO()
-    fieldnames = list(HumanReviewRow.__dataclass_fields__)
-    writer = csv.DictWriter(buffer, fieldnames=fieldnames)
-    writer.writeheader()
-    for row in bundle.human_review_rows:
-        writer.writerow(row.to_dict())
-    return buffer.getvalue()
-
-
-def write_aapl_pilot_evidence_outputs(
-    bundle: AAPLPilotEvidenceBundle,
-    *,
-    json_path: Path,
-    markdown_path: Path,
-    csv_path: Path,
-) -> dict[str, Path]:
-    """Write JSON, Markdown, and CSV evidence outputs to local artifact paths."""
-    json_path.parent.mkdir(parents=True, exist_ok=True)
-    markdown_path.parent.mkdir(parents=True, exist_ok=True)
-    csv_path.parent.mkdir(parents=True, exist_ok=True)
-    json_path.write_text(render_aapl_pilot_evidence_json(bundle), encoding="utf-8")
-    markdown_path.write_text(
-        render_aapl_pilot_human_review_markdown(bundle),
-        encoding="utf-8",
-    )
-    csv_path.write_text(render_aapl_pilot_human_review_csv(bundle), encoding="utf-8")
-    return {"json": json_path, "markdown": markdown_path, "csv": csv_path}
-
-
-def default_aapl_pilot_evidence_paths(
-    run_id: str,
-    *,
-    output_dir: Path = DEFAULT_AAPL_EVIDENCE_OUTPUT_DIR,
-) -> dict[str, Path]:
-    """Return deterministic local output paths for one AAPL evidence bundle."""
-    safe_run_id = run_id.strip()
-    return {
-        "json": output_dir / f"aapl_pilot_evidence_{safe_run_id}.json",
-        "markdown": output_dir / f"aapl_pilot_human_review_{safe_run_id}.md",
-        "csv": output_dir / f"aapl_pilot_human_review_rows_{safe_run_id}.csv",
-    }
-
-
-def _validate_inputs(
-    *,
-    run_id: str,
-    from_date: str,
-    to_date: str,
-    layer0_run_id: str,
-    ticker: str,
-    human_semantic_review_status: str,
-) -> None:
-    if not run_id.strip():
-        raise ValueError("run_id cannot be empty")
-    if not layer0_run_id.strip():
-        raise ValueError("layer0_run_id is required for source provenance")
-    if ticker.strip().upper() != "AAPL":
-        raise ValueError("AAPL evidence workflow is intentionally limited to ticker=AAPL")
-    _validate_iso_date(from_date, "from_date")
-    _validate_iso_date(to_date, "to_date")
-    if from_date > to_date:
-        raise ValueError("from_date must be <= to_date")
-    if human_semantic_review_status not in HUMAN_REVIEW_STATUSES:
-        allowed = ", ".join(sorted(HUMAN_REVIEW_STATUSES))
-        raise ValueError(f"human_semantic_review_status must be one of: {allowed}")
-
-
-def _artifact_keys(
-    *,
-    run_id: str,
-    layer0_run_id: str,
-    layer1_run_id: str,
-    ticker: str,
-    from_date: str,
-    to_date: str,
-    requested_dates: Sequence[str],
-    dates: Sequence[str],
-    skipped_dates: Sequence[str],
-    stage_run_ids: Mapping[str, str],
-) -> dict[str, object]:
-    return {
-        "accuracy_report": layer1_aapl_accuracy_report_path(run_id, from_date, to_date),
-        "requested_calendar_dates": list(requested_dates),
-        "expected_trading_dates": list(dates),
-        "skipped_non_trading_dates": list(skipped_dates),
-        "layer0_manifest": pipeline_manifest_path("layer0", layer0_run_id),
-        "layer1_manifest": pipeline_manifest_path("layer1", layer1_run_id),
-        "raw_price": raw_price_path(ticker),
-        "raw_news": {date_text: raw_news_path(date_text) for date_text in dates},
-        "raw_universe": {date_text: raw_universe_path(date_text) for date_text in dates},
-        "feature_shards": {
-            date_text: layer1_feature_path(date_text, ticker) for date_text in dates
-        },
-        "preprocessed_news": {
-            date_text: layer1_news_preprocessing_path(date_text, stage_run_ids[date_text])
-            for date_text in dates
-        },
-        "topic_features": {
-            date_text: layer1_topic_feature_path(date_text, stage_run_ids[date_text])
-            for date_text in dates
-        },
-        "finbert_scored_news": {
-            date_text: layer1_sentiment_score_path(date_text, stage_run_ids[date_text])
-            for date_text in dates
-        },
-        "sentiment_features": {
-            date_text: layer1_sentiment_feature_path(date_text, stage_run_ids[date_text])
-            for date_text in dates
-        },
-        "regime": {
-            date_text: layer1_regime_path(date_text, stage_run_ids[date_text])
-            for date_text in dates
-        },
-        "stage_manifests": {
-            date_text: {
-                "news_preprocessing": pipeline_manifest_path(
-                    "layer1_news_preprocessing", stage_run_ids[date_text]
-                ),
-                "text_topics": pipeline_manifest_path(
-                    "layer1_text_topics", stage_run_ids[date_text]
-                ),
-                "finbert_sentiment": pipeline_manifest_path(
-                    "layer1_finbert_sentiment", stage_run_ids[date_text]
-                ),
-                "regime": pipeline_manifest_path(
-                    "layer1_5_regime", stage_run_ids[date_text]
-                ),
-            }
-            for date_text in dates
-        },
-    }
-
-
-def _load_expected_artifacts(
-    *,
-    writer: AAPLEvidenceReader,
-    ticker: str,
-    dates: Sequence[str],
-    artifact_keys: Mapping[str, object],
-) -> dict[str, object]:
-    loaded: dict[str, object] = {
-        "missing_keys": [],
-        "read_errors": [],
-        "feature_records": {},
-        "raw_news_rows": {},
-        "preprocessed_rows": {},
-        "topic_records": {},
-        "scored_news_rows": {},
-        "sentiment_records": {},
-        "regime_rows": {},
-        "manifests": {},
-    }
-    for label in ("accuracy_report", "raw_price"):
-        _load_bytes_artifact(writer, loaded, label, str(artifact_keys[label]))
-    for label in ("layer0_manifest", "layer1_manifest"):
-        _load_manifest(writer, loaded, label, str(artifact_keys[label]))
-
-    for date_text in dates:
-        _load_raw_news(writer, loaded, date_text, _date_key(artifact_keys, "raw_news", date_text))
-        _load_bytes_artifact(
-            writer,
-            loaded,
-            f"raw_universe:{date_text}",
-            _date_key(artifact_keys, "raw_universe", date_text),
-        )
-        _load_feature_record(
-            writer,
-            loaded,
-            date_text,
-            ticker,
-            _date_key(artifact_keys, "feature_shards", date_text),
-        )
-        _load_parquet_rows(
-            writer,
-            loaded,
-            "preprocessed_rows",
-            date_text,
-            _date_key(artifact_keys, "preprocessed_news", date_text),
-        )
-        _load_feature_records(
-            writer,
-            loaded,
-            "topic_records",
-            date_text,
-            _date_key(artifact_keys, "topic_features", date_text),
-        )
-        _load_parquet_rows(
-            writer,
-            loaded,
-            "scored_news_rows",
-            date_text,
-            _date_key(artifact_keys, "finbert_scored_news", date_text),
-            validate_news_sentiment=True,
-        )
-        _load_feature_records(
-            writer,
-            loaded,
-            "sentiment_records",
-            date_text,
-            _date_key(artifact_keys, "sentiment_features", date_text),
-        )
-        _load_parquet_rows(
-            writer,
-            loaded,
-            "regime_rows",
-            date_text,
-            _date_key(artifact_keys, "regime", date_text),
-        )
-        for stage, key in _stage_manifest_keys(artifact_keys, date_text).items():
-            _load_manifest(writer, loaded, f"{stage}:{date_text}", key)
-    return loaded
-
-
-def _load_bytes_artifact(
-    writer: AAPLEvidenceReader,
-    loaded: dict[str, object],
-    label: str,
-    key: str,
-) -> None:
-    if not writer.exists(key):
-        _append_loaded(loaded, "missing_keys", key)
-        return
-    try:
-        loaded[label] = writer.get_object(key)
-    except Exception as exc:  # noqa: BLE001
-        _append_loaded(loaded, "read_errors", {"key": key, "error": str(exc)})
-
-
-def _load_manifest(
-    writer: AAPLEvidenceReader,
-    loaded: dict[str, object],
-    label: str,
-    key: str,
-) -> None:
-    if not writer.exists(key):
-        _append_loaded(loaded, "missing_keys", key)
-        return
-    try:
-        manifest = PipelineManifestRecord.model_validate_json(writer.get_object(key))
-        manifests = loaded["manifests"]
-        assert isinstance(manifests, dict)
-        manifests[label] = manifest
-    except Exception as exc:  # noqa: BLE001
-        _append_loaded(loaded, "read_errors", {"key": key, "error": str(exc)})
-
-
-def _load_feature_record(
-    writer: AAPLEvidenceReader,
-    loaded: dict[str, object],
-    date_text: str,
-    ticker: str,
-    key: str,
-) -> None:
-    if not writer.exists(key):
-        _append_loaded(loaded, "missing_keys", key)
-        return
-    try:
-        record = parquet_bytes_to_feature_record(writer.get_object(key))
-        if record.date != date_text or record.ticker != ticker:
-            raise ValueError(f"identity mismatch: expected {date_text}/{ticker}")
-        records = loaded["feature_records"]
-        assert isinstance(records, dict)
-        records[date_text] = record
-    except Exception as exc:  # noqa: BLE001
-        _append_loaded(loaded, "read_errors", {"key": key, "error": str(exc)})
-
-
-def _load_feature_records(
-    writer: AAPLEvidenceReader,
-    loaded: dict[str, object],
-    bucket: str,
-    date_text: str,
-    key: str,
-) -> None:
-    if not writer.exists(key):
-        _append_loaded(loaded, "missing_keys", key)
-        return
-    try:
-        records = parquet_bytes_to_feature_records(writer.get_object(key))
-        by_date = loaded[bucket]
-        assert isinstance(by_date, dict)
-        by_date[date_text] = records
-    except Exception as exc:  # noqa: BLE001
-        _append_loaded(loaded, "read_errors", {"key": key, "error": str(exc)})
-
-
-def _load_parquet_rows(
-    writer: AAPLEvidenceReader,
-    loaded: dict[str, object],
-    bucket: str,
-    date_text: str,
-    key: str,
-    *,
-    validate_news_sentiment: bool = False,
-) -> None:
-    if not writer.exists(key):
-        _append_loaded(loaded, "missing_keys", key)
-        return
-    try:
-        frame = _read_parquet_frame(writer.get_object(key))
-        rows = [_clean_mapping(row) for row in frame.to_dict("records")]
-        if validate_news_sentiment:
-            rows = [_validate_news_sentiment_row(row) for row in rows]
-        by_date = loaded[bucket]
-        assert isinstance(by_date, dict)
-        by_date[date_text] = rows
-    except Exception as exc:  # noqa: BLE001
-        _append_loaded(loaded, "read_errors", {"key": key, "error": str(exc)})
-
-
-def _load_raw_news(
-    writer: AAPLEvidenceReader,
-    loaded: dict[str, object],
-    date_text: str,
-    key: str,
-) -> None:
-    if not writer.exists(key):
-        _append_loaded(loaded, "missing_keys", key)
-        return
-    try:
-        rows = []
-        for line in writer.get_object(key).decode("utf-8").splitlines():
-            if line.strip():
-                rows.append(json.loads(line))
-        raw_rows = loaded["raw_news_rows"]
-        assert isinstance(raw_rows, dict)
-        raw_rows[date_text] = rows
-    except Exception as exc:  # noqa: BLE001
-        _append_loaded(loaded, "read_errors", {"key": key, "error": str(exc)})
-
-
-def _build_integrity_gates(
-    *,
-    dates: Sequence[str],
-    ticker: str,
-    loaded: Mapping[str, object],
-    artifact_keys: Mapping[str, object],
-) -> list[IntegrityGate]:
-    gates = [
-        _gate_no_missing_artifacts(loaded),
-        _gate_no_read_errors(loaded),
-        _gate_manifest_completed(loaded, "layer0_manifest"),
-        _gate_manifest_completed(loaded, "layer1_manifest"),
-        _gate_accuracy_report_available(loaded),
-        _gate_feature_coverage(dates, loaded, artifact_keys),
-        _gate_stage_row_coverage(dates, ticker, loaded),
-        _gate_catalog_schema(dates, loaded),
-        _gate_finite_numeric_values(loaded),
-        _gate_probability_sums(dates, loaded),
-        _gate_point_in_time_news(dates, loaded),
-        _gate_stage_manifest_outputs(dates, loaded, artifact_keys),
-    ]
-    return gates
-
-
-def _gate_no_missing_artifacts(loaded: Mapping[str, object]) -> IntegrityGate:
-    missing = list(loaded.get("missing_keys", []))
-    return IntegrityGate(
-        name="expected_artifacts_exist",
-        passed=len(missing) == 0,
-        details={"missing_keys": missing},
-    )
-
-
-def _gate_no_read_errors(loaded: Mapping[str, object]) -> IntegrityGate:
-    errors = list(loaded.get("read_errors", []))
-    return IntegrityGate(
-        name="artifacts_read_and_validate",
-        passed=len(errors) == 0,
-        details={"read_errors": errors},
-    )
-
-
-def _gate_manifest_completed(
-    loaded: Mapping[str, object],
-    manifest_label: str,
-) -> IntegrityGate:
-    manifest = _manifest(loaded, manifest_label)
-    return IntegrityGate(
-        name=f"{manifest_label}_completed",
-        passed=manifest is not None and str(manifest.status.value) == "completed",
-        details={
-            "status": None if manifest is None else str(manifest.status.value),
-            "stage": None if manifest is None else manifest.stage,
-            "output_path": None if manifest is None else manifest.output_path,
-        },
-    )
-
-
-def _gate_accuracy_report_available(loaded: Mapping[str, object]) -> IntegrityGate:
-    payload = loaded.get("accuracy_report")
-    parsed: dict[str, object] | None = None
-    if isinstance(payload, bytes):
+    scored_frames: list[pd.DataFrame] = []
+    load_warnings: list[dict[str, object]] = []
+    for current_date in _inclusive_date_range(start_date, end_date):
+        key = layer1_sentiment_score_path(current_date, run_id)
         try:
-            parsed = json.loads(payload.decode("utf-8"))
-        except json.JSONDecodeError:
-            parsed = None
-    terminal = (
-        isinstance(parsed, dict)
-        and isinstance(parsed.get("input_evidence"), dict)
-        and isinstance(parsed["input_evidence"].get("terminal_diagnostic"), dict)
-    )
-    return IntegrityGate(
-        name="aapl_accuracy_report_available",
-        passed=isinstance(parsed, dict) and not terminal,
-        details={
-            "available": isinstance(parsed, dict),
-            "terminal_diagnostic": terminal,
-            "recommendation": None if parsed is None else parsed.get("recommendation_for_issue_202"),
-        },
-    )
-
-
-def _gate_feature_coverage(
-    dates: Sequence[str],
-    loaded: Mapping[str, object],
-    artifact_keys: Mapping[str, object],
-) -> IntegrityGate:
-    records = _records_by_date(loaded, "feature_records")
-    present_dates = sorted(records)
-    return IntegrityGate(
-        name="date_first_feature_coverage",
-        passed=present_dates == list(dates),
-        details={
-            "expected_trading_dates": list(dates),
-            "present_dates": present_dates,
-            "skipped_non_trading_dates": list(
-                _sequence_artifact_value(artifact_keys, "skipped_non_trading_dates")
-            ),
-        },
-    )
-
-
-def _gate_stage_row_coverage(
-    dates: Sequence[str],
-    ticker: str,
-    loaded: Mapping[str, object],
-) -> IntegrityGate:
-    missing: list[dict[str, object]] = []
-    for bucket in (
-        "raw_news_rows",
-        "preprocessed_rows",
-        "topic_records",
-        "scored_news_rows",
-        "sentiment_records",
-        "regime_rows",
-    ):
-        rows_by_date = _records_by_date(loaded, bucket)
-        for date_text in dates:
-            rows = rows_by_date.get(date_text, [])
-            if bucket == "regime_rows":
-                has_rows = bool(rows)
-            elif bucket == "raw_news_rows":
-                has_rows = any(
-                    isinstance(row, Mapping) and _row_contains_ticker(row, ticker)
-                    for row in rows
-                )
-            elif bucket in {"topic_records", "sentiment_records"}:
-                has_rows = any(isinstance(row, FeatureRecord) and row.ticker == ticker for row in rows)
-            else:
-                has_rows = any(str(_row_value(row, "ticker")).upper() == ticker for row in rows)
-            if not has_rows:
-                missing.append({"bucket": bucket, "date": date_text})
-    return IntegrityGate(
-        name="stage_row_coverage",
-        passed=len(missing) == 0,
-        details={"missing_or_empty": missing},
-    )
-
-
-def _gate_catalog_schema(
-    dates: Sequence[str],
-    loaded: Mapping[str, object],
-) -> IntegrityGate:
-    catalog = feature_catalog()
-    failures: list[dict[str, object]] = []
-    for date_text in dates:
-        record = _records_by_date(loaded, "feature_records").get(date_text)
-        if not isinstance(record, FeatureRecord):
-            continue
-        for feature_name, rule in catalog.items():
-            if not rule.required:
-                continue
-            message = validate_feature_value(
-                feature_name,
-                record.features.get(feature_name),
-                rule,
-            )
-            if message is not None:
-                failures.append(
-                    {"date": date_text, "feature": feature_name, "message": message}
-                )
-    return IntegrityGate(
-        name="feature_schema_and_catalog",
-        passed=len(failures) == 0,
-        details={"failures": failures[:100], "failure_count": len(failures)},
-    )
-
-
-def _gate_finite_numeric_values(loaded: Mapping[str, object]) -> IntegrityGate:
-    failures: list[dict[str, object]] = []
-    for date_text, record in _records_by_date(loaded, "feature_records").items():
-        if not isinstance(record, FeatureRecord):
-            continue
-        for name, value in record.features.items():
-            if isinstance(value, (int, float)) and not _is_finite(value):
-                failures.append({"date": date_text, "field": name, "value": str(value)})
-    for bucket in ("scored_news_rows", "regime_rows"):
-        for date_text, rows in _records_by_date(loaded, bucket).items():
-            for row in rows if isinstance(rows, list) else []:
-                if not isinstance(row, Mapping):
-                    continue
-                for name, value in row.items():
-                    if isinstance(value, (int, float)) and not _is_finite(value):
-                        failures.append(
-                            {"date": date_text, "bucket": bucket, "field": name}
-                        )
-    return IntegrityGate(
-        name="finite_numeric_values",
-        passed=len(failures) == 0,
-        details={"failures": failures[:100], "failure_count": len(failures)},
-    )
-
-
-def _gate_probability_sums(
-    dates: Sequence[str],
-    loaded: Mapping[str, object],
-) -> IntegrityGate:
-    failures: list[dict[str, object]] = []
-    for date_text in dates:
-        for row in _records_by_date(loaded, "scored_news_rows").get(date_text, []):
-            total = _sum_fields(
-                row,
-                ("sentiment_positive", "sentiment_negative", "sentiment_neutral"),
-            )
-            if total is not None and abs(total - 1.0) > 1e-4:
-                failures.append({"date": date_text, "type": "finbert", "sum": total})
-        for row in _records_by_date(loaded, "regime_rows").get(date_text, []):
-            total = _sum_fields(
-                row,
-                ("regime_prob_bear", "regime_prob_sideways", "regime_prob_bull"),
-            )
-            if total is not None and abs(total - 1.0) > 1e-4:
-                failures.append({"date": date_text, "type": "regime", "sum": total})
-            label = str(_row_value(row, "regime_label") or "")
-            confidence = _to_finite_float(_row_value(row, "regime_confidence"))
-            label_probability = _regime_label_probability(row, label)
-            if confidence is not None and label_probability is not None:
-                if abs(confidence - label_probability) > 1e-4:
-                    failures.append(
-                        {
-                            "date": date_text,
-                            "type": "regime_confidence",
-                            "confidence": confidence,
-                            "label_probability": label_probability,
-                        }
-                    )
-    return IntegrityGate(
-        name="probability_sums",
-        passed=len(failures) == 0,
-        details={"failures": failures},
-    )
-
-
-def _gate_point_in_time_news(
-    dates: Sequence[str],
-    loaded: Mapping[str, object],
-) -> IntegrityGate:
-    failures: list[dict[str, object]] = []
-    for date_text in dates:
-        cutoff = f"{date_text}T23:59:59"
-        for row in _records_by_date(loaded, "raw_news_rows").get(date_text, []):
-            timestamp = _news_timestamp(row)
-            if timestamp is not None and timestamp[:19] > cutoff:
-                failures.append(
-                    {"date": date_text, "timestamp": timestamp, "cutoff": cutoff}
-                )
-    return IntegrityGate(
-        name="point_in_time_news_timestamps",
-        passed=len(failures) == 0,
-        details={"failures": failures},
-    )
-
-
-def _gate_stage_manifest_outputs(
-    dates: Sequence[str],
-    loaded: Mapping[str, object],
-    artifact_keys: Mapping[str, object],
-) -> IntegrityGate:
-    failures: list[dict[str, object]] = []
-    stage_to_artifact = {
-        "news_preprocessing": "preprocessed_news",
-        "text_topics": "topic_features",
-        "finbert_sentiment": "sentiment_features",
-        "regime": "regime",
-    }
-    for date_text in dates:
-        for stage, artifact_name in stage_to_artifact.items():
-            manifest = _manifest(loaded, f"{stage}:{date_text}")
-            expected_key = _date_key(artifact_keys, artifact_name, date_text)
-            if manifest is None:
-                continue
-            if str(manifest.status.value) != "completed":
-                failures.append(
-                    {"date": date_text, "stage": stage, "status": manifest.status.value}
-                )
-            if manifest.output_path != expected_key:
-                failures.append(
-                    {
-                        "date": date_text,
-                        "stage": stage,
-                        "expected_output": expected_key,
-                        "manifest_output": manifest.output_path,
-                    }
-                )
-    return IntegrityGate(
-        name="stage_manifest_outputs",
-        passed=len(failures) == 0,
-        details={"failures": failures},
-    )
-
-
-def _build_human_review_rows(
-    *,
-    dates: Sequence[str],
-    ticker: str,
-    human_semantic_review_status: str,
-    loaded: Mapping[str, object],
-    artifact_keys: Mapping[str, object],
-) -> list[HumanReviewRow]:
-    review_rows: list[HumanReviewRow] = []
-    for date_text in dates:
-        raw_rows = [
-            row
-            for row in _records_by_date(loaded, "raw_news_rows").get(date_text, [])
-            if _row_contains_ticker(row, ticker)
-        ]
-        scored_rows = [
-            row
-            for row in _records_by_date(loaded, "scored_news_rows").get(date_text, [])
-            if str(_row_value(row, "ticker")).upper() == ticker
-        ]
-        topic_record = _first_feature_record(loaded, "topic_records", date_text, ticker)
-        sentiment_record = _first_feature_record(
-            loaded, "sentiment_records", date_text, ticker
-        )
-        feature_record = _records_by_date(loaded, "feature_records").get(date_text)
-        regime_row = _first_mapping_row(loaded, "regime_rows", date_text)
-        rows_for_date = scored_rows or [None]
-        for scored_row in rows_for_date:
-            raw_row = _match_raw_row(raw_rows, scored_row)
-            review_rows.append(
-                _human_review_row(
-                    date_text=date_text,
-                    ticker=ticker,
-                    human_semantic_review_status=human_semantic_review_status,
-                    raw_row=raw_row,
-                    scored_row=scored_row,
-                    topic_record=topic_record,
-                    sentiment_record=sentiment_record,
-                    feature_record=feature_record,
-                    regime_row=regime_row,
-                    artifact_keys=artifact_keys,
-                )
-            )
-    return review_rows
-
-
-def _human_review_row(
-    *,
-    date_text: str,
-    ticker: str,
-    human_semantic_review_status: str,
-    raw_row: Mapping[str, object] | None,
-    scored_row: Mapping[str, object] | None,
-    topic_record: FeatureRecord | None,
-    sentiment_record: FeatureRecord | None,
-    feature_record: object,
-    regime_row: Mapping[str, object] | None,
-    artifact_keys: Mapping[str, object],
-) -> HumanReviewRow:
-    topic_features = {} if topic_record is None else topic_record.features
-    sentiment_features = {} if sentiment_record is None else sentiment_record.features
-    return HumanReviewRow(
-        date=date_text,
-        ticker=ticker,
-        review_status=human_semantic_review_status,
-        raw_article_id=_string_or_none(_row_value(raw_row, "id")),
-        raw_headline=_string_or_none(_row_value(raw_row, "headline")),
-        raw_snippet=_snippet(_row_value(raw_row, "summary") or _row_value(raw_row, "text")),
-        raw_source=_string_or_none(_row_value(raw_row, "source")),
-        raw_published_at=_string_or_none(_news_timestamp(raw_row)),
-        raw_news_key=_date_key(artifact_keys, "raw_news", date_text),
-        preprocessed_news_key=_date_key(artifact_keys, "preprocessed_news", date_text),
-        finbert_scored_news_key=_date_key(artifact_keys, "finbert_scored_news", date_text),
-        finbert_positive=_to_finite_float(_row_value(scored_row, "sentiment_positive")),
-        finbert_negative=_to_finite_float(_row_value(scored_row, "sentiment_negative")),
-        finbert_neutral=_to_finite_float(_row_value(scored_row, "sentiment_neutral")),
-        finbert_score=_to_finite_float(_row_value(scored_row, "sentiment_score")),
-        finbert_relevance=_to_finite_float(_row_value(scored_row, "relevance_score")),
-        topic_feature_key=_date_key(artifact_keys, "topic_features", date_text),
-        topic_count=_to_finite_float(topic_features.get("nlp_topic_count")),
-        topic_sentence_count=_to_finite_float(topic_features.get("nlp_sentence_count")),
-        sentiment_feature_key=_date_key(artifact_keys, "sentiment_features", date_text),
-        sentiment_score=_to_finite_float(sentiment_features.get("nlp_sentiment_score")),
-        sentiment_article_count=_to_finite_float(sentiment_features.get("nlp_article_count")),
-        regime_key=_date_key(artifact_keys, "regime", date_text),
-        regime_label=_string_or_none(_row_value(regime_row, "regime_label")),
-        regime_confidence=_to_finite_float(_row_value(regime_row, "regime_confidence")),
-        regime_prob_bear=_to_finite_float(_row_value(regime_row, "regime_prob_bear")),
-        regime_prob_sideways=_to_finite_float(_row_value(regime_row, "regime_prob_sideways")),
-        regime_prob_bull=_to_finite_float(_row_value(regime_row, "regime_prob_bull")),
-        feature_key=_date_key(artifact_keys, "feature_shards", date_text),
-        notes=_review_notes(raw_row, scored_row, feature_record),
-    )
-
-
-def _row_counts(
-    loaded: Mapping[str, object],
-    artifact_keys: Mapping[str, object],
-) -> dict[str, object]:
-    counts: dict[str, object] = {}
-    for bucket in (
-        "raw_news_rows",
-        "preprocessed_rows",
-        "topic_records",
-        "scored_news_rows",
-        "sentiment_records",
-        "regime_rows",
-    ):
-        counts[bucket] = {
-            date_text: len(rows) if isinstance(rows, list) else 1
-            for date_text, rows in _records_by_date(loaded, bucket).items()
-        }
-    counts["feature_records"] = len(_records_by_date(loaded, "feature_records"))
-    counts["expected_trading_dates"] = len(
-        _sequence_artifact_value(artifact_keys, "expected_trading_dates")
-    )
-    counts["skipped_non_trading_dates"] = len(
-        _sequence_artifact_value(artifact_keys, "skipped_non_trading_dates")
-    )
-    return counts
-
-
-def _null_rates(loaded: Mapping[str, object]) -> dict[str, object]:
-    feature_nulls = {}
-    for date_text, record in _records_by_date(loaded, "feature_records").items():
-        if isinstance(record, FeatureRecord):
-            values = list(record.features.values())
-            feature_nulls[date_text] = _null_rate(values)
-    scored_nulls = {
-        date_text: _mapping_null_rate(rows)
-        for date_text, rows in _records_by_date(loaded, "scored_news_rows").items()
-        if isinstance(rows, list)
-    }
-    return {"feature_records": feature_nulls, "scored_news_rows": scored_nulls}
-
-
-def _stale_artifacts(
-    writer: AAPLEvidenceReader,
-    artifact_keys: Mapping[str, object],
-) -> dict[str, list[str]]:
-    stale: dict[str, list[str]] = {}
-    for family in (
-        "preprocessed_news",
-        "topic_features",
-        "finbert_scored_news",
-        "sentiment_features",
-        "regime",
-    ):
-        keys_by_date = artifact_keys[family]
-        assert isinstance(keys_by_date, Mapping)
-        for date_text, expected_key in keys_by_date.items():
-            prefix = str(expected_key).rsplit("/", 1)[0] + "/"
-            siblings = [key for key in writer.list_keys(prefix) if key != expected_key]
-            if siblings:
-                stale[f"{family}:{date_text}"] = siblings
-    return stale
-
-
-def _source_provenance(
-    loaded: Mapping[str, object],
-    artifact_keys: Mapping[str, object],
-) -> dict[str, object]:
-    manifests = loaded.get("manifests")
-    manifest_payload = {}
-    if isinstance(manifests, Mapping):
-        for label, manifest in manifests.items():
-            if isinstance(manifest, PipelineManifestRecord):
-                manifest_payload[label] = {
-                    "stage": manifest.stage,
-                    "status": manifest.status.value,
-                    "output_path": manifest.output_path,
-                    "metadata": manifest.metadata,
+            scored_frame = _read_parquet_frame(active_writer.get_object(key))
+        except FileNotFoundError:
+            load_warnings.append(
+                {
+                    "scope": "sentence_rows",
+                    "date": current_date,
+                    "key": key,
+                    "message": "Missing scored-news parquet for this trading date.",
                 }
-    return {
-        "manifests": manifest_payload,
-        "requested_calendar_dates": artifact_keys["requested_calendar_dates"],
-        "expected_trading_dates": artifact_keys["expected_trading_dates"],
-        "skipped_non_trading_dates": artifact_keys["skipped_non_trading_dates"],
-        "raw_price_key": artifact_keys["raw_price"],
-        "raw_news_keys": artifact_keys["raw_news"],
-        "raw_universe_keys": artifact_keys["raw_universe"],
-    }
+            )
+            continue
+        if scored_frame.empty:
+            load_warnings.append(
+                {
+                    "scope": "sentence_rows",
+                    "date": current_date,
+                    "key": key,
+                    "message": "Scored-news parquet is empty.",
+                }
+            )
+            continue
+        scored_frames.append(scored_frame)
 
-
-def _recommend_issue_202(
-    *,
-    machine_integrity_status: str,
-    human_semantic_review_status: str,
-) -> str:
-    if machine_integrity_status != "pass":
-        return "do_not_proceed"
-    if human_semantic_review_status == "accepted":
-        return "proceed"
-    if human_semantic_review_status == "rejected":
-        return "do_not_proceed"
-    return "needs_human_review"
-
-
-def _validate_news_sentiment_row(row: Mapping[str, object]) -> dict[str, object]:
-    cleaned = _clean_mapping(row)
-    return NewsSentimentRecord(**cleaned).model_dump(mode="json")
-
-
-def _manifest(
-    loaded: Mapping[str, object],
-    label: str,
-) -> PipelineManifestRecord | None:
-    manifests = loaded.get("manifests")
-    if not isinstance(manifests, Mapping):
-        return None
-    manifest = manifests.get(label)
-    return manifest if isinstance(manifest, PipelineManifestRecord) else None
-
-
-def _records_by_date(loaded: Mapping[str, object], bucket: str) -> dict[str, Any]:
-    value = loaded.get(bucket)
-    return dict(value) if isinstance(value, Mapping) else {}
-
-
-def _date_key(artifact_keys: Mapping[str, object], family: str, date_text: str) -> str:
-    keys = artifact_keys[family]
-    if not isinstance(keys, Mapping):
-        raise TypeError(f"{family} is not keyed by date")
-    return str(keys[date_text])
-
-
-def _sequence_artifact_value(
-    artifact_keys: Mapping[str, object],
-    family: str,
-) -> tuple[str, ...]:
-    value = artifact_keys.get(family, ())
-    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
-        raise TypeError(f"{family} is not a sequence")
-    return tuple(str(item) for item in value)
-
-
-def _stage_manifest_keys(
-    artifact_keys: Mapping[str, object],
-    date_text: str,
-) -> dict[str, str]:
-    keys_by_date = artifact_keys["stage_manifests"]
-    if not isinstance(keys_by_date, Mapping):
-        raise TypeError("stage_manifests must be keyed by date")
-    stage_keys = keys_by_date[date_text]
-    if not isinstance(stage_keys, Mapping):
-        raise TypeError("stage manifest keys must be a mapping")
-    return {str(stage): str(key) for stage, key in stage_keys.items()}
-
-
-def _append_loaded(loaded: dict[str, object], bucket: str, value: object) -> None:
-    items = loaded[bucket]
-    assert isinstance(items, list)
-    items.append(value)
-
-
-def _read_parquet_frame(payload: bytes) -> Any:
-    pd = _require_pandas()
-    return pd.read_parquet(io.BytesIO(payload))
-
-
-def _require_pandas() -> Any:
     try:
-        import pandas as pd
+        regime_frame = _read_parquet_frame(active_writer.get_object(layer1_regime_path(run_id)))
+    except FileNotFoundError:
+        regime_frame = pd.DataFrame()
+        load_warnings.append(
+            {
+                "scope": "regime",
+                "key": layer1_regime_path(run_id),
+                "message": "Missing date-level HMM regime parquet for this run.",
+            }
+        )
 
-        importlib.import_module("pyarrow")
-    except ModuleNotFoundError as exc:
-        raise ModuleNotFoundError(
-            "pandas and pyarrow are required for the AAPL evidence workflow."
-        ) from exc
-    return pd
+    if scored_frames:
+        scored_frame = pd.concat(scored_frames, ignore_index=True)
+    else:
+        scored_frame = pd.DataFrame()
 
-
-def _clean_mapping(row: Mapping[str, object]) -> dict[str, object]:
-    return {str(key): _clean_value(value) for key, value in row.items()}
-
-
-def _clean_value(value: object) -> object:
-    if value is None:
-        return None
-    try:
-        if _require_pandas().isna(value):
-            return None
-    except (TypeError, ValueError):
-        return value
-    return value
-
-
-def _row_value(row: Mapping[str, object] | None, key: str) -> object:
-    if row is None:
-        return None
-    return row.get(key)
-
-
-def _row_contains_ticker(row: Mapping[str, object], ticker: str) -> bool:
-    symbols = row.get("symbols")
-    if isinstance(symbols, str):
-        return ticker in {part.strip().upper() for part in symbols.split(",")}
-    if isinstance(symbols, Sequence):
-        return ticker in {str(part).strip().upper() for part in symbols}
-    return str(row.get("ticker", "")).upper() == ticker
-
-
-def _match_raw_row(
-    raw_rows: Sequence[Mapping[str, object]],
-    scored_row: Mapping[str, object] | None,
-) -> Mapping[str, object] | None:
-    if not raw_rows:
-        return None
-    article_id = _row_value(scored_row, "article_id")
-    if article_id is not None:
-        for raw_row in raw_rows:
-            if str(raw_row.get("id")) == str(article_id):
-                return raw_row
-    return raw_rows[0]
-
-
-def _first_feature_record(
-    loaded: Mapping[str, object],
-    bucket: str,
-    date_text: str,
-    ticker: str,
-) -> FeatureRecord | None:
-    rows = _records_by_date(loaded, bucket).get(date_text, [])
-    for row in rows if isinstance(rows, list) else []:
-        if isinstance(row, FeatureRecord) and row.ticker == ticker:
-            return row
-    return None
-
-
-def _first_mapping_row(
-    loaded: Mapping[str, object],
-    bucket: str,
-    date_text: str,
-) -> Mapping[str, object] | None:
-    rows = _records_by_date(loaded, bucket).get(date_text, [])
-    for row in rows if isinstance(rows, list) else []:
-        if isinstance(row, Mapping):
-            return row
-    return None
-
-
-def _news_timestamp(row: Mapping[str, object] | None) -> str | None:
-    if row is None:
-        return None
-    for key in ("published_at", "created_at", "updated_at"):
-        value = row.get(key)
-        if value is not None:
-            return str(value)
-    return None
-
-
-def _snippet(value: object, *, limit: int = 180) -> str | None:
-    if value is None:
-        return None
-    text = " ".join(str(value).split())
-    if len(text) <= limit:
-        return text
-    return text[: limit - 3] + "..."
-
-
-def _string_or_none(value: object) -> str | None:
-    return None if value is None else str(value)
-
-
-def _review_notes(
-    raw_row: Mapping[str, object] | None,
-    scored_row: Mapping[str, object] | None,
-    feature_record: object,
-) -> str:
-    notes: list[str] = []
-    if raw_row is None:
-        notes.append("missing_raw_news")
-    if scored_row is None:
-        notes.append("missing_finbert_scored_row")
-    if not isinstance(feature_record, FeatureRecord):
-        notes.append("missing_feature_record")
-    return ";".join(notes)
-
-
-def _sum_fields(row: object, fields: Sequence[str]) -> float | None:
-    values = [_to_finite_float(_row_value(row, field)) for field in fields]
-    if any(value is None for value in values):
-        return None
-    return sum(value for value in values if value is not None)
-
-
-def _regime_label_probability(row: object, label: str) -> float | None:
-    label_to_field = {
-        "bear": "regime_prob_bear",
-        "sideways": "regime_prob_sideways",
-        "bull": "regime_prob_bull",
-    }
-    field = label_to_field.get(label)
-    if field is None:
-        return None
-    return _to_finite_float(_row_value(row, field))
-
-
-def _to_finite_float(value: object) -> float | None:
-    if value is None:
-        return None
-    try:
-        numeric = float(value)
-    except (TypeError, ValueError):
-        return None
-    return numeric if _is_finite(numeric) else None
-
-
-def _is_finite(value: object) -> bool:
-    try:
-        numeric = float(value)
-    except (TypeError, ValueError):
-        return False
-    return not (math.isnan(numeric) or math.isinf(numeric))
-
-
-def _null_rate(values: Sequence[object]) -> float:
-    if not values:
-        return 0.0
-    return sum(value is None for value in values) / len(values)
-
-
-def _mapping_null_rate(rows: Sequence[object]) -> float:
-    values: list[object] = []
-    for row in rows:
-        if isinstance(row, Mapping):
-            values.extend(row.values())
-    return _null_rate(values)
-
-
-def _format_sentiment(row: HumanReviewRow) -> str:
-    score = _format_optional_number(row.finbert_score)
-    probs = ", ".join(
-        [
-            f"p={_format_optional_number(row.finbert_positive)}",
-            f"n={_format_optional_number(row.finbert_negative)}",
-            f"u={_format_optional_number(row.finbert_neutral)}",
-        ]
+    article_groups, article_summary = _build_article_groups(
+        scored_frame,
+        requested_ticker=requested_ticker,
+        relevance_threshold=relevance_threshold,
     )
-    return f"{score}<br>{probs}"
+    regime_by_date = _build_regime_map(regime_frame)
+    date_groups = _build_date_groups(article_groups, regime_by_date)
+    summary = {
+        "row_count": int(article_summary["row_count"]),
+        "article_count": int(article_summary["article_count"]),
+        "date_count": len(date_groups),
+        "accepted_article_count": int(article_summary["accepted_article_count"]),
+        "flagged_article_count": int(article_summary["flagged_article_count"]),
+        "duplicate_article_count": int(article_summary["duplicate_article_count"]),
+        "repeated_headline_count": int(article_summary["repeated_headline_count"]),
+        "weak_article_count": int(article_summary["weak_article_count"]),
+        "sentence_count": int(article_summary["sentence_count"]),
+    }
+    generated_at = datetime.now(tz=UTC).isoformat()
+    return Layer1SemanticReviewReport(
+        run_id=run_id,
+        ticker=requested_ticker,
+        from_date=_format_date(start_date),
+        to_date=_format_date(end_date),
+        generated_at=generated_at,
+        row_count=summary["row_count"],
+        article_count=summary["article_count"],
+        date_count=summary["date_count"],
+        accepted_article_count=summary["accepted_article_count"],
+        flagged_article_count=summary["flagged_article_count"],
+        duplicate_article_count=summary["duplicate_article_count"],
+        repeated_headline_count=summary["repeated_headline_count"],
+        weak_article_count=summary["weak_article_count"],
+        sentence_count=summary["sentence_count"],
+        load_warnings=load_warnings,
+        regime_rows=[item.to_dict() for item in _regime_rows_from_map(regime_by_date)],
+        article_groups=[group.to_dict() for group in article_groups],
+        date_groups=[group.to_dict() for group in date_groups],
+        summary=summary,
+    )
 
 
-def _format_regime(row: HumanReviewRow) -> str:
-    confidence = _format_optional_number(row.regime_confidence)
-    return f"{_markdown_cell(row.regime_label)} ({confidence})"
+def _build_article_groups(
+    frame: pd.DataFrame,
+    *,
+    requested_ticker: str,
+    relevance_threshold: float,
+) -> tuple[list[SemanticReviewArticleGroup], dict[str, int]]:
+    if frame.empty:
+        return [], {
+            "row_count": 0,
+            "article_count": 0,
+            "accepted_article_count": 0,
+            "flagged_article_count": 0,
+            "duplicate_article_count": 0,
+            "repeated_headline_count": 0,
+            "weak_article_count": 0,
+            "sentence_count": 0,
+        }
+
+    normalized = _normalize_scored_frame(frame)
+    normalized["normalized_headline"] = normalized["headline"].map(_normalize_headline)
+    normalized["sentence_index_key"] = normalized["sentence_index"].where(
+        normalized["sentence_index"].notna(),
+        -1,
+    )
+    normalized["requested_ticker_terms"] = normalized["headline"].map(
+        lambda value: _ticker_terms(requested_ticker)
+    )
+    normalized["requested_ticker_term_hits"] = normalized.apply(
+        lambda row: tuple(
+            term
+            for term in row["requested_ticker_terms"]
+            if _text_contains_term(_combined_text(row), term)
+        ),
+        axis=1,
+    )
+    normalized["evidence_snippets"] = normalized.apply(
+        lambda row: tuple(_evidence_snippets(_combined_text(row), row["requested_ticker_terms"])),
+        axis=1,
+    )
+    normalized["has_requested_ticker_evidence"] = normalized["requested_ticker_term_hits"].map(bool)
+    normalized["relevance_state"] = normalized["relevance_score"].map(
+        lambda value: _relevance_state(value, threshold=relevance_threshold)
+    )
+
+    headline_counts = normalized.groupby("normalized_headline")["article_id"].nunique()
+    article_groups: list[SemanticReviewArticleGroup] = []
+    accepted_count = 0
+    flagged_count = 0
+    weak_count = 0
+    duplicate_article_count = 0
+    repeated_headline_count = 0
+    sentence_count = int(len(normalized))
+
+    for article_key, article_frame in normalized.groupby(["date", "article_id"], sort=True):
+        date_text, article_id = article_key
+        article_frame = article_frame.sort_values(["sentence_index_key", "sentence_index"])
+        headline = _first_non_null(article_frame["headline"])
+        normalized_headline = _normalize_headline(headline)
+        headline_duplicate_count = int(headline_counts.get(normalized_headline, 1))
+        row_count = int(len(article_frame))
+        unique_sentence_count = int(article_frame["sentence_index_key"].nunique())
+        duplicate_sentence_count = max(row_count - unique_sentence_count, 0)
+        duplicate_article_count += 1 if row_count > 1 else 0
+        repeated_headline_count += 1 if headline_duplicate_count > 1 else 0
+
+        requested_ticker_term_hits = tuple(
+            sorted(
+                {term for hits in article_frame["requested_ticker_term_hits"] for term in hits}
+            )
+        )
+        evidence_snippets = tuple(
+            _dedupe_preserve_order(
+                snippet
+                for snippets in article_frame["evidence_snippets"]
+                for snippet in snippets
+            )
+        )
+        relevance_score = _first_non_null_float(article_frame["relevance_score"])
+        ticker_field = str(_first_non_null(article_frame["ticker"]))
+        contamination_flags: list[str] = []
+        if ticker_field and ticker_field != requested_ticker:
+            contamination_flags.append("ticker_mismatch")
+        if not requested_ticker_term_hits:
+            contamination_flags.append("no_requested_ticker_evidence")
+        if relevance_score is not None and relevance_score < relevance_threshold:
+            contamination_flags.append("low_relevance_score")
+        elif relevance_score is None:
+            contamination_flags.append("missing_relevance_score")
+        if headline_duplicate_count > 1:
+            contamination_flags.append("duplicate_normalized_headline")
+        if duplicate_sentence_count > 0:
+            contamination_flags.append("duplicate_sentence_rows")
+        article_status = "accepted" if not contamination_flags else "flagged"
+        if article_status == "accepted":
+            accepted_count += 1
+        else:
+            flagged_count += 1
+        if "low_relevance_score" in contamination_flags or "missing_relevance_score" in contamination_flags:
+            weak_count += 1
+
+        sentence_rows = [
+            SemanticReviewSentenceRow(
+                sentence_index=_maybe_int(row["sentence_index"]),
+                text=_optional_str(row["text"]),
+                sentiment_score=_maybe_float(row["sentiment_score"]),
+                positive_probability=_maybe_float(row["positive_probability"]),
+                negative_probability=_maybe_float(row["negative_probability"]),
+                neutral_probability=_maybe_float(row["neutral_probability"]),
+                relevance_score=_maybe_float(row["relevance_score"]),
+                row_granularity="sentence-level",
+            ).to_dict()
+            for _, row in article_frame.iterrows()
+        ]
+        article_groups.append(
+            SemanticReviewArticleGroup(
+                article_id=str(article_id),
+                date=str(date_text),
+                ticker=ticker_field or requested_ticker,
+                headline=_optional_str(headline),
+                normalized_headline=normalized_headline,
+                source=_optional_str(_first_non_null(article_frame["source"])),
+                url=_optional_str(_first_non_null(article_frame["url"])),
+                published_at=_optional_str(_first_non_null(article_frame["published_at"])),
+                article_row_count=row_count,
+                sentence_count=row_count,
+                unique_sentence_count=unique_sentence_count,
+                duplicate_sentence_count=duplicate_sentence_count,
+                headline_duplicate_count=headline_duplicate_count,
+                relevance_score=relevance_score,
+                relevance_state=_relevance_state(relevance_score, threshold=relevance_threshold),
+                article_status=article_status,
+                contamination_flags=tuple(contamination_flags),
+                requested_ticker_terms=_ticker_terms(requested_ticker),
+                requested_ticker_term_hits=requested_ticker_term_hits,
+                evidence_snippets=evidence_snippets,
+                sentence_rows=sentence_rows,
+            )
+        )
+
+    summary = {
+        "row_count": sentence_count,
+        "article_count": len(article_groups),
+        "accepted_article_count": accepted_count,
+        "flagged_article_count": flagged_count,
+        "duplicate_article_count": duplicate_article_count,
+        "repeated_headline_count": repeated_headline_count,
+        "weak_article_count": weak_count,
+        "sentence_count": sentence_count,
+    }
+    return article_groups, summary
 
 
-def _format_optional_number(value: float | None) -> str:
-    return "" if value is None else f"{value:.4g}"
+def _build_regime_map(frame: pd.DataFrame) -> dict[str, SemanticReviewRegimeRow]:
+    if frame.empty:
+        return {}
+    normalized = frame.copy()
+    normalized.columns = [str(column) for column in normalized.columns]
+    date_column = _first_existing_column(normalized, ("date", "as_of_date"))
+    if date_column is None:
+        return {}
+    regime_column = _first_existing_column(normalized, ("regime", "state", "label"))
+    confidence_column = _first_existing_column(normalized, ("confidence", "regime_confidence"))
+    bear_column = _first_existing_column(normalized, ("prob_bear", "bear_prob", "probability_bear"))
+    sideways_column = _first_existing_column(
+        normalized,
+        ("prob_sideways", "sideways_prob", "probability_sideways"),
+    )
+    bull_column = _first_existing_column(normalized, ("prob_bull", "bull_prob", "probability_bull"))
+    regime_map: dict[str, SemanticReviewRegimeRow] = {}
+    for _, row in normalized.iterrows():
+        date_text = _optional_str(row.get(date_column))
+        if not date_text:
+            continue
+        regime_map[date_text] = SemanticReviewRegimeRow(
+            date=date_text,
+            regime=_optional_str(row.get(regime_column)) if regime_column else None,
+            confidence=_maybe_float(row.get(confidence_column)) if confidence_column else None,
+            prob_bear=_maybe_float(row.get(bear_column)) if bear_column else None,
+            prob_sideways=_maybe_float(row.get(sideways_column)) if sideways_column else None,
+            prob_bull=_maybe_float(row.get(bull_column)) if bull_column else None,
+        )
+    return regime_map
 
 
-def _markdown_cell(value: object) -> str:
+def _regime_rows_from_map(
+    regime_map: Mapping[str, SemanticReviewRegimeRow],
+) -> list[SemanticReviewRegimeRow]:
+    return [regime_map[key] for key in sorted(regime_map)]
+
+
+def _build_date_groups(
+    article_groups: Sequence[SemanticReviewArticleGroup],
+    regime_map: Mapping[str, SemanticReviewRegimeRow],
+) -> list[SemanticReviewDateGroup]:
+    grouped: dict[str, list[SemanticReviewArticleGroup]] = defaultdict(list)
+    for article_group in article_groups:
+        grouped[article_group.date].append(article_group)
+
+    date_groups: list[SemanticReviewDateGroup] = []
+    for date_text in sorted(grouped):
+        articles = sorted(grouped[date_text], key=lambda item: (item.article_status, item.article_id))
+        accepted_articles = [item.to_dict() for item in articles if item.article_status == "accepted"]
+        flagged_articles = [item.to_dict() for item in articles if item.article_status != "accepted"]
+        date_groups.append(
+            SemanticReviewDateGroup(
+                date=date_text,
+                regime=regime_map.get(date_text).to_dict() if date_text in regime_map else None,
+                article_count=len(articles),
+                accepted_article_count=len(accepted_articles),
+                flagged_article_count=len(flagged_articles),
+                sentence_count=sum(item.article_row_count for item in articles),
+                articles=[item.to_dict() for item in articles],
+                accepted_articles=accepted_articles,
+                flagged_articles=flagged_articles,
+            )
+        )
+    return date_groups
+
+
+def _normalize_scored_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    normalized = frame.copy()
+    normalized.columns = [str(column) for column in normalized.columns]
+    for column in (
+        "date",
+        "ticker",
+        "headline",
+        "text",
+        "article_id",
+        "source",
+        "url",
+        "published_at",
+    ):
+        if column not in normalized.columns:
+            normalized[column] = None
+    for column in (
+        "sentence_index",
+        "sentiment_score",
+        "positive_probability",
+        "negative_probability",
+        "neutral_probability",
+        "relevance_score",
+    ):
+        if column not in normalized.columns:
+            normalized[column] = None
+    normalized["date"] = normalized["date"].map(lambda value: _optional_str(value) or "")
+    normalized["ticker"] = normalized["ticker"].map(lambda value: _optional_str(value) or "")
+    normalized["headline"] = normalized["headline"].map(_optional_str)
+    normalized["text"] = normalized["text"].map(_optional_str)
+    normalized["article_id"] = normalized["article_id"].map(lambda value: _optional_str(value) or _fallback_article_id(value))
+    normalized["source"] = normalized["source"].map(_optional_str)
+    normalized["url"] = normalized["url"].map(_optional_str)
+    normalized["published_at"] = normalized["published_at"].map(_optional_str)
+    for column in (
+        "sentence_index",
+        "sentiment_score",
+        "positive_probability",
+        "negative_probability",
+        "neutral_probability",
+        "relevance_score",
+    ):
+        normalized[column] = normalized[column].map(_maybe_float)
+    normalized = normalized[normalized["date"].astype(bool)]
+    return normalized
+
+
+def _read_parquet_frame(data: bytes) -> pd.DataFrame:
+    """Load a parquet payload into a DataFrame."""
+    return pd.read_parquet(BytesIO(data))
+
+
+def _build_payload_from_report(report: Layer1SemanticReviewReport | Mapping[str, object]) -> dict[str, object]:
+    """Normalize a report into the semantic-review dashboard payload shape."""
+    report_dict = report.to_dict() if isinstance(report, Layer1SemanticReviewReport) else dict(report)
+    date_groups = [dict(item) for item in report_dict.get("date_groups", [])]
+    article_groups = [dict(item) for item in report_dict.get("article_groups", [])]
+    flagged_articles = [
+        dict(item)
+        for item in article_groups
+        if str(item.get("article_status", "flagged")) != "accepted"
+    ]
+    accepted_articles = [
+        dict(item)
+        for item in article_groups
+        if str(item.get("article_status", "flagged")) == "accepted"
+    ]
+    payload = {
+        "title": "Layer 1 semantic review dashboard",
+        "description": (
+            "Sentence-level FinBERT rows are grouped under raw-article cards. "
+            "HMM regime is date-level and is rendered once per trading date."
+        ),
+        "report": report_dict,
+        "summary": dict(report_dict.get("summary", {})),
+        "controls": {
+            "ticker": report_dict.get("ticker"),
+            "run_id": report_dict.get("run_id"),
+            "from_date": report_dict.get("from_date"),
+            "to_date": report_dict.get("to_date"),
+        },
+        "date_groups": date_groups,
+        "article_groups": article_groups,
+        "accepted_articles": accepted_articles,
+        "flagged_articles": flagged_articles,
+        "warnings": list(report_dict.get("load_warnings", [])),
+    }
+    return payload
+
+
+__all__ = [
+    "DEFAULT_RELEVANCE_THRESHOLD",
+    "Layer1SemanticReviewReport",
+    "SemanticReviewArticleGroup",
+    "SemanticReviewDateGroup",
+    "SemanticReviewRegimeRow",
+    "SemanticReviewSentenceRow",
+    "build_layer1_aapl_evidence_report",
+    "_build_payload_from_report",
+]
+
+
+def _parse_date(value: str) -> Date:
+    """Parse a YYYY-MM-DD date string."""
+    return Date.fromisoformat(value.strip())
+
+
+def _inclusive_date_range(start: Date, end: Date) -> list[str]:
+    """Return all YYYY-MM-DD values between two dates, inclusive."""
+    current = start
+    values: list[str] = []
+    while current <= end:
+        values.append(current.isoformat())
+        current = current.fromordinal(current.toordinal() + 1)
+    return values
+
+
+def _format_date(value: Date) -> str:
+    """Format a date for JSON payloads."""
+    return value.isoformat()
+
+
+def _maybe_float(value: Any) -> float | None:
+    """Return a float when the input is numeric and not missing."""
     if value is None:
-        return ""
-    return str(value).replace("|", "\\|").replace("\n", " ")
-
-
-def _validate_iso_date(value: str, field_name: str) -> None:
+        return None
+    if isinstance(value, float) and pd.isna(value):
+        return None
     try:
-        parsed = Date.fromisoformat(value)
-    except ValueError as exc:
-        raise ValueError(f"{field_name} must be YYYY-MM-DD") from exc
-    if parsed.isoformat() != value:
-        raise ValueError(f"{field_name} must be YYYY-MM-DD")
+        if pd.isna(value):
+            return None
+    except TypeError:
+        pass
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
-def _business_dates(from_date: str, to_date: str) -> tuple[str, ...]:
-    """Return regular US equity trading sessions for backward-compatible callers."""
-    return trading_dates(from_date, to_date)
+def _maybe_int(value: Any) -> int | None:
+    """Return an int when the input is numeric and not missing."""
+    maybe_value = _maybe_float(value)
+    if maybe_value is None:
+        return None
+    return int(maybe_value)
+
+
+def _optional_str(value: Any) -> str | None:
+    """Return a stripped string when the input is present."""
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except TypeError:
+        pass
+    text = str(value).strip()
+    return text or None
+
+
+def _first_non_null(values: Sequence[Any]) -> Any:
+    """Return the first non-null value from a sequence."""
+    for value in values:
+        if _optional_str(value) is not None:
+            return value
+    return None
+
+
+def _first_non_null_float(values: Sequence[Any]) -> float | None:
+    """Return the first non-null float from a sequence."""
+    for value in values:
+        maybe_value = _maybe_float(value)
+        if maybe_value is not None:
+            return maybe_value
+    return None
+
+
+def _fallback_article_id(value: Any) -> str:
+    """Build a deterministic fallback article identifier when one is missing."""
+    return f"article-{abs(hash(str(value)))}"
+
+
+def _normalize_headline(value: str | None) -> str:
+    """Normalize a headline for duplicate detection."""
+    if not value:
+        return ""
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", value.lower())).strip()
+
+
+def _ticker_terms(ticker: str) -> tuple[str, ...]:
+    """Return ticker and alias terms used for source-text evidence checks."""
+    normalized = ticker.strip().upper()
+    aliases = {
+        "AAPL": ("apple", "apple inc", "aapl"),
+    }
+    terms = [normalized.lower()]
+    for alias in aliases.get(normalized, ()): 
+        if alias.lower() not in terms:
+            terms.append(alias.lower())
+    return tuple(terms)
+
+
+def _text_contains_term(text: str, term: str) -> bool:
+    """Return True when a normalized term appears in text."""
+    if not text or not term:
+        return False
+    if " " in term:
+        return term in text.lower()
+    return re.search(rf"\b{re.escape(term.lower())}\b", text.lower()) is not None
+
+
+def _evidence_snippets(text: str, terms: Sequence[str]) -> list[str]:
+    """Return short source-text snippets that justify a ticker relevance decision."""
+    if not text:
+        return []
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    snippets: list[str] = []
+    for sentence in sentences:
+        if any(_text_contains_term(sentence, term) for term in terms):
+            snippets.append(sentence.strip())
+    return snippets
+
+
+def _combined_text(row: pd.Series) -> str:
+    """Return headline + text for evidence searches."""
+    headline = _optional_str(row.get("headline")) or ""
+    text = _optional_str(row.get("text")) or ""
+    return f"{headline} {text}".strip()
+
+
+def _relevance_state(value: float | None, *, threshold: float) -> str:
+    """Classify a relevance score for dashboard badges."""
+    if value is None:
+        return "missing"
+    if value < threshold:
+        return "weak"
+    return "strong"
+
+
+def _first_existing_column(frame: pd.DataFrame, candidates: Sequence[str]) -> str | None:
+    """Return the first matching column name from a candidate list."""
+    for candidate in candidates:
+        if candidate in frame.columns:
+            return candidate
+    return None
+
+
+def _dedupe_preserve_order(items: Sequence[str]) -> list[str]:
+    """Deduplicate a sequence while preserving first-seen order."""
+    seen: set[str] = set()
+    values: list[str] = []
+    for item in items:
+        if item in seen:
+            continue
+        seen.add(item)
+        values.append(item)
+    return values
+
+
+def _build_payload_from_report_and_json(report_json: str) -> dict[str, object]:
+    """Convenience helper for callers that already hold a JSON report string."""
+    return _build_payload_from_report(json.loads(report_json))

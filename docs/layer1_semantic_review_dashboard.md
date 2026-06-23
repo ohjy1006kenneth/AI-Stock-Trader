@@ -1,26 +1,38 @@
-# Layer 1 Semantic Review Dashboard
+# Layer 1 semantic-review dashboard
 
-## Purpose
+This dashboard is a read-only reviewer aid for the Layer 1 AAPL pilot.
+It is designed to make sentence-level FinBERT evidence and date-level HMM
+regimes visible at the same time without confusing the two granularities.
 
-`app.lab.semantic_review_dashboard` serves a persistent, read-only browser dashboard for
-human semantic review of Layer 1 evidence. It is a live local server, not a generated static
-HTML artifact.
+## What the dashboard shows
 
-Use it to inspect:
-- run status, machine-integrity gates, and #202 recommendation
-- FinBERT probabilities, polarity, score, and relevance
-- raw headlines, snippets, source, article timestamp, and duplicate headline groups
-- topic and ticker-day sentiment features
-- HMM regime label, confidence, and bear/sideways/bull probabilities
-- exact source artifact keys for raw news, scored news, topic, sentiment, regime, and feature
-  shards
+- Raw scored-news rows are grouped by `date -> article_id -> sentence_index`.
+- Each article card exposes the scored-news `sentence_index` and scored `text`.
+- The same raw article can contain multiple sentence rows; those rows are shown
+  together so reviewers do not mistake sentence-level FinBERT evidence for
+  contradictory duplicated article-level rows.
+- HMM regime is shown once per trading date in a dedicated date header.
+  Confidence and probabilities are therefore clearly date-level, not per row.
+- Articles are split into accepted and flagged groups.
+  Flagged articles stay visible with the evidence that caused the flag.
 
-The dashboard is read-only. Human acceptance or rejection must be recorded on the relevant
-GitHub issue; the dashboard does not write R2 objects or mutate feature artifacts.
+## Contamination / relevance handling
 
-## Run Against The Current AAPL Pilot
+The review payload surfaces the following conditions:
 
-From the repository root:
+- `ticker_mismatch`
+- `no_requested_ticker_evidence`
+- `low_relevance_score`
+- `missing_relevance_score`
+- `duplicate_normalized_headline`
+- `duplicate_sentence_rows`
+
+For the AAPL pilot, any article that lacks direct Apple/AAPL source-text
+support is flagged and kept out of the default acceptance path.
+This prevents unrelated or weakly relevant rows from silently dominating the
+review queue.
+
+## Local run
 
 ```bash
 ./.venv/bin/python -m app.lab.semantic_review_dashboard \
@@ -28,68 +40,58 @@ From the repository root:
   --from-date 2026-05-06 \
   --to-date 2026-05-28 \
   --ticker AAPL \
-  --host 0.0.0.0 \
-  --port 8765
+  --host 127.0.0.1 \
+  --port 8766
 ```
 
-Then open `http://127.0.0.1:8765/` or check:
+API example:
 
 ```bash
-curl -fsS http://127.0.0.1:8765/health
+curl -fsS 'http://127.0.0.1:8766/api/review?ticker=AAPL'
 ```
 
-A normal checkout now contains the current pilot diagnostics bundle under
-`artifacts/reports/diagnostics/`, so the command above loads the evidence JSON,
-human-review CSV, and accuracy report without needing a private home-path
-override.
+## Payload shape
 
-## Alternate Sources
+Top-level response fields:
 
-If you copied the bundle elsewhere, point the dashboard at that directory:
+- `report`: the canonical report payload
+- `summary`: aggregate counts
+- `date_groups`: one entry per trading date
+- `article_groups`: flat article cards for cross-date inspection
+- `accepted_articles`: accepted article cards
+- `flagged_articles`: flagged article cards
+- `warnings`: non-fatal load issues
 
-```bash
-./.venv/bin/python -m app.lab.semantic_review_dashboard \
-  --run-id <run_id> \
-  --artifact-dir /path/to/diagnostic-artifacts
-```
+Each `date_groups[]` entry contains:
 
-Use exact file paths when the artifacts were split apart:
+- `date`
+- `regime` with `scope: "date-level"`
+- article counts
+- nested `articles[]`
 
-```bash
-./.venv/bin/python -m app.lab.semantic_review_dashboard \
-  --run-id <run_id> \
-  --evidence-json /path/evidence.json \
-  --review-csv /path/review.csv \
-  --accuracy-report /path/accuracy.json \
-  --no-r2
-```
+Each `articles[]` entry contains:
 
-Use a local mock R2 tree when you want the dashboard to read the mock object-store
-instead of local files:
+- `article_id`
+- `headline`
+- `normalized_headline`
+- `article_status`
+- `contamination_flags`
+- `requested_ticker_term_hits`
+- `evidence_snippets`
+- `sentence_rows[]`
 
-```bash
-./.venv/bin/python -m app.lab.semantic_review_dashboard \
-  --run-id <run_id> \
-  --from-date <YYYY-MM-DD> \
-  --to-date <YYYY-MM-DD> \
-  --ticker AAPL \
-  --local-r2-root data/runtime/r2_mock
-```
+Each `sentence_rows[]` entry contains:
 
-## API
+- `sentence_index`
+- `text`
+- FinBERT probabilities and score
+- `row_granularity: "sentence-level"`
 
-- `GET /health` returns server health and the configured run id.
-- `GET /api/review` returns the current dashboard payload.
+## Review guidance
 
-`/api/review` supports these query filters:
-
-- `date=YYYY-MM-DD`
-- `from_date=YYYY-MM-DD`
-- `to_date=YYYY-MM-DD`
-- `ticker=AAPL`
-- `search=<text>`
-- `min_relevance=0.75`
-- `review_status=pending`
-
-The server reloads artifacts on every `/api/review` request, so a long-running dashboard can
-be reused after evidence files are refreshed.
+1. Check the date header first for the HMM regime context.
+2. Expand an article card to inspect its sentence rows.
+3. Use the evidence snippets and ticker-hit fields to decide whether the article
+   is actually about AAPL.
+4. Do not accept the pilot if the flagged section contains unrelated articles
+   that are not explained by source-text evidence.
