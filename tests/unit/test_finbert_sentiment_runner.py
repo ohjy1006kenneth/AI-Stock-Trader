@@ -87,6 +87,7 @@ def test_run_finbert_sentiment_reads_preprocessed_news_and_writes_outputs(
     assert manifest["metadata"]["relevance_accepted_rows"] == 2
     assert manifest["metadata"]["relevance_borderline_rows"] == 1
     assert manifest["metadata"]["feature_rows"] == 2
+    assert manifest["metadata"]["semantic_aggregation"]["relevance_gate_loaded"] is True
 
 
 def test_run_finbert_sentiment_honors_requested_ticker_scope(
@@ -182,6 +183,7 @@ def test_run_finbert_sentiment_scores_only_relevance_gate_candidates(
         "relevance_decision",
     ].iloc[0] == "rejected"
     assert manifest["metadata"]["relevance_rejected_rows"] == 1
+    assert manifest["metadata"]["semantic_aggregation"]["topic_labels_loaded"] is True
 
 
 def test_run_finbert_sentiment_writes_failure_manifest(

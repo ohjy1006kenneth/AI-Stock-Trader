@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -24,7 +25,7 @@ def _row(
     date: str = "2024-04-10",
     ticker: str = "AAPL",
     article_id: str = "article-1",
-    source: str = "Reuters",
+    source: str | None = "Reuters",
     published_at: str | None = None,
     sentiment_positive: float = 0.8,
     sentiment_negative: float = 0.1,
@@ -356,6 +357,123 @@ def test_sentiment_feature_records_from_scored_news_matches_contract() -> None:
     assert records[0].features["nlp_article_count"] == 2
     assert records[0].features["nlp_sentence_count"] == 3
     assert records[0].features["nlp_sentiment_score"] == pytest.approx(1.0 / 3.0)
+    assert json.loads(records[0].features["nlp_semantic_warning_codes"]) == [
+        "missing_relevance_evidence",
+        "missing_topic_artifact",
+    ]
+
+
+def test_sentiment_feature_records_combine_topics_relevance_and_source_weights() -> None:
+    """Semantic aggregation combines FinBERT, topics, relevance, and source weights."""
+    scored_news = pd.DataFrame(
+        [
+            _row(
+                article_id="aapl-specific",
+                source="Reuters",
+                sentiment_positive=0.9,
+                sentiment_negative=0.05,
+                sentiment_neutral=0.05,
+                sentiment_score=0.85,
+                relevance_score=0.9,
+            )
+            | {"sentence_index": 0, "chunk_index": 0},
+            _row(
+                article_id="broad-market",
+                source="Personal Blog",
+                sentiment_positive=0.2,
+                sentiment_negative=0.6,
+                sentiment_neutral=0.2,
+                sentiment_score=-0.4,
+                relevance_score=0.4,
+            )
+            | {"sentence_index": 0, "chunk_index": 0},
+        ]
+    )
+    topic_labels = pd.DataFrame(
+        [
+            _topic_row("aapl-specific", topic_id=7, topic_probability=0.8),
+            _topic_row("broad-market", topic_id=3, topic_probability=0.5),
+        ]
+    )
+    relevance_gate = pd.DataFrame(
+        [
+            _relevance_row("aapl-specific", decision="accepted", relevance_score=0.9),
+            _relevance_row("broad-market", decision="borderline", relevance_score=0.4),
+        ]
+    )
+
+    records = sentiment_feature_records_from_scored_news(
+        scored_news,
+        topic_labels=topic_labels,
+        relevance_gate=relevance_gate,
+        credibility_config=SourceCredibilityConfig(
+            default_source_weight=1.0,
+            source_weights={"reuters": 2.0, "personal blog": 0.5},
+        ),
+    )
+
+    features = records[0].features
+    topic_summary = json.loads(features["nlp_topic_sentiment_summary"])
+    source_summary = json.loads(features["nlp_source_weight_summary"])
+
+    assert features["nlp_sentiment_score"] == pytest.approx(0.725)
+    assert features["nlp_sentiment_topic_score"] == pytest.approx(0.7688311688311689)
+    assert features["nlp_sentiment_topic_count"] == 2
+    assert features["nlp_sentiment_dominant_topic_id"] == 7
+    assert features["nlp_sentiment_dominant_topic_score"] == pytest.approx(0.85)
+    assert features["nlp_relevance_accepted_count"] == 1
+    assert features["nlp_relevance_borderline_count"] == 1
+    assert features["nlp_effective_weight_sum"] == pytest.approx(2.0)
+    assert json.loads(features["nlp_contributing_article_ids"]) == [
+        "aapl-specific",
+        "broad-market",
+    ]
+    assert json.loads(features["nlp_semantic_warning_codes"]) == []
+    assert topic_summary[0]["topic_id"] == 7
+    assert topic_summary[0]["article_count"] == 1
+    assert source_summary == [
+        {
+            "article_count": 1,
+            "sentence_count": 1,
+            "source": "Personal Blog",
+            "source_weight": 0.5,
+        },
+        {
+            "article_count": 1,
+            "sentence_count": 1,
+            "source": "Reuters",
+            "source_weight": 2.0,
+        },
+    ]
+
+
+def test_sentiment_feature_records_warn_on_missing_optional_topic_evidence() -> None:
+    """Missing optional topic rows produce null topic features and warning metadata."""
+    scored_news = pd.DataFrame([_row(source=None) | {"sentence_index": 0, "chunk_index": 0}])
+    relevance_gate = pd.DataFrame([_relevance_row("article-1")])
+
+    records = sentiment_feature_records_from_scored_news(
+        scored_news,
+        topic_labels=pd.DataFrame(
+            columns=["date", "ticker", "article_id", "topic_id", "topic_probability"]
+        ),
+        relevance_gate=relevance_gate,
+        credibility_config=SourceCredibilityConfig(
+            default_source_weight=1.0,
+            source_weights={},
+        ),
+    )
+
+    features = records[0].features
+
+    assert features["nlp_sentiment_topic_score"] is None
+    assert features["nlp_sentiment_dominant_topic_id"] is None
+    assert features["nlp_missing_source_count"] == 1
+    assert features["nlp_missing_topic_count"] == 1
+    assert json.loads(features["nlp_semantic_warning_codes"]) == [
+        "missing_source_default_weight",
+        "missing_topic_artifact",
+    ]
 
 
 def test_sentiment_feature_records_to_frame_serializes_features() -> None:
@@ -371,16 +489,67 @@ def test_sentiment_feature_records_to_frame_serializes_features() -> None:
 
     frame = sentiment_feature_records_to_frame(records)
 
-    assert frame.to_dict(orient="records") == [
-        {
-            "date": "2024-04-10",
-            "ticker": "AAPL",
-            "features": (
-                '{"nlp_article_count":1,"nlp_relevance_score":1.0,'
-                '"nlp_sentence_count":1,"nlp_sentiment_negative":0.1,'
-                '"nlp_sentiment_neutral":0.1,"nlp_sentiment_positive":0.8,'
-                '"nlp_sentiment_score":0.7,"nlp_sentiment_std":0.0,'
-                '"nlp_sentiment_strength":0.8}'
-            ),
-        }
-    ]
+    serialized = frame.to_dict(orient="records")
+    features = json.loads(serialized[0]["features"])
+
+    assert serialized[0]["date"] == "2024-04-10"
+    assert serialized[0]["ticker"] == "AAPL"
+    assert features["nlp_article_count"] == 1
+    assert features["nlp_relevance_score"] == 1.0
+    assert features["nlp_sentence_count"] == 1
+    assert features["nlp_sentiment_score"] == 0.7
+    assert features["nlp_sentiment_strength"] == 0.8
+
+
+def _topic_row(
+    article_id: str,
+    *,
+    topic_id: int,
+    topic_probability: float,
+) -> dict[str, object]:
+    """Build one topic-label row."""
+    return {
+        "date": "2024-04-10",
+        "ticker": "AAPL",
+        "article_id": article_id,
+        "normalized_headline": article_id,
+        "text": article_id,
+        "article_sentence_count": 1,
+        "embedding_cache_key": f"embedding-{article_id}",
+        "topic_model": "test-topic",
+        "topic_model_version": "test-version",
+        "topic_id": topic_id,
+        "topic_probability": topic_probability,
+    }
+
+
+def _relevance_row(
+    article_id: str,
+    *,
+    decision: str = "accepted",
+    relevance_score: float = 1.0,
+) -> dict[str, object]:
+    """Build one relevance-gate audit row."""
+    return {
+        "date": "2024-04-10",
+        "ticker": "AAPL",
+        "article_id": article_id,
+        "sentence_index": 0,
+        "chunk_index": 0,
+        "headline": article_id,
+        "text": article_id,
+        "source": "Reuters",
+        "published_at": "2024-04-10T14:30:00Z",
+        "relevance_decision": decision,
+        "relevance_score": relevance_score,
+        "ticker_relevance_score": 1.0,
+        "financial_relevance_score": 1.0,
+        "topic_relevance_score": 0.8,
+        "reason_codes": "[]",
+        "ticker_evidence": "{}",
+        "entity_evidence": "[]",
+        "topic_id": 7,
+        "topic_probability": 0.8,
+        "embedding_cache_key": f"embedding-{article_id}",
+        "has_embedding": True,
+    }

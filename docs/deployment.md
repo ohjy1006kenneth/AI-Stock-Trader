@@ -71,6 +71,11 @@ Expected execution chain:
    - FinBERT sentiment runs consume the completed preprocessing, embedding, and topic-label
      artifacts through the pre-FinBERT relevance gate; rejected rows are retained in the
      `news_relevance_gate` audit artifact but are not scored by FinBERT
+   - The `sentiment_features` artifact is the source-weighted ticker-day semantic aggregate:
+     it joins scored FinBERT rows to topic labels and relevance-gate decisions by
+     point-in-time article/ticker evidence, applies `config/source_credibility.json`, and
+     emits topic sentiment, source-weight summaries, contributing article ids, and warning
+     codes for missing optional evidence
    - Multi-date lab/readiness runs invoke the same module with `--from-date` /
      `--to-date`; when the Modal app is available, that path submits one batched remote
      Layer 1 job so topic modeling and FinBERT stay on the declared Modal dependency stack

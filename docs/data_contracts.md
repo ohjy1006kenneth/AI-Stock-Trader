@@ -321,6 +321,42 @@ Notes:
   `reason_codes`, entity/ticker evidence, topic metadata, and embedding cache metadata
 - this is a non-contract artifact; no `core/contracts/schemas.py` change is required
 
+### Layer 1 topic-aware sentiment aggregation (non-contract artifact)
+
+Purpose:
+- combine FinBERT-scored sentence/chunk rows with the existing article topic labels,
+  relevance-gate evidence, and configured source credibility weights into ticker-day
+  semantic sentiment `FeatureRecord` rows
+- preserve enough audit metadata for downstream reports to explain which articles, topics,
+  source weights, and relevance decisions contributed to the aggregate
+
+Notes:
+- the aggregation stage consumes only completed Layer 1 artifacts for the same run/date:
+  `news_sentiment_scored`, `topic_labels`, and `news_relevance_gate`
+- source weights are loaded from `config/source_credibility.json`; missing source names use
+  the documented default weight and emit `missing_source_default_weight` in
+  `nlp_semantic_warning_codes`
+- topic evidence is joined by point-in-time artifact date, ticker, and article id; relevance
+  evidence is joined by artifact date, ticker, article id, sentence index, and chunk index
+- missing optional topic or relevance evidence does not fabricate values: topic sentiment
+  fields remain null where appropriate, missing counts are populated, and warning codes such
+  as `missing_topic_artifact`, `missing_topic_evidence`, or
+  `missing_relevance_evidence` are emitted
+- ticker-day sentiment FeatureRecords are persisted at
+  `features/{YYYY-MM-DD}/sentiment_features/{run_id}.parquet`; current summary keys include
+  the existing `nlp_sentiment_*`, `nlp_article_count`, `nlp_sentence_count`, and
+  `nlp_relevance_score` fields plus semantic audit fields such as
+  `nlp_sentiment_topic_score`, `nlp_sentiment_topic_count`,
+  `nlp_sentiment_dominant_topic_id`, `nlp_sentiment_dominant_topic_score`,
+  `nlp_sentiment_dominant_topic_probability`, `nlp_relevance_accepted_count`,
+  `nlp_relevance_borderline_count`, `nlp_source_weight_mean`,
+  `nlp_source_weight_sum`, `nlp_effective_weight_sum`, missing-evidence counts,
+  `nlp_contributing_article_ids`, `nlp_topic_sentiment_summary`,
+  `nlp_source_weight_summary`, `nlp_relevance_reason_codes`, and
+  `nlp_semantic_warning_codes`
+- this remains a `FeatureRecord` output with feature-dictionary keys, so no
+  `core/contracts/schemas.py` migration is required
+
 ### FeatureRecord
 
 Represents one fully aligned feature row for one `(date, ticker)`.
