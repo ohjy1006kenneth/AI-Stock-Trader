@@ -254,6 +254,54 @@ def feature_catalog() -> dict[str, FeatureRule]:
         required=False,
         minimum=0.0,
     )
+    for name in (
+        "nlp_source_weight_mean",
+        "nlp_source_weight_sum",
+        "nlp_effective_weight_sum",
+        "nlp_sentiment_topic_count",
+        "nlp_relevance_accepted_count",
+        "nlp_relevance_borderline_count",
+        "nlp_missing_source_count",
+        "nlp_missing_topic_count",
+        "nlp_missing_relevance_evidence_count",
+    ):
+        rules[name] = FeatureRule(
+            owner="sentiment",
+            kind="number",
+            required=False,
+            minimum=0.0,
+        )
+    for name in (
+        "nlp_sentiment_topic_score",
+        "nlp_sentiment_dominant_topic_score",
+    ):
+        rules[name] = FeatureRule(
+            owner="sentiment",
+            kind="number",
+            required=False,
+            minimum=-1.0,
+            maximum=1.0,
+        )
+    rules["nlp_sentiment_dominant_topic_id"] = FeatureRule(
+        owner="sentiment",
+        kind="number",
+        required=False,
+    )
+    rules["nlp_sentiment_dominant_topic_probability"] = FeatureRule(
+        owner="sentiment",
+        kind="number",
+        required=False,
+        minimum=0.0,
+        maximum=1.0,
+    )
+    for name in (
+        "nlp_contributing_article_ids",
+        "nlp_topic_sentiment_summary",
+        "nlp_source_weight_summary",
+        "nlp_relevance_reason_codes",
+        "nlp_semantic_warning_codes",
+    ):
+        rules[name] = FeatureRule(owner="sentiment", kind="string", required=False)
 
     rules["regime_label"] = FeatureRule(
         owner="regime",

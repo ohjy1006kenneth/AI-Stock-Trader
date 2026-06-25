@@ -3,6 +3,7 @@ from __future__ import annotations
 from core.features.catalog import feature_catalog, validate_feature_value
 from core.features.order_book_features import ORDER_BOOK_FEATURE_COLUMNS
 from core.features.sector_features import SECTOR_FEATURE_COLUMNS
+from core.features.sentiment_features import SENTIMENT_FEATURE_COLUMNS
 
 
 def test_feature_catalog_registers_sector_features() -> None:
@@ -46,5 +47,32 @@ def test_feature_catalog_registers_optional_order_book_features() -> None:
     )
     assert (
         validate_feature_value("l2_book_imbalance", 0.2, catalog["l2_book_imbalance"])
+        is None
+    )
+
+
+def test_feature_catalog_registers_sentiment_semantic_features() -> None:
+    """All sentiment semantic aggregation columns exist in the Layer 1 catalog."""
+    catalog = feature_catalog()
+
+    for feature_name in SENTIMENT_FEATURE_COLUMNS:
+        assert feature_name in catalog
+        assert catalog[feature_name].owner in {"sentiment", "nlp"}
+        assert catalog[feature_name].required is False
+
+    assert (
+        validate_feature_value(
+            "nlp_sentiment_topic_score",
+            -1.1,
+            catalog["nlp_sentiment_topic_score"],
+        )
+        is not None
+    )
+    assert (
+        validate_feature_value(
+            "nlp_topic_sentiment_summary",
+            '[{"topic_id":1}]',
+            catalog["nlp_topic_sentiment_summary"],
+        )
         is None
     )

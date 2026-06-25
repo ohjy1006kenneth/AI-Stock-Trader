@@ -128,6 +128,10 @@ Execution chain:
      `features/{YYYY-MM-DD}/news_sentiment_scored/{run_id}.parquet` and aggregate
      ticker-day sentiment FeatureRecords into the requested ticker scope at
      `features/{YYYY-MM-DD}/sentiment_features/{run_id}.parquet`
+   - The ticker-day sentiment aggregation combines FinBERT probabilities, article topic
+     labels, relevance-gate audit evidence, and `config/source_credibility.json` weights;
+     missing optional topic or relevance evidence is carried as null topic sentiment values,
+     missing-evidence counts, and `nlp_semantic_warning_codes` rather than fabricated inputs
    - Compute market, NLP, context, and optional order-book spread / imbalance features for today
    - Write authoritative date-first feature shards at `features/{YYYY-MM-DD}/{TICKER}.parquet`
      for every ticker in the point-in-time universe; legacy per-ticker histories under

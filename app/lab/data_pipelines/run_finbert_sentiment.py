@@ -192,18 +192,20 @@ def run_finbert_sentiment(
             _load_preprocessed_news_records(active_writer, config.preprocessed_news_key),
             config.tickers,
         )
+        embedding_frame = (
+            _load_parquet_frame(active_writer, config.embedding_key)
+            if config.embedding_key is not None
+            else None
+        )
+        topic_label_frame = (
+            _load_parquet_frame(active_writer, config.topic_label_key)
+            if config.topic_label_key is not None
+            else None
+        )
         relevance_result = apply_news_relevance_gate(
             records,
-            embeddings=(
-                _load_parquet_frame(active_writer, config.embedding_key)
-                if config.embedding_key is not None
-                else None
-            ),
-            topic_labels=(
-                _load_parquet_frame(active_writer, config.topic_label_key)
-                if config.topic_label_key is not None
-                else None
-            ),
+            embeddings=embedding_frame,
+            topic_labels=topic_label_frame,
         )
         active_writer.put_object(
             relevance_gate_key,
@@ -221,6 +223,8 @@ def run_finbert_sentiment(
         )
         feature_records = sentiment_feature_records_from_scored_news(
             scored_frame,
+            topic_labels=topic_label_frame,
+            relevance_gate=relevance_result.audit_frame,
             credibility_config=credibility_config,
             bucket_timezone=runtime.bucket_timezone,
         )
@@ -239,6 +243,13 @@ def run_finbert_sentiment(
                 "relevance_rejected_rows": relevance_result.rejected_rows,
                 "scored_rows": len(scored_records),
                 "feature_rows": len(feature_records),
+                "semantic_aggregation": {
+                    "topic_labels_loaded": topic_label_frame is not None,
+                    "relevance_gate_loaded": True,
+                    "source_credibility_config_path": str(
+                        runtime.source_credibility_config_path
+                    ),
+                },
             }
         )
         _write_manifest(
