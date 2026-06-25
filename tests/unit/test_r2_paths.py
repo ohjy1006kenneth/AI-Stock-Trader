@@ -13,6 +13,7 @@ from services.r2.paths import (
     layer1_aapl_accuracy_report_path,
     layer1_feature_path,
     layer1_news_preprocessing_path,
+    layer1_news_relevance_gate_path,
     layer1_regime_path,
     layer1_sentiment_feature_path,
     layer1_sentiment_score_path,
@@ -97,6 +98,10 @@ def test_layer1_text_artifact_paths_return_canonical_keys() -> None:
     assert (
         layer1_topic_feature_path("2025-01-02", "run-001")
         == "features/2025-01-02/topic_features/run-001.parquet"
+    )
+    assert (
+        layer1_news_relevance_gate_path("2025-01-02", "run-001")
+        == "features/2025-01-02/news_relevance_gate/run-001.parquet"
     )
     assert (
         layer1_sentiment_score_path("2025-01-02", "run-001")

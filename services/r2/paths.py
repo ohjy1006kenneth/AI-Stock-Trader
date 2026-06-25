@@ -163,6 +163,17 @@ def layer1_topic_feature_path(as_of_date: str | Date | datetime, run_id: str) ->
     )
 
 
+def layer1_news_relevance_gate_path(as_of_date: str | Date | datetime, run_id: str) -> str:
+    """Return the canonical date-first Layer 1 news relevance-gate audit path."""
+    safe_run_id = _validate_key_part(run_id)
+    return build_r2_key(
+        "features",
+        _format_date(as_of_date),
+        "news_relevance_gate",
+        f"{safe_run_id}.parquet",
+    )
+
+
 def layer1_sentiment_score_path(as_of_date: str | Date | datetime, run_id: str) -> str:
     """Return the canonical date-first Layer 1 scored FinBERT news path."""
     safe_run_id = _validate_key_part(run_id)

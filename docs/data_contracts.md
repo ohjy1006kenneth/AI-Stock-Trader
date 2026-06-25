@@ -296,6 +296,31 @@ Notes:
   `embedding_json`, and the article/topic metadata from these artifacts; threshold policy is
   owned by the relevance-filtering task, not this artifact writer
 
+### Layer 1 news relevance gate (non-contract artifact)
+
+Purpose:
+- filter sentence/chunk news candidates before FinBERT so sentiment scoring receives only
+  target-ticker relevant financial text or explicitly flagged borderline rows
+- preserve rejected and borderline decisions for semantic-review dashboards and diagnostics
+  without adding fields to `NewsSentimentRecord`
+
+Notes:
+- the gate consumes preprocessed `NewsSentimentRecord` rows plus the existing
+  `text_embeddings` and `topic_labels` artifacts for the same date/stage run
+- ticker/entity evidence is scored separately from broad-market financial relevance:
+  direct ticker text or target entity aliases are strong evidence; provider/source ticker tags
+  are weaker and can only produce borderline rows without stronger target evidence
+- known competitor entity evidence caps relevance when the target ticker is only a weak
+  provider tag, which prevents AAPL-tagged Microsoft-style articles from reaching FinBERT
+- accepted rows have `relevance_score >= 0.55`; borderline rows have
+  `relevance_score >= 0.35` plus financial and weak ticker evidence; rejected rows are not
+  sent to FinBERT
+- the audit table is written to
+  `features/{YYYY-MM-DD}/news_relevance_gate/{run_id}.parquet` with decision fields such as
+  `relevance_decision`, `relevance_score`, ticker/financial/topic sub-scores,
+  `reason_codes`, entity/ticker evidence, topic metadata, and embedding cache metadata
+- this is a non-contract artifact; no `core/contracts/schemas.py` change is required
+
 ### FeatureRecord
 
 Represents one fully aligned feature row for one `(date, ticker)`.

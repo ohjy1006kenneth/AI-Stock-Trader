@@ -43,6 +43,12 @@ from core.features.news_preprocessing import (
     records_to_news_sentiment_frame,
     split_article_sentences,
 )
+from core.features.news_relevance import (
+    RELEVANCE_GATE_COLUMNS,
+    NewsRelevanceGateConfig,
+    NewsRelevanceGateResult,
+    apply_news_relevance_gate,
+)
 from core.features.order_book_features import (
     ORDER_BOOK_FEATURE_COLUMNS,
     compute_order_book_features,
@@ -115,7 +121,10 @@ __all__ = [
     "MACRO_FEATURE_COLUMNS",
     "MARKET_FEATURE_COLUMNS",
     "NewsPreprocessingConfig",
+    "NewsRelevanceGateConfig",
+    "NewsRelevanceGateResult",
     "ORDER_BOOK_FEATURE_COLUMNS",
+    "RELEVANCE_GATE_COLUMNS",
     "SECTOR_FEATURE_COLUMNS",
     "SENTIMENT_AGGREGATE_COLUMNS",
     "SentimentScore",
@@ -126,6 +135,7 @@ __all__ = [
     "TextEmbeddingConfig",
     "TopicModelConfig",
     "aggregate_sentiment_by_ticker_day",
+    "apply_news_relevance_gate",
     "assemble_layer1_feature_records",
     "build_hmm_training_frame",
     "complete_hmm_training_matrix",

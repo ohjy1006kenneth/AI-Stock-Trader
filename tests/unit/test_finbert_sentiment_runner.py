@@ -27,6 +27,7 @@ from services.r2.client import (
     R2_SECRET_KEY_ENV,
 )
 from services.r2.paths import (
+    layer1_news_relevance_gate_path,
     layer1_sentiment_feature_path,
     layer1_sentiment_score_path,
     pipeline_manifest_path,
@@ -71,6 +72,10 @@ def test_run_finbert_sentiment_reads_preprocessed_news_and_writes_outputs(
         "2024-01-02",
         "finbert-run",
     )
+    assert result.relevance_gate_key == layer1_news_relevance_gate_path(
+        "2024-01-02",
+        "finbert-run",
+    )
     assert result.manifest_key == pipeline_manifest_path(FINBERT_SENTIMENT_STAGE, "finbert-run")
     assert len(scored) == 3
     assert set(features["ticker"]) == {"AAPL", "MSFT"}
@@ -79,6 +84,8 @@ def test_run_finbert_sentiment_reads_preprocessed_news_and_writes_outputs(
     ] == 2
     assert manifest["status"] == RunStatus.COMPLETED
     assert manifest["metadata"]["scored_rows"] == 3
+    assert manifest["metadata"]["relevance_accepted_rows"] == 2
+    assert manifest["metadata"]["relevance_borderline_rows"] == 1
     assert manifest["metadata"]["feature_rows"] == 2
 
 
@@ -111,6 +118,70 @@ def test_run_finbert_sentiment_honors_requested_ticker_scope(
     assert set(features["ticker"]) == {"AAPL"}
     assert manifest["metadata"]["requested_tickers"] == ["AAPL"]
     assert manifest["metadata"]["input_rows"] == 2
+
+
+def test_run_finbert_sentiment_scores_only_relevance_gate_candidates(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """FinBERT receives accepted or borderline rows, not rejected ticker contamination."""
+    writer = _local_writer(tmp_path, monkeypatch)
+    input_key = news_preprocessing_output_path("nlp-pre-run", "2024-01-02")
+    _write_preprocessed_news(
+        writer,
+        input_key,
+        [
+            _record(
+                ticker="AAPL",
+                text="Apple shares rose after revenue beat expectations.",
+                sentence_index=0,
+                article_id="aapl-good",
+                entity_mentions=("Apple",),
+                article_tickers=("AAPL",),
+            ),
+            _record(
+                ticker="AAPL",
+                text="Microsoft shares rose after cloud revenue beat expectations.",
+                sentence_index=0,
+                article_id="aapl-contamination",
+                entity_mentions=("Microsoft",),
+                article_tickers=("AAPL",),
+            ),
+            _record(
+                ticker="AAPL",
+                text="Stocks rose as Treasury yields fell.",
+                sentence_index=0,
+                article_id="aapl-borderline",
+                entity_mentions=(),
+                article_tickers=("AAPL",),
+            ),
+        ],
+    )
+
+    result = run_finbert_sentiment(
+        FinBERTPipelineConfig(
+            run_id="finbert-gated",
+            as_of_date="2024-01-02",
+            preprocessed_news_key=input_key,
+            embedding_key=_write_embedding_frame(writer),
+            topic_label_key=_write_topic_label_frame(writer),
+        ),
+        writer=writer,
+        scorer=_FakeScorer(),
+        runtime_config=_runtime_config(tmp_path),
+    )
+
+    scored = pd.read_parquet(io.BytesIO(writer.get_object(result.scored_news_key)))
+    gate = pd.read_parquet(io.BytesIO(writer.get_object(str(result.relevance_gate_key))))
+    manifest = json.loads(writer.get_object(result.manifest_key))
+
+    assert set(scored["article_id"]) == {"aapl-good", "aapl-borderline"}
+    assert set(gate["relevance_decision"]) == {"accepted", "borderline", "rejected"}
+    assert gate.loc[
+        gate["article_id"] == "aapl-contamination",
+        "relevance_decision",
+    ].iloc[0] == "rejected"
+    assert manifest["metadata"]["relevance_rejected_rows"] == 1
 
 
 def test_run_finbert_sentiment_writes_failure_manifest(
@@ -202,18 +273,87 @@ def _records() -> list[NewsSentimentRecord]:
     ]
 
 
-def _record(ticker: str, text: str, sentence_index: int) -> NewsSentimentRecord:
+def _record(
+    ticker: str,
+    text: str,
+    sentence_index: int,
+    *,
+    article_id: str | None = None,
+    entity_mentions: tuple[str, ...] | None = None,
+    article_tickers: tuple[str, ...] | None = None,
+) -> NewsSentimentRecord:
     """Build one sentence-level news record."""
+    normalized_article_tickers = article_tickers or (ticker,)
+    normalized_entity_mentions = entity_mentions or ()
     return NewsSentimentRecord(
         date="2024-01-02",
         ticker=ticker,
         headline="Company released results.",
         text=text,
-        article_id=f"article-{ticker}",
+        article_id=article_id or f"article-{ticker}",
         sentence_index=sentence_index,
         source="benzinga",
         published_at="2024-01-02T12:00:00+00:00",
+        source_text_provenance={
+            "article_tickers": list(normalized_article_tickers),
+            "chunk_tickers": [],
+            "entity_mentions": list(normalized_entity_mentions),
+        },
+        ticker_mentions=normalized_article_tickers,
+        entity_mentions=normalized_entity_mentions,
     )
+
+
+def _write_embedding_frame(writer: R2Writer) -> str:
+    """Write a minimal existing embedding artifact for gate tests."""
+    key = "features/2024-01-02/text_embeddings/finbert-gated.parquet"
+    frame = pd.DataFrame(
+        [
+            {
+                "date": "2024-01-02",
+                "article_id": article_id,
+                "normalized_headline": article_id,
+                "text": article_id,
+                "article_sentence_count": 1,
+                "embedding_model": "test",
+                "embedding_revision": "test",
+                "embedding_cache_key": f"embedding-{article_id}",
+                "embedding_json": "[0.1,0.2]",
+            }
+            for article_id in ("aapl-good", "aapl-contamination", "aapl-borderline")
+        ]
+    )
+    buffer = io.BytesIO()
+    frame.to_parquet(buffer, index=False)
+    writer.put_object(key, buffer.getvalue())
+    return key
+
+
+def _write_topic_label_frame(writer: R2Writer) -> str:
+    """Write a minimal existing topic-label artifact for gate tests."""
+    key = "features/2024-01-02/topic_labels/finbert-gated.parquet"
+    frame = pd.DataFrame(
+        [
+            {
+                "date": "2024-01-02",
+                "ticker": "AAPL",
+                "article_id": article_id,
+                "normalized_headline": article_id,
+                "text": article_id,
+                "article_sentence_count": 1,
+                "embedding_cache_key": f"embedding-{article_id}",
+                "topic_model": "test",
+                "topic_model_version": "test",
+                "topic_id": 1,
+                "topic_probability": 0.7,
+            }
+            for article_id in ("aapl-good", "aapl-contamination", "aapl-borderline")
+        ]
+    )
+    buffer = io.BytesIO()
+    frame.to_parquet(buffer, index=False)
+    writer.put_object(key, buffer.getvalue())
+    return key
 
 
 def _runtime_config(tmp_path: Path) -> FinBERTModelRuntimeConfig:
