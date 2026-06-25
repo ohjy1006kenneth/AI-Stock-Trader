@@ -283,27 +283,30 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
     .flag {{ color: #fca5a5; }}
     .accepted {{ color: #86efac; }}
     ul {{ margin: 8px 0 0 20px; }}
-    .sentence {{ border-top: 1px solid #1f2937; margin-top: 8px; padding-top: 8px; }}
+    .sentence, .evidence-row {{ border-top: 1px solid #1f2937; margin-top: 8px; padding-top: 8px; }}
     .sentence code {{ white-space: pre-wrap; color: #cbd5e1; }}
     .empty {{ color: #94a3b8; font-style: italic; }}
     .warning {{ color: #fbbf24; }}
+    .section-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; margin: 14px 0; }}
     pre {{ white-space: pre-wrap; word-break: break-word; }}
   </style>
 </head>
 <body>
   <header>
     <h1>Layer 1 semantic-review dashboard</h1>
-    <p class="note">Sentence-level FinBERT rows are grouped beneath raw articles. Date-level HMM regime values are shown once per trading date, not once per sentence row.</p>
+    <p class="note">Raw ticker/entity preprocessing, article embeddings, BERTopic labels, relevance-gate decisions, sentence-level FinBERT rows, ticker-date semantic aggregates, and date-level HMM regime evidence are separated by pipeline stage.</p>
     <div class="meta" id="meta"></div>
   </header>
   <main>
     <section class="summary" id="summary"></section>
+    <section id="pipeline"></section>
     <section id="content"></section>
   </main>
   <script>
     const defaults = {defaults_json};
     const metaEl = document.getElementById('meta');
     const summaryEl = document.getElementById('summary');
+    const pipelineEl = document.getElementById('pipeline');
     const contentEl = document.getElementById('content');
 
     function badge(label, value) {{
@@ -320,6 +323,11 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
         ['Duplicate articles', summary.duplicate_article_count ?? 0],
         ['Repeated headlines', summary.repeated_headline_count ?? 0],
         ['Weak articles', summary.weak_article_count ?? 0],
+        ['Preprocess rows', summary.preprocessing_row_count ?? 0],
+        ['Embeddings', summary.embedding_row_count ?? 0],
+        ['Topic labels', summary.topic_label_row_count ?? 0],
+        ['Relevance rows', summary.relevance_gate_row_count ?? 0],
+        ['Aggregates', summary.semantic_aggregate_row_count ?? 0],
       ];
       summaryEl.innerHTML = entries.map(([label, value]) => `<div class="card"><div>${{label}}</div><div style="font-size:1.6rem;font-weight:700">${{value}}</div></div>`).join('');
     }}
@@ -340,6 +348,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
         <div class="sentence">
           <div class="article-meta">
             <span class="badge">sentence_index=${{row.sentence_index ?? 'n/a'}}</span>
+            <span class="badge">chunk_index=${{row.chunk_index ?? 'n/a'}}</span>
             <span class="badge">granularity=${{row.row_granularity}}</span>
             <span class="badge">sentiment_score=${{formatNumber(row.sentiment_score)}}</span>
             <span class="badge">relevance_score=${{formatNumber(row.relevance_score)}}</span>
@@ -371,7 +380,41 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
           <p class="note">Evidence snippets: ${{(article.evidence_snippets || []).length ? (article.evidence_snippets || []).map(escapeHtml).join(' | ') : 'none'}}</p>
           <p class="note">Ticker evidence: ${{(article.requested_ticker_term_hits || []).length ? (article.requested_ticker_term_hits || []).join(', ') : 'none — this article is kept out of the default acceptance path'}}</p>
           ${{flags.length ? `<p class="warning">Flags: ${{flags.join(', ')}}</p>` : ''}}
+          <div class="article-meta">
+            <span class="badge">preprocessing_rows=${{(article.preprocessing_rows || []).length}}</span>
+            <span class="badge">topic_rows=${{(article.topic_evidence || []).length}}</span>
+            <span class="badge">relevance_gate_rows=${{(article.relevance_gate_rows || []).length}}</span>
+          </div>
           ${{renderSentenceRows(article.sentence_rows || [])}}
+        </details>`;
+    }}
+
+    function renderPipelineSections(sections) {{
+      const labels = [
+        ['raw_preprocessing_rows', 'Ticker/entity preprocessing'],
+        ['article_embedding_rows', 'Article embeddings'],
+        ['topic_label_rows', 'BERTopic labels'],
+        ['relevance_gate_rows', 'Pre-FinBERT relevance gate'],
+        ['finbert_sentence_rows', 'Sentence/chunk FinBERT rows'],
+        ['semantic_aggregate_rows', 'Ticker-date semantic aggregates'],
+        ['date_level_regime_rows', 'Date-level HMM regime'],
+      ];
+      pipelineEl.innerHTML = `
+        <section class="card">
+          <h2>Pipeline Evidence</h2>
+          <p class="note">Human semantic review remains needs_human_review until these completed NLP pipeline sections are inspected and explicitly accepted.</p>
+          <div class="section-grid">
+            ${{labels.map(([key, label]) => renderPipelineCard(label, sections[key] || [])).join('')}}
+          </div>
+        </section>`;
+    }}
+
+    function renderPipelineCard(label, rows) {{
+      const sample = rows[0] || null;
+      return `
+        <details>
+          <summary>${{label}} <span class="badge">rows=${{rows.length}}</span></summary>
+          ${{sample ? `<div class="evidence-row"><pre>${{escapeHtml(JSON.stringify(sample, null, 2))}}</pre></div>` : '<p class="empty">No rows available.</p>'}}
         </details>`;
     }}
 
@@ -423,6 +466,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       }}
       renderMeta(payload.report || payload);
       renderSummary(payload.summary || (payload.report && payload.report.summary) || {{}});
+      renderPipelineSections(payload.pipeline_sections || {{}});
       contentEl.innerHTML = (payload.date_groups || []).map(renderDateGroup).join('');
       if (!(payload.date_groups || []).length) {{
         contentEl.innerHTML = '<p class="empty">No review rows were found for this run and date range.</p>';
