@@ -121,7 +121,10 @@ Execution chain:
    - Compute pinned-model article embeddings and BERTopic labels into
      `features/{YYYY-MM-DD}/text_embeddings/`, `features/{YYYY-MM-DD}/topic_labels/`, and
      `features/{YYYY-MM-DD}/topic_features/`
-   - Score preprocessed news with FinBERT into
+   - Gate preprocessed news before FinBERT using ticker/entity evidence, financial text
+     relevance, and the existing text embedding/topic-label artifacts; write the full audit
+     decision table to `features/{YYYY-MM-DD}/news_relevance_gate/{run_id}.parquet`
+   - Score only accepted and explicitly borderline relevance-gate candidates with FinBERT into
      `features/{YYYY-MM-DD}/news_sentiment_scored/{run_id}.parquet` and aggregate
      ticker-day sentiment FeatureRecords into the requested ticker scope at
      `features/{YYYY-MM-DD}/sentiment_features/{run_id}.parquet`

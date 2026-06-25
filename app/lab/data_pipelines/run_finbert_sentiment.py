@@ -33,6 +33,7 @@ from core.features.news_preprocessing import (  # noqa: E402
     news_sentiment_frame_to_records,
     records_to_news_sentiment_frame,
 )
+from core.features.news_relevance import apply_news_relevance_gate  # noqa: E402
 from core.features.sentiment_features import (  # noqa: E402
     SentimentScore,
     SentimentScorer,
@@ -47,6 +48,7 @@ from services.modal.secrets import (  # noqa: E402
     build_modal_secrets,
 )
 from services.r2.paths import (  # noqa: E402
+    layer1_news_relevance_gate_path,
     layer1_sentiment_feature_path,
     layer1_sentiment_score_path,
     pipeline_manifest_path,
@@ -76,6 +78,8 @@ class FinBERTPipelineConfig:
     as_of_date: str
     preprocessed_news_key: str
     tickers: tuple[str, ...] = ()
+    embedding_key: str | None = None
+    topic_label_key: str | None = None
 
     def __post_init__(self) -> None:
         """Validate run identity and input references."""
@@ -87,6 +91,10 @@ class FinBERTPipelineConfig:
             raise ValueError("as_of_date must be YYYY-MM-DD") from exc
         if not self.preprocessed_news_key.strip():
             raise ValueError("preprocessed_news_key cannot be empty")
+        if self.embedding_key is not None and not self.embedding_key.strip():
+            raise ValueError("embedding_key cannot be empty when provided")
+        if self.topic_label_key is not None and not self.topic_label_key.strip():
+            raise ValueError("topic_label_key cannot be empty when provided")
         for ticker in self.tickers:
             if not ticker.strip():
                 raise ValueError("tickers cannot contain empty strings")
@@ -144,6 +152,7 @@ class FinBERTPipelineResult:
     input_rows: int
     scored_rows: int
     feature_rows: int
+    relevance_gate_key: str | None = None
 
 
 def run_finbert_sentiment(
@@ -161,11 +170,15 @@ def run_finbert_sentiment(
 
     scored_news_key = layer1_sentiment_score_path(config.as_of_date, config.run_id)
     sentiment_feature_key = layer1_sentiment_feature_path(config.as_of_date, config.run_id)
+    relevance_gate_key = layer1_news_relevance_gate_path(config.as_of_date, config.run_id)
     manifest_key = pipeline_manifest_path(FINBERT_SENTIMENT_STAGE, config.run_id)
     metadata: dict[str, object] = {
         "as_of_date": config.as_of_date,
         "preprocessed_news_key": config.preprocessed_news_key,
+        "embedding_key": config.embedding_key,
+        "topic_label_key": config.topic_label_key,
         "requested_tickers": list(config.tickers),
+        "relevance_gate_key": relevance_gate_key,
         "scored_news_key": scored_news_key,
         "sentiment_feature_key": sentiment_feature_key,
         "model_name": runtime.model_name,
@@ -179,8 +192,25 @@ def run_finbert_sentiment(
             _load_preprocessed_news_records(active_writer, config.preprocessed_news_key),
             config.tickers,
         )
-        scored_records = score_news_sentiment(
+        relevance_result = apply_news_relevance_gate(
             records,
+            embeddings=(
+                _load_parquet_frame(active_writer, config.embedding_key)
+                if config.embedding_key is not None
+                else None
+            ),
+            topic_labels=(
+                _load_parquet_frame(active_writer, config.topic_label_key)
+                if config.topic_label_key is not None
+                else None
+            ),
+        )
+        active_writer.put_object(
+            relevance_gate_key,
+            _frame_to_parquet_bytes(relevance_result.audit_frame),
+        )
+        scored_records = score_news_sentiment(
+            relevance_result.finbert_records,
             scorer=active_scorer,
             batch_size=runtime.batch_size,
             default_relevance_score=runtime.default_relevance_score,
@@ -203,6 +233,10 @@ def run_finbert_sentiment(
         metadata.update(
             {
                 "input_rows": len(records),
+                "relevance_gate_rows": relevance_result.input_rows,
+                "relevance_accepted_rows": relevance_result.accepted_rows,
+                "relevance_borderline_rows": relevance_result.borderline_rows,
+                "relevance_rejected_rows": relevance_result.rejected_rows,
                 "scored_rows": len(scored_records),
                 "feature_rows": len(feature_records),
             }
@@ -225,6 +259,7 @@ def run_finbert_sentiment(
             input_rows=len(records),
             scored_rows=len(scored_records),
             feature_rows=len(feature_records),
+            relevance_gate_key=relevance_gate_key,
         )
     except Exception as exc:
         metadata["error"] = {"type": type(exc).__name__, "message": str(exc)}
@@ -328,14 +363,19 @@ def _score_from_model_output(output: object) -> SentimentScore:
 
 def _load_preprocessed_news_records(writer: ObjectStore, key: str) -> list[object]:
     """Load sentence-level NewsSentimentRecord rows from a preprocessing artifact."""
+    frame = _load_parquet_frame(writer, key)
+    return news_sentiment_frame_to_records(frame)
+
+
+def _load_parquet_frame(writer: ObjectStore, key: str) -> object:
+    """Load a parquet object into a pandas DataFrame."""
     try:
         import pandas as pd
     except ModuleNotFoundError as exc:
         raise ModuleNotFoundError(
-            "pandas and pyarrow are required to load preprocessed news outputs."
+            "pandas and pyarrow are required to load FinBERT input artifacts."
         ) from exc
-    frame = pd.read_parquet(io.BytesIO(writer.get_object(key)))
-    return news_sentiment_frame_to_records(frame)
+    return pd.read_parquet(io.BytesIO(writer.get_object(key)))
 
 
 def _filter_records_to_tickers(
@@ -401,6 +441,8 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--as-of-date", required=True, metavar="YYYY-MM-DD")
     parser.add_argument("--preprocessed-news-key", required=True)
+    parser.add_argument("--embedding-key", default=None)
+    parser.add_argument("--topic-label-key", default=None)
     parser.add_argument("--tickers", nargs="*", default=None)
     args = parser.parse_args(argv)
     if args.tickers == []:
@@ -415,6 +457,8 @@ def _config_from_args(args: argparse.Namespace) -> FinBERTPipelineConfig:
         as_of_date=args.as_of_date,
         preprocessed_news_key=args.preprocessed_news_key,
         tickers=tuple(ticker.strip().upper() for ticker in (args.tickers or [])),
+        embedding_key=args.embedding_key,
+        topic_label_key=args.topic_label_key,
     )
 
 
@@ -430,6 +474,8 @@ def modal_main(
     as_of_date: str,
     preprocessed_news_key: str,
     tickers: Sequence[str] | None = None,
+    embedding_key: str | None = None,
+    topic_label_key: str | None = None,
 ) -> None:
     """Submit a FinBERT sentiment run to Modal from the local CLI."""
     remote_kwargs: dict[str, object] = {
@@ -437,6 +483,10 @@ def modal_main(
         "as_of_date": as_of_date,
         "preprocessed_news_key": preprocessed_news_key,
     }
+    if embedding_key is not None:
+        remote_kwargs["embedding_key"] = embedding_key
+    if topic_label_key is not None:
+        remote_kwargs["topic_label_key"] = topic_label_key
     normalized_tickers = [str(ticker).strip().upper() for ticker in (tickers or ())]
     normalized_tickers = [ticker for ticker in normalized_tickers if ticker]
     if normalized_tickers:
@@ -449,6 +499,8 @@ def _modal_run_finbert_sentiment_entry(
     as_of_date: str,
     preprocessed_news_key: str,
     tickers: Sequence[str] | None = None,
+    embedding_key: str | None = None,
+    topic_label_key: str | None = None,
 ) -> dict[str, object]:
     """Run FinBERT sentiment scoring on Modal."""
     runtime = load_finbert_runtime_config()
@@ -458,6 +510,8 @@ def _modal_run_finbert_sentiment_entry(
             as_of_date=as_of_date,
             preprocessed_news_key=preprocessed_news_key,
             tickers=tuple(str(ticker).strip().upper() for ticker in (tickers or ())),
+            embedding_key=embedding_key,
+            topic_label_key=topic_label_key,
         ),
         runtime_config=runtime,
     )
@@ -466,6 +520,7 @@ def _modal_run_finbert_sentiment_entry(
         "scored_news_key": result.scored_news_key,
         "sentiment_feature_key": result.sentiment_feature_key,
         "manifest_key": result.manifest_key,
+        "relevance_gate_key": result.relevance_gate_key,
         "input_rows": result.input_rows,
         "scored_rows": result.scored_rows,
         "feature_rows": result.feature_rows,

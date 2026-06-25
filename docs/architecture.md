@@ -210,6 +210,7 @@ r2/
       text_embeddings/# Article embedding cache keyed by pinned model/version
       topic_labels/   # Article-level BERTopic labels from Modal
       topic_features/ # Ticker-day FeatureRecord topic summaries
+      news_relevance_gate/ # Pre-FinBERT ticker/financial relevance audit rows
       news_sentiment_scored/ # Sentence-level NewsSentimentRecord rows scored by FinBERT
       sentiment_features/ # Ticker-day FeatureRecord sentiment summaries
   processed/

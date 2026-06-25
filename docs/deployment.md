@@ -68,6 +68,9 @@ Expected execution chain:
    - The single-date CLI path submits the heavy NLP/HMM stages through their dedicated
      Modal apps first, then invokes the final daily Layer 1 app only for history assembly
      and validation
+   - FinBERT sentiment runs consume the completed preprocessing, embedding, and topic-label
+     artifacts through the pre-FinBERT relevance gate; rejected rows are retained in the
+     `news_relevance_gate` audit artifact but are not scored by FinBERT
    - Multi-date lab/readiness runs invoke the same module with `--from-date` /
      `--to-date`; when the Modal app is available, that path submits one batched remote
      Layer 1 job so topic modeling and FinBERT stay on the declared Modal dependency stack

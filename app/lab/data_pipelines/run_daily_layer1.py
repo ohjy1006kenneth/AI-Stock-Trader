@@ -310,6 +310,8 @@ class ModalBatchedStageOutputs:
     """Completed branch output keys for one batched remote Layer 1 run."""
 
     news_output_keys_by_date: dict[str, str]
+    embedding_output_keys_by_date: dict[str, str]
+    topic_label_output_keys_by_date: dict[str, str]
     topic_output_keys_by_date: dict[str, str]
     sentiment_output_keys_by_date: dict[str, str]
     regime_output_keys_by_date: dict[str, str]
@@ -470,6 +472,7 @@ def run_daily_layer1(
             config,
             processed_dates,
             news_results=news_results,
+            topic_results=topic_results,
             finbert_runner=finbert_runner,
         )
         regime_results = _run_regime_stage(
@@ -663,6 +666,8 @@ def _run_modal_batched_stage_outputs(
     """Run per-date branches inside one Modal context for a multi-date readiness window."""
     processed_dates = _trading_dates(config.from_date, config.to_date)
     news_output_keys_by_date: dict[str, str] = {}
+    embedding_output_keys_by_date: dict[str, str] = {}
+    topic_label_output_keys_by_date: dict[str, str] = {}
     topic_output_keys_by_date: dict[str, str] = {}
     sentiment_output_keys_by_date: dict[str, str] = {}
     regime_output_keys_by_date: dict[str, str] = {}
@@ -696,6 +701,8 @@ def _run_modal_batched_stage_outputs(
             topic_labeler=topic_labeler_factory(text_runtime),
             runtime_config=text_runtime,
         )
+        embedding_output_keys_by_date[date_text] = topic_result.embedding_key
+        topic_label_output_keys_by_date[date_text] = topic_result.topic_label_key
         topic_output_keys_by_date[date_text] = topic_result.topic_feature_key
 
     finbert_runtime = finbert_runtime_loader()
@@ -708,6 +715,8 @@ def _run_modal_batched_stage_outputs(
                 as_of_date=date_text,
                 preprocessed_news_key=news_output_keys_by_date[date_text],
                 tickers=config.tickers,
+                embedding_key=embedding_output_keys_by_date[date_text],
+                topic_label_key=topic_label_output_keys_by_date[date_text],
             ),
             writer=writer,
             scorer=scorer,
@@ -733,6 +742,8 @@ def _run_modal_batched_stage_outputs(
 
     return ModalBatchedStageOutputs(
         news_output_keys_by_date=news_output_keys_by_date,
+        embedding_output_keys_by_date=embedding_output_keys_by_date,
+        topic_label_output_keys_by_date=topic_label_output_keys_by_date,
         topic_output_keys_by_date=topic_output_keys_by_date,
         sentiment_output_keys_by_date=sentiment_output_keys_by_date,
         regime_output_keys_by_date=regime_output_keys_by_date,
@@ -792,6 +803,7 @@ def _run_finbert_stage(
     processed_dates: Sequence[str],
     *,
     news_results: Mapping[str, NewsPreprocessingPipelineResult],
+    topic_results: Mapping[str, TextTopicPipelineResult],
     finbert_runner: Callable[..., FinBERTPipelineResult],
 ) -> dict[str, FinBERTPipelineResult]:
     """Run FinBERT scoring and ticker-day sentiment aggregation for each date."""
@@ -804,6 +816,8 @@ def _run_finbert_stage(
                 as_of_date=date_text,
                 preprocessed_news_key=news_results[date_text].output_key,
                 tickers=config.tickers,
+                embedding_key=topic_results[date_text].embedding_key or None,
+                topic_label_key=topic_results[date_text].topic_label_key or None,
             ),
             writer=writer,
         )
