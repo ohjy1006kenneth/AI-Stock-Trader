@@ -8,11 +8,12 @@ from typing import Any
 
 import pandas as pd
 
-from services.r2.paths import layer1_regime_path, layer1_sentiment_score_path
 from services.r2.paths import (
     layer1_news_preprocessing_path,
     layer1_news_relevance_gate_path,
+    layer1_regime_path,
     layer1_sentiment_feature_path,
+    layer1_sentiment_score_path,
     layer1_text_embedding_path,
     layer1_topic_label_path,
 )
