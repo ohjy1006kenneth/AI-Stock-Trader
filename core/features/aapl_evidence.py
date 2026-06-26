@@ -19,10 +19,13 @@ from core.common.trading_calendar import skipped_non_trading_dates, trading_date
 from services.r2.paths import (
     layer1_feature_path,
     layer1_news_preprocessing_path,
+    layer1_news_relevance_gate_path,
     layer1_regime_path,
     layer1_sentiment_feature_path,
     layer1_sentiment_score_path,
+    layer1_text_embedding_path,
     layer1_topic_feature_path,
+    layer1_topic_label_path,
     pipeline_manifest_path,
     raw_price_path,
 )
@@ -48,6 +51,11 @@ class SemanticReviewSentenceRow:
     """Sentence-level FinBERT evidence for one scored-news row."""
 
     sentence_index: int | None
+    chunk_index: int | None
+    source_text_field: str | None
+    source_text_order: int | None
+    ticker_mentions: list[str]
+    entity_mentions: list[str]
     text: str | None
     sentiment_score: float | None
     positive_probability: float | None
@@ -85,6 +93,9 @@ class SemanticReviewArticleGroup:
     requested_ticker_terms: tuple[str, ...]
     requested_ticker_term_hits: tuple[str, ...]
     evidence_snippets: tuple[str, ...]
+    preprocessing_rows: list[dict[str, object]]
+    topic_evidence: list[dict[str, object]]
+    relevance_gate_rows: list[dict[str, object]]
     sentence_rows: list[dict[str, object]]
 
     def to_dict(self) -> dict[str, object]:
@@ -126,6 +137,7 @@ class SemanticReviewDateGroup:
     accepted_article_count: int
     flagged_article_count: int
     sentence_count: int
+    semantic_aggregates: list[dict[str, object]]
     articles: list[dict[str, object]]
     accepted_articles: list[dict[str, object]]
     flagged_articles: list[dict[str, object]]
@@ -153,7 +165,18 @@ class Layer1SemanticReviewReport:
     repeated_headline_count: int
     weak_article_count: int
     sentence_count: int
+    preprocessing_row_count: int
+    embedding_row_count: int
+    topic_label_row_count: int
+    relevance_gate_row_count: int
+    semantic_aggregate_row_count: int
     load_warnings: list[dict[str, object]]
+    artifact_keys: dict[str, list[str]]
+    preprocessing_rows: list[dict[str, object]]
+    embedding_rows: list[dict[str, object]]
+    topic_label_rows: list[dict[str, object]]
+    relevance_gate_rows: list[dict[str, object]]
+    semantic_aggregate_rows: list[dict[str, object]]
     regime_rows: list[dict[str, object]]
     article_groups: list[dict[str, object]]
     date_groups: list[dict[str, object]]
@@ -185,6 +208,15 @@ def build_layer1_aapl_evidence_report(
     active_writer = writer or R2Writer()
     scored_frames: list[pd.DataFrame] = []
     load_warnings: list[dict[str, object]] = []
+    artifact_keys: dict[str, list[str]] = {
+        "news_preprocessing": [],
+        "text_embeddings": [],
+        "topic_labels": [],
+        "news_relevance_gate": [],
+        "news_sentiment_scored": [],
+        "sentiment_features": [],
+        "regime": [],
+    }
     trading_date_list = trading_dates(from_date, to_date)
     for current_date in trading_date_list:
         primary_key = layer1_sentiment_score_path(current_date, run_id)
@@ -217,6 +249,8 @@ def build_layer1_aapl_evidence_report(
                 }
             )
             continue
+        if resolved_key is not None:
+            artifact_keys["news_sentiment_scored"].append(resolved_key)
         scored_frames.append(scored_frame)
 
     regime_frames: list[pd.DataFrame] = []
@@ -251,9 +285,57 @@ def build_layer1_aapl_evidence_report(
                 }
             )
             continue
+        if resolved_key is not None:
+            artifact_keys["regime"].append(resolved_key)
         regime_frames.append(regime_frame)
 
     regime_frame = pd.concat(regime_frames, ignore_index=True) if regime_frames else pd.DataFrame()
+
+    preprocessing_frame = _load_date_partitioned_artifacts(
+        writer=active_writer,
+        dates=trading_date_list,
+        run_id=run_id,
+        path_builder=layer1_news_preprocessing_path,
+        artifact_name="news_preprocessing",
+        artifact_keys=artifact_keys,
+        load_warnings=load_warnings,
+    )
+    embedding_frame = _load_date_partitioned_artifacts(
+        writer=active_writer,
+        dates=trading_date_list,
+        run_id=run_id,
+        path_builder=layer1_text_embedding_path,
+        artifact_name="text_embeddings",
+        artifact_keys=artifact_keys,
+        load_warnings=load_warnings,
+    )
+    topic_label_frame = _load_date_partitioned_artifacts(
+        writer=active_writer,
+        dates=trading_date_list,
+        run_id=run_id,
+        path_builder=layer1_topic_label_path,
+        artifact_name="topic_labels",
+        artifact_keys=artifact_keys,
+        load_warnings=load_warnings,
+    )
+    relevance_gate_frame = _load_date_partitioned_artifacts(
+        writer=active_writer,
+        dates=trading_date_list,
+        run_id=run_id,
+        path_builder=layer1_news_relevance_gate_path,
+        artifact_name="news_relevance_gate",
+        artifact_keys=artifact_keys,
+        load_warnings=load_warnings,
+    )
+    semantic_aggregate_frame = _load_date_partitioned_artifacts(
+        writer=active_writer,
+        dates=trading_date_list,
+        run_id=run_id,
+        path_builder=layer1_sentiment_feature_path,
+        artifact_name="sentiment_features",
+        artifact_keys=artifact_keys,
+        load_warnings=load_warnings,
+    )
 
     if (not scored_frames or not regime_frames) and (cached_frames := _load_cached_aapl_pilot_evidence_frames(
         run_id=run_id,
@@ -281,13 +363,24 @@ def build_layer1_aapl_evidence_report(
     else:
         scored_frame = pd.DataFrame()
 
+    preprocessing_rows = _preprocessing_rows(preprocessing_frame, requested_ticker=requested_ticker)
+    embedding_rows = _embedding_rows(embedding_frame)
+    topic_label_rows = _topic_label_rows(topic_label_frame, requested_ticker=requested_ticker)
+    relevance_gate_rows = _relevance_gate_rows(relevance_gate_frame, requested_ticker=requested_ticker)
+    semantic_aggregate_rows = _semantic_aggregate_rows(
+        semantic_aggregate_frame,
+        requested_ticker=requested_ticker,
+    )
     article_groups, article_summary = _build_article_groups(
         scored_frame,
         requested_ticker=requested_ticker,
         relevance_threshold=relevance_threshold,
+        preprocessing_rows=preprocessing_rows,
+        topic_label_rows=topic_label_rows,
+        relevance_gate_rows=relevance_gate_rows,
     )
     regime_by_date = _build_regime_map(regime_frame)
-    date_groups = _build_date_groups(article_groups, regime_by_date)
+    date_groups = _build_date_groups(article_groups, regime_by_date, semantic_aggregate_rows)
     summary = {
         "row_count": int(article_summary["row_count"]),
         "article_count": int(article_summary["article_count"]),
@@ -298,6 +391,11 @@ def build_layer1_aapl_evidence_report(
         "repeated_headline_count": int(article_summary["repeated_headline_count"]),
         "weak_article_count": int(article_summary["weak_article_count"]),
         "sentence_count": int(article_summary["sentence_count"]),
+        "preprocessing_row_count": len(preprocessing_rows),
+        "embedding_row_count": len(embedding_rows),
+        "topic_label_row_count": len(topic_label_rows),
+        "relevance_gate_row_count": len(relevance_gate_rows),
+        "semantic_aggregate_row_count": len(semantic_aggregate_rows),
     }
     generated_at = datetime.now(tz=UTC).isoformat()
     return Layer1SemanticReviewReport(
@@ -315,7 +413,18 @@ def build_layer1_aapl_evidence_report(
         repeated_headline_count=summary["repeated_headline_count"],
         weak_article_count=summary["weak_article_count"],
         sentence_count=summary["sentence_count"],
+        preprocessing_row_count=summary["preprocessing_row_count"],
+        embedding_row_count=summary["embedding_row_count"],
+        topic_label_row_count=summary["topic_label_row_count"],
+        relevance_gate_row_count=summary["relevance_gate_row_count"],
+        semantic_aggregate_row_count=summary["semantic_aggregate_row_count"],
         load_warnings=load_warnings,
+        artifact_keys=artifact_keys,
+        preprocessing_rows=preprocessing_rows,
+        embedding_rows=embedding_rows,
+        topic_label_rows=topic_label_rows,
+        relevance_gate_rows=relevance_gate_rows,
+        semantic_aggregate_rows=semantic_aggregate_rows,
         regime_rows=[item.to_dict() for item in _regime_rows_from_map(regime_by_date)],
         article_groups=[group.to_dict() for group in article_groups],
         date_groups=[group.to_dict() for group in date_groups],
@@ -328,6 +437,9 @@ def _build_article_groups(
     *,
     requested_ticker: str,
     relevance_threshold: float,
+    preprocessing_rows: Sequence[Mapping[str, object]] = (),
+    topic_label_rows: Sequence[Mapping[str, object]] = (),
+    relevance_gate_rows: Sequence[Mapping[str, object]] = (),
 ) -> tuple[list[SemanticReviewArticleGroup], dict[str, int]]:
     if frame.empty:
         return [], {
@@ -342,6 +454,9 @@ def _build_article_groups(
         }
 
     normalized = _normalize_scored_frame(frame)
+    preprocessing_by_article = _rows_by_article(preprocessing_rows)
+    topic_by_article = _rows_by_article(topic_label_rows)
+    relevance_by_article = _rows_by_article(relevance_gate_rows)
     normalized["normalized_headline"] = normalized["headline"].map(_normalize_headline)
     normalized["sentence_index_key"] = normalized["sentence_index"].where(
         normalized["sentence_index"].notna(),
@@ -426,6 +541,11 @@ def _build_article_groups(
         sentence_rows = [
             SemanticReviewSentenceRow(
                 sentence_index=_maybe_int(row["sentence_index"]),
+                chunk_index=_maybe_int(row.get("chunk_index")),
+                source_text_field=_optional_str(row.get("source_text_field")),
+                source_text_order=_maybe_int(row.get("source_text_order")),
+                ticker_mentions=_json_string_list(row.get("ticker_mentions")),
+                entity_mentions=_json_string_list(row.get("entity_mentions")),
                 text=_optional_str(row["text"]),
                 sentiment_score=_maybe_float(row["sentiment_score"]),
                 positive_probability=_maybe_float(row["positive_probability"]),
@@ -458,6 +578,9 @@ def _build_article_groups(
                 requested_ticker_terms=_ticker_terms(requested_ticker),
                 requested_ticker_term_hits=requested_ticker_term_hits,
                 evidence_snippets=evidence_snippets,
+                preprocessing_rows=preprocessing_by_article.get((str(date_text), str(article_id)), []),
+                topic_evidence=topic_by_article.get((str(date_text), str(article_id)), []),
+                relevance_gate_rows=relevance_by_article.get((str(date_text), str(article_id)), []),
                 sentence_rows=sentence_rows,
             )
         )
@@ -516,13 +639,19 @@ def _regime_rows_from_map(
 def _build_date_groups(
     article_groups: Sequence[SemanticReviewArticleGroup],
     regime_map: Mapping[str, SemanticReviewRegimeRow],
+    semantic_aggregate_rows: Sequence[Mapping[str, object]] = (),
 ) -> list[SemanticReviewDateGroup]:
     grouped: dict[str, list[SemanticReviewArticleGroup]] = defaultdict(list)
     for article_group in article_groups:
         grouped[article_group.date].append(article_group)
+    semantic_by_date: dict[str, list[dict[str, object]]] = defaultdict(list)
+    for row in semantic_aggregate_rows:
+        date_text = _optional_str(row.get("date"))
+        if date_text:
+            semantic_by_date[date_text].append(dict(row))
 
     date_groups: list[SemanticReviewDateGroup] = []
-    for date_text in sorted(grouped):
+    for date_text in sorted(set(grouped) | set(semantic_by_date)):
         articles = sorted(grouped[date_text], key=lambda item: (item.article_status, item.article_id))
         accepted_articles = [item.to_dict() for item in articles if item.article_status == "accepted"]
         flagged_articles = [item.to_dict() for item in articles if item.article_status != "accepted"]
@@ -534,6 +663,7 @@ def _build_date_groups(
                 accepted_article_count=len(accepted_articles),
                 flagged_article_count=len(flagged_articles),
                 sentence_count=sum(item.article_row_count for item in articles),
+                semantic_aggregates=semantic_by_date.get(date_text, []),
                 articles=[item.to_dict() for item in articles],
                 accepted_articles=accepted_articles,
                 flagged_articles=flagged_articles,
@@ -554,11 +684,16 @@ def _normalize_scored_frame(frame: pd.DataFrame) -> pd.DataFrame:
         "source",
         "url",
         "published_at",
+        "source_text_field",
+        "ticker_mentions",
+        "entity_mentions",
     ):
         if column not in normalized.columns:
             normalized[column] = None
     for column in (
         "sentence_index",
+        "chunk_index",
+        "source_text_order",
         "sentiment_score",
         "positive_probability",
         "negative_probability",
@@ -567,6 +702,9 @@ def _normalize_scored_frame(frame: pd.DataFrame) -> pd.DataFrame:
     ):
         if column not in normalized.columns:
             normalized[column] = None
+    _copy_first_existing_column(normalized, "positive_probability", ("sentiment_positive",))
+    _copy_first_existing_column(normalized, "negative_probability", ("sentiment_negative",))
+    _copy_first_existing_column(normalized, "neutral_probability", ("sentiment_neutral",))
     normalized["date"] = normalized["date"].map(lambda value: _optional_str(value) or "")
     normalized["ticker"] = normalized["ticker"].map(lambda value: _optional_str(value) or "")
     normalized["headline"] = normalized["headline"].map(_optional_str)
@@ -575,8 +713,11 @@ def _normalize_scored_frame(frame: pd.DataFrame) -> pd.DataFrame:
     normalized["source"] = normalized["source"].map(_optional_str)
     normalized["url"] = normalized["url"].map(_optional_str)
     normalized["published_at"] = normalized["published_at"].map(_optional_str)
+    normalized["source_text_field"] = normalized["source_text_field"].map(_optional_str)
     for column in (
         "sentence_index",
+        "chunk_index",
+        "source_text_order",
         "sentiment_score",
         "positive_probability",
         "negative_probability",
@@ -604,6 +745,283 @@ def _read_first_available_parquet_frame(
         except FileNotFoundError:
             continue
     return None, None
+
+
+def _load_date_partitioned_artifacts(
+    *,
+    writer: R2Writer,
+    dates: Sequence[str],
+    run_id: str,
+    path_builder: Any,
+    artifact_name: str,
+    artifact_keys: dict[str, list[str]],
+    load_warnings: list[dict[str, object]],
+) -> pd.DataFrame:
+    """Load date-partitioned Layer 1 parquet artifacts with dated-run fallback."""
+    frames: list[pd.DataFrame] = []
+    for date_text in dates:
+        primary_key = path_builder(date_text, run_id)
+        fallback_key = path_builder(date_text, f"{run_id}-{date_text}")
+        frame, resolved_key = _read_first_available_parquet_frame(
+            writer,
+            (primary_key, fallback_key),
+        )
+        if frame is None:
+            load_warnings.append(
+                {
+                    "scope": artifact_name,
+                    "date": date_text,
+                    "key": primary_key,
+                    "fallback_key": fallback_key,
+                    "tried_keys": [primary_key, fallback_key],
+                    "message": f"Missing {artifact_name} parquet for this trading date.",
+                }
+            )
+            continue
+        if frame.empty:
+            load_warnings.append(
+                {
+                    "scope": artifact_name,
+                    "date": date_text,
+                    "key": resolved_key,
+                    "fallback_key": fallback_key if resolved_key == primary_key else primary_key,
+                    "tried_keys": [primary_key, fallback_key],
+                    "message": f"{artifact_name} parquet is empty.",
+                }
+            )
+            continue
+        if resolved_key is not None:
+            artifact_keys[artifact_name].append(resolved_key)
+            frame = frame.copy()
+            frame["_artifact_key"] = resolved_key
+        frames.append(frame)
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+def _preprocessing_rows(
+    frame: pd.DataFrame,
+    *,
+    requested_ticker: str,
+) -> list[dict[str, object]]:
+    """Return normalized pre-FinBERT preprocessing rows for dashboard review."""
+    if frame.empty:
+        return []
+    normalized = frame.copy()
+    normalized.columns = [str(column) for column in normalized.columns]
+    rows: list[dict[str, object]] = []
+    for _, row in normalized.iterrows():
+        ticker_mentions = _json_string_list(row.get("ticker_mentions"))
+        entity_mentions = _json_string_list(row.get("entity_mentions"))
+        provenance = _json_mapping(row.get("source_text_provenance"))
+        flags: list[str] = []
+        if requested_ticker not in {value.upper() for value in ticker_mentions}:
+            flags.append("missing_requested_ticker_mention")
+        if not entity_mentions:
+            flags.append("missing_entity_mentions")
+        if not provenance:
+            flags.append("missing_source_text_provenance")
+        rows.append(
+            {
+                "date": _optional_str(row.get("date")),
+                "ticker": _optional_str(row.get("ticker")),
+                "article_id": _optional_str(row.get("article_id")),
+                "headline": _optional_str(row.get("headline")),
+                "normalized_headline": _optional_str(row.get("normalized_headline")),
+                "text": _optional_str(row.get("text")),
+                "sentence_index": _maybe_int(row.get("sentence_index")),
+                "chunk_index": _maybe_int(row.get("chunk_index")),
+                "source": _optional_str(row.get("source")),
+                "url": _optional_str(row.get("url")),
+                "published_at": _optional_str(row.get("published_at")),
+                "source_text_field": _optional_str(row.get("source_text_field")),
+                "source_text_order": _maybe_int(row.get("source_text_order")),
+                "source_text_provenance": provenance,
+                "ticker_mentions": ticker_mentions,
+                "entity_mentions": entity_mentions,
+                "missing_evidence_flags": flags,
+                "artifact_key": _optional_str(row.get("_artifact_key")),
+                "stage": "ticker_entity_preprocessing",
+                "row_granularity": "sentence-or-chunk",
+            }
+        )
+    return _sort_evidence_rows(rows)
+
+
+def _embedding_rows(frame: pd.DataFrame) -> list[dict[str, object]]:
+    """Return normalized article embedding cache rows for dashboard review."""
+    if frame.empty:
+        return []
+    normalized = frame.copy()
+    normalized.columns = [str(column) for column in normalized.columns]
+    rows: list[dict[str, object]] = []
+    for _, row in normalized.iterrows():
+        embedding_vector = _json_list(row.get("embedding_json"))
+        rows.append(
+            {
+                "date": _optional_str(row.get("date")),
+                "article_id": _optional_str(row.get("article_id")),
+                "normalized_headline": _optional_str(row.get("normalized_headline")),
+                "article_sentence_count": _maybe_int(row.get("article_sentence_count")),
+                "embedding_model": _optional_str(row.get("embedding_model")),
+                "embedding_revision": _optional_str(row.get("embedding_revision")),
+                "embedding_cache_key": _optional_str(row.get("embedding_cache_key")),
+                "embedding_dimension": len(embedding_vector),
+                "artifact_key": _optional_str(row.get("_artifact_key")),
+                "stage": "article_embeddings",
+            }
+        )
+    return _sort_evidence_rows(rows)
+
+
+def _topic_label_rows(
+    frame: pd.DataFrame,
+    *,
+    requested_ticker: str,
+) -> list[dict[str, object]]:
+    """Return normalized topic-label evidence rows for dashboard review."""
+    if frame.empty:
+        return []
+    normalized = frame.copy()
+    normalized.columns = [str(column) for column in normalized.columns]
+    rows: list[dict[str, object]] = []
+    for _, row in normalized.iterrows():
+        ticker = (_optional_str(row.get("ticker")) or "").upper()
+        if ticker and ticker != requested_ticker:
+            continue
+        rows.append(
+            {
+                "date": _optional_str(row.get("date")),
+                "ticker": ticker or requested_ticker,
+                "article_id": _optional_str(row.get("article_id")),
+                "normalized_headline": _optional_str(row.get("normalized_headline")),
+                "article_sentence_count": _maybe_int(row.get("article_sentence_count")),
+                "embedding_cache_key": _optional_str(row.get("embedding_cache_key")),
+                "topic_model": _optional_str(row.get("topic_model")),
+                "topic_model_version": _optional_str(row.get("topic_model_version")),
+                "topic_id": _maybe_int(row.get("topic_id")),
+                "topic_probability": _maybe_float(row.get("topic_probability")),
+                "topic_label": _optional_str(row.get("topic_label")),
+                "topic_keywords": _json_string_list(row.get("topic_keywords")),
+                "artifact_key": _optional_str(row.get("_artifact_key")),
+                "stage": "article_topic_labels",
+            }
+        )
+    return _sort_evidence_rows(rows)
+
+
+def _relevance_gate_rows(
+    frame: pd.DataFrame,
+    *,
+    requested_ticker: str,
+) -> list[dict[str, object]]:
+    """Return normalized relevance-gate audit rows for dashboard review."""
+    if frame.empty:
+        return []
+    normalized = frame.copy()
+    normalized.columns = [str(column) for column in normalized.columns]
+    rows: list[dict[str, object]] = []
+    for _, row in normalized.iterrows():
+        ticker = (_optional_str(row.get("ticker")) or "").upper()
+        if ticker and ticker != requested_ticker:
+            continue
+        rows.append(
+            {
+                "date": _optional_str(row.get("date")),
+                "ticker": ticker or requested_ticker,
+                "article_id": _optional_str(row.get("article_id")),
+                "sentence_index": _maybe_int(row.get("sentence_index")),
+                "chunk_index": _maybe_int(row.get("chunk_index")),
+                "headline": _optional_str(row.get("headline")),
+                "text": _optional_str(row.get("text")),
+                "source": _optional_str(row.get("source")),
+                "published_at": _optional_str(row.get("published_at")),
+                "relevance_decision": _optional_str(row.get("relevance_decision")),
+                "relevance_score": _maybe_float(row.get("relevance_score")),
+                "ticker_relevance_score": _maybe_float(row.get("ticker_relevance_score")),
+                "financial_relevance_score": _maybe_float(row.get("financial_relevance_score")),
+                "topic_relevance_score": _maybe_float(row.get("topic_relevance_score")),
+                "reason_codes": _json_string_list(row.get("reason_codes")),
+                "ticker_evidence": _json_mapping(row.get("ticker_evidence")),
+                "entity_evidence": _json_string_list(row.get("entity_evidence")),
+                "topic_id": _maybe_int(row.get("topic_id")),
+                "topic_probability": _maybe_float(row.get("topic_probability")),
+                "embedding_cache_key": _optional_str(row.get("embedding_cache_key")),
+                "has_embedding": _maybe_bool(row.get("has_embedding")),
+                "artifact_key": _optional_str(row.get("_artifact_key")),
+                "stage": "pre_finbert_relevance_gate",
+            }
+        )
+    return _sort_evidence_rows(rows)
+
+
+def _semantic_aggregate_rows(
+    frame: pd.DataFrame,
+    *,
+    requested_ticker: str,
+) -> list[dict[str, object]]:
+    """Return normalized ticker-date semantic aggregate FeatureRecord rows."""
+    if frame.empty:
+        return []
+    normalized = frame.copy()
+    normalized.columns = [str(column) for column in normalized.columns]
+    rows: list[dict[str, object]] = []
+    for _, row in normalized.iterrows():
+        ticker = (_optional_str(row.get("ticker")) or "").upper()
+        if ticker and ticker != requested_ticker:
+            continue
+        features = _json_mapping(row.get("features"))
+        rows.append(
+            {
+                "date": _optional_str(row.get("date")),
+                "ticker": ticker or requested_ticker,
+                "features": features,
+                "source_weight_summary": _json_list(
+                    features.get("nlp_source_weight_summary")
+                ),
+                "topic_sentiment_summary": _json_list(
+                    features.get("nlp_topic_sentiment_summary")
+                ),
+                "relevance_reason_codes": _json_string_list(
+                    features.get("nlp_relevance_reason_codes")
+                ),
+                "semantic_warning_codes": _json_string_list(
+                    features.get("nlp_semantic_warning_codes")
+                ),
+                "contributing_article_ids": _json_string_list(
+                    features.get("nlp_contributing_article_ids")
+                ),
+                "artifact_key": _optional_str(row.get("_artifact_key")),
+                "stage": "source_weighted_semantic_aggregation",
+                "row_granularity": "ticker-date",
+            }
+        )
+    return _sort_evidence_rows(rows)
+
+
+def _rows_by_article(
+    rows: Sequence[Mapping[str, object]],
+) -> dict[tuple[str, str], list[dict[str, object]]]:
+    """Group normalized evidence rows by date and article id."""
+    grouped: dict[tuple[str, str], list[dict[str, object]]] = defaultdict(list)
+    for row in rows:
+        date_text = _optional_str(row.get("date"))
+        article_id = _optional_str(row.get("article_id"))
+        if date_text and article_id:
+            grouped[(date_text, article_id)].append(dict(row))
+    return grouped
+
+
+def _sort_evidence_rows(rows: Sequence[Mapping[str, object]]) -> list[dict[str, object]]:
+    """Return evidence rows in deterministic review order."""
+    return sorted(
+        (dict(row) for row in rows),
+        key=lambda row: (
+            str(row.get("date") or ""),
+            str(row.get("article_id") or ""),
+            _maybe_int(row.get("sentence_index")) if row.get("sentence_index") is not None else -1,
+            _maybe_int(row.get("chunk_index")) if row.get("chunk_index") is not None else -1,
+        ),
+    )
 
 
 def _load_cached_aapl_pilot_evidence_frames(
@@ -716,9 +1134,11 @@ def _build_payload_from_report(report: Layer1SemanticReviewReport | Mapping[str,
     payload = {
         "title": "Layer 1 semantic review dashboard",
         "description": (
-            "Sentence-level FinBERT rows are grouped under raw-article cards. "
-            "HMM regime is date-level and is rendered once per trading date."
+            "Raw preprocessing, topic/embedding, relevance-gate, FinBERT, "
+            "semantic aggregate, and HMM evidence are separated by pipeline stage."
         ),
+        "human_semantic_review_status": "needs_human_review",
+        "recommendation_for_issue_202": "needs_human_review",
         "report": report_dict,
         "summary": dict(report_dict.get("summary", {})),
         "controls": {
@@ -731,6 +1151,22 @@ def _build_payload_from_report(report: Layer1SemanticReviewReport | Mapping[str,
         "article_groups": article_groups,
         "accepted_articles": accepted_articles,
         "flagged_articles": flagged_articles,
+        "pipeline_sections": {
+            "raw_preprocessing_rows": list(report_dict.get("preprocessing_rows", [])),
+            "article_embedding_rows": list(report_dict.get("embedding_rows", [])),
+            "topic_label_rows": list(report_dict.get("topic_label_rows", [])),
+            "relevance_gate_rows": list(report_dict.get("relevance_gate_rows", [])),
+            "finbert_sentence_rows": [
+                row
+                for article in article_groups
+                for row in list(article.get("sentence_rows", []))
+            ],
+            "semantic_aggregate_rows": list(
+                report_dict.get("semantic_aggregate_rows", [])
+            ),
+            "date_level_regime_rows": list(report_dict.get("regime_rows", [])),
+        },
+        "artifact_keys": dict(report_dict.get("artifact_keys", {})),
         "warnings": list(report_dict.get("load_warnings", [])),
     }
     return payload
@@ -893,6 +1329,22 @@ def _first_existing_column(frame: pd.DataFrame, candidates: Sequence[str]) -> st
     return None
 
 
+def _copy_first_existing_column(
+    frame: pd.DataFrame,
+    target_column: str,
+    source_columns: Sequence[str],
+) -> None:
+    """Fill an empty normalized column from the first existing source column."""
+    if target_column not in frame.columns:
+        frame[target_column] = None
+    if frame[target_column].notna().any():
+        return
+    for source_column in source_columns:
+        if source_column in frame.columns:
+            frame[target_column] = frame[source_column]
+            return
+
+
 def _dedupe_preserve_order(items: Sequence[str]) -> list[str]:
     """Deduplicate a sequence while preserving first-seen order."""
     seen: set[str] = set()
@@ -903,6 +1355,88 @@ def _dedupe_preserve_order(items: Sequence[str]) -> list[str]:
         seen.add(item)
         values.append(item)
     return values
+
+
+def _json_mapping(value: Any) -> dict[str, object]:
+    """Return a JSON object from an encoded or native mapping value."""
+    decoded = _json_value(value)
+    if isinstance(decoded, Mapping):
+        return {str(key): _json_safe(item) for key, item in decoded.items()}
+    return {}
+
+
+def _json_list(value: Any) -> list[object]:
+    """Return a JSON list from an encoded or native sequence value."""
+    decoded = _json_value(value)
+    if isinstance(decoded, Sequence) and not isinstance(decoded, (bytes, bytearray, str)):
+        return [_json_safe(item) for item in decoded]
+    return []
+
+
+def _json_string_list(value: Any) -> list[str]:
+    """Return a string list from an encoded or native sequence value."""
+    decoded = _json_value(value)
+    if decoded is None:
+        return []
+    if isinstance(decoded, str):
+        text = decoded.strip()
+        return [text] if text else []
+    if isinstance(decoded, Sequence) and not isinstance(decoded, (bytes, bytearray, str)):
+        return [str(item).strip() for item in decoded if str(item).strip()]
+    return [str(decoded).strip()] if str(decoded).strip() else []
+
+
+def _json_value(value: Any) -> object:
+    """Decode JSON-looking strings while preserving native objects."""
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            return text
+    return value
+
+
+def _json_safe(value: Any) -> object:
+    """Return a JSON-safe scalar, list, or dict."""
+    decoded = _json_value(value)
+    if isinstance(decoded, Mapping):
+        return {str(key): _json_safe(item) for key, item in decoded.items()}
+    if isinstance(decoded, Sequence) and not isinstance(decoded, (bytes, bytearray, str)):
+        return [_json_safe(item) for item in decoded]
+    if isinstance(decoded, bool):
+        return decoded
+    maybe_float = _maybe_float(decoded)
+    if maybe_float is not None:
+        return maybe_float
+    maybe_text = _optional_str(decoded)
+    return maybe_text
+
+
+def _maybe_bool(value: Any) -> bool | None:
+    """Return a bool when the input is clearly boolean-like."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    text = _optional_str(value)
+    if text is None:
+        return None
+    lowered = text.lower()
+    if lowered in {"true", "1", "yes"}:
+        return True
+    if lowered in {"false", "0", "no"}:
+        return False
+    return None
 
 
 def _build_payload_from_report_and_json(report_json: str) -> dict[str, object]:
