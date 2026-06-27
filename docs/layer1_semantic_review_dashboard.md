@@ -25,8 +25,17 @@ the pilot for the broad point-in-time backfill tracked by #202.
   `features/{date}/sentiment_features/{run_id}.parquet`, including parsed
   source-weight summaries, topic sentiment summaries, contributing article ids,
   relevance reason codes, and semantic warning codes.
+- Date-aligned raw stock-price rows from `raw/prices/{ticker}.parquet`, including
+  close/adjusted-close, volume, one-day return, and drawdown from the review-window high.
 - HMM regime is shown once per trading date in a dedicated date header.
   Confidence and probabilities are therefore clearly date-level, not per row.
+- A stock-price/HMM chart synchronizes adjusted-close price with bear/sideways/bull
+  probabilities on the same date axis so reviewers can compare regime labels with
+  prior price behavior.
+- HMM evaluation context is exposed explicitly: expected input feature columns, any
+  dropped feature columns, requested and observed inference dates, training/lookback
+  window metadata, source regime artifact keys, source manifest keys, and warnings for
+  missing, all-null, or incomplete HMM evidence.
 - Articles are split into accepted and flagged groups.
   Flagged articles stay visible with the evidence that caused the flag.
 
@@ -82,8 +91,13 @@ Top-level response fields:
 - `article_groups`: flat article cards for cross-date inspection
 - `accepted_articles`: accepted article cards
 - `flagged_articles`: flagged article cards
+- `price_series`: date-aligned raw stock-price context rows
+- `market_regime_series`: one row per trading date combining stock price and HMM
+  regime evidence plus per-date warnings
+- `hmm_evaluation_context`: HMM scope, input feature columns, training window, source
+  keys, inference date coverage, and warning metadata
 - `pipeline_sections`: stage-separated raw preprocessing, embedding, topic,
-  relevance, FinBERT, semantic aggregate, and regime rows
+  relevance, FinBERT, semantic aggregate, stock-price, and regime rows
 - `artifact_keys`: resolved R2 keys used for each evidence section
 - `human_semantic_review_status`: currently `needs_human_review`
 - `recommendation_for_issue_202`: currently `needs_human_review`
@@ -93,9 +107,20 @@ Each `date_groups[]` entry contains:
 
 - `date`
 - `regime` with `scope: "date-level"`
+- `price` with `scope: "ticker-date"`
+- `market_regime_context` with aligned price/HMM warning flags
 - `semantic_aggregates[]` with ticker-date semantic aggregate rows
 - article counts
 - nested `articles[]`
+
+Each `market_regime_series[]` entry contains:
+
+- `date`
+- `price` with OHLCV, adjusted close, return, drawdown, and source artifact key
+- `hmm_regime` with label, confidence, bear/sideways/bull probabilities, readiness
+  fields, source artifact key, and source manifest key
+- `warnings`, for example `missing_price`, `missing_hmm_regime`,
+  `all_null_hmm_regime`, `missing_hmm_manifest`, or `incomplete_hmm_feature_set`
 
 Each `articles[]` entry contains:
 
@@ -134,11 +159,17 @@ Each `pipeline_sections.semantic_aggregate_rows[]` entry contains parsed:
 
 ## Review guidance
 
-1. Check the date header first for the HMM regime context.
-2. Inspect the pipeline evidence cards to confirm each NLP stage is present.
-3. Expand an article card to inspect preprocessing, topic, relevance, and
+1. Check the stock-price/HMM chart first to compare price behavior with the
+   bull/bear/sideways regime evidence.
+2. Inspect the HMM context and warnings to confirm the feature set, inference
+   dates, source artifacts, and training window are trustworthy.
+3. Check the date header for the date-level HMM regime context.
+4. Inspect the pipeline evidence cards to confirm each NLP stage is present.
+5. Expand an article card to inspect preprocessing, topic, relevance, and
    sentence-level FinBERT rows together.
-4. Use the evidence snippets and ticker-hit fields to decide whether the article
+6. Use the evidence snippets and ticker-hit fields to decide whether the article
    is actually about AAPL.
-5. Do not accept the pilot if the flagged section contains unrelated articles
+7. Do not accept the pilot if the flagged section contains unrelated articles
    that are not explained by source-text evidence.
+8. Do not accept the pilot if price/HMM context is missing, stale, all-null, or
+   evaluated from an unexpected feature set/window without a documented reason.

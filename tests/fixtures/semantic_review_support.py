@@ -8,6 +8,7 @@ from typing import Any
 
 import pandas as pd
 
+from core.contracts.schemas import PipelineManifestRecord, RunStatus
 from services.r2.paths import (
     layer1_news_preprocessing_path,
     layer1_news_relevance_gate_path,
@@ -16,6 +17,8 @@ from services.r2.paths import (
     layer1_sentiment_score_path,
     layer1_text_embedding_path,
     layer1_topic_label_path,
+    pipeline_manifest_path,
+    raw_price_path,
 )
 from services.r2.writer import R2Writer
 
@@ -47,6 +50,7 @@ def seed_semantic_review_fixture(
     writer = R2Writer(local_root=local_root)
     scored_frame = pd.DataFrame(fixture["scored_rows"])
     regime_frame = pd.DataFrame(fixture["regime_rows"])
+    regime_frame = _regime_frame_with_review_metadata(regime_frame)
     preprocessing_frame = _preprocessing_frame(scored_frame)
     embedding_frame = _embedding_frame(scored_frame)
     topic_label_frame = _topic_label_frame(scored_frame)
@@ -79,10 +83,14 @@ def seed_semantic_review_fixture(
             ),
         )
 
+    for date_text, date_frame in regime_frame.groupby("date", sort=True):
+        output_key = layer1_regime_path(str(date_text), active_run_id)
+        writer.put_object(output_key, _dataframe_to_parquet_bytes(date_frame))
     writer.put_object(
-        layer1_regime_path(fixture["regime_rows"][0]["date"], active_run_id),
-        _dataframe_to_parquet_bytes(regime_frame),
+        pipeline_manifest_path("layer1_5_regime", active_run_id),
+        _regime_manifest_json(active_run_id, sorted(regime_frame["date"].astype(str).unique())),
     )
+    writer.put_object(raw_price_path("AAPL"), _dataframe_to_parquet_bytes(_price_frame()))
     return {
         "run_id": active_run_id,
         "writer": writer,
@@ -97,6 +105,90 @@ def _dataframe_to_parquet_bytes(frame: pd.DataFrame) -> bytes:
     buffer = BytesIO()
     frame.to_parquet(buffer, index=False)
     return buffer.getvalue()
+
+
+def _regime_frame_with_review_metadata(frame: pd.DataFrame) -> pd.DataFrame:
+    """Return fixture HMM rows with readiness metadata used by the dashboard."""
+    enriched = frame.copy()
+    enriched["regime_readiness_status"] = "ready"
+    enriched["regime_readiness_reason"] = "ready"
+    enriched["regime_required_for_layer2"] = True
+    enriched["regime_missing_features"] = ""
+    enriched["regime_probability_sum"] = (
+        enriched["prob_bear"] + enriched["prob_sideways"] + enriched["prob_bull"]
+    )
+    enriched["training_rows"] = 42
+    enriched["complete_training_rows"] = 40
+    enriched["min_training_rows"] = 30
+    return enriched
+
+
+def _regime_manifest_json(run_id: str, inference_dates: list[str]) -> str:
+    """Return a completed HMM manifest with fixture training-window metadata."""
+    metadata = {
+        "benchmark_ticker": "SPY",
+        "train_start_date": "2026-02-02",
+        "train_end_date": "2026-05-20",
+        "inference_dates": inference_dates,
+        "ready_inference_dates": inference_dates,
+        "warning_inference_dates": [],
+        "macro_load_start_date": "2026-02-02",
+        "macro_load_end_date": inference_dates[-1],
+        "training_rows": 42,
+        "complete_training_rows": 40,
+        "dropped_feature_columns": [],
+        "regime_layer2_ready": True,
+        "regime_readiness_by_date": {
+            date_text: {
+                "status": "ready",
+                "reason": "ready",
+                "required_for_layer2": True,
+                "missing_features": [],
+                "probability_sum": 1.0,
+            }
+            for date_text in inference_dates
+        },
+    }
+    manifest = PipelineManifestRecord(
+        run_id=run_id,
+        stage="layer1_5_regime",
+        status=RunStatus.COMPLETED,
+        started_at=pd.Timestamp("2026-05-22T20:00:00Z").to_pydatetime(),
+        finished_at=pd.Timestamp("2026-05-22T20:05:00Z").to_pydatetime(),
+        input_path=f"{raw_price_path('SPY')},raw/macro/",
+        output_path=layer1_regime_path(inference_dates[0], run_id),
+        metadata=metadata,
+    )
+    return manifest.model_dump_json()
+
+
+def _price_frame() -> pd.DataFrame:
+    """Return raw AAPL price rows for the semantic-review fixture window."""
+    rows = [
+        {
+            "date": "2026-05-21",
+            "ticker": "AAPL",
+            "open": 189.5,
+            "high": 193.2,
+            "low": 188.8,
+            "close": 192.4,
+            "adj_close": 192.4,
+            "volume": 52_000_000,
+            "dollar_volume": 10_004_800_000.0,
+        },
+        {
+            "date": "2026-05-22",
+            "ticker": "AAPL",
+            "open": 192.2,
+            "high": 195.0,
+            "low": 191.6,
+            "close": 194.8,
+            "adj_close": 194.8,
+            "volume": 48_500_000,
+            "dollar_volume": 9_447_800_000.0,
+        },
+    ]
+    return pd.DataFrame(rows)
 
 
 def _preprocessing_frame(scored_frame: pd.DataFrame) -> pd.DataFrame:
