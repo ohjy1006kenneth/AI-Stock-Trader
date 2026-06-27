@@ -15,6 +15,8 @@ from services.r2.paths import (
     layer1_sentiment_score_path,
     layer1_text_embedding_path,
     layer1_topic_label_path,
+    pipeline_manifest_path,
+    raw_price_path,
 )
 from tests.fixtures.semantic_review_support import seed_semantic_review_fixture
 
@@ -39,6 +41,13 @@ def test_semantic_review_report_groups_sentence_rows_and_date_regime(tmp_path: P
     assert report_dict["topic_label_row_count"] == 4
     assert report_dict["relevance_gate_row_count"] == 8
     assert report_dict["semantic_aggregate_row_count"] == 2
+    assert report_dict["summary"]["price_row_count"] == 2
+    assert report_dict["summary"]["hmm_regime_row_count"] == 2
+
+    price_rows = cast(list[dict[str, Any]], report_dict["price_rows"])
+    assert [row["date"] for row in price_rows] == ["2026-05-21", "2026-05-22"]
+    assert price_rows[0]["adj_close"] == 192.4
+    assert price_rows[1]["return_1d"] is not None
 
     article_groups = {
         str(item["article_id"]): cast(dict[str, Any], item)
@@ -60,8 +69,21 @@ def test_semantic_review_report_groups_sentence_rows_and_date_regime(tmp_path: P
     assert regime["scope"] == "date-level"
     assert regime["applies_to"] == "all sentence rows on the trading date"
     assert regime["regime"] == "sideways"
+    assert regime["readiness_status"] == "ready"
+    assert regime["manifest_key"] == pipeline_manifest_path(
+        "layer1_5_regime",
+        str(fixture["run_id"]),
+    )
+    assert date_groups["2026-05-21"]["price"]["close"] == 192.4
+    assert date_groups["2026-05-21"]["market_regime_context"]["warnings"] == []
     assert date_groups["2026-05-21"]["sentence_count"] == 5
     assert date_groups["2026-05-21"]["semantic_aggregates"][0]["source_weight_summary"]
+
+    context = cast(dict[str, Any], report_dict["hmm_evaluation_context"])
+    assert context["requested_inference_dates"] == ["2026-05-21", "2026-05-22"]
+    assert context["observed_inference_dates"] == ["2026-05-21", "2026-05-22"]
+    assert context["warnings"] == []
+    assert context["training_windows"][0]["train_end_date"] == "2026-05-20"
 
 
 def test_semantic_review_report_loads_dated_stage_artifacts_for_parent_run_id(tmp_path: Path) -> None:
@@ -89,8 +111,16 @@ def test_semantic_review_report_loads_dated_stage_artifacts_for_parent_run_id(tm
             )
         writer.put_object(
             layer1_regime_path(date_text, stage_run_id),
-            writer.get_object(layer1_regime_path("2026-05-21", fixture["run_id"])),
+            writer.get_object(layer1_regime_path(date_text, fixture["run_id"])),
         )
+    writer.put_object(
+        pipeline_manifest_path("layer1_5_regime", parent_run_id),
+        writer.get_object(pipeline_manifest_path("layer1_5_regime", fixture["run_id"])),
+    )
+    writer.put_object(
+        raw_price_path("AAPL"),
+        writer.get_object(raw_price_path("AAPL")),
+    )
 
     report = build_layer1_aapl_evidence_report(
         run_id=parent_run_id,
@@ -133,6 +163,11 @@ def test_semantic_review_payload_flags_weak_and_duplicate_articles(tmp_path: Pat
     assert len(cast(list[dict[str, Any]], sections["topic_label_rows"])) == 4
     assert len(cast(list[dict[str, Any]], sections["relevance_gate_rows"])) == 8
     assert len(cast(list[dict[str, Any]], sections["semantic_aggregate_rows"])) == 2
+    assert len(cast(list[dict[str, Any]], payload["price_series"])) == 2
+    assert len(cast(list[dict[str, Any]], payload["market_regime_series"])) == 2
+    assert len(cast(list[dict[str, Any]], sections["stock_price_rows"])) == 2
+    assert len(cast(list[dict[str, Any]], sections["date_aligned_price_hmm_rows"])) == 2
+    assert payload["hmm_evaluation_context"]["warnings"] == []
 
     article_groups = cast(list[dict[str, Any]], payload["article_groups"])
     ferrari = next(item for item in article_groups if item["article_id"] == "ferrari-001")
@@ -144,6 +179,37 @@ def test_semantic_review_payload_flags_weak_and_duplicate_articles(tmp_path: Pat
     duplicate = next(item for item in article_groups if item["article_id"] == "aapl-001")
     assert "duplicate_normalized_headline" in duplicate["contamination_flags"]
     assert duplicate["sentence_rows"][0]["text"].startswith("Apple shares climbed")
+
+
+def test_semantic_review_payload_warns_when_price_or_hmm_context_is_missing(
+    tmp_path: Path,
+) -> None:
+    """Missing price and HMM context should be surfaced as aligned review warnings."""
+    fixture = seed_semantic_review_fixture(local_root=tmp_path / "r2")
+    writer = fixture["writer"]
+    writer.delete_object(raw_price_path("AAPL"))
+    writer.delete_object(layer1_regime_path("2026-05-22", str(fixture["run_id"])))
+
+    report = build_layer1_aapl_evidence_report(
+        run_id=str(fixture["run_id"]),
+        from_date="2026-05-21",
+        to_date="2026-05-22",
+        ticker="AAPL",
+        writer=writer,
+    )
+    payload = cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report))
+    warnings = cast(list[dict[str, Any]], payload["warnings"])
+    aligned_rows = {
+        str(item["date"]): cast(dict[str, Any], item)
+        for item in cast(list[dict[str, Any]], payload["market_regime_series"])
+    }
+
+    assert any(item["scope"] == "price_series" for item in warnings)
+    assert any(item["scope"] == "hmm_regime" and item["date"] == "2026-05-22" for item in warnings)
+    assert "missing_price" in aligned_rows["2026-05-21"]["warnings"]
+    assert "missing_hmm_regime" in aligned_rows["2026-05-22"]["warnings"]
+    assert payload["hmm_evaluation_context"]["missing_inference_dates"] == ["2026-05-22"]
+    assert payload["human_semantic_review_status"] == "needs_human_review"
 
 
 def test_semantic_review_dashboard_html_labels_date_level_regime_and_sentence_rows() -> None:
@@ -161,6 +227,9 @@ def test_semantic_review_dashboard_html_labels_date_level_regime_and_sentence_ro
     assert "Layer 1 semantic-review dashboard" in html
     assert "Raw ticker/entity preprocessing, article embeddings, BERTopic labels" in html
     assert "Date-level HMM regime" in html
+    assert "Stock Price and HMM Regime" in html
+    assert "Stock-price rows" in html
+    assert "date_aligned_price_hmm_rows" in html
     assert "Pipeline Evidence" in html
     assert "needs_human_review" in html
     assert "/api/review" in html

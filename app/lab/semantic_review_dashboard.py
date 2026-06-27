@@ -288,13 +288,21 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
     .empty {{ color: #94a3b8; font-style: italic; }}
     .warning {{ color: #fbbf24; }}
     .section-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; margin: 14px 0; }}
+    .chart-wrap {{ margin: 18px 0; }}
+    .chart {{ width: 100%; height: 300px; background: #0b1220; border: 1px solid #334155; border-radius: 8px; }}
+    .chart text {{ fill: #cbd5e1; font-size: 11px; }}
+    .chart-line {{ fill: none; stroke: #38bdf8; stroke-width: 2.5; }}
+    .axis-line {{ stroke: #334155; stroke-width: 1; }}
+    .prob-bear {{ fill: #f87171; }}
+    .prob-sideways {{ fill: #fbbf24; }}
+    .prob-bull {{ fill: #4ade80; }}
     pre {{ white-space: pre-wrap; word-break: break-word; }}
   </style>
 </head>
 <body>
   <header>
     <h1>Layer 1 semantic-review dashboard</h1>
-    <p class="note">Raw ticker/entity preprocessing, article embeddings, BERTopic labels, relevance-gate decisions, sentence-level FinBERT rows, ticker-date semantic aggregates, and date-level HMM regime evidence are separated by pipeline stage.</p>
+    <p class="note">Raw ticker/entity preprocessing, article embeddings, BERTopic labels, relevance-gate decisions, sentence-level FinBERT rows, ticker-date semantic aggregates, stock prices, and date-level HMM regime evidence are separated by pipeline stage.</p>
     <div class="meta" id="meta"></div>
   </header>
   <main>
@@ -328,6 +336,8 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
         ['Topic labels', summary.topic_label_row_count ?? 0],
         ['Relevance rows', summary.relevance_gate_row_count ?? 0],
         ['Aggregates', summary.semantic_aggregate_row_count ?? 0],
+        ['Price rows', summary.price_row_count ?? 0],
+        ['HMM rows', summary.hmm_regime_row_count ?? 0],
       ];
       summaryEl.innerHTML = entries.map(([label, value]) => `<div class="card"><div>${{label}}</div><div style="font-size:1.6rem;font-weight:700">${{value}}</div></div>`).join('');
     }}
@@ -398,13 +408,93 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
         ['finbert_sentence_rows', 'Sentence/chunk FinBERT rows'],
         ['semantic_aggregate_rows', 'Ticker-date semantic aggregates'],
         ['date_level_regime_rows', 'Date-level HMM regime'],
+        ['stock_price_rows', 'Stock-price rows'],
+        ['date_aligned_price_hmm_rows', 'Date-aligned price/HMM rows'],
       ];
       pipelineEl.innerHTML = `
         <section class="card">
           <h2>Pipeline Evidence</h2>
-          <p class="note">Human semantic review remains needs_human_review until these completed NLP pipeline sections are inspected and explicitly accepted.</p>
+          <p class="note">Human semantic review remains needs_human_review until completed NLP, stock-price, and HMM evidence are inspected and explicitly accepted.</p>
           <div class="section-grid">
             ${{labels.map(([key, label]) => renderPipelineCard(label, sections[key] || [])).join('')}}
+          </div>
+        </section>`;
+    }}
+
+    function renderMarketRegimeChart(rows, hmmContext) {{
+      if (!rows.length) {{
+        return '<section class="card chart-wrap"><h2>Stock Price and HMM Regime</h2><p class="empty">No price/HMM rows available.</p></section>';
+      }}
+      const priced = rows.filter((row) => row.price && Number.isFinite(Number(row.price.adj_close ?? row.price.close)));
+      const width = 960;
+      const height = 300;
+      const left = 48;
+      const right = 18;
+      const top = 22;
+      const priceBottom = 190;
+      const probTop = 218;
+      const probHeight = 54;
+      const values = priced.map((row) => Number(row.price.adj_close ?? row.price.close));
+      const minPrice = values.length ? Math.min(...values) : 0;
+      const maxPrice = values.length ? Math.max(...values) : 1;
+      const priceRange = Math.max(maxPrice - minPrice, 0.0001);
+      const step = rows.length > 1 ? (width - left - right) / (rows.length - 1) : 0;
+      const xFor = (index) => left + index * step;
+      const yFor = (value) => priceBottom - ((value - minPrice) / priceRange) * (priceBottom - top);
+      const points = rows
+        .map((row, index) => {{
+          const price = row.price;
+          if (!price) return null;
+          const value = Number(price.adj_close ?? price.close);
+          return Number.isFinite(value) ? `${{xFor(index)}},${{yFor(value)}}` : null;
+        }})
+        .filter(Boolean)
+        .join(' ');
+      const markers = rows.map((row, index) => {{
+        const regime = row.hmm_regime || {{}};
+        const price = row.price || {{}};
+        const value = Number(price.adj_close ?? price.close);
+        const x = xFor(index);
+        const y = Number.isFinite(value) ? yFor(value) : priceBottom;
+        const color = regime.regime === 'bear' ? '#f87171' : regime.regime === 'bull' ? '#4ade80' : '#fbbf24';
+        const warning = (row.warnings || []).join(', ');
+        return `<circle cx="${{x}}" cy="${{y}}" r="5" fill="${{color}}"><title>${{row.date}} ${{regime.regime || 'missing'}} ${{warning}}</title></circle>`;
+      }}).join('');
+      const bars = rows.map((row, index) => {{
+        const regime = row.hmm_regime || {{}};
+        const x = xFor(index) - 8;
+        const widthBar = 16;
+        const bear = Number(regime.prob_bear || 0) * probHeight;
+        const sideways = Number(regime.prob_sideways || 0) * probHeight;
+        const bull = Number(regime.prob_bull || 0) * probHeight;
+        const yBear = probTop + probHeight - bear;
+        const ySideways = yBear - sideways;
+        const yBull = ySideways - bull;
+        return `
+          <rect class="prob-bear" x="${{x}}" y="${{yBear}}" width="${{widthBar}}" height="${{bear}}"></rect>
+          <rect class="prob-sideways" x="${{x}}" y="${{ySideways}}" width="${{widthBar}}" height="${{sideways}}"></rect>
+          <rect class="prob-bull" x="${{x}}" y="${{yBull}}" width="${{widthBar}}" height="${{bull}}"></rect>`;
+      }}).join('');
+      const labels = rows.map((row, index) => `<text x="${{xFor(index) - 28}}" y="292">${{row.date.slice(5)}}</text>`).join('');
+      const contextWarnings = (hmmContext.warnings || []).join(', ') || 'none';
+      return `
+        <section class="card chart-wrap">
+          <h2>Stock Price and HMM Regime</h2>
+          <p class="note">Close/adjusted-close price and HMM bear/sideways/bull probabilities share the same date axis.</p>
+          <svg class="chart" viewBox="0 0 ${{width}} ${{height}}" role="img" aria-label="Stock price with HMM regime probabilities">
+            <line class="axis-line" x1="${{left}}" y1="${{priceBottom}}" x2="${{width - right}}" y2="${{priceBottom}}"></line>
+            <line class="axis-line" x1="${{left}}" y1="${{probTop + probHeight}}" x2="${{width - right}}" y2="${{probTop + probHeight}}"></line>
+            <text x="8" y="${{top + 10}}">${{formatNumber(maxPrice)}}</text>
+            <text x="8" y="${{priceBottom}}">${{formatNumber(minPrice)}}</text>
+            <polyline class="chart-line" points="${{points}}"></polyline>
+            ${{markers}}
+            ${{bars}}
+            ${{labels}}
+          </svg>
+          <div class="article-meta">
+            <span class="badge">training_windows=${{(hmmContext.training_windows || []).length}}</span>
+            <span class="badge">input_features=${{(hmmContext.input_feature_columns_used || []).length}}</span>
+            <span class="badge">warnings=${{escapeHtml(contextWarnings)}}</span>
           </div>
         </section>`;
     }}
@@ -434,6 +524,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
             <span class="badge">accepted=${{group.accepted_article_count}}</span>
             <span class="badge">flagged=${{group.flagged_article_count}}</span>
             <span class="badge">sentence_rows=${{group.sentence_count}}</span>
+            <span class="badge">close=${{group.price ? formatNumber(group.price.adj_close ?? group.price.close) : 'n/a'}}</span>
           </div>
           ${{(group.articles || []).map(renderArticle).join('') || '<p class="empty">No articles for this date.</p>'}}
         </section>`;
@@ -467,7 +558,10 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       renderMeta(payload.report || payload);
       renderSummary(payload.summary || (payload.report && payload.report.summary) || {{}});
       renderPipelineSections(payload.pipeline_sections || {{}});
-      contentEl.innerHTML = (payload.date_groups || []).map(renderDateGroup).join('');
+      contentEl.innerHTML = renderMarketRegimeChart(
+        payload.market_regime_series || [],
+        payload.hmm_evaluation_context || {{}}
+      ) + (payload.date_groups || []).map(renderDateGroup).join('');
       if (!(payload.date_groups || []).length) {{
         contentEl.innerHTML = '<p class="empty">No review rows were found for this run and date range.</p>';
       }}

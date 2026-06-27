@@ -16,6 +16,7 @@ from typing import Any
 import pandas as pd
 
 from core.common.trading_calendar import skipped_non_trading_dates, trading_dates
+from core.features.regime_training import HMM_TRAINING_FEATURE_COLUMNS
 from services.r2.paths import (
     layer1_feature_path,
     layer1_news_preprocessing_path,
@@ -118,6 +119,16 @@ class SemanticReviewRegimeRow:
     prob_bear: float | None
     prob_sideways: float | None
     prob_bull: float | None
+    readiness_status: str | None = None
+    readiness_reason: str | None = None
+    required_for_layer2: bool | None = None
+    missing_features: list[str] = field(default_factory=list)
+    probability_sum: float | None = None
+    training_rows: int | None = None
+    complete_training_rows: int | None = None
+    min_training_rows: int | None = None
+    artifact_key: str | None = None
+    manifest_key: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         """Return a JSON-serializable representation."""
@@ -128,11 +139,38 @@ class SemanticReviewRegimeRow:
 
 
 @dataclass(frozen=True)
+class SemanticReviewPriceRow:
+    """Date-level raw price evidence aligned to semantic and HMM review rows."""
+
+    date: str
+    ticker: str
+    open: float | None
+    high: float | None
+    low: float | None
+    close: float | None
+    adj_close: float | None
+    volume: int | None
+    dollar_volume: float | None
+    return_1d: float | None
+    drawdown_from_window_high: float | None
+    artifact_key: str | None
+
+    def to_dict(self) -> dict[str, object]:
+        """Return a JSON-serializable representation."""
+        payload = asdict(self)
+        payload["scope"] = "ticker-date"
+        payload["stage"] = "raw_price_context"
+        return payload
+
+
+@dataclass(frozen=True)
 class SemanticReviewDateGroup:
     """One trading-date bucket that contains the date-level regime and article cards."""
 
     date: str
     regime: dict[str, object] | None
+    price: dict[str, object] | None
+    market_regime_context: dict[str, object]
     article_count: int
     accepted_article_count: int
     flagged_article_count: int
@@ -178,6 +216,9 @@ class Layer1SemanticReviewReport:
     relevance_gate_rows: list[dict[str, object]]
     semantic_aggregate_rows: list[dict[str, object]]
     regime_rows: list[dict[str, object]]
+    price_rows: list[dict[str, object]]
+    market_regime_rows: list[dict[str, object]]
+    hmm_evaluation_context: dict[str, object]
     article_groups: list[dict[str, object]]
     date_groups: list[dict[str, object]]
     summary: dict[str, int]
@@ -216,8 +257,19 @@ def build_layer1_aapl_evidence_report(
         "news_sentiment_scored": [],
         "sentiment_features": [],
         "regime": [],
+        "regime_manifests": [],
+        "raw_prices": [],
     }
     trading_date_list = trading_dates(from_date, to_date)
+    price_key = raw_price_path(requested_ticker)
+    price_rows = _load_price_rows(
+        writer=active_writer,
+        key=price_key,
+        ticker=requested_ticker,
+        dates=trading_date_list,
+        artifact_keys=artifact_keys,
+        load_warnings=load_warnings,
+    )
     for current_date in trading_date_list:
         primary_key = layer1_sentiment_score_path(current_date, run_id)
         fallback_key = layer1_sentiment_score_path(current_date, f"{run_id}-{current_date}")
@@ -287,9 +339,18 @@ def build_layer1_aapl_evidence_report(
             continue
         if resolved_key is not None:
             artifact_keys["regime"].append(resolved_key)
+            regime_frame = regime_frame.copy()
+            regime_frame["_artifact_key"] = resolved_key
         regime_frames.append(regime_frame)
 
     regime_frame = pd.concat(regime_frames, ignore_index=True) if regime_frames else pd.DataFrame()
+    regime_manifest_context = _load_regime_manifest_context(
+        writer=active_writer,
+        dates=trading_date_list,
+        run_id=run_id,
+        artifact_keys=artifact_keys,
+        load_warnings=load_warnings,
+    )
 
     preprocessing_frame = _load_date_partitioned_artifacts(
         writer=active_writer,
@@ -344,6 +405,8 @@ def build_layer1_aapl_evidence_report(
         ticker=requested_ticker,
     )) is not None:
         scored_frame, regime_frame = cached_frames
+        price_rows = []
+        regime_manifest_context = _empty_regime_manifest_context(trading_date_list)
         scored_frames = [scored_frame]
         regime_frames = [regime_frame]
         load_warnings = [
@@ -380,7 +443,31 @@ def build_layer1_aapl_evidence_report(
         relevance_gate_rows=relevance_gate_rows,
     )
     regime_by_date = _build_regime_map(regime_frame)
-    date_groups = _build_date_groups(article_groups, regime_by_date, semantic_aggregate_rows)
+    _enrich_regime_rows_with_manifests(regime_by_date, regime_manifest_context)
+    _append_market_context_warnings(
+        dates=trading_date_list,
+        price_rows=price_rows,
+        regime_map=regime_by_date,
+        load_warnings=load_warnings,
+    )
+    market_regime_rows = _build_market_regime_rows(
+        dates=trading_date_list,
+        price_rows=price_rows,
+        regime_map=regime_by_date,
+    )
+    hmm_evaluation_context = _build_hmm_evaluation_context(
+        dates=trading_date_list,
+        regime_map=regime_by_date,
+        manifest_context=regime_manifest_context,
+        artifact_keys=artifact_keys,
+    )
+    date_groups = _build_date_groups(
+        article_groups,
+        regime_by_date,
+        semantic_aggregate_rows,
+        price_rows=price_rows,
+        market_regime_rows=market_regime_rows,
+    )
     summary = {
         "row_count": int(article_summary["row_count"]),
         "article_count": int(article_summary["article_count"]),
@@ -396,6 +483,8 @@ def build_layer1_aapl_evidence_report(
         "topic_label_row_count": len(topic_label_rows),
         "relevance_gate_row_count": len(relevance_gate_rows),
         "semantic_aggregate_row_count": len(semantic_aggregate_rows),
+        "price_row_count": len(price_rows),
+        "hmm_regime_row_count": len(regime_by_date),
     }
     generated_at = datetime.now(tz=UTC).isoformat()
     return Layer1SemanticReviewReport(
@@ -426,6 +515,9 @@ def build_layer1_aapl_evidence_report(
         relevance_gate_rows=relevance_gate_rows,
         semantic_aggregate_rows=semantic_aggregate_rows,
         regime_rows=[item.to_dict() for item in _regime_rows_from_map(regime_by_date)],
+        price_rows=[item.to_dict() for item in price_rows],
+        market_regime_rows=market_regime_rows,
+        hmm_evaluation_context=hmm_evaluation_context,
         article_groups=[group.to_dict() for group in article_groups],
         date_groups=[group.to_dict() for group in date_groups],
         summary=summary,
@@ -606,14 +698,20 @@ def _build_regime_map(frame: pd.DataFrame) -> dict[str, SemanticReviewRegimeRow]
     date_column = _first_existing_column(normalized, ("date", "as_of_date"))
     if date_column is None:
         return {}
-    regime_column = _first_existing_column(normalized, ("regime", "state", "label"))
+    regime_column = _first_existing_column(normalized, ("regime", "state", "label", "regime_label"))
     confidence_column = _first_existing_column(normalized, ("confidence", "regime_confidence"))
-    bear_column = _first_existing_column(normalized, ("prob_bear", "bear_prob", "probability_bear"))
+    bear_column = _first_existing_column(
+        normalized,
+        ("prob_bear", "bear_prob", "probability_bear", "regime_prob_bear"),
+    )
     sideways_column = _first_existing_column(
         normalized,
-        ("prob_sideways", "sideways_prob", "probability_sideways"),
+        ("prob_sideways", "sideways_prob", "probability_sideways", "regime_prob_sideways"),
     )
-    bull_column = _first_existing_column(normalized, ("prob_bull", "bull_prob", "probability_bull"))
+    bull_column = _first_existing_column(
+        normalized,
+        ("prob_bull", "bull_prob", "probability_bull", "regime_prob_bull"),
+    )
     regime_map: dict[str, SemanticReviewRegimeRow] = {}
     for _, row in normalized.iterrows():
         date_text = _optional_str(row.get(date_column))
@@ -626,6 +724,15 @@ def _build_regime_map(frame: pd.DataFrame) -> dict[str, SemanticReviewRegimeRow]
             prob_bear=_maybe_float(row.get(bear_column)) if bear_column else None,
             prob_sideways=_maybe_float(row.get(sideways_column)) if sideways_column else None,
             prob_bull=_maybe_float(row.get(bull_column)) if bull_column else None,
+            readiness_status=_optional_str(row.get("regime_readiness_status")),
+            readiness_reason=_optional_str(row.get("regime_readiness_reason")),
+            required_for_layer2=_maybe_bool(row.get("regime_required_for_layer2")),
+            missing_features=_comma_string_list(row.get("regime_missing_features")),
+            probability_sum=_maybe_float(row.get("regime_probability_sum")),
+            training_rows=_maybe_int(row.get("training_rows")),
+            complete_training_rows=_maybe_int(row.get("complete_training_rows")),
+            min_training_rows=_maybe_int(row.get("min_training_rows")),
+            artifact_key=_optional_str(row.get("_artifact_key")),
         )
     return regime_map
 
@@ -640,6 +747,9 @@ def _build_date_groups(
     article_groups: Sequence[SemanticReviewArticleGroup],
     regime_map: Mapping[str, SemanticReviewRegimeRow],
     semantic_aggregate_rows: Sequence[Mapping[str, object]] = (),
+    *,
+    price_rows: Sequence[SemanticReviewPriceRow] = (),
+    market_regime_rows: Sequence[Mapping[str, object]] = (),
 ) -> list[SemanticReviewDateGroup]:
     grouped: dict[str, list[SemanticReviewArticleGroup]] = defaultdict(list)
     for article_group in article_groups:
@@ -649,9 +759,15 @@ def _build_date_groups(
         date_text = _optional_str(row.get("date"))
         if date_text:
             semantic_by_date[date_text].append(dict(row))
+    price_by_date = {row.date: row.to_dict() for row in price_rows}
+    context_by_date = {
+        str(row["date"]): dict(row)
+        for row in market_regime_rows
+        if _optional_str(row.get("date")) is not None
+    }
 
     date_groups: list[SemanticReviewDateGroup] = []
-    for date_text in sorted(set(grouped) | set(semantic_by_date)):
+    for date_text in sorted(set(grouped) | set(semantic_by_date) | set(price_by_date) | set(regime_map)):
         articles = sorted(grouped[date_text], key=lambda item: (item.article_status, item.article_id))
         accepted_articles = [item.to_dict() for item in articles if item.article_status == "accepted"]
         flagged_articles = [item.to_dict() for item in articles if item.article_status != "accepted"]
@@ -659,6 +775,17 @@ def _build_date_groups(
             SemanticReviewDateGroup(
                 date=date_text,
                 regime=regime_map.get(date_text).to_dict() if date_text in regime_map else None,
+                price=price_by_date.get(date_text),
+                market_regime_context=context_by_date.get(
+                    date_text,
+                    {
+                        "date": date_text,
+                        "ticker": None,
+                        "price": None,
+                        "hmm_regime": None,
+                        "warnings": ["missing_aligned_market_regime_context"],
+                    },
+                ),
                 article_count=len(articles),
                 accepted_article_count=len(accepted_articles),
                 flagged_article_count=len(flagged_articles),
@@ -745,6 +872,434 @@ def _read_first_available_parquet_frame(
         except FileNotFoundError:
             continue
     return None, None
+
+
+def _load_price_rows(
+    *,
+    writer: R2Writer,
+    key: str,
+    ticker: str,
+    dates: Sequence[str],
+    artifact_keys: dict[str, list[str]],
+    load_warnings: list[dict[str, object]],
+) -> list[SemanticReviewPriceRow]:
+    """Load raw price rows for the selected ticker/window."""
+    try:
+        frame = _read_parquet_frame(writer.get_object(key))
+    except FileNotFoundError:
+        load_warnings.append(
+            {
+                "scope": "price_series",
+                "ticker": ticker,
+                "key": key,
+                "message": "Missing raw OHLCV price parquet for the selected ticker.",
+            }
+        )
+        return []
+    if frame.empty:
+        load_warnings.append(
+            {
+                "scope": "price_series",
+                "ticker": ticker,
+                "key": key,
+                "message": "Raw OHLCV price parquet is empty for the selected ticker.",
+            }
+        )
+        return []
+
+    artifact_keys["raw_prices"].append(key)
+    normalized = frame.copy()
+    normalized.columns = [str(column) for column in normalized.columns]
+    if "date" not in normalized.columns:
+        load_warnings.append(
+            {
+                "scope": "price_series",
+                "ticker": ticker,
+                "key": key,
+                "message": "Raw OHLCV price parquet has no date column.",
+            }
+        )
+        return []
+
+    normalized["date"] = normalized["date"].map(lambda value: _optional_str(value) or "")
+    if "ticker" in normalized.columns:
+        normalized["ticker"] = normalized["ticker"].map(lambda value: _optional_str(value) or ticker)
+        normalized = normalized[normalized["ticker"].str.upper() == ticker]
+    expected_dates = set(dates)
+    normalized = normalized[normalized["date"].isin(expected_dates)]
+    if normalized.empty:
+        load_warnings.append(
+            {
+                "scope": "price_series",
+                "ticker": ticker,
+                "key": key,
+                "message": "Raw OHLCV price parquet has no rows in the review window.",
+            }
+        )
+        return []
+
+    normalized = normalized.sort_values("date").drop_duplicates("date").reset_index(drop=True)
+    if "adj_close" not in normalized.columns and "close" not in normalized.columns:
+        load_warnings.append(
+            {
+                "scope": "price_series",
+                "ticker": ticker,
+                "key": key,
+                "message": "Raw OHLCV price parquet has neither adj_close nor close.",
+            }
+        )
+        return []
+    close_column = "adj_close" if "adj_close" in normalized.columns else "close"
+    normalized["_adj_close_for_context"] = normalized[close_column].map(_maybe_float)
+    normalized["_return_1d"] = normalized["_adj_close_for_context"].pct_change()
+    running_high = normalized["_adj_close_for_context"].cummax()
+    normalized["_drawdown_from_window_high"] = normalized["_adj_close_for_context"] / running_high - 1.0
+    rows: list[SemanticReviewPriceRow] = []
+    for _, row in normalized.iterrows():
+        rows.append(
+            SemanticReviewPriceRow(
+                date=str(row["date"]),
+                ticker=ticker,
+                open=_maybe_float(row.get("open")),
+                high=_maybe_float(row.get("high")),
+                low=_maybe_float(row.get("low")),
+                close=_maybe_float(row.get("close")),
+                adj_close=_maybe_float(row.get("adj_close")),
+                volume=_maybe_int(row.get("volume")),
+                dollar_volume=_maybe_float(row.get("dollar_volume")),
+                return_1d=_maybe_float(row.get("_return_1d")),
+                drawdown_from_window_high=_maybe_float(row.get("_drawdown_from_window_high")),
+                artifact_key=key,
+            )
+        )
+    return rows
+
+
+def _load_regime_manifest_context(
+    *,
+    writer: R2Writer,
+    dates: Sequence[str],
+    run_id: str,
+    artifact_keys: dict[str, list[str]],
+    load_warnings: list[dict[str, object]],
+) -> dict[str, object]:
+    """Load HMM regime manifest metadata for the selected date window."""
+    by_date: dict[str, dict[str, object]] = {}
+    manifests: list[dict[str, object]] = []
+    seen_keys: set[str] = set()
+    for date_text in dates:
+        primary_key = pipeline_manifest_path("layer1_5_regime", run_id)
+        fallback_key = pipeline_manifest_path("layer1_5_regime", f"{run_id}-{date_text}")
+        payload, resolved_key = _read_first_available_json_object(
+            writer,
+            (primary_key, fallback_key),
+        )
+        if payload is None:
+            load_warnings.append(
+                {
+                    "scope": "hmm_evaluation_context",
+                    "date": date_text,
+                    "key": primary_key,
+                    "fallback_key": fallback_key,
+                    "tried_keys": [primary_key, fallback_key],
+                    "message": "Missing Layer 1.5 HMM regime manifest for this date.",
+                }
+            )
+            by_date[date_text] = {"manifest_key": None, "metadata": {}}
+            continue
+        if resolved_key is not None and resolved_key not in artifact_keys["regime_manifests"]:
+            artifact_keys["regime_manifests"].append(resolved_key)
+        if resolved_key is not None and resolved_key not in seen_keys:
+            manifests.append(_manifest_summary(payload, resolved_key))
+            seen_keys.add(resolved_key)
+        by_date[date_text] = {
+            "manifest_key": resolved_key,
+            "metadata": _json_mapping(payload.get("metadata")),
+            "status": _optional_str(payload.get("status")),
+            "output_path": _optional_str(payload.get("output_path")),
+            "input_path": _optional_str(payload.get("input_path")),
+            "run_id": _optional_str(payload.get("run_id")),
+        }
+    return {
+        "by_date": by_date,
+        "manifests": manifests,
+        "source_manifest_keys": sorted(seen_keys),
+    }
+
+
+def _empty_regime_manifest_context(dates: Sequence[str]) -> dict[str, object]:
+    """Return an empty manifest-context shape for cached report fallbacks."""
+    return {
+        "by_date": {date_text: {"manifest_key": None, "metadata": {}} for date_text in dates},
+        "manifests": [],
+        "source_manifest_keys": [],
+    }
+
+
+def _read_first_available_json_object(
+    writer: R2Writer,
+    keys: Sequence[str],
+) -> tuple[dict[str, object] | None, str | None]:
+    """Return the first readable JSON object for one of the provided keys."""
+    for key in keys:
+        try:
+            payload = json.loads(writer.get_object(key).decode("utf-8"))
+        except FileNotFoundError:
+            continue
+        if isinstance(payload, Mapping):
+            return {str(item_key): _json_safe(item) for item_key, item in payload.items()}, key
+        return {}, key
+    return None, None
+
+
+def _manifest_summary(payload: Mapping[str, object], key: str) -> dict[str, object]:
+    """Return manifest fields relevant to HMM review evidence."""
+    metadata = _json_mapping(payload.get("metadata"))
+    return {
+        "manifest_key": key,
+        "run_id": _optional_str(payload.get("run_id")),
+        "stage": _optional_str(payload.get("stage")),
+        "status": _optional_str(payload.get("status")),
+        "input_path": _optional_str(payload.get("input_path")),
+        "output_path": _optional_str(payload.get("output_path")),
+        "train_start_date": _optional_str(metadata.get("train_start_date")),
+        "train_end_date": _optional_str(metadata.get("train_end_date")),
+        "macro_load_start_date": _optional_str(metadata.get("macro_load_start_date")),
+        "macro_load_end_date": _optional_str(metadata.get("macro_load_end_date")),
+        "inference_dates": _json_string_list(metadata.get("inference_dates")),
+        "ready_inference_dates": _json_string_list(metadata.get("ready_inference_dates")),
+        "warning_inference_dates": _json_string_list(metadata.get("warning_inference_dates")),
+        "training_rows": _maybe_int(metadata.get("training_rows")),
+        "complete_training_rows": _maybe_int(metadata.get("complete_training_rows")),
+        "dropped_feature_columns": _json_string_list(metadata.get("dropped_feature_columns")),
+        "regime_layer2_ready": _maybe_bool(metadata.get("regime_layer2_ready")),
+    }
+
+
+def _enrich_regime_rows_with_manifests(
+    regime_map: Mapping[str, SemanticReviewRegimeRow],
+    manifest_context: Mapping[str, object],
+) -> None:
+    """Attach source manifest keys and missing-feature metadata to regime rows."""
+    by_date = manifest_context.get("by_date")
+    if not isinstance(by_date, Mapping):
+        return
+    for date_text, row in regime_map.items():
+        context = by_date.get(date_text)
+        if not isinstance(context, Mapping):
+            continue
+        object.__setattr__(row, "manifest_key", _optional_str(context.get("manifest_key")))
+        metadata = _json_mapping(context.get("metadata"))
+        readiness_by_date = _json_mapping(metadata.get("regime_readiness_by_date"))
+        readiness = _json_mapping(readiness_by_date.get(date_text))
+        if readiness and row.readiness_status is None:
+            object.__setattr__(row, "readiness_status", _optional_str(readiness.get("status")))
+            object.__setattr__(row, "readiness_reason", _optional_str(readiness.get("reason")))
+            object.__setattr__(
+                row,
+                "required_for_layer2",
+                _maybe_bool(readiness.get("required_for_layer2")),
+            )
+            object.__setattr__(
+                row,
+                "missing_features",
+                _json_string_list(readiness.get("missing_features")),
+            )
+            object.__setattr__(row, "probability_sum", _maybe_float(readiness.get("probability_sum")))
+
+
+def _append_market_context_warnings(
+    *,
+    dates: Sequence[str],
+    price_rows: Sequence[SemanticReviewPriceRow],
+    regime_map: Mapping[str, SemanticReviewRegimeRow],
+    load_warnings: list[dict[str, object]],
+) -> None:
+    """Add explicit warnings for missing or all-null price/HMM review evidence."""
+    price_dates = {row.date for row in price_rows}
+    for date_text in dates:
+        if date_text not in price_dates:
+            load_warnings.append(
+                {
+                    "scope": "price_series",
+                    "date": date_text,
+                    "message": "No raw price row is available for this review date.",
+                }
+            )
+        regime = regime_map.get(date_text)
+        if regime is None:
+            load_warnings.append(
+                {
+                    "scope": "hmm_regime",
+                    "date": date_text,
+                    "message": "No HMM regime row is available for this review date.",
+                }
+            )
+            continue
+        if all(
+            value is None
+            for value in (
+                regime.regime,
+                regime.confidence,
+                regime.prob_bear,
+                regime.prob_sideways,
+                regime.prob_bull,
+            )
+        ):
+            load_warnings.append(
+                {
+                    "scope": "hmm_regime",
+                    "date": date_text,
+                    "artifact_key": regime.artifact_key,
+                    "manifest_key": regime.manifest_key,
+                    "message": "HMM regime row is present but all label/probability fields are null.",
+                }
+            )
+
+
+def _build_market_regime_rows(
+    *,
+    dates: Sequence[str],
+    price_rows: Sequence[SemanticReviewPriceRow],
+    regime_map: Mapping[str, SemanticReviewRegimeRow],
+) -> list[dict[str, object]]:
+    """Return date-aligned price and HMM regime rows for chart/API consumers."""
+    price_by_date = {row.date: row.to_dict() for row in price_rows}
+    rows: list[dict[str, object]] = []
+    for date_text in dates:
+        price = price_by_date.get(date_text)
+        regime = regime_map.get(date_text)
+        warnings: list[str] = []
+        if price is None:
+            warnings.append("missing_price")
+        if regime is None:
+            warnings.append("missing_hmm_regime")
+            regime_payload = None
+        else:
+            regime_payload = regime.to_dict()
+            if all(
+                regime_payload.get(field) is None
+                for field in ("regime", "confidence", "prob_bear", "prob_sideways", "prob_bull")
+            ):
+                warnings.append("all_null_hmm_regime")
+            if regime.manifest_key is None:
+                warnings.append("missing_hmm_manifest")
+            if regime.missing_features:
+                warnings.append("incomplete_hmm_feature_set")
+        rows.append(
+            {
+                "date": date_text,
+                "ticker": price.get("ticker") if price else None,
+                "price": price,
+                "hmm_regime": regime_payload,
+                "warnings": warnings,
+                "scope": "date-aligned-price-and-hmm",
+            }
+        )
+    return rows
+
+
+def _build_hmm_evaluation_context(
+    *,
+    dates: Sequence[str],
+    regime_map: Mapping[str, SemanticReviewRegimeRow],
+    manifest_context: Mapping[str, object],
+    artifact_keys: Mapping[str, Sequence[str]],
+) -> dict[str, object]:
+    """Return explicit HMM evaluation scope and source metadata for review."""
+    manifests = [
+        dict(item)
+        for item in manifest_context.get("manifests", [])
+        if isinstance(item, Mapping)
+    ]
+    observed_dates = sorted(regime_map)
+    source_manifest_keys = [
+        str(item)
+        for item in manifest_context.get("source_manifest_keys", [])
+        if _optional_str(item) is not None
+    ]
+    by_date = manifest_context.get("by_date")
+    not_evaluated_dates: list[str] = []
+    stale_manifest_dates: list[str] = []
+    if isinstance(by_date, Mapping):
+        for date_text in dates:
+            context = by_date.get(date_text)
+            if not isinstance(context, Mapping):
+                continue
+            status = (_optional_str(context.get("status")) or "").lower()
+            if status and status != "completed":
+                stale_manifest_dates.append(date_text)
+            metadata = _json_mapping(context.get("metadata"))
+            inference_dates = _json_string_list(metadata.get("inference_dates"))
+            if inference_dates and date_text not in set(inference_dates):
+                not_evaluated_dates.append(date_text)
+    dropped_columns = sorted(
+        {
+            column
+            for manifest in manifests
+            for column in _json_string_list(manifest.get("dropped_feature_columns"))
+        }
+    )
+    expected_columns = list(HMM_TRAINING_FEATURE_COLUMNS)
+    active_columns = [column for column in expected_columns if column not in set(dropped_columns)]
+    warnings: list[str] = []
+    if not source_manifest_keys:
+        warnings.append("missing_hmm_manifest")
+    missing_dates = sorted(set(dates) - set(observed_dates))
+    if missing_dates:
+        warnings.append("missing_hmm_inference_dates")
+    unexpected_dates = sorted(set(observed_dates) - set(dates))
+    if unexpected_dates:
+        warnings.append("unexpected_hmm_inference_dates")
+    if not_evaluated_dates:
+        warnings.append("hmm_not_evaluated_for_date")
+    if stale_manifest_dates:
+        warnings.append("stale_hmm_manifest")
+    if dropped_columns:
+        warnings.append("incomplete_hmm_feature_set")
+    if not any(_optional_str(manifest.get("train_end_date")) for manifest in manifests):
+        warnings.append("missing_training_window_metadata")
+    return {
+        "scope": "market-wide-date-level-hmm",
+        "applies_to": "all tickers and sentence rows for each inference date",
+        "expected_input_feature_columns": expected_columns,
+        "input_feature_columns_used": active_columns,
+        "dropped_feature_columns": dropped_columns,
+        "requested_inference_dates": list(dates),
+        "observed_inference_dates": observed_dates,
+        "missing_inference_dates": missing_dates,
+        "unexpected_inference_dates": unexpected_dates,
+        "not_evaluated_dates": not_evaluated_dates,
+        "stale_manifest_dates": stale_manifest_dates,
+        "training_windows": _training_windows_from_manifests(manifests),
+        "source_artifact_keys": list(artifact_keys.get("regime", [])),
+        "source_manifest_keys": source_manifest_keys,
+        "manifest_summaries": manifests,
+        "warnings": warnings,
+    }
+
+
+def _training_windows_from_manifests(
+    manifests: Sequence[Mapping[str, object]],
+) -> list[dict[str, object]]:
+    """Return de-duplicated HMM training/lookback windows from manifest summaries."""
+    windows: list[dict[str, object]] = []
+    seen: set[tuple[object, ...]] = set()
+    for manifest in manifests:
+        window = {
+            "train_start_date": _optional_str(manifest.get("train_start_date")),
+            "train_end_date": _optional_str(manifest.get("train_end_date")),
+            "macro_load_start_date": _optional_str(manifest.get("macro_load_start_date")),
+            "macro_load_end_date": _optional_str(manifest.get("macro_load_end_date")),
+            "training_rows": _maybe_int(manifest.get("training_rows")),
+            "complete_training_rows": _maybe_int(manifest.get("complete_training_rows")),
+        }
+        key = tuple(window.values())
+        if key in seen:
+            continue
+        seen.add(key)
+        windows.append(window)
+    return windows
 
 
 def _load_date_partitioned_artifacts(
@@ -1148,6 +1703,9 @@ def _build_payload_from_report(report: Layer1SemanticReviewReport | Mapping[str,
             "to_date": report_dict.get("to_date"),
         },
         "date_groups": date_groups,
+        "price_series": list(report_dict.get("price_rows", [])),
+        "market_regime_series": list(report_dict.get("market_regime_rows", [])),
+        "hmm_evaluation_context": dict(report_dict.get("hmm_evaluation_context", {})),
         "article_groups": article_groups,
         "accepted_articles": accepted_articles,
         "flagged_articles": flagged_articles,
@@ -1165,6 +1723,8 @@ def _build_payload_from_report(report: Layer1SemanticReviewReport | Mapping[str,
                 report_dict.get("semantic_aggregate_rows", [])
             ),
             "date_level_regime_rows": list(report_dict.get("regime_rows", [])),
+            "stock_price_rows": list(report_dict.get("price_rows", [])),
+            "date_aligned_price_hmm_rows": list(report_dict.get("market_regime_rows", [])),
         },
         "artifact_keys": dict(report_dict.get("artifact_keys", {})),
         "warnings": list(report_dict.get("load_warnings", [])),
@@ -1177,6 +1737,7 @@ __all__ = [
     "Layer1SemanticReviewReport",
     "SemanticReviewArticleGroup",
     "SemanticReviewDateGroup",
+    "SemanticReviewPriceRow",
     "SemanticReviewRegimeRow",
     "SemanticReviewSentenceRow",
     "build_layer1_aapl_evidence_report",
@@ -1384,6 +1945,14 @@ def _json_string_list(value: Any) -> list[str]:
     if isinstance(decoded, Sequence) and not isinstance(decoded, (bytes, bytearray, str)):
         return [str(item).strip() for item in decoded if str(item).strip()]
     return [str(decoded).strip()] if str(decoded).strip() else []
+
+
+def _comma_string_list(value: Any) -> list[str]:
+    """Return a clean string list from comma-delimited or JSON-list input."""
+    items = _json_string_list(value)
+    if len(items) != 1 or "," not in items[0]:
+        return items
+    return [item.strip() for item in items[0].split(",") if item.strip()]
 
 
 def _json_value(value: Any) -> object:
