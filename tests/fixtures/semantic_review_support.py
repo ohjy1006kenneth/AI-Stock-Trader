@@ -31,18 +31,20 @@ def load_semantic_review_fixture() -> dict[str, Any]:
         return json.load(handle)
 
 
-def build_semantic_review_frames() -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Return scored-news and regime frames for the semantic-review fixture."""
+def build_semantic_review_frames() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Return scored-news, regime, and benchmark price frames for the fixture."""
     fixture = load_semantic_review_fixture()
     scored_frame = pd.DataFrame(fixture["scored_rows"])
     regime_frame = pd.DataFrame(fixture["regime_rows"])
-    return scored_frame, regime_frame
+    benchmark_frame = pd.DataFrame(fixture.get("benchmark_price_rows", []))
+    return scored_frame, regime_frame, benchmark_frame
 
 
 def seed_semantic_review_fixture(
     *,
     local_root: Path,
     run_id: str | None = None,
+    include_benchmark_price_rows: bool = True,
 ) -> dict[str, Any]:
     """Write the semantic-review fixture into a local mock R2 tree."""
     fixture = load_semantic_review_fixture()
@@ -50,6 +52,7 @@ def seed_semantic_review_fixture(
     writer = R2Writer(local_root=local_root)
     scored_frame = pd.DataFrame(fixture["scored_rows"])
     regime_frame = pd.DataFrame(fixture["regime_rows"])
+    benchmark_price_frame = pd.DataFrame(fixture.get("benchmark_price_rows", []))
     regime_frame = _regime_frame_with_review_metadata(regime_frame)
     preprocessing_frame = _preprocessing_frame(scored_frame)
     embedding_frame = _embedding_frame(scored_frame)
@@ -91,11 +94,14 @@ def seed_semantic_review_fixture(
         _regime_manifest_json(active_run_id, sorted(regime_frame["date"].astype(str).unique())),
     )
     writer.put_object(raw_price_path("AAPL"), _dataframe_to_parquet_bytes(_price_frame()))
+    if include_benchmark_price_rows and not benchmark_price_frame.empty:
+        writer.put_object(raw_price_path("SPY"), _dataframe_to_parquet_bytes(benchmark_price_frame))
     return {
         "run_id": active_run_id,
         "writer": writer,
         "scored_rows": scored_frame,
         "regime_rows": regime_frame,
+        "benchmark_price_rows": benchmark_price_frame,
         "local_root": local_root,
     }
 
@@ -173,8 +179,8 @@ def _price_frame() -> pd.DataFrame:
             "low": 188.8,
             "close": 192.4,
             "adj_close": 192.4,
-            "volume": 52_000_000,
-            "dollar_volume": 10_004_800_000.0,
+            "volume": 52000000,
+            "dollar_volume": 10004800000.0,
         },
         {
             "date": "2026-05-22",
@@ -184,8 +190,8 @@ def _price_frame() -> pd.DataFrame:
             "low": 191.6,
             "close": 194.8,
             "adj_close": 194.8,
-            "volume": 48_500_000,
-            "dollar_volume": 9_447_800_000.0,
+            "volume": 48500000,
+            "dollar_volume": 9447800000.0,
         },
     ]
     return pd.DataFrame(rows)

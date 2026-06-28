@@ -147,5 +147,29 @@
       "prob_sideways": 0.76,
       "prob_bull": 0.14
     }
+  ],
+  "benchmark_price_rows": [
+    {
+      "date": "2026-05-21",
+      "ticker": "SPY",
+      "open": 589.2,
+      "high": 592.1,
+      "low": 587.4,
+      "close": 590.8,
+      "adj_close": 590.8,
+      "volume": 71000000,
+      "dollar_volume": 41936800000.0
+    },
+    {
+      "date": "2026-05-22",
+      "ticker": "SPY",
+      "open": 591.0,
+      "high": 593.7,
+      "low": 589.9,
+      "close": 592.9,
+      "adj_close": 592.9,
+      "volume": 68500000,
+      "dollar_volume": 40634650000.0
+    }
   ]
 }

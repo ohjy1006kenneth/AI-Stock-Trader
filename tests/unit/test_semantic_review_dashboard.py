@@ -21,8 +21,8 @@ from services.r2.paths import (
 from tests.fixtures.semantic_review_support import seed_semantic_review_fixture
 
 
-def test_semantic_review_report_groups_sentence_rows_and_date_regime(tmp_path: Path) -> None:
-    """The report should collapse sentence rows beneath each raw article and each date regime."""
+def test_semantic_review_report_includes_benchmark_rows(tmp_path: Path) -> None:
+    """The report should load the SPY benchmark alongside the selected ticker."""
     fixture = seed_semantic_review_fixture(local_root=tmp_path / "r2")
     report = build_layer1_aapl_evidence_report(
         run_id=str(fixture["run_id"]),
@@ -36,18 +36,18 @@ def test_semantic_review_report_groups_sentence_rows_and_date_regime(tmp_path: P
     assert report_dict["row_count"] == 8
     assert report_dict["article_count"] == 4
     assert report_dict["date_count"] == 2
-    assert report_dict["preprocessing_row_count"] == 8
-    assert report_dict["embedding_row_count"] == 4
-    assert report_dict["topic_label_row_count"] == 4
-    assert report_dict["relevance_gate_row_count"] == 8
-    assert report_dict["semantic_aggregate_row_count"] == 2
+    assert report_dict["benchmark_ticker"] == "SPY"
+    assert len(cast(list[dict[str, Any]], report_dict["benchmark_price_rows"])) == 2
+    assert len(cast(list[dict[str, Any]], report_dict["benchmark_market_regime_rows"])) == 2
     assert report_dict["summary"]["price_row_count"] == 2
     assert report_dict["summary"]["hmm_regime_row_count"] == 2
 
     price_rows = cast(list[dict[str, Any]], report_dict["price_rows"])
+    benchmark_rows = cast(list[dict[str, Any]], report_dict["benchmark_price_rows"])
     assert [row["date"] for row in price_rows] == ["2026-05-21", "2026-05-22"]
+    assert [row["ticker"] for row in benchmark_rows] == ["SPY", "SPY"]
     assert price_rows[0]["adj_close"] == 192.4
-    assert price_rows[1]["return_1d"] is not None
+    assert benchmark_rows[0]["adj_close"] == 590.8
 
     article_groups = {
         str(item["article_id"]): cast(dict[str, Any], item)
@@ -138,8 +138,6 @@ def test_semantic_review_report_loads_dated_stage_artifacts_for_parent_run_id(tm
     assert report_dict["load_warnings"] == []
 
 
-
-
 def test_semantic_review_payload_flags_weak_and_duplicate_articles(tmp_path: Path) -> None:
     """The payload should flag duplicate headlines and weak/non-AAPL article contamination."""
     fixture = seed_semantic_review_fixture(local_root=tmp_path / "r2")
@@ -159,6 +157,9 @@ def test_semantic_review_payload_flags_weak_and_duplicate_articles(tmp_path: Pat
     assert flagged_ids == {"aapl-001", "aapl-002", "ferrari-001"}
     assert accepted_ids == {"aapl-003"}
     assert payload["human_semantic_review_status"] == "needs_human_review"
+    assert payload["benchmark_ticker"] == "SPY"
+    assert len(cast(list[dict[str, Any]], payload["benchmark_price_series"])) == 2
+    assert len(cast(list[dict[str, Any]], payload["benchmark_market_regime_series"])) == 2
     assert len(cast(list[dict[str, Any]], sections["raw_preprocessing_rows"])) == 8
     assert len(cast(list[dict[str, Any]], sections["topic_label_rows"])) == 4
     assert len(cast(list[dict[str, Any]], sections["relevance_gate_rows"])) == 8
@@ -181,39 +182,31 @@ def test_semantic_review_payload_flags_weak_and_duplicate_articles(tmp_path: Pat
     assert duplicate["sentence_rows"][0]["text"].startswith("Apple shares climbed")
 
 
-def test_semantic_review_payload_warns_when_price_or_hmm_context_is_missing(
+def test_semantic_review_payload_suppresses_benchmark_chart_when_benchmark_missing(
     tmp_path: Path,
 ) -> None:
-    """Missing price and HMM context should be surfaced as aligned review warnings."""
-    fixture = seed_semantic_review_fixture(local_root=tmp_path / "r2")
-    writer = fixture["writer"]
-    writer.delete_object(raw_price_path("AAPL"))
-    writer.delete_object(layer1_regime_path("2026-05-22", str(fixture["run_id"])))
-
+    """Missing benchmark rows should leave the chart with no SPY data to render."""
+    fixture = seed_semantic_review_fixture(
+        local_root=tmp_path / "r2",
+        include_benchmark_price_rows=False,
+    )
     report = build_layer1_aapl_evidence_report(
         run_id=str(fixture["run_id"]),
         from_date="2026-05-21",
         to_date="2026-05-22",
         ticker="AAPL",
-        writer=writer,
+        writer=fixture["writer"],
     )
     payload = cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report))
-    warnings = cast(list[dict[str, Any]], payload["warnings"])
-    aligned_rows = {
-        str(item["date"]): cast(dict[str, Any], item)
-        for item in cast(list[dict[str, Any]], payload["market_regime_series"])
-    }
 
-    assert any(item["scope"] == "price_series" for item in warnings)
-    assert any(item["scope"] == "hmm_regime" and item["date"] == "2026-05-22" for item in warnings)
-    assert "missing_price" in aligned_rows["2026-05-21"]["warnings"]
-    assert "missing_hmm_regime" in aligned_rows["2026-05-22"]["warnings"]
-    assert payload["hmm_evaluation_context"]["missing_inference_dates"] == ["2026-05-22"]
-    assert payload["human_semantic_review_status"] == "needs_human_review"
+    assert payload["benchmark_ticker"] == "SPY"
+    assert payload["benchmark_price_series"] == []
+    assert len(cast(list[dict[str, Any]], payload["benchmark_market_regime_series"])) == 2
+    assert any(item["scope"] == "price_series" for item in cast(list[dict[str, Any]], payload["warnings"]))
 
 
-def test_semantic_review_dashboard_html_labels_date_level_regime_and_sentence_rows() -> None:
-    """The dashboard shell should explain the different granularities to human reviewers."""
+def test_semantic_review_dashboard_html_is_beginner_friendly_and_collapsed() -> None:
+    """The dashboard shell should stay clean, explain itself, and keep advanced sections collapsed."""
     html = _render_dashboard_html(
         _DashboardDefaults(
             run_id="run-123",
@@ -225,11 +218,13 @@ def test_semantic_review_dashboard_html_labels_date_level_regime_and_sentence_ro
         )
     )
     assert "Layer 1 semantic-review dashboard" in html
-    assert "Raw ticker/entity preprocessing, article embeddings, BERTopic labels" in html
-    assert "Date-level HMM regime" in html
-    assert "Stock Price and HMM Regime" in html
-    assert "Stock-price rows" in html
+    assert "What am I looking at?" in html
+    assert "Why does it matter?" in html
+    assert "What would make this good or bad?" in html
+    assert "Benchmark chart blocked" in html
+    assert "SPY" in html
+    assert "Advanced evidence and raw rows" in html
+    assert "<details open" not in html
+    assert "<table" not in html
     assert "date_aligned_price_hmm_rows" in html
-    assert "Pipeline Evidence" in html
-    assert "needs_human_review" in html
     assert "/api/review" in html

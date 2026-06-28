@@ -218,6 +218,9 @@ class Layer1SemanticReviewReport:
     regime_rows: list[dict[str, object]]
     price_rows: list[dict[str, object]]
     market_regime_rows: list[dict[str, object]]
+    benchmark_ticker: str | None
+    benchmark_price_rows: list[dict[str, object]]
+    benchmark_market_regime_rows: list[dict[str, object]]
     hmm_evaluation_context: dict[str, object]
     article_groups: list[dict[str, object]]
     date_groups: list[dict[str, object]]
@@ -351,6 +354,15 @@ def build_layer1_aapl_evidence_report(
         artifact_keys=artifact_keys,
         load_warnings=load_warnings,
     )
+    benchmark_ticker = _benchmark_ticker_from_manifest_context(regime_manifest_context)
+    benchmark_price_rows = _load_price_rows(
+        writer=active_writer,
+        key=raw_price_path(benchmark_ticker),
+        ticker=benchmark_ticker,
+        dates=trading_date_list,
+        artifact_keys=artifact_keys,
+        load_warnings=load_warnings,
+    )
 
     preprocessing_frame = _load_date_partitioned_artifacts(
         writer=active_writer,
@@ -455,6 +467,11 @@ def build_layer1_aapl_evidence_report(
         price_rows=price_rows,
         regime_map=regime_by_date,
     )
+    benchmark_market_regime_rows = _build_market_regime_rows(
+        dates=trading_date_list,
+        price_rows=benchmark_price_rows,
+        regime_map=regime_by_date,
+    )
     hmm_evaluation_context = _build_hmm_evaluation_context(
         dates=trading_date_list,
         regime_map=regime_by_date,
@@ -517,6 +534,9 @@ def build_layer1_aapl_evidence_report(
         regime_rows=[item.to_dict() for item in _regime_rows_from_map(regime_by_date)],
         price_rows=[item.to_dict() for item in price_rows],
         market_regime_rows=market_regime_rows,
+        benchmark_ticker=benchmark_ticker,
+        benchmark_price_rows=[item.to_dict() for item in benchmark_price_rows],
+        benchmark_market_regime_rows=benchmark_market_regime_rows,
         hmm_evaluation_context=hmm_evaluation_context,
         article_groups=[group.to_dict() for group in article_groups],
         date_groups=[group.to_dict() for group in date_groups],
@@ -1279,6 +1299,19 @@ def _build_hmm_evaluation_context(
     }
 
 
+def _benchmark_ticker_from_manifest_context(manifest_context: Mapping[str, object]) -> str:
+    """Return the benchmark ticker to use for the market-level HMM chart."""
+    manifests = manifest_context.get("manifests")
+    if isinstance(manifests, Sequence):
+        for manifest in manifests:
+            if not isinstance(manifest, Mapping):
+                continue
+            benchmark_ticker = _optional_str(manifest.get("benchmark_ticker"))
+            if benchmark_ticker:
+                return benchmark_ticker.upper()
+    return "SPY"
+
+
 def _training_windows_from_manifests(
     manifests: Sequence[Mapping[str, object]],
 ) -> list[dict[str, object]]:
@@ -1686,11 +1719,13 @@ def _build_payload_from_report(report: Layer1SemanticReviewReport | Mapping[str,
         for item in article_groups
         if str(item.get("article_status", "flagged")) == "accepted"
     ]
+    benchmark_price_rows = report_dict.get("benchmark_price_rows")
+    benchmark_market_regime_rows = report_dict.get("benchmark_market_regime_rows")
     payload = {
         "title": "Layer 1 semantic review dashboard",
         "description": (
-            "Raw preprocessing, topic/embedding, relevance-gate, FinBERT, "
-            "semantic aggregate, and HMM evidence are separated by pipeline stage."
+            "Beginner-friendly review of whether the Layer 1 Apple news signal, "
+            "the market benchmark, and the market-regime evidence look trustworthy."
         ),
         "human_semantic_review_status": "needs_human_review",
         "recommendation_for_issue_202": "needs_human_review",
@@ -1705,6 +1740,11 @@ def _build_payload_from_report(report: Layer1SemanticReviewReport | Mapping[str,
         "date_groups": date_groups,
         "price_series": list(report_dict.get("price_rows", [])),
         "market_regime_series": list(report_dict.get("market_regime_rows", [])),
+        "benchmark_ticker": report_dict.get("benchmark_ticker"),
+        "benchmark_price_series": benchmark_price_rows if isinstance(benchmark_price_rows, list) else [],
+        "benchmark_market_regime_series": (
+            benchmark_market_regime_rows if isinstance(benchmark_market_regime_rows, list) else []
+        ),
         "hmm_evaluation_context": dict(report_dict.get("hmm_evaluation_context", {})),
         "article_groups": article_groups,
         "accepted_articles": accepted_articles,

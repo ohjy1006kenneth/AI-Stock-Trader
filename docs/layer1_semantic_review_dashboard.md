@@ -1,67 +1,44 @@
 # Layer 1 semantic-review dashboard
 
 This dashboard is a read-only reviewer aid for the Layer 1 AAPL pilot.
-It is designed to make the full NLP pipeline visible before a human accepts
-the pilot for the broad point-in-time backfill tracked by #202.
+It is intentionally beginner-friendly: the default view stays clean, the
+advanced technical rows are collapsed by default, and the page explains the
+review in plain language before showing raw evidence.
 
 ## What the dashboard shows
 
-- Ticker/entity preprocessing rows from `features/{date}/news_sentiment/{run_id}.parquet`,
-  including `ticker_mentions`, `entity_mentions`, `source_text_field`,
-  `source_text_order`, and `source_text_provenance`.
-- Article embedding cache rows from `features/{date}/text_embeddings/{run_id}.parquet`,
-  including model identity, revision, cache key, and embedding dimension.
-- BERTopic article labels from `features/{date}/topic_labels/{run_id}.parquet`,
-  including topic ids, probabilities, model metadata, labels, and keywords when
-  those optional columns exist.
-- Relevance-gate audit rows from
-  `features/{date}/news_relevance_gate/{run_id}.parquet`, including
-  accepted/borderline/rejected decisions, reason codes, ticker/entity evidence,
-  score components, topic evidence, and embedding cache keys.
-- Sentence/chunk FinBERT rows from
-  `features/{date}/news_sentiment_scored/{run_id}.parquet`, grouped by
-  `date -> article_id -> sentence_index`.
-- Source-weighted ticker-date semantic aggregate rows from
-  `features/{date}/sentiment_features/{run_id}.parquet`, including parsed
-  source-weight summaries, topic sentiment summaries, contributing article ids,
-  relevance reason codes, and semantic warning codes.
-- Date-aligned raw stock-price rows from `raw/prices/{ticker}.parquet`, including
-  close/adjusted-close, volume, one-day return, and drawdown from the review-window high.
-- HMM regime is shown once per trading date in a dedicated date header.
-  Confidence and probabilities are therefore clearly date-level, not per row.
-- A stock-price/HMM chart synchronizes adjusted-close price with bear/sideways/bull
-  probabilities on the same date axis so reviewers can compare regime labels with
-  prior price behavior.
-- HMM evaluation context is exposed explicitly: expected input feature columns, any
-  dropped feature columns, requested and observed inference dates, training/lookback
-  window metadata, source regime artifact keys, source manifest keys, and warnings for
-  missing, all-null, or incomplete HMM evidence.
-- Articles are split into accepted and flagged groups.
-  Flagged articles stay visible with the evidence that caused the flag.
+- A simple status card that says whether the page is ready to review, needs a
+  data fix, needs a model/pipeline fix, or does not yet have enough evidence.
+- Plain-language overview cards that answer:
+  - What am I looking at?
+  - Why does it matter?
+  - What would make this good or bad?
+- A market benchmark chart that uses SPY by default, because the HMM regime is
+  market-wide and date-level rather than company-specific.
+- Daily review cards that stay collapsed by default and only expand when a
+  reviewer wants article-level evidence.
+- Advanced technical sections for preprocessing, embeddings, topic labels,
+  relevance-gate rows, FinBERT rows, semantic aggregates, benchmark rows, and
+  HMM artifacts.
 
-## Contamination / relevance handling
+## Benchmark chart behavior
 
-The review payload surfaces the following conditions:
+The chart combines:
 
-- `ticker_mismatch`
-- `no_requested_ticker_evidence`
-- `low_relevance_score`
-- `missing_relevance_score`
-- `duplicate_normalized_headline`
-- `duplicate_sentence_rows`
+- benchmark price history
+- date-axis regime bands / markers
+- bear, sideways, and bull probabilities
+- a short beginner explanation of why the benchmark matters
 
-For the AAPL pilot, any article that lacks direct Apple/AAPL source-text
-support is flagged and kept out of the default acceptance path.
-This prevents unrelated or weakly relevant rows from silently dominating the
-review queue.
+If SPY price rows or the HMM manifest / training metadata are missing, the page
+shows a blocker card instead of an empty chart.
 
-The dashboard keeps pre-FinBERT relevance decisions visible even when a row was
-rejected and therefore never received FinBERT scores. Missing ticker/entity or
-provenance evidence is surfaced through `missing_evidence_flags`.
+## Review guidance
 
-Human semantic review remains `needs_human_review` in the dashboard/API until
-the completed NLP pipeline evidence is inspected and explicitly accepted by the
-user through the separate AAPL pilot evidence flow.
+1. Check the benchmark chart first.
+2. Read the review state.
+3. Open a day only when you want the article-level evidence.
+4. Open the nested technical rows only when you need raw debug details.
 
 ## Local run
 
@@ -83,7 +60,7 @@ curl -fsS 'http://127.0.0.1:8766/api/review?ticker=AAPL'
 
 ## Payload shape
 
-Top-level response fields:
+Top-level response fields include:
 
 - `report`: the canonical report payload
 - `summary`: aggregate counts
@@ -91,17 +68,22 @@ Top-level response fields:
 - `article_groups`: flat article cards for cross-date inspection
 - `accepted_articles`: accepted article cards
 - `flagged_articles`: flagged article cards
-- `price_series`: date-aligned raw stock-price context rows
-- `market_regime_series`: one row per trading date combining stock price and HMM
-  regime evidence plus per-date warnings
-- `hmm_evaluation_context`: HMM scope, input feature columns, training window, source
-  keys, inference date coverage, and warning metadata
+- `price_series`: selected-ticker price context rows
+- `benchmark_ticker`: the market benchmark used for the HMM chart
+- `benchmark_price_series`: benchmark price rows
+- `benchmark_market_regime_series`: benchmark price + HMM rows used by the chart
+- `market_regime_series`: selected-ticker price + HMM rows for date-level review
+- `hmm_evaluation_context`: HMM scope, input feature columns, training window,
+  source keys, inference-date coverage, and warning metadata
 - `pipeline_sections`: stage-separated raw preprocessing, embedding, topic,
-  relevance, FinBERT, semantic aggregate, stock-price, and regime rows
+  relevance, FinBERT, semantic aggregate, benchmark, and regime rows
 - `artifact_keys`: resolved R2 keys used for each evidence section
-- `human_semantic_review_status`: currently `needs_human_review`
-- `recommendation_for_issue_202`: currently `needs_human_review`
+- `human_semantic_review_status`: current dashboard-level semantic review state
+- `recommendation_for_issue_202`: same semantic review recommendation used in the
+  AAPL pilot flow
 - `warnings`: non-fatal load issues
+
+## What the daily cards contain
 
 Each `date_groups[]` entry contains:
 
@@ -113,14 +95,7 @@ Each `date_groups[]` entry contains:
 - article counts
 - nested `articles[]`
 
-Each `market_regime_series[]` entry contains:
-
-- `date`
-- `price` with OHLCV, adjusted close, return, drawdown, and source artifact key
-- `hmm_regime` with label, confidence, bear/sideways/bull probabilities, readiness
-  fields, source artifact key, and source manifest key
-- `warnings`, for example `missing_price`, `missing_hmm_regime`,
-  `all_null_hmm_regime`, `missing_hmm_manifest`, or `incomplete_hmm_feature_set`
+## What the article cards contain
 
 Each `articles[]` entry contains:
 
@@ -136,40 +111,5 @@ Each `articles[]` entry contains:
 - `relevance_gate_rows[]`
 - `sentence_rows[]`
 
-Each sentence_rows[] entry contains:
-
-- `sentence_index`
-- `chunk_index`
-- `source_text_field`
-- `source_text_order`
-- `ticker_mentions`
-- `entity_mentions`
-- `text`
-- FinBERT probabilities and score
-- `row_granularity: "sentence-level"`
-
-Each `pipeline_sections.semantic_aggregate_rows[]` entry contains parsed:
-
-- `features`
-- `source_weight_summary`
-- `topic_sentiment_summary`
-- `relevance_reason_codes`
-- `semantic_warning_codes`
-- `contributing_article_ids`
-
-## Review guidance
-
-1. Check the stock-price/HMM chart first to compare price behavior with the
-   bull/bear/sideways regime evidence.
-2. Inspect the HMM context and warnings to confirm the feature set, inference
-   dates, source artifacts, and training window are trustworthy.
-3. Check the date header for the date-level HMM regime context.
-4. Inspect the pipeline evidence cards to confirm each NLP stage is present.
-5. Expand an article card to inspect preprocessing, topic, relevance, and
-   sentence-level FinBERT rows together.
-6. Use the evidence snippets and ticker-hit fields to decide whether the article
-   is actually about AAPL.
-7. Do not accept the pilot if the flagged section contains unrelated articles
-   that are not explained by source-text evidence.
-8. Do not accept the pilot if price/HMM context is missing, stale, all-null, or
-   evaluated from an unexpected feature set/window without a documented reason.
+The raw rows are intentionally hidden behind expanders so the default page stays
+clean and easy to scan.

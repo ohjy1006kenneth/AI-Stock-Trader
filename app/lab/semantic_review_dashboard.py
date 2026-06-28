@@ -69,10 +69,7 @@ class _DashboardRequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/health":
             self._send_json({"status": "ok"})
             return
-        self._send_json(
-            {"error": f"Unknown route: {parsed.path}"},
-            status=HTTPStatus.NOT_FOUND,
-        )
+        self._send_json({"error": f"Unknown route: {parsed.path}"}, status=HTTPStatus.NOT_FOUND)
 
     def log_message(self, format: str, *args: object) -> None:
         """Route stdlib HTTP logs through Loguru."""
@@ -263,284 +260,579 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Layer 1 semantic-review dashboard</title>
   <style>
-    :root {{ color-scheme: dark; }}
-    body {{ font-family: system-ui, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }}
-    header {{ padding: 20px 24px; border-bottom: 1px solid #334155; background: #111827; }}
-    main {{ padding: 20px 24px 32px; }}
-    .note {{ color: #cbd5e1; margin: 8px 0 0; line-height: 1.5; }}
-    .meta {{ display: flex; flex-wrap: wrap; gap: 12px; margin-top: 16px; }}
-    .badge {{ background: #1e293b; border: 1px solid #475569; border-radius: 999px; padding: 6px 10px; }}
-    .summary {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin: 18px 0; }}
-    .card {{ background: #111827; border: 1px solid #334155; border-radius: 14px; padding: 14px; }}
-    .date-group {{ margin-top: 16px; }}
-    .date-header {{ display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; align-items: center; }}
-    .date-header h2 {{ margin: 0; font-size: 1.1rem; }}
-    .regime {{ color: #fde68a; }}
-    details {{ margin-top: 12px; background: #0b1220; border: 1px solid #334155; border-radius: 12px; padding: 10px 12px; }}
-    summary {{ cursor: pointer; font-weight: 600; }}
-    .article-meta {{ display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 0; }}
-    .article-meta .badge {{ background: #172033; }}
-    .flag {{ color: #fca5a5; }}
-    .accepted {{ color: #86efac; }}
-    ul {{ margin: 8px 0 0 20px; }}
-    .sentence, .evidence-row {{ border-top: 1px solid #1f2937; margin-top: 8px; padding-top: 8px; }}
-    .sentence code {{ white-space: pre-wrap; color: #cbd5e1; }}
-    .empty {{ color: #94a3b8; font-style: italic; }}
-    .warning {{ color: #fbbf24; }}
-    .section-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; margin: 14px 0; }}
-    .chart-wrap {{ margin: 18px 0; }}
-    .chart {{ width: 100%; height: 300px; background: #0b1220; border: 1px solid #334155; border-radius: 8px; }}
+    :root {{
+      color-scheme: dark;
+      --bg: #0f172a;
+      --panel: #111827;
+      --panel-soft: #0b1220;
+      --border: #243245;
+      --text: #e5eefb;
+      --muted: #aebbd0;
+      --accent: #38bdf8;
+      --good: #4ade80;
+      --warn: #fbbf24;
+      --bad: #fb7185;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      background: linear-gradient(180deg, #0b1120 0%, var(--bg) 100%);
+      color: var(--text);
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.5;
+    }}
+    header {{
+      padding: 24px 28px 16px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(15, 23, 42, 0.92);
+      position: sticky;
+      top: 0;
+      backdrop-filter: blur(10px);
+      z-index: 1;
+    }}
+    main {{ padding: 20px 28px 32px; max-width: 1280px; margin: 0 auto; }}
+    h1, h2, h3, p {{ margin-top: 0; }}
+    h1 {{ margin-bottom: 6px; font-size: 2rem; }}
+    h2 {{ margin-bottom: 8px; font-size: 1.25rem; }}
+    h3 {{ margin-bottom: 6px; font-size: 1rem; }}
+    .subtitle {{ color: var(--muted); max-width: 80ch; margin-bottom: 0; }}
+    .topline {{ display: flex; gap: 12px; flex-wrap: wrap; margin-top: 14px; }}
+    .badge {{
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 10px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: rgba(17, 24, 39, 0.92);
+      color: var(--text);
+      font-size: 0.92rem;
+    }}
+    .badge strong {{ color: #fff; }}
+    .stack {{ display: grid; gap: 16px; }}
+    .panel {{
+      background: rgba(17, 24, 39, 0.95);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 18px;
+      box-shadow: 0 10px 30px rgba(2, 6, 23, 0.28);
+    }}
+    .hero-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }}
+    .metric {{
+      padding: 14px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: rgba(11, 18, 32, 0.9);
+      min-height: 92px;
+    }}
+    .metric .label {{ color: var(--muted); font-size: 0.88rem; }}
+    .metric .value {{ font-size: 1.6rem; font-weight: 700; margin-top: 6px; }}
+    .metric .raw {{ color: var(--muted); font-size: 0.8rem; margin-top: 4px; }}
+    .state-card {{ display: grid; gap: 8px; }}
+    .state-pill {{
+      width: fit-content;
+      padding: 6px 12px;
+      border-radius: 999px;
+      font-weight: 700;
+      background: rgba(56, 189, 248, 0.12);
+      color: #b9ecff;
+      border: 1px solid rgba(56, 189, 248, 0.28);
+    }}
+    .state-pill.good {{ background: rgba(74, 222, 128, 0.12); color: #c6f5d2; border-color: rgba(74, 222, 128, 0.28); }}
+    .state-pill.warn {{ background: rgba(251, 191, 36, 0.12); color: #ffe7a6; border-color: rgba(251, 191, 36, 0.28); }}
+    .state-pill.bad {{ background: rgba(251, 113, 133, 0.12); color: #ffc3cf; border-color: rgba(251, 113, 133, 0.28); }}
+    .explain-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }}
+    .explain {{ background: rgba(11, 18, 32, 0.75); border: 1px solid var(--border); border-radius: 14px; padding: 14px; }}
+    .explain p {{ color: var(--muted); margin-bottom: 0; }}
+    .chart-shell {{ display: grid; gap: 12px; }}
+    .chart-note {{ color: var(--muted); max-width: 90ch; }}
+    .chart-meta {{ display: flex; gap: 10px; flex-wrap: wrap; }}
+    .chart-blocker {{
+      padding: 16px;
+      border-radius: 14px;
+      border: 1px solid rgba(251, 191, 36, 0.35);
+      background: rgba(120, 53, 15, 0.18);
+      color: #fde68a;
+    }}
+    .chart {{ width: 100%; height: 360px; border: 1px solid var(--border); border-radius: 14px; background: #0a1220; }}
     .chart text {{ fill: #cbd5e1; font-size: 11px; }}
-    .chart-line {{ fill: none; stroke: #38bdf8; stroke-width: 2.5; }}
-    .axis-line {{ stroke: #334155; stroke-width: 1; }}
-    .prob-bear {{ fill: #f87171; }}
-    .prob-sideways {{ fill: #fbbf24; }}
-    .prob-bull {{ fill: #4ade80; }}
-    pre {{ white-space: pre-wrap; word-break: break-word; }}
+    .axis {{ stroke: #33506d; stroke-width: 1; }}
+    .price-line {{ fill: none; stroke: var(--accent); stroke-width: 2.75; }}
+    .price-dot {{ stroke: #0a1220; stroke-width: 2; }}
+    .legend {{ display: flex; flex-wrap: wrap; gap: 12px; align-items: center; color: var(--muted); font-size: 0.92rem; }}
+    .legend-item {{ display: inline-flex; align-items: center; gap: 6px; }}
+    .swatch {{ width: 12px; height: 12px; border-radius: 999px; display: inline-block; }}
+    .swatch.price {{ background: var(--accent); }}
+    .swatch.bear {{ background: #fb7185; }}
+    .swatch.sideways {{ background: #fbbf24; }}
+    .swatch.bull {{ background: #4ade80; }}
+    details {{
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: rgba(11, 18, 32, 0.92);
+      overflow: hidden;
+    }}
+    summary {{
+      cursor: pointer;
+      list-style: none;
+      padding: 14px 16px;
+      font-weight: 650;
+    }}
+    summary::-webkit-details-marker {{ display: none; }}
+    details .body {{ padding: 0 16px 16px; border-top: 1px solid rgba(36, 50, 69, 0.75); }}
+    .date-grid {{ display: grid; gap: 14px; }}
+    .date-summary {{ display: flex; gap: 10px; flex-wrap: wrap; align-items: center; color: var(--muted); margin-top: 6px; font-weight: 500; }}
+    .compact-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin-top: 12px; }}
+    .compact {{ padding: 12px; border-radius: 12px; background: rgba(15, 23, 42, 0.65); border: 1px solid rgba(36, 50, 69, 0.8); }}
+    .compact .k {{ color: var(--muted); font-size: 0.85rem; }}
+    .compact .v {{ font-weight: 650; margin-top: 4px; }}
+    .article {{ margin-top: 12px; }}
+    .article-title {{ display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }}
+    .article-copy {{ color: var(--muted); margin: 10px 0; }}
+    .article-copy strong {{ color: var(--text); }}
+    .row-list {{ display: grid; gap: 8px; }}
+    .row-item {{ border: 1px solid rgba(36, 50, 69, 0.8); border-radius: 12px; padding: 12px; background: rgba(15, 23, 42, 0.68); }}
+    .row-item pre {{ margin: 8px 0 0; white-space: pre-wrap; word-break: break-word; color: #d6e4ff; }}
+    .muted {{ color: var(--muted); }}
+    .good {{ color: #baf7c9; }}
+    .warn {{ color: #fde68a; }}
+    .bad {{ color: #fecdd3; }}
+    .hidden {{ display: none !important; }}
+    .section-note {{ color: var(--muted); max-width: 90ch; }}
+    .footer-note {{ color: var(--muted); font-size: 0.9rem; }}
+    .loading {{ color: var(--muted); padding: 8px 0; }}
   </style>
 </head>
 <body>
   <header>
     <h1>Layer 1 semantic-review dashboard</h1>
-    <p class="note">Raw ticker/entity preprocessing, article embeddings, BERTopic labels, relevance-gate decisions, sentence-level FinBERT rows, ticker-date semantic aggregates, stock prices, and date-level HMM regime evidence are separated by pipeline stage.</p>
-    <div class="meta" id="meta"></div>
+    <p class="subtitle">A calm, beginner-friendly review page for checking whether the Apple news signal and the market benchmark story make sense before anyone relies on them.</p>
+    <div class="topline" id="meta"></div>
   </header>
   <main>
-    <section class="summary" id="summary"></section>
-    <section id="pipeline"></section>
-    <section id="content"></section>
+    <div class="stack">
+      <section class="panel state-card" id="state-panel">
+        <div class="state-pill warn" id="review-state">Loading review…</div>
+        <h2>What am I looking at?</h2>
+        <p id="state-explainer" class="section-note">This page loads the day-by-day Apple review evidence, plus a market benchmark chart for the HMM regime check.</p>
+        <div class="hero-grid" id="metrics"></div>
+      </section>
+
+      <section class="panel">
+        <h2>Why does it matter?</h2>
+        <div class="explain-grid">
+          <div class="explain">
+            <h3>Good sign</h3>
+            <p>The page shows a benchmark chart, clear daily article evidence, and the status stays on <strong>Ready to review</strong>.</p>
+          </div>
+          <div class="explain">
+            <h3>Bad sign</h3>
+            <p>If the benchmark is missing, the HMM manifest is incomplete, or the news rows are too thin, the page should tell you that plainly.</p>
+          </div>
+          <div class="explain">
+            <h3>What changes the answer?</h3>
+            <p>Look for direct Apple evidence, the market benchmark trend, and whether the HMM metadata says the model was actually ready on the dates shown.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel chart-shell" id="chart-section">
+        <h2>Market benchmark and HMM regime</h2>
+        <p class="chart-note">HMM regime is market-wide and date-level, so the default chart uses <strong>SPY</strong> as the benchmark instead of the selected company ticker. The line shows the benchmark price trend; the colored markers and bars show which regime was most likely on each date and how confident the model was.</p>
+        <div id="chart-meta" class="chart-meta"></div>
+        <div id="chart-container" class="loading">Loading benchmark chart…</div>
+      </section>
+
+      <section class="panel">
+        <h2>Daily review</h2>
+        <p class="section-note">Each trading day is collapsed by default. Open a day when you want the article-by-article evidence, and open the nested technical details only if you need the raw rows.</p>
+        <div id="dates" class="date-grid"></div>
+      </section>
+
+      <details class="panel" id="advanced-section">
+        <summary>Advanced evidence and raw rows</summary>
+        <div class="body" id="advanced-content">
+          <p class="section-note">This section stays collapsed by default so the dashboard remains easy to scan. It is only here when you need the raw preprocessing, embeddings, topic labels, relevance-gate rows, FinBERT rows, semantic aggregates, and HMM artifacts for debugging.</p>
+          <div id="pipeline"></div>
+        </div>
+      </details>
+
+      <p class="footer-note">Tip: if anything in the chart is missing, trust the blocker card instead of guessing. The dashboard is designed to fail loudly when the benchmark or HMM metadata is incomplete.</p>
+    </div>
   </main>
   <script>
     const defaults = {defaults_json};
     const metaEl = document.getElementById('meta');
-    const summaryEl = document.getElementById('summary');
+    const metricsEl = document.getElementById('metrics');
+    const stateEl = document.getElementById('review-state');
+    const stateExplainerEl = document.getElementById('state-explainer');
+    const chartMetaEl = document.getElementById('chart-meta');
+    const chartContainerEl = document.getElementById('chart-container');
+    const datesEl = document.getElementById('dates');
     const pipelineEl = document.getElementById('pipeline');
-    const contentEl = document.getElementById('content');
 
-    function badge(label, value) {{
-      return `<span class="badge"><strong>${{label}}:</strong> ${{value}}</span>`;
-    }}
-
-    function renderSummary(summary) {{
-      const entries = [
-        ['Rows', summary.row_count ?? 0],
-        ['Articles', summary.article_count ?? 0],
-        ['Dates', summary.date_count ?? 0],
-        ['Accepted', summary.accepted_article_count ?? 0],
-        ['Flagged', summary.flagged_article_count ?? 0],
-        ['Duplicate articles', summary.duplicate_article_count ?? 0],
-        ['Repeated headlines', summary.repeated_headline_count ?? 0],
-        ['Weak articles', summary.weak_article_count ?? 0],
-        ['Preprocess rows', summary.preprocessing_row_count ?? 0],
-        ['Embeddings', summary.embedding_row_count ?? 0],
-        ['Topic labels', summary.topic_label_row_count ?? 0],
-        ['Relevance rows', summary.relevance_gate_row_count ?? 0],
-        ['Aggregates', summary.semantic_aggregate_row_count ?? 0],
-        ['Price rows', summary.price_row_count ?? 0],
-        ['HMM rows', summary.hmm_regime_row_count ?? 0],
-      ];
-      summaryEl.innerHTML = entries.map(([label, value]) => `<div class="card"><div>${{label}}</div><div style="font-size:1.6rem;font-weight:700">${{value}}</div></div>`).join('');
-    }}
-
-    function renderMeta(report) {{
-      metaEl.innerHTML = [
-        badge('run_id', report.run_id),
-        badge('ticker', report.ticker),
-        badge('window', `${{report.from_date}} → ${{report.to_date}}`),
-      ].join('');
-    }}
-
-    function renderSentenceRows(sentenceRows) {{
-      if (!sentenceRows.length) {{
-        return '<p class="empty">No sentence rows available.</p>';
-      }}
-      return sentenceRows.map((row) => `
-        <div class="sentence">
-          <div class="article-meta">
-            <span class="badge">sentence_index=${{row.sentence_index ?? 'n/a'}}</span>
-            <span class="badge">chunk_index=${{row.chunk_index ?? 'n/a'}}</span>
-            <span class="badge">granularity=${{row.row_granularity}}</span>
-            <span class="badge">sentiment_score=${{formatNumber(row.sentiment_score)}}</span>
-            <span class="badge">relevance_score=${{formatNumber(row.relevance_score)}}</span>
-          </div>
-          <pre>${{escapeHtml(row.text ?? '')}}</pre>
-        </div>`).join('');
-    }}
-
-    function renderArticle(article) {{
-      const accepted = article.article_status === 'accepted';
-      const flags = article.contamination_flags || [];
-      return `
-        <details open>
-          <summary>
-            ${{escapeHtml(article.headline ?? article.article_id)}}
-            <span class="badge ${{accepted ? 'accepted' : 'flag'}}">${{accepted ? 'accepted' : 'flagged'}}</span>
-            <span class="badge">article_id=${{article.article_id}}</span>
-            <span class="badge">rows=${{article.article_row_count}}</span>
-            <span class="badge">duplicate_headlines=${{article.headline_duplicate_count}}</span>
-          </summary>
-          <div class="article-meta">
-            <span class="badge">published_at=${{article.published_at ?? 'n/a'}}</span>
-            <span class="badge">source=${{escapeHtml(article.source ?? 'n/a')}}</span>
-            <span class="badge">ticker=${{article.ticker}}</span>
-            <span class="badge">relevance_state=${{article.relevance_state}}</span>
-            <span class="badge">requested_ticker_terms=${{(article.requested_ticker_terms || []).join(', ') || 'n/a'}}</span>
-          </div>
-          <p class="note">Normalized headline: ${{escapeHtml(article.normalized_headline || '')}}</p>
-          <p class="note">Evidence snippets: ${{(article.evidence_snippets || []).length ? (article.evidence_snippets || []).map(escapeHtml).join(' | ') : 'none'}}</p>
-          <p class="note">Ticker evidence: ${{(article.requested_ticker_term_hits || []).length ? (article.requested_ticker_term_hits || []).join(', ') : 'none — this article is kept out of the default acceptance path'}}</p>
-          ${{flags.length ? `<p class="warning">Flags: ${{flags.join(', ')}}</p>` : ''}}
-          <div class="article-meta">
-            <span class="badge">preprocessing_rows=${{(article.preprocessing_rows || []).length}}</span>
-            <span class="badge">topic_rows=${{(article.topic_evidence || []).length}}</span>
-            <span class="badge">relevance_gate_rows=${{(article.relevance_gate_rows || []).length}}</span>
-          </div>
-          ${{renderSentenceRows(article.sentence_rows || [])}}
-        </details>`;
-    }}
-
-    function renderPipelineSections(sections) {{
-      const labels = [
-        ['raw_preprocessing_rows', 'Ticker/entity preprocessing'],
-        ['article_embedding_rows', 'Article embeddings'],
-        ['topic_label_rows', 'BERTopic labels'],
-        ['relevance_gate_rows', 'Pre-FinBERT relevance gate'],
-        ['finbert_sentence_rows', 'Sentence/chunk FinBERT rows'],
-        ['semantic_aggregate_rows', 'Ticker-date semantic aggregates'],
-        ['date_level_regime_rows', 'Date-level HMM regime'],
-        ['stock_price_rows', 'Stock-price rows'],
-        ['date_aligned_price_hmm_rows', 'Date-aligned price/HMM rows'],
-      ];
-      pipelineEl.innerHTML = `
-        <section class="card">
-          <h2>Pipeline Evidence</h2>
-          <p class="note">Human semantic review remains needs_human_review until completed NLP, stock-price, and HMM evidence are inspected and explicitly accepted.</p>
-          <div class="section-grid">
-            ${{labels.map(([key, label]) => renderPipelineCard(label, sections[key] || [])).join('')}}
-          </div>
-        </section>`;
-    }}
-
-    function renderMarketRegimeChart(rows, hmmContext) {{
-      if (!rows.length) {{
-        return '<section class="card chart-wrap"><h2>Stock Price and HMM Regime</h2><p class="empty">No price/HMM rows available.</p></section>';
-      }}
-      const priced = rows.filter((row) => row.price && Number.isFinite(Number(row.price.adj_close ?? row.price.close)));
-      const width = 960;
-      const height = 300;
-      const left = 48;
-      const right = 18;
-      const top = 22;
-      const priceBottom = 190;
-      const probTop = 218;
-      const probHeight = 54;
-      const values = priced.map((row) => Number(row.price.adj_close ?? row.price.close));
-      const minPrice = values.length ? Math.min(...values) : 0;
-      const maxPrice = values.length ? Math.max(...values) : 1;
-      const priceRange = Math.max(maxPrice - minPrice, 0.0001);
-      const step = rows.length > 1 ? (width - left - right) / (rows.length - 1) : 0;
-      const xFor = (index) => left + index * step;
-      const yFor = (value) => priceBottom - ((value - minPrice) / priceRange) * (priceBottom - top);
-      const points = rows
-        .map((row, index) => {{
-          const price = row.price;
-          if (!price) return null;
-          const value = Number(price.adj_close ?? price.close);
-          return Number.isFinite(value) ? `${{xFor(index)}},${{yFor(value)}}` : null;
-        }})
-        .filter(Boolean)
-        .join(' ');
-      const markers = rows.map((row, index) => {{
-        const regime = row.hmm_regime || {{}};
-        const price = row.price || {{}};
-        const value = Number(price.adj_close ?? price.close);
-        const x = xFor(index);
-        const y = Number.isFinite(value) ? yFor(value) : priceBottom;
-        const color = regime.regime === 'bear' ? '#f87171' : regime.regime === 'bull' ? '#4ade80' : '#fbbf24';
-        const warning = (row.warnings || []).join(', ');
-        return `<circle cx="${{x}}" cy="${{y}}" r="5" fill="${{color}}"><title>${{row.date}} ${{regime.regime || 'missing'}} ${{warning}}</title></circle>`;
-      }}).join('');
-      const bars = rows.map((row, index) => {{
-        const regime = row.hmm_regime || {{}};
-        const x = xFor(index) - 8;
-        const widthBar = 16;
-        const bear = Number(regime.prob_bear || 0) * probHeight;
-        const sideways = Number(regime.prob_sideways || 0) * probHeight;
-        const bull = Number(regime.prob_bull || 0) * probHeight;
-        const yBear = probTop + probHeight - bear;
-        const ySideways = yBear - sideways;
-        const yBull = ySideways - bull;
-        return `
-          <rect class="prob-bear" x="${{x}}" y="${{yBear}}" width="${{widthBar}}" height="${{bear}}"></rect>
-          <rect class="prob-sideways" x="${{x}}" y="${{ySideways}}" width="${{widthBar}}" height="${{sideways}}"></rect>
-          <rect class="prob-bull" x="${{x}}" y="${{yBull}}" width="${{widthBar}}" height="${{bull}}"></rect>`;
-      }}).join('');
-      const labels = rows.map((row, index) => `<text x="${{xFor(index) - 28}}" y="292">${{row.date.slice(5)}}</text>`).join('');
-      const contextWarnings = (hmmContext.warnings || []).join(', ') || 'none';
-      return `
-        <section class="card chart-wrap">
-          <h2>Stock Price and HMM Regime</h2>
-          <p class="note">Close/adjusted-close price and HMM bear/sideways/bull probabilities share the same date axis.</p>
-          <svg class="chart" viewBox="0 0 ${{width}} ${{height}}" role="img" aria-label="Stock price with HMM regime probabilities">
-            <line class="axis-line" x1="${{left}}" y1="${{priceBottom}}" x2="${{width - right}}" y2="${{priceBottom}}"></line>
-            <line class="axis-line" x1="${{left}}" y1="${{probTop + probHeight}}" x2="${{width - right}}" y2="${{probTop + probHeight}}"></line>
-            <text x="8" y="${{top + 10}}">${{formatNumber(maxPrice)}}</text>
-            <text x="8" y="${{priceBottom}}">${{formatNumber(minPrice)}}</text>
-            <polyline class="chart-line" points="${{points}}"></polyline>
-            ${{markers}}
-            ${{bars}}
-            ${{labels}}
-          </svg>
-          <div class="article-meta">
-            <span class="badge">training_windows=${{(hmmContext.training_windows || []).length}}</span>
-            <span class="badge">input_features=${{(hmmContext.input_feature_columns_used || []).length}}</span>
-            <span class="badge">warnings=${{escapeHtml(contextWarnings)}}</span>
-          </div>
-        </section>`;
-    }}
-
-    function renderPipelineCard(label, rows) {{
-      const sample = rows[0] || null;
-      return `
-        <details>
-          <summary>${{label}} <span class="badge">rows=${{rows.length}}</span></summary>
-          ${{sample ? `<div class="evidence-row"><pre>${{escapeHtml(JSON.stringify(sample, null, 2))}}</pre></div>` : '<p class="empty">No rows available.</p>'}}
-        </details>`;
-    }}
-
-    function renderDateGroup(group) {{
-      const regime = group.regime || null;
-      const regimeText = regime
-        ? `${{regime.regime || 'unknown'}} (confidence ${{formatNumber(regime.confidence)}}; bear ${{formatNumber(regime.prob_bear)}}, sideways ${{formatNumber(regime.prob_sideways)}}, bull ${{formatNumber(regime.prob_bull)}})`
-        : 'regime unavailable';
-      return `
-        <section class="date-group card">
-          <div class="date-header">
-            <h2>${{group.date}}</h2>
-            <div class="regime">Date-level HMM regime: ${{regimeText}}</div>
-          </div>
-          <div class="article-meta">
-            <span class="badge">articles=${{group.article_count}}</span>
-            <span class="badge">accepted=${{group.accepted_article_count}}</span>
-            <span class="badge">flagged=${{group.flagged_article_count}}</span>
-            <span class="badge">sentence_rows=${{group.sentence_count}}</span>
-            <span class="badge">close=${{group.price ? formatNumber(group.price.adj_close ?? group.price.close) : 'n/a'}}</span>
-          </div>
-          ${{(group.articles || []).map(renderArticle).join('') || '<p class="empty">No articles for this date.</p>'}}
-        </section>`;
-    }}
-
-    function formatNumber(value) {{
-      return value === null || value === undefined ? 'n/a' : Number(value).toFixed(4);
-    }}
-
-    function escapeHtml(text) {{
-      return String(text)
+    function escapeHtml(value) {{
+      return String(value ?? '')
         .replaceAll('&', '&amp;')
         .replaceAll('<', '&lt;')
         .replaceAll('>', '&gt;')
         .replaceAll('"', '&quot;')
         .replaceAll("'", '&#39;');
+    }}
+
+    function formatNumber(value, digits = 2) {{
+      const number = Number(value);
+      if (!Number.isFinite(number)) return 'n/a';
+      return number.toFixed(digits);
+    }}
+
+    function labelState(state) {{
+      return state || 'Not enough evidence';
+    }}
+
+    function stateClass(state) {{
+      if (state === 'Ready to review') return 'good';
+      if (state === 'Needs data fix') return 'warn';
+      if (state === 'Needs model/pipeline fix') return 'bad';
+      return 'warn';
+    }}
+
+    function metricCard(label, value, rawName, title) {{
+      return `
+        <div class="metric" title="${{escapeHtml(title || rawName)}}">
+          <div class="label">${{escapeHtml(label)}}</div>
+          <div class="value">${{escapeHtml(value)}}</div>
+          <div class="raw">raw: ${{escapeHtml(rawName)}}</div>
+        </div>`;
+    }}
+
+    function deriveReviewState(payload) {{
+      const summary = payload.summary || {{}};
+      const warnings = Array.isArray(payload.warnings) ? payload.warnings : [];
+      const hmmContext = payload.hmm_evaluation_context || {{}};
+      const benchmarkSeries = Array.isArray(payload.benchmark_market_regime_series) ? payload.benchmark_market_regime_series : [];
+      const benchmarkPrices = Array.isArray(payload.benchmark_price_series) ? payload.benchmark_price_series : [];
+      const articles = Array.isArray(payload.article_groups) ? payload.article_groups : [];
+      const hasArticles = Number(summary.article_count || 0) > 0 && articles.length > 0;
+      const hasDates = Number(summary.date_count || 0) > 0;
+      const benchmarkMissing = benchmarkSeries.length === 0 || benchmarkPrices.length === 0;
+      const manifestMissing = (Array.isArray(hmmContext.source_manifest_keys) && hmmContext.source_manifest_keys.length === 0)
+        || (Array.isArray(hmmContext.training_windows) && hmmContext.training_windows.length === 0)
+        || (Array.isArray(hmmContext.manifest_summaries) && hmmContext.manifest_summaries.length === 0);
+      const modelWarningCodes = new Set([
+        'missing_hmm_manifest',
+        'missing_training_window_metadata',
+        'incomplete_hmm_feature_set',
+        'stale_hmm_manifest',
+        'hmm_not_evaluated_for_date',
+        'missing_hmm_inference_dates',
+        'unexpected_hmm_inference_dates',
+      ]);
+      const dataWarningScopes = new Set(['price_series', 'hmm_regime', 'hmm_evaluation_context']);
+      const hasModelWarnings = Array.isArray(hmmContext.warnings) && hmmContext.warnings.some((warning) => modelWarningCodes.has(String(warning)));
+      const hasDataWarnings = warnings.some((warning) => dataWarningScopes.has(String(warning.scope || '')));
+      if (!hasArticles || !hasDates) {{
+        return {{ state: 'Not enough evidence', reason: 'The page does not yet have enough rows to make a calm judgment.' }};
+      }}
+      if (benchmarkMissing || warnings.some((warning) => warning.scope === 'benchmark_price_series')) {{
+        return {{ state: 'Needs data fix', reason: 'The market benchmark chart is missing, so this page should not pretend the HMM view is complete.' }};
+      }}
+      if (manifestMissing || hasModelWarnings || hasDataWarnings) {{
+        return {{ state: 'Needs model/pipeline fix', reason: 'The HMM evidence or upstream pipeline metadata is incomplete.' }};
+      }}
+      return {{ state: 'Ready to review', reason: 'The page has enough benchmark, HMM, and article evidence to inspect.' }};
+    }}
+
+    function renderTopline(payload, reviewState) {{
+      const benchmarkTicker = payload.benchmark_ticker || 'SPY';
+      const windowText = `${{payload.from_date || defaults.from_date}} → ${{payload.to_date || defaults.to_date}}`;
+      metaEl.innerHTML = [
+        badge('run_id', payload.run_id || defaults.run_id),
+        badge('ticker', payload.ticker || defaults.ticker),
+        badge('benchmark', benchmarkTicker),
+        badge('window', windowText),
+      ].join('');
+      stateEl.textContent = reviewState.state;
+      stateEl.className = `state-pill ${{stateClass(reviewState.state)}}`;
+      stateExplainerEl.textContent = reviewState.reason;
+    }}
+
+    function badge(label, value) {{
+      return `<span class="badge"><strong>${{escapeHtml(label)}}:</strong> ${{escapeHtml(value)}}</span>`;
+    }}
+
+    function renderMetrics(payload) {{
+      const summary = payload.summary || {{}};
+      const benchmarkTicker = payload.benchmark_ticker || 'SPY';
+      metricsEl.innerHTML = [
+        metricCard('Stories scanned', summary.article_count ?? 0, 'article_count', 'How many article rows were loaded for this review.'),
+        metricCard('Days in view', summary.date_count ?? 0, 'date_count', 'How many trading dates are available in the review window.'),
+        metricCard('Accepted stories', summary.accepted_article_count ?? 0, 'accepted_article_count', 'Stories that look like they belong in the default review path.'),
+        metricCard('Flagged stories', summary.flagged_article_count ?? 0, 'flagged_article_count', 'Stories that need a closer look because their evidence is weak or off-topic.'),
+        metricCard('Market benchmark', benchmarkTicker, 'benchmark_ticker', 'The benchmark ticker used for the HMM regime chart.'),
+      ].join('');
+    }}
+
+    function renderChart(payload) {{
+      const benchmarkTicker = payload.benchmark_ticker || 'SPY';
+      const prices = Array.isArray(payload.benchmark_price_series) ? payload.benchmark_price_series : [];
+      const rows = Array.isArray(payload.benchmark_market_regime_series) ? payload.benchmark_market_regime_series : [];
+      const hmmContext = payload.hmm_evaluation_context || {{}};
+      const manifestSummaries = Array.isArray(hmmContext.manifest_summaries) ? hmmContext.manifest_summaries : [];
+      const trainingWindows = Array.isArray(hmmContext.training_windows) ? hmmContext.training_windows : [];
+      const hasManifest = manifestSummaries.length > 0;
+      const hasTrainingWindow = trainingWindows.length > 0;
+      const missingReasons = [];
+      if (!prices.length) missingReasons.push(`No ${{benchmarkTicker}} price rows were available for the chart.`);
+      if (!rows.length) missingReasons.push('No HMM regime rows were available for the benchmark dates.');
+      if (!hasManifest) missingReasons.push('The HMM manifest summary is missing, so we cannot verify the training window.');
+      if (!hasTrainingWindow) missingReasons.push('The HMM training-window metadata is missing, so the model readiness check is incomplete.');
+      if (missingReasons.length) {{
+        chartMetaEl.innerHTML = [
+          badge('benchmark', benchmarkTicker),
+          badge('date range', `${{payload.from_date || defaults.from_date}} → ${{payload.to_date || defaults.to_date}}`),
+        ].join('');
+        chartContainerEl.innerHTML = `
+          <div class="chart-blocker">
+            <h3>Benchmark chart blocked</h3>
+            <p>What am I looking at? A market-wide HMM check that should use the benchmark, not the company ticker.</p>
+            <p>Why does it matter? If the benchmark price rows or HMM manifest metadata are missing, the chart would be misleading.</p>
+            <p>What would make this good or bad? Good: SPY rows plus a training window and manifest summary. Bad: empty prices, empty regime rows, or missing manifest details.</p>
+            <ul>${{missingReasons.map((reason) => `<li>${{escapeHtml(reason)}}</li>`).join('')}}</ul>
+          </div>`;
+        return;
+      }}
+
+      const width = 1040;
+      const height = 360;
+      const left = 64;
+      const right = 18;
+      const top = 18;
+      const priceBottom = 210;
+      const probTop = 242;
+      const probHeight = 74;
+      const priceValues = prices.map((row) => Number(row.adj_close ?? row.close)).filter((value) => Number.isFinite(value));
+      const minPrice = priceValues.length ? Math.min(...priceValues) : 0;
+      const maxPrice = priceValues.length ? Math.max(...priceValues) : 1;
+      const priceRange = Math.max(maxPrice - minPrice, 0.0001);
+      const step = rows.length > 1 ? (width - left - right) / (rows.length - 1) : 0;
+      const xFor = (index) => left + index * step;
+      const yFor = (value) => priceBottom - ((value - minPrice) / priceRange) * (priceBottom - top);
+      const priceSeries = rows.map((row, index) => {{
+        const price = row.price || {{}};
+        const value = Number(price.adj_close ?? price.close);
+        return Number.isFinite(value) ? `${{xFor(index)}},${{yFor(value)}}` : null;
+      }}).filter(Boolean).join(' ');
+      const dominantRegime = (regime) => {{
+        const bear = Number(regime?.prob_bear ?? 0);
+        const sideways = Number(regime?.prob_sideways ?? 0);
+        const bull = Number(regime?.prob_bull ?? 0);
+        if (bear >= sideways && bear >= bull) return 'bear';
+        if (bull >= bear && bull >= sideways) return 'bull';
+        return 'sideways';
+      }};
+      const regimeColor = (regime) => {{
+        const label = dominantRegime(regime);
+        if (label === 'bear') return 'rgba(251, 113, 133, 0.16)';
+        if (label === 'bull') return 'rgba(74, 222, 128, 0.16)';
+        return 'rgba(251, 191, 36, 0.18)';
+      }};
+      const regimeBorder = (regime) => {{
+        const label = dominantRegime(regime);
+        if (label === 'bear') return '#fb7185';
+        if (label === 'bull') return '#4ade80';
+        return '#fbbf24';
+      }};
+      const probabilityBars = rows.map((row, index) => {{
+        const regime = row.hmm_regime || {{}};
+        const x = xFor(index) - 10;
+        const widthBar = 20;
+        const bear = Math.max(Number(regime.prob_bear ?? 0), 0) * probHeight;
+        const sideways = Math.max(Number(regime.prob_sideways ?? 0), 0) * probHeight;
+        const bull = Math.max(Number(regime.prob_bull ?? 0), 0) * probHeight;
+        const yBear = probTop + probHeight - bear;
+        const ySideways = yBear - sideways;
+        const yBull = ySideways - bull;
+        return `
+          <rect x="${{x}}" y="${{probTop}}" width="${{widthBar}}" height="${{probHeight}}" rx="4" ry="4" fill="rgba(15, 23, 42, 0.3)" stroke="#22334a" />
+          <rect x="${{x}}" y="${{yBear}}" width="${{widthBar}}" height="${{bear}}" fill="#fb7185" opacity="0.92"></rect>
+          <rect x="${{x}}" y="${{ySideways}}" width="${{widthBar}}" height="${{sideways}}" fill="#fbbf24" opacity="0.92"></rect>
+          <rect x="${{x}}" y="${{yBull}}" width="${{widthBar}}" height="${{bull}}" fill="#4ade80" opacity="0.92"></rect>`;
+      }}).join('');
+      const regimeBands = rows.map((row, index) => {{
+        const price = row.price || {{}};
+        const value = Number(price.adj_close ?? price.close);
+        const regime = row.hmm_regime || {{}};
+        const x = xFor(index);
+        const y = Number.isFinite(value) ? yFor(value) : priceBottom;
+        const label = dominantRegime(regime);
+        const fill = regimeColor(regime);
+        const border = regimeBorder(regime);
+        const confidence = formatNumber(regime.confidence, 2);
+        const warningText = Array.isArray(row.warnings) ? row.warnings.join(', ') : '';
+        return `
+          <rect x="${{x - 8}}" y="${{top}}" width="16" height="${{priceBottom - top}}" fill="${{fill}}" stroke="${{border}}" stroke-opacity="0.55" opacity="0.9">
+            <title>${{row.date}}: ${{label}} regime, confidence ${{confidence}}${{warningText ? `; warnings: ${{warningText}}` : ''}}</title>
+          </rect>
+          <circle cx="${{x}}" cy="${{y}}" r="5.5" fill="${{border}}" class="price-dot">
+            <title>${{row.date}}: ${{benchmarkTicker}} adjusted close ${{formatNumber(price.adj_close ?? price.close, 2)}}; regime ${{label}}; confidence ${{confidence}}</title>
+          </circle>`;
+      }}).join('');
+      const dateLabels = rows.map((row, index) => `<text x="${{xFor(index) - 20}}" y="338">${{String(row.date || '').slice(5)}}</text>`).join('');
+      const chartWarnings = Array.isArray(hmmContext.warnings) && hmmContext.warnings.length ? hmmContext.warnings.join(', ') : 'none';
+      chartMetaEl.innerHTML = [
+        badge('benchmark', benchmarkTicker),
+        badge('date range', `${{payload.from_date || defaults.from_date}} → ${{payload.to_date || defaults.to_date}}`),
+        badge('manifest', hasManifest ? 'present' : 'missing'),
+        badge('training window', hasTrainingWindow ? 'present' : 'missing'),
+      ].join('');
+      chartContainerEl.innerHTML = `
+        <svg class="chart" viewBox="0 0 ${{width}} ${{height}}" role="img" aria-label="${{benchmarkTicker}} price and HMM regime chart">
+          <line class="axis" x1="${{left}}" y1="${{priceBottom}}" x2="${{width - right}}" y2="${{priceBottom}}"></line>
+          <line class="axis" x1="${{left}}" y1="${{probTop + probHeight}}" x2="${{width - right}}" y2="${{probTop + probHeight}}"></line>
+          <text x="8" y="${{top + 12}}">${{formatNumber(maxPrice, 2)}}</text>
+          <text x="8" y="${{priceBottom}}">${{formatNumber(minPrice, 2)}}</text>
+          <text x="8" y="${{probTop + 14}}">probability</text>
+          <text x="8" y="${{probTop + probHeight}}">0</text>
+          <text x="8" y="${{probTop + 30}}">0.5</text>
+          <text x="8" y="${{probTop + probHeight - 2}}">1.0</text>
+          <polyline class="price-line" points="${{priceSeries}}"></polyline>
+          ${{regimeBands}}
+          ${{probabilityBars}}
+          ${{dateLabels}}
+        </svg>
+        <div class="legend">
+          <span class="legend-item"><span class="swatch price"></span>${{escapeHtml(benchmarkTicker)}} adjusted close</span>
+          <span class="legend-item"><span class="swatch bear"></span>bear probability</span>
+          <span class="legend-item"><span class="swatch sideways"></span>sideways probability</span>
+          <span class="legend-item"><span class="swatch bull"></span>bull probability</span>
+        </div>
+        <p class="chart-note">What am I looking at? The market benchmark price line with HMM regime bands and probabilities on the same date axis. Why does it matter? The regime model is market-wide, so this gives the right context for the day. What would make this good or bad? Good: visible benchmark prices, non-empty probabilities, and a complete manifest. Bad: empty rows, all-null regime values, or missing training metadata.</p>
+        <p class="chart-note muted">Model notes: ${{escapeHtml(chartWarnings)}}.</p>`;
+    }}
+
+    function renderArticleDetails(article) {{
+      const articleStatus = article.article_status || 'flagged';
+      const accepted = articleStatus === 'accepted';
+      const flags = Array.isArray(article.contamination_flags) ? article.contamination_flags : [];
+      const snippets = Array.isArray(article.evidence_snippets) ? article.evidence_snippets : [];
+      const tickerHits = Array.isArray(article.requested_ticker_term_hits) ? article.requested_ticker_term_hits : [];
+      const preprocessingRows = Array.isArray(article.preprocessing_rows) ? article.preprocessing_rows : [];
+      const topicRows = Array.isArray(article.topic_evidence) ? article.topic_evidence : [];
+      const relevanceRows = Array.isArray(article.relevance_gate_rows) ? article.relevance_gate_rows : [];
+      return `
+        <details class="article">
+          <summary>
+            <span class="article-title">${{escapeHtml(article.headline || article.article_id || 'Article')}}</span>
+            <span class="badge ${{accepted ? 'good' : 'warn'}}">${{accepted ? 'Accepted for review' : 'Needs a closer look'}}</span>
+            <span class="badge" title="Raw field: article_id">article_id: ${{escapeHtml(article.article_id || 'n/a')}}</span>
+            <span class="badge" title="Raw field: article_status">status: ${{escapeHtml(articleStatus)}}</span>
+          </summary>
+          <div class="body">
+            <p class="article-copy">What am I looking at? A single story and the evidence that tells us whether it really belongs in the Apple review. Why does it matter? Good articles should mention Apple directly or show strong Apple-specific context; bad articles should be obviously unrelated or too weak to trust. What would make this good or bad? Good: direct Apple/AAPL support, useful topic labels, and matching relevance-gate rows. Bad: unrelated company mentions, duplicate headlines, or missing provenance.</p>
+            <div class="compact-grid">
+              <div class="compact"><div class="k">Published</div><div class="v">${{escapeHtml(article.published_at || 'n/a')}}</div><div class="k">raw: published_at</div></div>
+              <div class="compact"><div class="k">Source</div><div class="v">${{escapeHtml(article.source || 'n/a')}}</div><div class="k">raw: source</div></div>
+              <div class="compact"><div class="k">Normalized headline</div><div class="v">${{escapeHtml(article.normalized_headline || 'n/a')}}</div><div class="k">raw: normalized_headline</div></div>
+              <div class="compact"><div class="k">Relevance state</div><div class="v">${{escapeHtml(article.relevance_state || 'n/a')}}</div><div class="k">raw: relevance_state</div></div>
+            </div>
+            <p class="article-copy"><strong>Evidence snippets:</strong> ${{snippets.length ? snippets.map(escapeHtml).join(' · ') : 'none'}}</p>
+            <p class="article-copy"><strong>Ticker evidence:</strong> ${{tickerHits.length ? tickerHits.map(escapeHtml).join(', ') : 'none'}}</p>
+            ${{flags.length ? `<p class="article-copy bad"><strong>Flags:</strong> ${{flags.map(escapeHtml).join(', ')}}</p>` : ''}}
+            <div class="row-list">
+              <details>
+                <summary>Technical details for this story</summary>
+                <div class="body">
+                  <div class="row-item"><strong>Preprocessing rows</strong><pre>${{escapeHtml(JSON.stringify(preprocessingRows, null, 2))}}</pre></div>
+                  <div class="row-item"><strong>Topic evidence</strong><pre>${{escapeHtml(JSON.stringify(topicRows, null, 2))}}</pre></div>
+                  <div class="row-item"><strong>Relevance-gate rows</strong><pre>${{escapeHtml(JSON.stringify(relevanceRows, null, 2))}}</pre></div>
+                </div>
+              </details>
+            </div>
+          </div>
+        </details>`;
+    }}
+
+    function renderDateGroup(group) {{
+      const regime = group.regime || {{}};
+      const price = group.price || {{}};
+      const marketContext = group.market_regime_context || {{}};
+      const articles = Array.isArray(group.articles) ? group.articles : [];
+      const acceptedCount = Number(group.accepted_article_count || 0);
+      const flaggedCount = Number(group.flagged_article_count || 0);
+      const sentenceCount = Number(group.sentence_count || 0);
+      const semanticAggregates = Array.isArray(group.semantic_aggregates) ? group.semantic_aggregates : [];
+      const regimeLabel = regime.regime || 'not available';
+      const closeValue = price ? (price.adj_close ?? price.close) : null;
+      const hints = [
+        `articles: ${{group.article_count ?? 0}}`,
+        `accepted: ${{acceptedCount}}`,
+        `flagged: ${{flaggedCount}}`,
+        `sentences: ${{sentenceCount}}`,
+      ];
+      return `
+        <details class="date-card">
+          <summary>
+            <span>${{escapeHtml(group.date || 'n/a')}}</span>
+            <span class="badge" title="Raw field: regime">regime: ${{escapeHtml(regimeLabel)}}</span>
+            <span class="badge" title="Raw field: article_count">articles: ${{group.article_count ?? 0}}</span>
+            <span class="badge" title="Raw field: sentence_count">sentences: ${{sentenceCount}}</span>
+            <span class="badge" title="Raw field: close / adj_close">price: ${{formatNumber(closeValue, 2)}}</span>
+          </summary>
+          <div class="body">
+            <p class="article-copy">What am I looking at? One trading day of Apple review evidence. Why does it matter? It shows whether the news rows, benchmark context, and regime label line up for that date. What would make this good or bad? Good: a few clear Apple stories and a readable regime signal. Bad: unrelated news, missing benchmark context, or warnings about price or HMM data.</p>
+            <div class="compact-grid">
+              <div class="compact"><div class="k">HMM regime</div><div class="v">${{escapeHtml(regimeLabel)}}</div><div class="k">raw: regime</div></div>
+              <div class="compact"><div class="k">Confidence</div><div class="v">${{formatNumber(regime.confidence, 2)}}</div><div class="k">raw: confidence</div></div>
+              <div class="compact"><div class="k">Benchmark close</div><div class="v">${{formatNumber(closeValue, 2)}}</div><div class="k">raw: close / adj_close</div></div>
+              <div class="compact"><div class="k">Market context warnings</div><div class="v">${{Array.isArray(marketContext.warnings) && marketContext.warnings.length ? marketContext.warnings.join(', ') : 'none'}}</div><div class="k">raw: market_regime_context.warnings</div></div>
+            </div>
+            <div class="compact-grid">
+              ${{hints.map((hint) => `<div class="compact"><div class="k">At a glance</div><div class="v">${{escapeHtml(hint)}}</div><div class="k">friendly summary</div></div>`).join('')}}
+            </div>
+            <p class="article-copy"><strong>Semantic aggregates:</strong> ${{semanticAggregates.length ? `${{semanticAggregates.length}} row(s)` : 'none'}}</p>
+            <div class="row-list">
+              ${{articles.map(renderArticleDetails).join('') || '<p class="muted">No articles were loaded for this date.</p>'}}
+            </div>
+          </div>
+        </details>`;
+    }}
+
+    function renderPipelineSection(sections) {{
+      const orderedSections = [
+        ['Ticker/entity preprocessing', 'raw_preprocessing_rows'],
+        ['Article embeddings', 'article_embedding_rows'],
+        ['BERTopic labels', 'topic_label_rows'],
+        ['Pre-FinBERT relevance gate', 'relevance_gate_rows'],
+        ['Sentence/chunk FinBERT rows', 'finbert_sentence_rows'],
+        ['Semantic aggregates', 'semantic_aggregate_rows'],
+        ['Date-level HMM regime', 'date_level_regime_rows'],
+        ['Stock benchmark rows', 'stock_price_rows'],
+        ['Date-aligned benchmark/HMM rows', 'date_aligned_price_hmm_rows'],
+      ];
+      pipelineEl.innerHTML = orderedSections.map(([label, key]) => {{
+        const rows = Array.isArray(sections?.[key]) ? sections[key] : [];
+        const sample = rows[0] || null;
+        return `
+          <details>
+            <summary>${{escapeHtml(label)}} <span class="badge">rows: ${{rows.length}}</span></summary>
+            <div class="body">
+              <p class="section-note">What am I looking at? A technical sample from the ${{escapeHtml(label.toLowerCase())}} stage. Why does it matter? It helps debug the pipeline when the human-friendly view says something is missing. What would make this good or bad? Good: rows exist and the sample is coherent. Bad: an empty section or a sample that shows unexpected nulls or keys.</p>
+              ${{sample ? `<div class="row-item"><pre>${{escapeHtml(JSON.stringify(sample, null, 2))}}</pre></div>` : '<p class="muted">No rows available.</p>'}}
+            </div>
+          </details>`;
+      }}).join('');
+    }}
+
+    function renderDashboard(payload) {{
+      const reviewState = deriveReviewState(payload);
+      renderTopline(payload, reviewState);
+      renderMetrics(payload);
+      renderChart(payload);
+      renderPipelineSection(payload.pipeline_sections || {{}});
+      datesEl.innerHTML = Array.isArray(payload.date_groups) && payload.date_groups.length
+        ? payload.date_groups.map(renderDateGroup).join('')
+        : '<p class="muted">No review dates were found for this run and window.</p>';
     }}
 
     async function loadReview() {{
@@ -552,23 +844,17 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       const response = await fetch(`/api/review?${{params.toString()}}`);
       const payload = await response.json();
       if (!response.ok) {{
-        contentEl.innerHTML = `<p class="warning">${{escapeHtml(payload.error || 'Failed to load dashboard payload.')}}</p>`;
+        const error = payload.error || 'Failed to load dashboard payload.';
+        document.getElementById('state-panel').innerHTML = `<div class="chart-blocker"><strong>Could not load review data.</strong><p>${{escapeHtml(error)}}</p></div>`;
+        chartContainerEl.className = 'chart-blocker';
+        chartContainerEl.textContent = error;
         return;
       }}
-      renderMeta(payload.report || payload);
-      renderSummary(payload.summary || (payload.report && payload.report.summary) || {{}});
-      renderPipelineSections(payload.pipeline_sections || {{}});
-      contentEl.innerHTML = renderMarketRegimeChart(
-        payload.market_regime_series || [],
-        payload.hmm_evaluation_context || {{}}
-      ) + (payload.date_groups || []).map(renderDateGroup).join('');
-      if (!(payload.date_groups || []).length) {{
-        contentEl.innerHTML = '<p class="empty">No review rows were found for this run and date range.</p>';
-      }}
+      renderDashboard(payload);
     }}
 
     loadReview().catch((error) => {{
-      contentEl.innerHTML = `<p class="warning">${{escapeHtml(error.message)}}</p>`;
+      document.getElementById('state-panel').innerHTML = `<div class="chart-blocker"><strong>Could not load dashboard.</strong><p>${{escapeHtml(error.message)}}</p></div>`;
     }});
   </script>
 </body>
