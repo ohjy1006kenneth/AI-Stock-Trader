@@ -481,6 +481,30 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
     .metric .value {{ font-size: 1.6rem; font-weight: 700; margin-top: 6px; }}
     .metric .raw {{ color: var(--muted); font-size: 0.8rem; margin-top: 4px; }}
     .state-card {{ display: grid; gap: 8px; }}
+    .tab-bar {{ display: flex; gap: 8px; flex-wrap: wrap; }}
+    .tab-button {{
+      appearance: none;
+      border: 1px solid rgba(56, 189, 248, 0.42);
+      border-radius: 999px;
+      background: rgba(56, 189, 248, 0.14);
+      color: #dff7ff;
+      padding: 8px 12px;
+      font-weight: 700;
+    }}
+    .tab-panel {{ display: grid; gap: 14px; }}
+    .readiness-line {{ color: var(--muted); margin-bottom: 0; }}
+    .gate-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; }}
+    .gate {{
+      padding: 13px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: rgba(11, 18, 32, 0.84);
+      min-height: 132px;
+    }}
+    .gate .name {{ font-weight: 750; margin-bottom: 6px; }}
+    .gate .message {{ color: var(--muted); font-size: 0.9rem; margin: 8px 0 0; }}
+    .gate.good {{ border-color: rgba(74, 222, 128, 0.36); }}
+    .gate.bad {{ border-color: rgba(251, 113, 133, 0.42); }}
     .state-pill {{
       width: fit-content;
       padding: 6px 12px;
@@ -570,6 +594,20 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
         <div class="hero-grid" id="metrics"></div>
       </section>
 
+      <nav class="tab-bar" aria-label="Semantic dashboard tabs">
+        <button class="tab-button active" type="button" role="tab" aria-selected="true" aria-controls="summary-gate-tab">Summary / Gate Status</button>
+      </nav>
+
+      <section class="panel tab-panel" id="summary-gate-tab" role="tabpanel">
+        <div>
+          <h2>Summary / Gate Status</h2>
+          <p class="readiness-line" id="readiness-line">Loading run readiness…</p>
+        </div>
+        <div class="hero-grid" id="summary-cards"></div>
+        <div id="missing-sections"></div>
+        <div class="gate-grid" id="gate-cards"></div>
+      </section>
+
       <section class="panel">
         <h2>Why does it matter?</h2>
         <div class="explain-grid">
@@ -616,6 +654,10 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
     const defaults = {defaults_json};
     const metaEl = document.getElementById('meta');
     const metricsEl = document.getElementById('metrics');
+    const summaryCardsEl = document.getElementById('summary-cards');
+    const gateCardsEl = document.getElementById('gate-cards');
+    const readinessLineEl = document.getElementById('readiness-line');
+    const missingSectionsEl = document.getElementById('missing-sections');
     const stateEl = document.getElementById('review-state');
     const stateExplainerEl = document.getElementById('state-explainer');
     const chartMetaEl = document.getElementById('chart-meta');
@@ -732,6 +774,45 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
         metricCard('Flagged stories', summary.flagged_article_count ?? 0, 'flagged_article_count', 'Stories that need a closer look because their evidence is weak or off-topic.'),
         metricCard('Market benchmark', benchmarkTicker, 'benchmark_ticker', 'The benchmark ticker used for the HMM regime chart.'),
       ].join('');
+    }}
+
+    function renderSummaryGateStatus(payload) {{
+      const readiness = payload.run_readiness || {{}};
+      const cards = Array.isArray(payload.summary_cards) ? payload.summary_cards : [];
+      const gates = Array.isArray(payload.gate_cards) ? payload.gate_cards : [];
+      const missingSections = Array.isArray(payload.missing_pipeline_sections) ? payload.missing_pipeline_sections : [];
+      const ready = readiness.ready_for_final_human_acceptance === true;
+      const recommendation = readiness.recommendation || (ready ? 'ready for final human acceptance' : 'not ready for final human acceptance');
+      readinessLineEl.innerHTML = `
+        <strong class="${{ready ? 'good' : 'bad'}}">${{escapeHtml(recommendation)}}</strong>
+        <span class="muted"> · human review status: ${{escapeHtml(readiness.human_review_status || 'unknown')}}</span>`;
+      summaryCardsEl.innerHTML = cards.map((card) => metricCard(
+        card.label || card.field || 'Summary',
+        card.value ?? 'n/a',
+        card.field || card.label || 'summary',
+        card.field || card.label || 'summary'
+      )).join('');
+      missingSectionsEl.innerHTML = missingSections.length
+        ? `<div class="chart-blocker">
+            <h3>Human review remains blocked</h3>
+            <p>The run is <strong>not ready for final human acceptance</strong> because required NLP, HMM, or price evidence is missing.</p>
+            <ul>${{missingSections.map((section) => `<li>${{escapeHtml(section.label || section.key)}}: ${{escapeHtml(section.reason || 'missing required evidence')}}</li>`).join('')}}</ul>
+          </div>`
+        : `<p class="readiness-line good">Required NLP, HMM, and price evidence is present. Human semantic review can start.</p>`;
+      gateCardsEl.innerHTML = gates.map((gate) => {{
+        const blocked = gate.status === 'blocked';
+        const keys = Array.isArray(gate.missing_or_tried_keys) ? gate.missing_or_tried_keys : [];
+        const artifacts = Array.isArray(gate.artifact_keys) ? gate.artifact_keys : [];
+        return `
+          <div class="gate ${{blocked ? 'bad' : 'good'}}">
+            <div class="name">${{escapeHtml(gate.label || gate.key || 'Gate')}}</div>
+            <span class="state-pill ${{blocked ? 'bad' : 'good'}}">${{blocked ? 'Blocked' : 'Ready'}}</span>
+            <div class="message">rows: ${{Number(gate.row_count || 0)}} · required: ${{gate.required === false ? 'no' : 'yes'}}</div>
+            <div class="message">${{escapeHtml(gate.message || '')}}</div>
+            ${{keys.length ? `<div class="message">missing/tried: ${{escapeHtml(keys.slice(0, 3).join(', '))}}${{keys.length > 3 ? '…' : ''}}</div>` : ''}}
+            ${{!keys.length && artifacts.length ? `<div class="message">artifact: ${{escapeHtml(artifacts[0])}}</div>` : ''}}
+          </div>`;
+      }}).join('');
     }}
 
     function renderChart(payload) {{
@@ -1006,6 +1087,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       document.body.dataset.smokeStatus = payload.smoke?.status || 'unknown';
       renderTopline(payload, reviewState);
       renderMetrics(payload);
+      renderSummaryGateStatus(payload);
       renderChart(payload);
       renderPipelineSection(payload.pipeline_sections || {{}});
       datesEl.innerHTML = Array.isArray(payload.date_groups) && payload.date_groups.length
