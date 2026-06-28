@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
+import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from http import HTTPStatus
@@ -14,7 +16,10 @@ from urllib.parse import parse_qs, urlparse
 from loguru import logger
 
 from core.features.aapl_evidence import build_layer1_aapl_evidence_report
-from core.features.semantic_review_dashboard import build_layer1_semantic_review_dashboard_payload
+from core.features.semantic_review_dashboard import (
+    build_layer1_semantic_review_dashboard_payload,
+    validate_layer1_semantic_review_dashboard_payload,
+)
 from services.r2.writer import R2Writer
 
 
@@ -124,7 +129,6 @@ def main(argv: list[str] | None = None) -> int:
         port=int(args.port),
         local_root=args.local_root,
     )
-    server = _DashboardHTTPServer((defaults.host, defaults.port), defaults)
     logger.info(
         "Layer 1 semantic-review dashboard listening on http://{}:{}",
         defaults.host,
@@ -139,6 +143,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     if defaults.local_root is not None:
         logger.info("Using local mock R2 root: {}", defaults.local_root)
+    if bool(args.smoke):
+        return _run_dashboard_smoke(defaults=defaults, args=args)
+    server = _DashboardHTTPServer((defaults.host, defaults.port), defaults)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -165,6 +172,129 @@ def _build_dashboard_payload(
         writer=writer,
     )
     return build_layer1_semantic_review_dashboard_payload(report)
+
+
+def _run_dashboard_smoke(*, defaults: _DashboardDefaults, args: argparse.Namespace) -> int:
+    """Run API and rendered-browser smoke checks for the semantic-review dashboard."""
+    payload = _build_dashboard_payload(
+        run_id=defaults.run_id,
+        from_date=defaults.from_date,
+        to_date=defaults.to_date,
+        ticker=defaults.ticker,
+        local_root=defaults.local_root,
+    )
+    smoke = validate_layer1_semantic_review_dashboard_payload(payload)
+    if smoke.get("status") != "pass":
+        logger.error("Dashboard smoke failed before browser QA: {}", json.dumps(smoke, indent=2))
+        return 1
+
+    browser_binary = _resolve_browser_binary(str(args.browser_binary))
+    screenshot_path = Path(args.smoke_screenshot) if args.smoke_screenshot else None
+    result = _run_browser_render_smoke(
+        browser_binary=browser_binary,
+        html=_render_dashboard_html(defaults),
+        payload=payload,
+        screenshot_path=screenshot_path,
+        timeout_seconds=float(args.smoke_timeout_seconds),
+    )
+    if result["status"] != "pass":
+        logger.error("Rendered dashboard smoke failed: {}", json.dumps(result, indent=2))
+        return 1
+    logger.info("Dashboard API and rendered-browser smoke passed: {}", json.dumps(result))
+    return 0
+
+
+def _run_browser_render_smoke(
+    *,
+    browser_binary: str,
+    html: str,
+    payload: Mapping[str, object],
+    screenshot_path: Path | None,
+    timeout_seconds: float,
+) -> dict[str, object]:
+    """Render the dashboard in Chromium and verify the chart is not visually misleading."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        active_screenshot = screenshot_path or Path(tmpdir) / "semantic_review_dashboard.png"
+        html_path = Path(tmpdir) / "semantic_review_dashboard.html"
+        html_path.write_text(_inject_smoke_payload(html, payload), encoding="utf-8")
+        user_data_dir = Path(tmpdir) / "chromium-profile"
+        command = [
+            browser_binary,
+            "--headless=new",
+            "--disable-gpu",
+            "--no-sandbox",
+            f"--user-data-dir={user_data_dir}",
+            "--window-size=1400,1000",
+            f"--screenshot={active_screenshot}",
+            "--dump-dom",
+            html_path.as_uri(),
+        ]
+        try:
+            completed = subprocess.run(
+                command,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return {
+                "status": "fail",
+                "reason": "browser_launch_failed",
+                "message": str(exc),
+                "browser_binary": browser_binary,
+            }
+
+        dom = completed.stdout
+        failures: list[str] = []
+        if completed.returncode != 0:
+            failures.append(f"chromium_exit_{completed.returncode}")
+        if 'data-smoke-status="pass"' not in dom:
+            failures.append("rendered_smoke_status_not_pass")
+        if '<svg class="chart"' not in dom:
+            failures.append("missing_rendered_svg_chart")
+        if not active_screenshot.exists() or active_screenshot.stat().st_size <= 0:
+            failures.append("missing_or_empty_screenshot")
+        return {
+            "status": "pass" if not failures else "fail",
+            "url": html_path.as_uri(),
+            "browser_binary": browser_binary,
+            "screenshot_path": str(active_screenshot),
+            "failures": failures,
+            "stderr_tail": completed.stderr[-1000:],
+        }
+
+
+def _inject_smoke_payload(html: str, payload: Mapping[str, object]) -> str:
+    """Inject an API payload into the dashboard shell for file-based browser smoke."""
+    payload_json = json.dumps(payload, sort_keys=True)
+    script = f"""  <script>
+    window.__semanticReviewSmokePayload = {payload_json};
+    const __semanticReviewSmokeFetch = window.fetch.bind(window);
+    window.fetch = async (url, options) => {{
+      if (String(url).startsWith('/api/review')) {{
+        return new Response(JSON.stringify(window.__semanticReviewSmokePayload), {{
+          status: 200,
+          headers: {{'Content-Type': 'application/json'}}
+        }});
+      }}
+      return __semanticReviewSmokeFetch(url, options);
+    }};
+  </script>
+"""
+    marker = "  <script>\n    const defaults"
+    if marker not in html:
+        return html.replace("</body>", f"{script}</body>")
+    return html.replace(marker, f"{script}{marker}", 1)
+
+
+def _resolve_browser_binary(browser_binary: str) -> str:
+    """Return a browser executable suitable for headless smoke rendering."""
+    requested = Path(browser_binary)
+    debian_chromium = Path("/usr/lib/chromium/chromium")
+    if requested.name == "chromium" and debian_chromium.exists():
+        return str(debian_chromium)
+    return browser_binary
 
 
 def _query_from_params(
@@ -230,6 +360,28 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         default=None,
         help="Optional filesystem root for the mock R2 store.",
+    )
+    parser.add_argument(
+        "--smoke",
+        action="store_true",
+        help="Run API and rendered Chromium smoke checks, then exit.",
+    )
+    parser.add_argument(
+        "--browser-binary",
+        default="chromium",
+        help="Browser executable used by --smoke for rendered dashboard QA.",
+    )
+    parser.add_argument(
+        "--smoke-screenshot",
+        type=Path,
+        default=None,
+        help="Optional screenshot path written by --smoke browser QA.",
+    )
+    parser.add_argument(
+        "--smoke-timeout-seconds",
+        type=float,
+        default=30.0,
+        help="Timeout for --smoke browser rendering.",
     )
     return parser.parse_args(argv)
 
@@ -403,7 +555,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
     .loading {{ color: var(--muted); padding: 8px 0; }}
   </style>
 </head>
-<body>
+<body data-smoke-status="loading">
   <header>
     <h1>Layer 1 semantic-review dashboard</h1>
     <p class="subtitle">A calm, beginner-friendly review page for checking whether the Apple news signal and the market benchmark story make sense before anyone relies on them.</p>
@@ -507,6 +659,15 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
     }}
 
     function deriveReviewState(payload) {{
+      const smoke = payload.smoke || {{}};
+      if (smoke.status === 'fail') {{
+        const failures = Array.isArray(smoke.failures) ? smoke.failures : [];
+        const hasHmmFailure = failures.some((failure) => String(failure.stage || '').includes('hmm') || String(failure.stage || '').includes('benchmark'));
+        return {{
+          state: hasHmmFailure ? 'Needs model/pipeline fix' : 'Needs data fix',
+          reason: 'The real-artifact smoke gate failed, so this dashboard is not ready for final human acceptance.'
+        }};
+      }}
       const summary = payload.summary || {{}};
       const warnings = Array.isArray(payload.warnings) ? payload.warnings : [];
       const hmmContext = payload.hmm_evaluation_context || {{}};
@@ -582,12 +743,27 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       const trainingWindows = Array.isArray(hmmContext.training_windows) ? hmmContext.training_windows : [];
       const hasManifest = manifestSummaries.length > 0;
       const hasTrainingWindow = trainingWindows.length > 0;
+      const hasRenderablePrice = rows.some((row) => {{
+        const price = row.price || {{}};
+        const value = Number(price.adj_close ?? price.close);
+        return Number.isFinite(value);
+      }});
+      const hasRenderableProbability = rows.some((row) => {{
+        const regime = row.hmm_regime || {{}};
+        return ['prob_bear', 'prob_sideways', 'prob_bull'].some((field) => Number.isFinite(Number(regime[field])));
+      }});
+      const rowWarnings = rows.flatMap((row) => Array.isArray(row.warnings) ? row.warnings : []);
       const missingReasons = [];
       if (!prices.length) missingReasons.push(`No ${{benchmarkTicker}} price rows were available for the chart.`);
       if (!rows.length) missingReasons.push('No HMM regime rows were available for the benchmark dates.');
+      if (rows.length && !hasRenderablePrice) missingReasons.push(`The ${{benchmarkTicker}} rows did not contain numeric close or adjusted-close values.`);
+      if (rows.length && !hasRenderableProbability) missingReasons.push('The HMM rows did not contain numeric regime probabilities.');
+      if (rowWarnings.includes('missing_price')) missingReasons.push('At least one benchmark chart date is missing benchmark price context.');
+      if (rowWarnings.includes('all_null_hmm_regime')) missingReasons.push('At least one HMM row has all label/probability fields null.');
       if (!hasManifest) missingReasons.push('The HMM manifest summary is missing, so we cannot verify the training window.');
       if (!hasTrainingWindow) missingReasons.push('The HMM training-window metadata is missing, so the model readiness check is incomplete.');
       if (missingReasons.length) {{
+        chartContainerEl.dataset.smokeStatus = 'fail';
         chartMetaEl.innerHTML = [
           badge('benchmark', benchmarkTicker),
           badge('date range', `${{payload.from_date || defaults.from_date}} → ${{payload.to_date || defaults.to_date}}`),
@@ -602,6 +778,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
           </div>`;
         return;
       }}
+      chartContainerEl.dataset.smokeStatus = 'pass';
 
       const width = 1040;
       const height = 360;
@@ -826,6 +1003,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
 
     function renderDashboard(payload) {{
       const reviewState = deriveReviewState(payload);
+      document.body.dataset.smokeStatus = payload.smoke?.status || 'unknown';
       renderTopline(payload, reviewState);
       renderMetrics(payload);
       renderChart(payload);

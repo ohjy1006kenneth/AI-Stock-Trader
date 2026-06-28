@@ -6,7 +6,10 @@ from typing import Any, cast
 
 from app.lab.semantic_review_dashboard import _DashboardDefaults, _render_dashboard_html
 from core.features.aapl_evidence import build_layer1_aapl_evidence_report
-from core.features.semantic_review_dashboard import build_layer1_semantic_review_dashboard_payload
+from core.features.semantic_review_dashboard import (
+    build_layer1_semantic_review_dashboard_payload,
+    validate_layer1_semantic_review_dashboard_payload,
+)
 from services.r2.paths import (
     layer1_news_preprocessing_path,
     layer1_news_relevance_gate_path,
@@ -169,6 +172,10 @@ def test_semantic_review_payload_flags_weak_and_duplicate_articles(tmp_path: Pat
     assert len(cast(list[dict[str, Any]], sections["stock_price_rows"])) == 2
     assert len(cast(list[dict[str, Any]], sections["date_aligned_price_hmm_rows"])) == 2
     assert payload["hmm_evaluation_context"]["warnings"] == []
+    assert payload["smoke"]["status"] == "pass"
+    assert payload["smoke"]["ready_for_final_human_acceptance"] is True
+    assert payload["smoke"]["visual_browser_qa_required"] is True
+    assert payload["smoke"]["required_stage_row_counts"]["benchmark_price_context"] == 2
 
     article_groups = cast(list[dict[str, Any]], payload["article_groups"])
     ferrari = next(item for item in article_groups if item["article_id"] == "ferrari-001")
@@ -203,6 +210,39 @@ def test_semantic_review_payload_suppresses_benchmark_chart_when_benchmark_missi
     assert payload["benchmark_price_series"] == []
     assert len(cast(list[dict[str, Any]], payload["benchmark_market_regime_series"])) == 2
     assert any(item["scope"] == "price_series" for item in cast(list[dict[str, Any]], payload["warnings"]))
+    smoke = cast(dict[str, Any], payload["smoke"])
+    assert smoke["status"] == "fail"
+    failure_reasons = {item["reason"] for item in cast(list[dict[str, Any]], smoke["failures"])}
+    assert "empty_benchmark_price_rows" in failure_reasons
+    assert "no_renderable_benchmark_prices" in failure_reasons
+
+
+def test_semantic_review_smoke_reports_missing_stage_keys(tmp_path: Path) -> None:
+    """The smoke result should name missing raw stage keys needed to repair the pilot."""
+    fixture = seed_semantic_review_fixture(local_root=tmp_path / "r2")
+    writer = fixture["writer"]
+    run_id = str(fixture["run_id"])
+    missing_key = layer1_topic_label_path("2026-05-21", run_id)
+    writer.delete_object(missing_key)
+
+    report = build_layer1_aapl_evidence_report(
+        run_id=run_id,
+        from_date="2026-05-21",
+        to_date="2026-05-22",
+        ticker="AAPL",
+        writer=writer,
+    )
+    payload = cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report))
+    smoke = validate_layer1_semantic_review_dashboard_payload(payload)
+    failures = cast(list[dict[str, Any]], smoke["failures"])
+    topic_failure = next(item for item in failures if item["stage"] == "topic_labels")
+
+    assert smoke["status"] == "fail"
+    assert topic_failure["reason"] == "missing_or_incomplete_artifacts"
+    assert missing_key in topic_failure["missing_or_tried_keys"]
+    assert layer1_topic_label_path("2026-05-21", f"{run_id}-2026-05-21") in topic_failure[
+        "missing_or_tried_keys"
+    ]
 
 
 def test_semantic_review_dashboard_html_is_beginner_friendly_and_collapsed() -> None:
@@ -224,6 +264,7 @@ def test_semantic_review_dashboard_html_is_beginner_friendly_and_collapsed() -> 
     assert "Benchmark chart blocked" in html
     assert "SPY" in html
     assert "Advanced evidence and raw rows" in html
+    assert "data-smoke-status" in html
     assert "<details open" not in html
     assert "<table" not in html
     assert "date_aligned_price_hmm_rows" in html

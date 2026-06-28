@@ -25,6 +25,7 @@ from core.features.aapl_evidence import (
     write_aapl_pilot_evidence_outputs,
 )
 from core.features.news_preprocessing import records_to_news_sentiment_frame
+from core.features.semantic_review_dashboard import build_layer1_semantic_review_dashboard_payload
 from services.r2.paths import (
     layer1_news_preprocessing_path,
     layer1_regime_path,
@@ -155,6 +156,20 @@ def test_build_layer1_aapl_evidence_report_loads_cached_bundle_when_stage_artifa
     assert report.article_count == 2
     assert report.date_count == 2
     assert report.load_warnings[0]["scope"] == "cached_bundle"
+    assert report.load_warnings[0]["raw_lookup_warnings"]
+
+    payload = build_layer1_semantic_review_dashboard_payload(report)
+    smoke = payload["smoke"]
+    assert smoke["status"] == "fail"
+    assert smoke["ready_for_final_human_acceptance"] is False
+    failure_reasons = {item["reason"] for item in smoke["failures"]}
+    assert "cached_bundle_fallback" in failure_reasons
+    cached_failure = next(
+        item for item in smoke["failures"] if item["reason"] == "cached_bundle_fallback"
+    )
+    assert "features/2026-05-21/news_sentiment_scored/cached-run.parquet" in cached_failure[
+        "missing_or_tried_keys"
+    ]
 
 
 def test_build_aapl_pilot_evidence_bundle_allows_proceed_only_after_human_acceptance(

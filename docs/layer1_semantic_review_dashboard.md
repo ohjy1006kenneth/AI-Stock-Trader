@@ -58,6 +58,27 @@ API example:
 curl -fsS 'http://127.0.0.1:8766/api/review?ticker=AAPL'
 ```
 
+Rendered smoke gate:
+
+```bash
+./.venv/bin/python -m app.lab.semantic_review_dashboard \
+  --run-id layer1-aapl-accuracy-2026-05-06-to-2026-05-28-v4-after-pr221 \
+  --from-date 2026-05-06 \
+  --to-date 2026-05-28 \
+  --ticker AAPL \
+  --host 127.0.0.1 \
+  --port 8766 \
+  --smoke \
+  --browser-binary chromium \
+  --smoke-screenshot artifacts/reports/diagnostics/semantic_review_dashboard_smoke.png
+```
+
+The smoke gate checks both the API payload and the rendered browser page. It fails when any
+required raw stage section has zero rows or missing date artifacts, when the page falls back
+to a cached evidence bundle, or when the rendered HMM benchmark chart would be empty or
+misleading. The browser check requires a real SVG chart, numeric SPY benchmark close values,
+numeric bear/sideways/bull probabilities, and HMM manifest/training-window metadata.
+
 ## Payload shape
 
 Top-level response fields include:
@@ -82,6 +103,8 @@ Top-level response fields include:
 - `recommendation_for_issue_202`: same semantic review recommendation used in the
   AAPL pilot flow
 - `warnings`: non-fatal load issues
+- `smoke`: machine-readable smoke result with required stage row counts, visual/browser QA
+  assertions, and exact missing/tried artifact keys when the dashboard cannot be accepted
 
 ## What the daily cards contain
 
