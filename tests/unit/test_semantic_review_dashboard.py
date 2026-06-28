@@ -8,6 +8,7 @@ from app.lab.semantic_review_dashboard import _DashboardDefaults, _render_dashbo
 from core.features.aapl_evidence import build_layer1_aapl_evidence_report
 from core.features.semantic_review_dashboard import (
     build_layer1_semantic_review_dashboard_payload,
+    build_layer1_semantic_review_readiness_summary,
     validate_layer1_semantic_review_dashboard_payload,
 )
 from services.r2.paths import (
@@ -21,6 +22,7 @@ from services.r2.paths import (
     pipeline_manifest_path,
     raw_price_path,
 )
+from services.r2.writer import R2Writer
 from tests.fixtures.semantic_review_support import seed_semantic_review_fixture
 
 
@@ -189,6 +191,135 @@ def test_semantic_review_payload_flags_weak_and_duplicate_articles(tmp_path: Pat
     assert duplicate["sentence_rows"][0]["text"].startswith("Apple shares climbed")
 
 
+def test_semantic_review_summary_gate_status_allows_complete_evidence(tmp_path: Path) -> None:
+    """Complete raw evidence should produce ready summary and gate-card fields."""
+    fixture = seed_semantic_review_fixture(local_root=tmp_path / "r2")
+    report = build_layer1_aapl_evidence_report(
+        run_id=str(fixture["run_id"]),
+        from_date="2026-05-21",
+        to_date="2026-05-22",
+        ticker="AAPL",
+        writer=fixture["writer"],
+    )
+    payload = cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report))
+    readiness = cast(dict[str, Any], payload["run_readiness"])
+    gates = {
+        str(item["key"]): cast(dict[str, Any], item)
+        for item in cast(list[dict[str, Any]], payload["gate_cards"])
+    }
+
+    assert readiness["ready_for_final_human_acceptance"] is True
+    assert readiness["recommendation"] == "ready for final human acceptance"
+    assert readiness["human_review_status"] == "can_start"
+    assert readiness["article_count"] == 4
+    assert readiness["sentence_row_count"] == 8
+    assert payload["missing_pipeline_sections"] == []
+    assert gates["news_preprocessing"]["status"] == "ready"
+    assert gates["text_embeddings"]["row_count"] == 4
+    assert gates["topic_labels"]["status"] == "ready"
+    assert gates["news_relevance_gate"]["status"] == "ready"
+    assert gates["sentiment_features"]["status"] == "ready"
+    assert gates["hmm_regime"]["status"] == "ready"
+    assert gates["stock_price_context"]["status"] == "ready"
+    assert gates["benchmark_price_context"]["status"] == "ready"
+
+
+def test_semantic_review_summary_gate_status_blocks_missing_evidence(tmp_path: Path) -> None:
+    """Missing stage and benchmark artifacts should be surfaced as blocked gate cards."""
+    fixture = seed_semantic_review_fixture(
+        local_root=tmp_path / "r2",
+        include_benchmark_price_rows=False,
+    )
+    writer = fixture["writer"]
+    run_id = str(fixture["run_id"])
+    writer.delete_object(layer1_topic_label_path("2026-05-21", run_id))
+    report = build_layer1_aapl_evidence_report(
+        run_id=run_id,
+        from_date="2026-05-21",
+        to_date="2026-05-22",
+        ticker="AAPL",
+        writer=writer,
+    )
+    payload = cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report))
+    readiness = cast(dict[str, Any], payload["run_readiness"])
+    gates = {
+        str(item["key"]): cast(dict[str, Any], item)
+        for item in cast(list[dict[str, Any]], payload["gate_cards"])
+    }
+    missing_labels = {
+        str(item["label"])
+        for item in cast(list[dict[str, Any]], payload["missing_pipeline_sections"])
+    }
+
+    assert readiness["ready_for_final_human_acceptance"] is False
+    assert readiness["recommendation"] == "not ready for final human acceptance"
+    assert readiness["human_review_status"] == "blocked_by_missing_pipeline_evidence"
+    assert gates["topic_labels"]["status"] == "blocked"
+    assert gates["benchmark_price_context"]["status"] == "blocked"
+    assert "BERTopic labels" in missing_labels
+    assert "Benchmark price rows" in missing_labels
+    assert layer1_topic_label_path("2026-05-21", run_id) in gates["topic_labels"][
+        "missing_or_tried_keys"
+    ]
+
+
+def test_semantic_review_summary_gate_status_blocks_cached_bundle_fallback(
+    tmp_path: Path,
+) -> None:
+    """Cached bundles should be prominent and remain blocked for final acceptance."""
+    run_id = "layer1-aapl-accuracy-2026-05-06-to-2026-05-28-v4-after-pr221"
+    fixture = seed_semantic_review_fixture(local_root=tmp_path / "empty-r2", run_id="unused")
+    report = build_layer1_aapl_evidence_report(
+        run_id=run_id,
+        from_date="2026-05-06",
+        to_date="2026-05-28",
+        ticker="AAPL",
+        writer=fixture["writer"],
+    )
+    payload = cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report))
+    readiness = cast(dict[str, Any], payload["run_readiness"])
+    sections = {
+        str(item["key"]): cast(dict[str, Any], item)
+        for item in cast(list[dict[str, Any]], payload["missing_pipeline_sections"])
+    }
+
+    assert any(item["scope"] == "cached_bundle" for item in cast(list[dict[str, Any]], payload["warnings"]))
+    assert readiness["ready_for_final_human_acceptance"] is False
+    assert readiness["recommendation"] == "not ready for final human acceptance"
+    assert "news_preprocessing" in sections
+    assert "sentiment_features" in sections
+    assert "stock_price_context" in sections
+
+
+def test_semantic_review_summary_gate_status_handles_no_row_runs(tmp_path: Path) -> None:
+    """A run with no loaded rows should return stable blocked readiness fields."""
+    writer = R2Writer(local_root=tmp_path / "empty-r2")
+    report = build_layer1_aapl_evidence_report(
+        run_id="semantic-review-no-row-run",
+        from_date="2026-05-21",
+        to_date="2026-05-22",
+        ticker="AAPL",
+        writer=writer,
+    )
+    payload = cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report))
+    readiness = cast(dict[str, Any], payload["run_readiness"])
+    gate_keys = {
+        str(item["key"])
+        for item in cast(list[dict[str, Any]], payload["missing_pipeline_sections"])
+    }
+
+    assert readiness["sentence_row_count"] == 0
+    assert readiness["article_count"] == 0
+    assert readiness["date_count"] == 0
+    assert readiness["ready_for_final_human_acceptance"] is False
+    assert "news_sentiment_scored" in gate_keys
+    assert "hmm_regime" in gate_keys
+    assert "stock_price_context" in gate_keys
+    assert build_layer1_semantic_review_readiness_summary(payload)["run_readiness"][
+        "recommendation"
+    ] == "not ready for final human acceptance"
+
+
 def test_semantic_review_payload_suppresses_benchmark_chart_when_benchmark_missing(
     tmp_path: Path,
 ) -> None:
@@ -258,6 +389,8 @@ def test_semantic_review_dashboard_html_is_beginner_friendly_and_collapsed() -> 
         )
     )
     assert "Layer 1 semantic-review dashboard" in html
+    assert "Summary / Gate Status" in html
+    assert "not ready for final human acceptance" in html
     assert "What am I looking at?" in html
     assert "Why does it matter?" in html
     assert "What would make this good or bad?" in html

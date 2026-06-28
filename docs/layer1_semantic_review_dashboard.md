@@ -7,6 +7,12 @@ review in plain language before showing raw evidence.
 
 ## What the dashboard shows
 
+- A Summary / Gate Status tab that says whether human semantic review can start
+  or is `not ready for final human acceptance` because required NLP, HMM, or
+  price evidence is missing.
+- Stable gate cards for preprocessing, embeddings, topic labels, relevance
+  gate rows, FinBERT rows, semantic aggregates, HMM rows, selected-ticker price
+  rows, benchmark price rows, and benchmark/HMM chart rows.
 - A simple status card that says whether the page is ready to review, needs a
   data fix, needs a model/pipeline fix, or does not yet have enough evidence.
 - Plain-language overview cards that answer:
@@ -85,6 +91,15 @@ Top-level response fields include:
 
 - `report`: the canonical report payload
 - `summary`: aggregate counts
+- `run_readiness`: stable run-level readiness fields including run ID, ticker,
+  date range, recommendation, human-review status, row/article/date counts,
+  accepted/flagged counts, blocked-gate count, and final-acceptance boolean
+- `summary_cards`: display-ready run ID, ticker, date range, recommendation,
+  human-review status, row/article/date, accepted, and flagged cards
+- `gate_cards`: one stable card per required evidence gate with status, row
+  count, artifact keys, missing/tried keys, failure reasons, and message
+- `missing_pipeline_sections`: blocked gate summaries used by the browser to
+  show why review remains blocked
 - `date_groups`: one entry per trading date
 - `article_groups`: flat article cards for cross-date inspection
 - `accepted_articles`: accepted article cards
@@ -136,3 +151,16 @@ Each `articles[]` entry contains:
 
 The raw rows are intentionally hidden behind expanders so the default page stays
 clean and easy to scan.
+
+## Summary / Gate Status tab
+
+The Summary / Gate Status tab is the first explicit readiness surface. It does
+not infer readiness from browser-only logic; it renders the API fields listed
+above.
+
+Human semantic review can start only when required NLP, HMM, selected-ticker
+price, and benchmark price evidence gates are ready. If any required section is
+empty, missing, loaded from the cached AAPL bundle, or blocked by HMM manifest /
+training-window warnings, the recommendation is `not ready for final human
+acceptance` and `human_review_status` is
+`blocked_by_missing_pipeline_evidence`.
