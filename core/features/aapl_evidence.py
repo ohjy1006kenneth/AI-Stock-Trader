@@ -416,6 +416,7 @@ def build_layer1_aapl_evidence_report(
         to_date=to_date,
         ticker=requested_ticker,
     )) is not None:
+        raw_lookup_warnings = list(load_warnings)
         scored_frame, regime_frame = cached_frames
         price_rows = []
         regime_manifest_context = _empty_regime_manifest_context(trading_date_list)
@@ -430,8 +431,9 @@ def build_layer1_aapl_evidence_report(
                 ),
                 "run_id": run_id,
                 "source": str(_find_cached_aapl_pilot_evidence_bundle_path(run_id)),
+                "raw_lookup_warnings": raw_lookup_warnings,
             }
-        ]
+        ] + raw_lookup_warnings
 
     if scored_frames:
         scored_frame = pd.concat(scored_frames, ignore_index=True)
@@ -1704,6 +1706,294 @@ def _find_cached_aapl_pilot_evidence_bundle_path(run_id: str) -> Path | None:
     return None
 
 
+def build_layer1_semantic_review_dashboard_smoke_result(
+    payload: Mapping[str, object],
+) -> dict[str, object]:
+    """Return machine-checkable readiness for the rendered dashboard smoke."""
+    summary = _json_mapping(payload.get("summary"))
+    warnings = [dict(item) for item in payload.get("warnings", []) if isinstance(item, Mapping)]
+    artifact_keys = _json_mapping(payload.get("artifact_keys"))
+    pipeline_sections = _json_mapping(payload.get("pipeline_sections"))
+    hmm_context = _json_mapping(payload.get("hmm_evaluation_context"))
+    benchmark_ticker = _optional_str(payload.get("benchmark_ticker")) or "SPY"
+    failures: list[dict[str, object]] = []
+
+    required_sections = (
+        ("news_preprocessing", "raw_preprocessing_rows", "news_preprocessing"),
+        ("text_embeddings", "article_embedding_rows", "text_embeddings"),
+        ("topic_labels", "topic_label_rows", "topic_labels"),
+        ("news_relevance_gate", "relevance_gate_rows", "news_relevance_gate"),
+        ("news_sentiment_scored", "finbert_sentence_rows", "news_sentiment_scored"),
+        ("sentiment_features", "semantic_aggregate_rows", "sentiment_features"),
+        ("hmm_regime", "date_level_regime_rows", "regime"),
+        ("raw_price_context", "stock_price_rows", "raw_prices"),
+    )
+    for stage_name, section_key, artifact_key_name in required_sections:
+        rows = pipeline_sections.get(section_key)
+        if not isinstance(rows, list) or not rows:
+            failures.append(
+                _dashboard_smoke_failure(
+                    stage=stage_name,
+                    reason="empty_rows",
+                    warnings=warnings,
+                    artifact_key_name=artifact_key_name,
+                    artifact_keys=artifact_keys,
+                )
+            )
+        elif _warning_keys_for_scopes(warnings, _warning_scopes_for_stage(stage_name)):
+            failures.append(
+                _dashboard_smoke_failure(
+                    stage=stage_name,
+                    reason="missing_or_incomplete_artifacts",
+                    warnings=warnings,
+                    artifact_key_name=artifact_key_name,
+                    artifact_keys=artifact_keys,
+                )
+            )
+
+    if any(str(item.get("scope")) == "cached_bundle" for item in warnings):
+        failures.append(
+            {
+                "stage": "cached_bundle",
+                "reason": "cached_bundle_fallback",
+                "message": (
+                    "Dashboard loaded cached AAPL evidence; final acceptance requires raw "
+                    "stage artifacts."
+                ),
+                "missing_or_tried_keys": _warning_keys_for_scopes(
+                    warnings,
+                    {
+                        "sentence_rows",
+                        "regime",
+                        "hmm_evaluation_context",
+                        "news_preprocessing",
+                        "text_embeddings",
+                        "topic_labels",
+                        "news_relevance_gate",
+                        "sentiment_features",
+                        "price_series",
+                    },
+                ),
+            }
+        )
+
+    benchmark_prices = [
+        dict(item)
+        for item in payload.get("benchmark_price_series", [])
+        if isinstance(item, Mapping)
+    ]
+    benchmark_rows = [
+        dict(item)
+        for item in payload.get("benchmark_market_regime_series", [])
+        if isinstance(item, Mapping)
+    ]
+    if not benchmark_prices:
+        failures.append(
+            _dashboard_smoke_failure(
+                stage="benchmark_price_context",
+                reason="empty_benchmark_price_rows",
+                warnings=warnings,
+                artifact_key_name="raw_prices",
+                artifact_keys=artifact_keys,
+            )
+        )
+    if not benchmark_rows:
+        failures.append(
+            {
+                "stage": "benchmark_hmm_chart",
+                "reason": "empty_benchmark_hmm_rows",
+                "message": "No date-aligned benchmark/HMM rows are available for the chart.",
+                "missing_or_tried_keys": _warning_keys_for_scopes(
+                    warnings,
+                    {"hmm_regime", "hmm_evaluation_context", "price_series"},
+                ),
+            }
+        )
+    if benchmark_rows and not any(_row_has_renderable_price(row) for row in benchmark_rows):
+        failures.append(
+            {
+                "stage": "benchmark_hmm_chart",
+                "reason": "no_renderable_benchmark_prices",
+                "message": f"{benchmark_ticker} benchmark rows have no numeric close/adj_close.",
+                "missing_or_tried_keys": _warning_keys_for_scopes(warnings, {"price_series"}),
+            }
+        )
+    if benchmark_rows and not any(_row_has_renderable_probabilities(row) for row in benchmark_rows):
+        failures.append(
+            {
+                "stage": "benchmark_hmm_chart",
+                "reason": "no_renderable_hmm_probabilities",
+                "message": "HMM chart rows have no numeric bear/sideways/bull probabilities.",
+                "missing_or_tried_keys": _warning_keys_for_scopes(
+                    warnings,
+                    {"hmm_regime", "hmm_evaluation_context"},
+                ),
+            }
+        )
+
+    if not _json_string_list(hmm_context.get("source_manifest_keys")):
+        failures.append(
+            {
+                "stage": "hmm_manifest",
+                "reason": "missing_hmm_manifest",
+                "message": "HMM manifest key is missing from the dashboard payload.",
+                "missing_or_tried_keys": _warning_keys_for_scopes(
+                    warnings,
+                    {"hmm_evaluation_context"},
+                ),
+            }
+        )
+    training_windows = hmm_context.get("training_windows")
+    if not isinstance(training_windows, list) or not training_windows:
+        failures.append(
+            {
+                "stage": "hmm_manifest",
+                "reason": "missing_training_window_metadata",
+                "message": "HMM training-window metadata is missing.",
+                "missing_or_tried_keys": _warning_keys_for_scopes(
+                    warnings,
+                    {"hmm_evaluation_context"},
+                ),
+            }
+        )
+    hmm_warnings = set(_json_string_list(hmm_context.get("warnings")))
+    blocker_warnings = {
+        "missing_hmm_manifest",
+        "missing_hmm_inference_dates",
+        "hmm_not_evaluated_for_date",
+        "stale_hmm_manifest",
+        "incomplete_hmm_feature_set",
+        "missing_training_window_metadata",
+    }
+    if hmm_warnings & blocker_warnings:
+        failures.append(
+            {
+                "stage": "hmm_evaluation_context",
+                "reason": "hmm_context_blocker_warnings",
+                "message": "HMM context has blocker warnings.",
+                "warning_codes": sorted(hmm_warnings & blocker_warnings),
+                "missing_or_tried_keys": _warning_keys_for_scopes(
+                    warnings,
+                    {"hmm_evaluation_context", "hmm_regime"},
+                ),
+            }
+        )
+
+    status = "pass" if not failures else "fail"
+    return {
+        "status": status,
+        "ready_for_final_human_acceptance": status == "pass",
+        "required_stage_row_counts": {
+            "news_preprocessing": int(summary.get("preprocessing_row_count") or 0),
+            "text_embeddings": int(summary.get("embedding_row_count") or 0),
+            "topic_labels": int(summary.get("topic_label_row_count") or 0),
+            "news_relevance_gate": int(summary.get("relevance_gate_row_count") or 0),
+            "news_sentiment_scored": int(summary.get("row_count") or 0),
+            "sentiment_features": int(summary.get("semantic_aggregate_row_count") or 0),
+            "hmm_regime": int(summary.get("hmm_regime_row_count") or 0),
+            "stock_price_context": int(summary.get("price_row_count") or 0),
+            "benchmark_price_context": len(benchmark_prices),
+            "benchmark_price_hmm_context": len(benchmark_rows),
+        },
+        "benchmark_ticker": benchmark_ticker,
+        "visual_browser_qa_required": True,
+        "visual_browser_qa_assertions": [
+            "Rendered page contains an SVG benchmark chart rather than the blocker card.",
+            f"{benchmark_ticker} benchmark close/adj_close values are numeric.",
+            "HMM bear, sideways, and bull probabilities are numeric and visible in the chart.",
+            "HMM manifest and training-window metadata are present.",
+        ],
+        "failures": failures,
+    }
+
+
+def _dashboard_smoke_failure(
+    *,
+    stage: str,
+    reason: str,
+    warnings: Sequence[Mapping[str, object]],
+    artifact_key_name: str,
+    artifact_keys: Mapping[str, object],
+) -> dict[str, object]:
+    """Return a normalized dashboard smoke failure with repair keys."""
+    warning_scopes = _warning_scopes_for_stage(stage)
+    if reason == "missing_or_incomplete_artifacts":
+        message = f"{stage} has missing or incomplete raw artifacts for the review window."
+    else:
+        message = f"{stage} did not provide nonzero rows for dashboard smoke."
+    return {
+        "stage": stage,
+        "reason": reason,
+        "message": message,
+        "resolved_artifact_keys": _json_string_list(artifact_keys.get(artifact_key_name)),
+        "missing_or_tried_keys": _warning_keys_for_scopes(warnings, warning_scopes),
+    }
+
+
+def _warning_scopes_for_stage(stage: str) -> set[str]:
+    """Return load-warning scopes that can explain a dashboard smoke stage failure."""
+    scopes_by_stage = {
+        "news_preprocessing": {"news_preprocessing"},
+        "text_embeddings": {"text_embeddings"},
+        "topic_labels": {"topic_labels"},
+        "news_relevance_gate": {"news_relevance_gate"},
+        "news_sentiment_scored": {"sentence_rows"},
+        "sentiment_features": {"sentiment_features"},
+        "hmm_regime": {"regime", "hmm_regime", "hmm_evaluation_context"},
+        "raw_price_context": {"price_series"},
+        "benchmark_price_context": {"price_series"},
+    }
+    return scopes_by_stage.get(stage, {stage})
+
+
+def _warning_keys_for_scopes(
+    warnings: Sequence[Mapping[str, object]],
+    scopes: set[str],
+) -> list[str]:
+    """Return exact missing or attempted keys reported for warning scopes."""
+    keys: list[str] = []
+    for warning in warnings:
+        if str(warning.get("scope")) not in scopes:
+            continue
+        for field_name in ("key", "fallback_key", "artifact_key", "manifest_key"):
+            value = _optional_str(warning.get(field_name))
+            if value:
+                keys.append(value)
+        tried_keys = warning.get("tried_keys")
+        if isinstance(tried_keys, Sequence) and not isinstance(tried_keys, str):
+            keys.extend(str(item) for item in tried_keys if _optional_str(item) is not None)
+        raw_warnings = warning.get("raw_lookup_warnings")
+        if isinstance(raw_warnings, Sequence) and not isinstance(raw_warnings, str):
+            keys.extend(
+                _warning_keys_for_scopes(
+                    [item for item in raw_warnings if isinstance(item, Mapping)],
+                    scopes,
+                )
+            )
+    return _dedupe_preserve_order(keys)
+
+
+def _row_has_renderable_price(row: Mapping[str, object]) -> bool:
+    """Return whether a date-aligned chart row has a numeric price."""
+    price = row.get("price")
+    if not isinstance(price, Mapping):
+        return False
+    return _maybe_float(price.get("adj_close")) is not None or _maybe_float(price.get("close")) is not None
+
+
+def _row_has_renderable_probabilities(row: Mapping[str, object]) -> bool:
+    """Return whether a date-aligned chart row has numeric HMM probabilities."""
+    regime = row.get("hmm_regime")
+    if not isinstance(regime, Mapping):
+        return False
+    probabilities = (
+        _maybe_float(regime.get("prob_bear")),
+        _maybe_float(regime.get("prob_sideways")),
+        _maybe_float(regime.get("prob_bull")),
+    )
+    return any(value is not None for value in probabilities)
+
+
 def _build_payload_from_report(report: Layer1SemanticReviewReport | Mapping[str, object]) -> dict[str, object]:
     """Normalize a report into the semantic-review dashboard payload shape."""
     report_dict = report.to_dict() if isinstance(report, Layer1SemanticReviewReport) else dict(report)
@@ -1769,6 +2059,7 @@ def _build_payload_from_report(report: Layer1SemanticReviewReport | Mapping[str,
         "artifact_keys": dict(report_dict.get("artifact_keys", {})),
         "warnings": list(report_dict.get("load_warnings", [])),
     }
+    payload["smoke"] = build_layer1_semantic_review_dashboard_smoke_result(payload)
     return payload
 
 
@@ -1781,6 +2072,7 @@ __all__ = [
     "SemanticReviewRegimeRow",
     "SemanticReviewSentenceRow",
     "build_layer1_aapl_evidence_report",
+    "build_layer1_semantic_review_dashboard_smoke_result",
     "_build_payload_from_report",
 ]
 
