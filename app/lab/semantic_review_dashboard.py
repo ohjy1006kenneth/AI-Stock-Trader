@@ -491,6 +491,12 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       padding: 8px 12px;
       font-weight: 700;
     }}
+    .tab-button.active {{
+      background: rgba(56, 189, 248, 0.24);
+      border-color: rgba(125, 211, 252, 0.72);
+      color: #ffffff;
+      box-shadow: 0 0 0 1px rgba(125, 211, 252, 0.18) inset;
+    }}
     .tab-panel {{ display: grid; gap: 14px; }}
     .readiness-line {{ color: var(--muted); margin-bottom: 0; }}
     .gate-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; }}
@@ -595,7 +601,9 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       </section>
 
       <nav class="tab-bar" aria-label="Semantic dashboard tabs">
-        <button class="tab-button active" type="button" role="tab" aria-selected="true" aria-controls="summary-gate-tab">Summary / Gate Status</button>
+        <button class="tab-button active" type="button" role="tab" aria-selected="true" aria-controls="summary-gate-tab" data-tab-target="summary-gate-tab">Summary / Gate Status</button>
+        <button class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="article-review-tab" data-tab-target="article-review-tab">Article Review</button>
+        <button class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="finbert-sentence-review-tab" data-tab-target="finbert-sentence-review-tab">FinBERT Sentence Review</button>
       </nav>
 
       <section class="panel tab-panel" id="summary-gate-tab" role="tabpanel">
@@ -608,12 +616,35 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
         <div class="gate-grid" id="gate-cards"></div>
       </section>
 
+      <section class="panel tab-panel hidden" id="article-review-tab" role="tabpanel" aria-hidden="true">
+        <div>
+          <h2>Article Review</h2>
+          <p class="section-note">Accepted AAPL article groups appear first. Articles with contamination, weak ticker evidence, or non-AAPL focus are separated below so they cannot be mistaken for clean evidence.</p>
+        </div>
+        <div id="article-review-content"></div>
+      </section>
+
+      <section class="panel tab-panel hidden" id="finbert-sentence-review-tab" role="tabpanel" aria-hidden="true">
+        <div>
+          <h2>FinBERT Sentence Review</h2>
+          <p class="section-note">This tab shows the full scored sentence rows, sentence/chunk index, source text field/order, sentiment probabilities, sentiment score, relevance score/state, and row granularity. If the scored-news artifact is missing full text, the dashboard shows a warning instead of pretending the evidence is complete.</p>
+        </div>
+        <div id="finbert-sentence-review-content"></div>
+        <details class="panel" id="advanced-section">
+          <summary>Advanced evidence and raw rows</summary>
+          <div class="body" id="advanced-content">
+            <p class="section-note">This section stays collapsed by default so the dashboard remains easy to scan. It is only here when you need the raw preprocessing, embeddings, topic labels, relevance-gate rows, FinBERT rows, semantic aggregates, and HMM artifacts for debugging.</p>
+            <div id="pipeline"></div>
+          </div>
+        </details>
+      </section>
+
       <section class="panel">
         <h2>Why does it matter?</h2>
         <div class="explain-grid">
           <div class="explain">
             <h3>Good sign</h3>
-            <p>The page shows a benchmark chart, clear daily article evidence, and the status stays on <strong>Ready to review</strong>.</p>
+            <p>The page shows a benchmark chart, clear article evidence, and the status stays on <strong>Ready to review</strong>.</p>
           </div>
           <div class="explain">
             <h3>Bad sign</h3>
@@ -633,20 +664,6 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
         <div id="chart-container" class="loading">Loading benchmark chart…</div>
       </section>
 
-      <section class="panel">
-        <h2>Daily review</h2>
-        <p class="section-note">Each trading day is collapsed by default. Open a day when you want the article-by-article evidence, and open the nested technical details only if you need the raw rows.</p>
-        <div id="dates" class="date-grid"></div>
-      </section>
-
-      <details class="panel" id="advanced-section">
-        <summary>Advanced evidence and raw rows</summary>
-        <div class="body" id="advanced-content">
-          <p class="section-note">This section stays collapsed by default so the dashboard remains easy to scan. It is only here when you need the raw preprocessing, embeddings, topic labels, relevance-gate rows, FinBERT rows, semantic aggregates, and HMM artifacts for debugging.</p>
-          <div id="pipeline"></div>
-        </div>
-      </details>
-
       <p class="footer-note">Tip: if anything in the chart is missing, trust the blocker card instead of guessing. The dashboard is designed to fail loudly when the benchmark or HMM metadata is incomplete.</p>
     </div>
   </main>
@@ -662,8 +679,10 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
     const stateExplainerEl = document.getElementById('state-explainer');
     const chartMetaEl = document.getElementById('chart-meta');
     const chartContainerEl = document.getElementById('chart-container');
-    const datesEl = document.getElementById('dates');
+    const articleReviewEl = document.getElementById('article-review-content');
+    const finbertReviewEl = document.getElementById('finbert-sentence-review-content');
     const pipelineEl = document.getElementById('pipeline');
+    const tabButtons = Array.from(document.querySelectorAll('[data-tab-target]'));
 
     function escapeHtml(value) {{
       return String(value ?? '')
@@ -1056,6 +1075,157 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
         </details>`;
     }}
 
+    function renderArticleReviewGroup(group) {{
+      const articles = Array.isArray(group.articles) ? group.articles : [];
+      const summary = group.summary || {{}};
+      return `
+        <details class="date-card">
+          <summary>
+            <span>${{escapeHtml(group.date || 'n/a')}}</span>
+            <span class="badge" title="Accepted article count">accepted: ${{Number(summary.accepted_article_count || 0)}}</span>
+            <span class="badge" title="Flagged article count">flagged: ${{Number(summary.flagged_article_count || 0)}}</span>
+            <span class="badge" title="Sentence count">sentences: ${{Number(summary.sentence_count || 0)}}</span>
+            <span class="badge" title="Article count">articles: ${{Number(group.article_count || 0)}}</span>
+          </summary>
+          <div class="body">
+            <p class="article-copy">What am I looking at? A date bucket for ${{escapeHtml(group.date || 'n/a')}}. Why does it matter? It keeps the accepted Apple articles together and makes contamination easy to separate. What would make this good or bad? Good: the accepted bucket contains Apple-focused stories with strong ticker evidence. Bad: the contamination bucket contains unrelated or weak stories that should not be treated as Apple evidence.</p>
+            <div class="row-list">
+              ${{articles.map(renderArticleDetails).join('') || '<p class="muted">No articles were loaded for this date.</p>'}}
+            </div>
+          </div>
+        </details>`;
+    }}
+
+    function renderSentenceRow(row) {{
+      const text = row.text || '';
+      const hasText = Boolean(String(text).trim());
+      const sourceTextField = row.source_text_field || 'n/a';
+      const sourceTextOrder = row.source_text_order ?? 'n/a';
+      const sentenceIndex = row.sentence_index ?? 'n/a';
+      const chunkIndex = row.chunk_index ?? 'n/a';
+      const rowGranularity = row.row_granularity || 'n/a';
+      const relevanceState = row.relevance_state || 'missing';
+      const probabilities = [
+        `pos: ${{formatNumber(row.positive_probability, 2)}}`,
+        `neg: ${{formatNumber(row.negative_probability, 2)}}`,
+        `neu: ${{formatNumber(row.neutral_probability, 2)}}`,
+      ].join(' · ');
+      return `
+        <details class="row-item">
+          <summary>
+            <span class="article-title">Sentence ${{escapeHtml(sentenceIndex)}} / chunk ${{escapeHtml(chunkIndex)}}</span>
+            <span class="badge">${{escapeHtml(rowGranularity)}}</span>
+            <span class="badge ${{hasText ? 'good' : 'warn'}}">${{hasText ? 'Text available' : 'Text missing'}}</span>
+            <span class="badge" title="Raw field: relevance_state">relevance: ${{escapeHtml(relevanceState)}}</span>
+          </summary>
+          <div class="body">
+            ${{hasText ? `<p class="article-copy"><strong>Full scored text:</strong> ${{escapeHtml(text)}}</p>` : `<div class="chart-blocker"><h3>Full scored text unavailable</h3><p>This row came from the scored-news artifact, but the full text field is missing.</p></div>`}}
+            ${{row.source_artifact_gap ? `<p class="article-copy bad"><strong>Source artifact gap:</strong> ${{escapeHtml(row.source_artifact_gap)}}</p>` : ''}}
+            <div class="compact-grid">
+              <div class="compact"><div class="k">Source text field</div><div class="v">${{escapeHtml(sourceTextField)}}</div><div class="k">raw: source_text_field</div></div>
+              <div class="compact"><div class="k">Source text order</div><div class="v">${{escapeHtml(sourceTextOrder)}}</div><div class="k">raw: source_text_order</div></div>
+              <div class="compact"><div class="k">Sentiment score</div><div class="v">${{formatNumber(row.sentiment_score, 2)}}</div><div class="k">raw: sentiment_score</div></div>
+              <div class="compact"><div class="k">Relevance score</div><div class="v">${{formatNumber(row.relevance_score, 2)}}</div><div class="k">raw: relevance_score</div></div>
+            </div>
+            <p class="article-copy"><strong>Probabilities:</strong> ${{probabilities}}</p>
+            <p class="article-copy"><strong>Sentence/chunk index:</strong> ${{escapeHtml(sentenceIndex)}} / ${{escapeHtml(chunkIndex)}}</p>
+          </div>
+        </details>`;
+    }}
+
+    function renderFinbertArticle(article) {{
+      const rows = Array.isArray(article.sentence_rows) ? article.sentence_rows : [];
+      const rowCount = rows.length;
+      return `
+        <details class="article">
+          <summary>
+            <span class="article-title">${{escapeHtml(article.headline || article.article_id || 'Article')}}</span>
+            <span class="badge ${{article.article_status === 'accepted' ? 'good' : 'warn'}}">${{article.article_status === 'accepted' ? 'Accepted for review' : 'Needs a closer look'}}</span>
+            <span class="badge" title="Raw field: article_id">article_id: ${{escapeHtml(article.article_id || 'n/a')}}</span>
+            <span class="badge" title="Raw field: sentence rows">rows: ${{rowCount}}</span>
+          </summary>
+          <div class="body">
+            <p class="article-copy">What am I looking at? The full FinBERT-scored text for one article and its sentence-level rows. Why does it matter? Reviewers can verify the exact text that was scored, the source-text field/order, and the sentiment/relevance outputs without guessing. What would make this good or bad? Good: all rows have full text and the ordering matches the scored artifact. Bad: the dashboard has to warn about missing text or a source-artifact gap.</p>
+            <div class="compact-grid">
+              <div class="compact"><div class="k">Published</div><div class="v">${{escapeHtml(article.published_at || 'n/a')}}</div><div class="k">raw: published_at</div></div>
+              <div class="compact"><div class="k">Source</div><div class="v">${{escapeHtml(article.source || 'n/a')}}</div><div class="k">raw: source</div></div>
+              <div class="compact"><div class="k">Full text available</div><div class="v">${{article.full_scored_text_available ? 'yes' : 'no'}}</div><div class="k">raw: full_scored_text_available</div></div>
+              <div class="compact"><div class="k">Missing text rows</div><div class="v">${{Number(article.missing_text_row_count || 0)}}</div><div class="k">raw: missing_text_row_count</div></div>
+            </div>
+            ${{article.full_scored_text ? `<p class="article-copy"><strong>Full scored text:</strong> ${{escapeHtml(article.full_scored_text)}}</p>` : ''}}
+            ${{article.full_scored_text_warning ? `<div class="chart-blocker"><h3>Full scored text unavailable</h3><p>${{escapeHtml(article.full_scored_text_warning)}}</p><p>${{escapeHtml(article.source_artifact_gap || 'The source artifact is missing full scored text.')}}</p></div>` : ''}}
+            <div class="row-list">
+              ${{rows.length ? rows.map(renderSentenceRow).join('') : '<p class="muted">No sentence rows were loaded for this article.</p>'}}
+            </div>
+          </div>
+        </details>`;
+    }}
+
+    function renderArticleReview(payload) {{
+      const review = payload.article_review || {{}};
+      const acceptedDateGroups = Array.isArray(review.accepted_date_groups) ? review.accepted_date_groups : [];
+      const contaminationDateGroups = Array.isArray(review.contamination_date_groups) ? review.contamination_date_groups : [];
+      const acceptedArticles = Number(review.accepted_article_count || 0);
+      const contaminationArticles = Number(review.contamination_article_count || 0);
+      const flagCounts = review.contamination_flag_counts || {{}};
+      const flagSummary = Object.keys(flagCounts).length
+        ? Object.entries(flagCounts).map(([flag, count]) => `${{flag}}: ${{count}}`).join(' · ')
+        : 'none';
+      articleReviewEl.innerHTML = `
+        <div class="hero-grid">
+          ${{metricCard('Accepted stories', acceptedArticles, 'article_review.accepted_article_count', 'Accepted Apple article groups that remain in the clean review path.')}}
+          ${{metricCard('Contamination stories', contaminationArticles, 'article_review.contamination_article_count', 'Flagged or off-topic stories that are intentionally separated from the clean article review path.')}}
+          ${{metricCard('Contamination flags', flagSummary, 'article_review.contamination_flag_counts', 'Why the contamination section exists.')}}
+        </div>
+        <div class="panel">
+          <h3>Accepted AAPL article groups</h3>
+          <p class="section-note">These groups are the default article-review path. They should read like Apple evidence, not a mixed pile of unrelated rows.</p>
+          <div class="date-grid">
+            ${{acceptedDateGroups.length ? acceptedDateGroups.map(renderArticleReviewGroup).join('') : '<p class="muted">No accepted article groups were found for this run.</p>'}}
+          </div>
+        </div>
+        <div class="panel">
+          <h3>Contamination / no-ticker-evidence articles</h3>
+          <p class="section-note">These groups are separated on purpose so reviewers can see what should not be treated as clean Apple evidence.</p>
+          <div class="date-grid">
+            ${{contaminationDateGroups.length ? contaminationDateGroups.map(renderArticleReviewGroup).join('') : '<p class="muted">No contamination articles were found for this run.</p>'}}
+          </div>
+        </div>`;
+    }}
+
+    function renderFinbertSentenceReview(payload) {{
+      const review = payload.finbert_sentence_review || {{}};
+      const articles = Array.isArray(review.articles) ? review.articles : [];
+      const missingTextWarnings = Array.isArray(review.missing_text_warnings) ? review.missing_text_warnings : [];
+      const sourceArtifactGaps = Array.isArray(review.source_artifact_gaps) ? review.source_artifact_gaps : [];
+      const rowCount = Number(review.row_count || 0);
+      finbertReviewEl.innerHTML = `
+        <div class="hero-grid">
+          ${{metricCard('Articles', articles.length, 'finbert_sentence_review.article_count', 'How many article-level FinBERT review cards are available.')}}
+          ${{metricCard('Sentence rows', rowCount, 'finbert_sentence_review.row_count', 'How many sentence/chunk rows were reviewed.')}}
+          ${{metricCard('Missing text rows', missingTextWarnings.length, 'finbert_sentence_review.missing_text_warning_count', 'How many scored rows are missing the full scored sentence text.')}}
+        </div>
+        ${{sourceArtifactGaps.length ? `<div class="chart-blocker"><h3>Source artifact gap</h3><p>The scored-news artifact is incomplete for at least one row, so the dashboard is telling you that instead of inventing missing text.</p><ul>${{sourceArtifactGaps.map((gap) => `<li>${{escapeHtml(gap.date || 'n/a')}} · ${{escapeHtml(gap.article_id || 'n/a')}} · sentence ${{escapeHtml(gap.sentence_index ?? 'n/a')}} / chunk ${{escapeHtml(gap.chunk_index ?? 'n/a')}}${{gap.source_text_field ? ` · source field: ${{escapeHtml(gap.source_text_field)}}` : ''}}${{gap.source_text_order !== undefined && gap.source_text_order !== null ? ` · source order: ${{escapeHtml(gap.source_text_order)}}` : ''}}</li>`).join('')}}</ul></div>` : ''}}
+        <div class="row-list">
+          ${{articles.length ? articles.map(renderFinbertArticle).join('') : '<p class="muted">No FinBERT sentence rows were found for this run.</p>'}}
+        </div>`;
+    }}
+
+    function setActiveTab(targetId) {{
+      tabButtons.forEach((button) => {{
+        const isActive = button.dataset.tabTarget === targetId;
+        button.classList.toggle('active', isActive);
+        button.setAttribute('aria-selected', String(isActive));
+        const panel = document.getElementById(button.dataset.tabTarget);
+        if (panel) panel.classList.toggle('hidden', !isActive);
+        if (panel) panel.setAttribute('aria-hidden', String(!isActive));
+      }});
+    }}
+
+    tabButtons.forEach((button) => {{
+      button.addEventListener('click', () => setActiveTab(button.dataset.tabTarget || 'summary-gate-tab'));
+    }});
+
     function renderPipelineSection(sections) {{
       const orderedSections = [
         ['Ticker/entity preprocessing', 'raw_preprocessing_rows'],
@@ -1089,10 +1259,10 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       renderMetrics(payload);
       renderSummaryGateStatus(payload);
       renderChart(payload);
+      renderArticleReview(payload);
+      renderFinbertSentenceReview(payload);
       renderPipelineSection(payload.pipeline_sections || {{}});
-      datesEl.innerHTML = Array.isArray(payload.date_groups) && payload.date_groups.length
-        ? payload.date_groups.map(renderDateGroup).join('')
-        : '<p class="muted">No review dates were found for this run and window.</p>';
+      setActiveTab('summary-gate-tab');
     }}
 
     async function loadReview() {{

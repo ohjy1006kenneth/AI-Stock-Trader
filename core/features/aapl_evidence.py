@@ -2039,6 +2039,7 @@ def _build_payload_from_report(report: Layer1SemanticReviewReport | Mapping[str,
         "article_groups": article_groups,
         "accepted_articles": accepted_articles,
         "flagged_articles": flagged_articles,
+        "article_review": _build_article_review_payload(date_groups=date_groups),
         "pipeline_sections": {
             "raw_preprocessing_rows": list(report_dict.get("preprocessing_rows", [])),
             "article_embedding_rows": list(report_dict.get("embedding_rows", [])),
@@ -2059,8 +2060,158 @@ def _build_payload_from_report(report: Layer1SemanticReviewReport | Mapping[str,
         "artifact_keys": dict(report_dict.get("artifact_keys", {})),
         "warnings": list(report_dict.get("load_warnings", [])),
     }
+    payload["finbert_sentence_review"] = _build_finbert_sentence_review_payload(article_groups)
     payload["smoke"] = build_layer1_semantic_review_dashboard_smoke_result(payload)
     return payload
+
+
+def _build_article_review_payload(*, date_groups: Sequence[dict[str, object]]) -> dict[str, object]:
+    """Return tab-ready article-review sections grouped into acceptance and contamination."""
+    accepted_date_groups: list[dict[str, object]] = []
+    contamination_date_groups: list[dict[str, object]] = []
+    accepted_articles: list[dict[str, object]] = []
+    contamination_articles: list[dict[str, object]] = []
+    contamination_flag_counts: dict[str, int] = {}
+
+    for date_group in date_groups:
+        accepted_group_articles = [dict(item) for item in _json_list(date_group.get("accepted_articles")) if isinstance(item, Mapping)]
+        contamination_group_articles = [
+            dict(item) for item in _json_list(date_group.get("flagged_articles")) if isinstance(item, Mapping)
+        ]
+        if accepted_group_articles:
+            accepted_date_groups.append(
+                {
+                    "date": date_group.get("date"),
+                    "article_count": len(accepted_group_articles),
+                    "summary": {
+                        "accepted_article_count": len(accepted_group_articles),
+                        "flagged_article_count": 0,
+                        "sentence_count": _maybe_int(date_group.get("sentence_count")) or 0,
+                    },
+                    "articles": accepted_group_articles,
+                }
+            )
+            accepted_articles.extend(accepted_group_articles)
+        if contamination_group_articles:
+            contamination_date_groups.append(
+                {
+                    "date": date_group.get("date"),
+                    "article_count": len(contamination_group_articles),
+                    "summary": {
+                        "accepted_article_count": 0,
+                        "flagged_article_count": len(contamination_group_articles),
+                        "sentence_count": _maybe_int(date_group.get("sentence_count")) or 0,
+                    },
+                    "articles": contamination_group_articles,
+                }
+            )
+            contamination_articles.extend(contamination_group_articles)
+            for article in contamination_group_articles:
+                for flag in _json_string_list(article.get("contamination_flags")):
+                    contamination_flag_counts[flag] = contamination_flag_counts.get(flag, 0) + 1
+
+    return {
+        "accepted_date_groups": accepted_date_groups,
+        "contamination_date_groups": contamination_date_groups,
+        "accepted_articles": accepted_articles,
+        "contamination_articles": contamination_articles,
+        "accepted_article_count": len(accepted_articles),
+        "contamination_article_count": len(contamination_articles),
+        "contamination_flag_counts": contamination_flag_counts,
+    }
+
+
+def _build_finbert_sentence_review_payload(article_groups: Sequence[Mapping[str, object]]) -> dict[str, object]:
+    """Return FinBERT sentence-review sections with article-level missing-text warnings."""
+    articles: list[dict[str, object]] = []
+    missing_text_warnings: list[dict[str, object]] = []
+    source_artifact_gaps: list[dict[str, object]] = []
+    row_count = 0
+
+    for article in article_groups:
+        sentence_rows = [dict(item) for item in _json_list(article.get("sentence_rows")) if isinstance(item, Mapping)]
+        row_count += len(sentence_rows)
+        article_missing_text = 0
+        full_text_parts: list[str] = []
+        decorated_rows: list[dict[str, object]] = []
+        for row in sentence_rows:
+            text = _optional_str(row.get("text"))
+            relevance_score = _maybe_float(row.get("relevance_score"))
+            missing_text = text is None
+            if text is not None:
+                full_text_parts.append(text)
+            else:
+                article_missing_text += 1
+                gap = {
+                    "article_id": article.get("article_id"),
+                    "date": article.get("date"),
+                    "sentence_index": row.get("sentence_index"),
+                    "chunk_index": row.get("chunk_index"),
+                    "source_text_field": row.get("source_text_field"),
+                    "source_text_order": row.get("source_text_order"),
+                    "gap": "missing_full_scored_sentence_text",
+                }
+                source_artifact_gaps.append(gap)
+                missing_text_warnings.append(
+                    {
+                        **gap,
+                        "warning": "Full scored sentence text is unavailable for this scored-news row.",
+                    }
+                )
+            decorated_rows.append(
+                {
+                    **row,
+                    "relevance_state": _relevance_state(relevance_score, threshold=DEFAULT_RELEVANCE_THRESHOLD),
+                    "has_full_scored_text": not missing_text,
+                    "missing_text_warning": (
+                        "Full scored sentence text is unavailable for this row."
+                        if missing_text
+                        else None
+                    ),
+                    "source_artifact_gap": (
+                        "The scored-news artifact is missing the full sentence text for this row."
+                        if missing_text
+                        else None
+                    ),
+                }
+            )
+        has_full_scored_text = article_missing_text == 0 and bool(sentence_rows)
+        articles.append(
+            {
+                **article,
+                "sentence_rows": decorated_rows,
+                "full_scored_text": " ".join(full_text_parts) if has_full_scored_text else None,
+                "full_scored_text_available": has_full_scored_text,
+                "missing_text_row_count": article_missing_text,
+                "full_scored_text_warning": (
+                    None
+                    if has_full_scored_text
+                    else (
+                        f"Full scored sentence text is unavailable for article {article.get('article_id')} "
+                        "because one or more scored-news rows are missing text."
+                    )
+                ),
+                "source_artifact_gap": (
+                    None
+                    if has_full_scored_text
+                    else (
+                        "The review depends on the scored-news artifact, but one or more rows do not "
+                        "contain full sentence text."
+                    )
+                ),
+            }
+        )
+
+    return {
+        "articles": articles,
+        "article_count": len(articles),
+        "row_count": row_count,
+        "missing_text_warning_count": len(missing_text_warnings),
+        "missing_text_warnings": missing_text_warnings,
+        "source_artifact_gaps": source_artifact_gaps,
+        "has_missing_text": bool(missing_text_warnings),
+        "has_full_scored_text": not missing_text_warnings,
+    }
 
 
 __all__ = [

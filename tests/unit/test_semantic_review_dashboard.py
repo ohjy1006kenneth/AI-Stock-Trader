@@ -189,6 +189,52 @@ def test_semantic_review_payload_flags_weak_and_duplicate_articles(tmp_path: Pat
     duplicate = next(item for item in article_groups if item["article_id"] == "aapl-001")
     assert "duplicate_normalized_headline" in duplicate["contamination_flags"]
     assert duplicate["sentence_rows"][0]["text"].startswith("Apple shares climbed")
+    assert payload["article_review"]["accepted_article_count"] == 1
+    assert payload["article_review"]["contamination_article_count"] == 3
+
+
+def test_semantic_review_payload_separates_tabs_and_reports_missing_sentence_text(
+    tmp_path: Path,
+) -> None:
+    """The payload should keep article review separate from sentence review and warn on missing text."""
+    fixture = seed_semantic_review_fixture(local_root=tmp_path / "r2")
+    report = build_layer1_aapl_evidence_report(
+        run_id=str(fixture["run_id"]),
+        from_date="2026-05-21",
+        to_date="2026-05-22",
+        ticker="AAPL",
+        writer=fixture["writer"],
+    )
+    report_dict = cast(dict[str, Any], report.to_dict())
+    article_groups = cast(list[dict[str, Any]], report_dict["article_groups"])
+    date_groups = cast(list[dict[str, Any]], report_dict["date_groups"])
+    for article in article_groups:
+        if article.get("article_id") == "aapl-001":
+            cast(list[dict[str, Any]], article["sentence_rows"])[1]["text"] = None
+            break
+    for date_group in date_groups:
+        articles = cast(list[dict[str, Any]], date_group.get("articles", []))
+        for article in articles:
+            if article.get("article_id") == "aapl-001":
+                cast(list[dict[str, Any]], article["sentence_rows"])[1]["text"] = None
+                break
+
+    payload = cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report_dict))
+    article_review = cast(dict[str, Any], payload["article_review"])
+    finbert_review = cast(dict[str, Any], payload["finbert_sentence_review"])
+    finbert_articles = cast(list[dict[str, Any]], finbert_review["articles"])
+    missing_article = next(item for item in finbert_articles if item["article_id"] == "aapl-001")
+
+    assert article_review["accepted_date_groups"][0]["articles"][0]["article_id"] == "aapl-003"
+    assert article_review["accepted_article_count"] == 1
+    assert article_review["contamination_article_count"] == 3
+    assert finbert_review["row_count"] == 8
+    assert finbert_review["has_missing_text"] is True
+    assert finbert_review["missing_text_warning_count"] == 1
+    assert finbert_review["source_artifact_gaps"][0]["gap"] == "missing_full_scored_sentence_text"
+    assert missing_article["full_scored_text_available"] is False
+    assert missing_article["full_scored_text_warning"]
+    assert any(row["missing_text_warning"] for row in missing_article["sentence_rows"])
 
 
 def test_semantic_review_summary_gate_status_allows_complete_evidence(tmp_path: Path) -> None:
@@ -315,9 +361,12 @@ def test_semantic_review_summary_gate_status_handles_no_row_runs(tmp_path: Path)
     assert "news_sentiment_scored" in gate_keys
     assert "hmm_regime" in gate_keys
     assert "stock_price_context" in gate_keys
-    assert build_layer1_semantic_review_readiness_summary(payload)["run_readiness"][
-        "recommendation"
-    ] == "not ready for final human acceptance"
+    readiness_summary = cast(
+        dict[str, Any], build_layer1_semantic_review_readiness_summary(payload)
+    )
+    assert readiness_summary["run_readiness"]["recommendation"] == (
+        "not ready for final human acceptance"
+    )
 
 
 def test_semantic_review_payload_suppresses_benchmark_chart_when_benchmark_missing(
@@ -390,6 +439,8 @@ def test_semantic_review_dashboard_html_is_beginner_friendly_and_collapsed() -> 
     )
     assert "Layer 1 semantic-review dashboard" in html
     assert "Summary / Gate Status" in html
+    assert "Article Review" in html
+    assert "FinBERT Sentence Review" in html
     assert "not ready for final human acceptance" in html
     assert "What am I looking at?" in html
     assert "Why does it matter?" in html
