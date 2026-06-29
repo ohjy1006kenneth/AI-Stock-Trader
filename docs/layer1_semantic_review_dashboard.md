@@ -10,9 +10,11 @@ review in plain language before showing raw evidence.
 - A Summary / Gate Status tab that says whether human semantic review can start
   or is `not ready for final human acceptance` because required NLP, HMM, or
   price evidence is missing.
-- Separate Article Review and FinBERT Sentence Review tabs so accepted AAPL
-  article groups do not get mixed with contamination/no-ticker-evidence rows,
-  and sentence-level FinBERT review can show the scored text directly.
+- Separate Article Review, FinBERT Sentence Review, and Ticker-Date Semantic
+  Aggregates tabs so accepted AAPL article groups do not get mixed with
+  contamination/no-ticker-evidence rows, sentence-level FinBERT review can show
+  the scored text directly, and the final `(date, ticker)` Layer 1 aggregate
+  rows stay clearly distinct from article evidence.
 - A dedicated HMM Regime tab that stays benchmark-first, uses SPY by default,
   and separates market-wide regime context from article/sentence evidence.
 - A simple status card that says whether the page is ready to review, needs a
@@ -55,8 +57,10 @@ shows a blocker card instead of an empty chart.
 2. Read the review state.
 3. Open the HMM Regime tab when you want market-wide regime context,
    benchmark price rows, and HMM metadata.
-4. Open the Article Review tab when you want article-level evidence.
-5. Open the FinBERT Sentence Review tab when you need the scored sentence text
+4. Open the Ticker-Date Semantic Aggregates tab when you want the final Layer 1
+   `(date, ticker)` feature row and its repeated context / aggregate values.
+5. Open the Article Review tab when you want article-level evidence.
+6. Open the FinBERT Sentence Review tab when you need the scored sentence text
    and row-level probabilities.
 
 ## Local run
