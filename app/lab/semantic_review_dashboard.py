@@ -604,6 +604,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
         <button class="tab-button active" type="button" role="tab" aria-selected="true" aria-controls="summary-gate-tab" data-tab-target="summary-gate-tab">Summary / Gate Status</button>
         <button class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="article-review-tab" data-tab-target="article-review-tab">Article Review</button>
         <button class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="finbert-sentence-review-tab" data-tab-target="finbert-sentence-review-tab">FinBERT Sentence Review</button>
+        <button class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="hmm-regime-tab" data-tab-target="hmm-regime-tab">HMM Regime</button>
       </nav>
 
       <section class="panel tab-panel" id="summary-gate-tab" role="tabpanel">
@@ -633,8 +634,31 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
         <details class="panel" id="advanced-section">
           <summary>Advanced evidence and raw rows</summary>
           <div class="body" id="advanced-content">
-            <p class="section-note">This section stays collapsed by default so the dashboard remains easy to scan. It is only here when you need the raw preprocessing, embeddings, topic labels, relevance-gate rows, FinBERT rows, semantic aggregates, and HMM artifacts for debugging.</p>
-            <div id="pipeline"></div>
+            <p class="section-note">This section stays collapsed by default so the dashboard remains easy to scan. It is only here when you need the raw preprocessing, embeddings, topic labels, relevance-gate rows, FinBERT rows, and semantic aggregates for debugging.</p>
+            <div id="nlp-pipeline"></div>
+          </div>
+        </details>
+      </section>
+
+      <section class="panel tab-panel hidden" id="hmm-regime-tab" role="tabpanel" aria-hidden="true">
+        <div>
+          <h2>HMM Regime</h2>
+          <p class="section-note">HMM applies once per market/inference date and is shared context for every ticker/news row on that date. This tab is intentionally benchmark-first: it uses the market benchmark, usually SPY, so reviewers can validate the regime context without confusing it with company-specific article evidence.</p>
+        </div>
+        <div class="hero-grid" id="hmm-summary-cards"></div>
+        <div class="compact-grid" id="hmm-context-cards"></div>
+        <div class="row-list" id="hmm-date-rows"></div>
+        <section class="panel chart-shell" id="chart-section">
+          <h3>Market benchmark and HMM regime</h3>
+          <p class="chart-note">HMM regime is market-wide and date-level, so the default chart uses <strong>SPY</strong> as the benchmark instead of the selected company ticker. The line shows the benchmark price trend; the colored markers and bars show which regime was most likely on each date and how confident the model was.</p>
+          <div id="chart-meta" class="chart-meta"></div>
+          <div id="chart-container" class="loading">Loading benchmark chart…</div>
+        </section>
+        <details class="panel" id="hmm-advanced-section">
+          <summary>Advanced HMM evidence and raw rows</summary>
+          <div class="body">
+            <p class="section-note">This section stays collapsed by default so the dashboard remains easy to scan. It is only here when you need the raw date-level regime, benchmark price, and benchmark/HMM alignment rows for debugging.</p>
+            <div id="hmm-pipeline"></div>
           </div>
         </details>
       </section>
@@ -657,13 +681,6 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
         </div>
       </section>
 
-      <section class="panel chart-shell" id="chart-section">
-        <h2>Market benchmark and HMM regime</h2>
-        <p class="chart-note">HMM regime is market-wide and date-level, so the default chart uses <strong>SPY</strong> as the benchmark instead of the selected company ticker. The line shows the benchmark price trend; the colored markers and bars show which regime was most likely on each date and how confident the model was.</p>
-        <div id="chart-meta" class="chart-meta"></div>
-        <div id="chart-container" class="loading">Loading benchmark chart…</div>
-      </section>
-
       <p class="footer-note">Tip: if anything in the chart is missing, trust the blocker card instead of guessing. The dashboard is designed to fail loudly when the benchmark or HMM metadata is incomplete.</p>
     </div>
   </main>
@@ -681,7 +698,11 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
     const chartContainerEl = document.getElementById('chart-container');
     const articleReviewEl = document.getElementById('article-review-content');
     const finbertReviewEl = document.getElementById('finbert-sentence-review-content');
-    const pipelineEl = document.getElementById('pipeline');
+    const nlpPipelineEl = document.getElementById('nlp-pipeline');
+    const hmmSummaryCardsEl = document.getElementById('hmm-summary-cards');
+    const hmmContextCardsEl = document.getElementById('hmm-context-cards');
+    const hmmDateRowsEl = document.getElementById('hmm-date-rows');
+    const hmmPipelineEl = document.getElementById('hmm-pipeline');
     const tabButtons = Array.from(document.querySelectorAll('[data-tab-target]'));
 
     function escapeHtml(value) {{
@@ -783,6 +804,19 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       return `<span class="badge"><strong>${{escapeHtml(label)}}:</strong> ${{escapeHtml(value)}}</span>`;
     }}
 
+    function compactCard(label, value, rawName) {{
+      return `<div class="compact"><div class="k">${{escapeHtml(label)}}</div><div class="v">${{escapeHtml(value)}}</div><div class="k">${{escapeHtml(rawName)}}</div></div>`;
+    }}
+
+    function dominanceLabel(regime) {{
+      const bear = Number(regime?.prob_bear ?? 0);
+      const sideways = Number(regime?.prob_sideways ?? 0);
+      const bull = Number(regime?.prob_bull ?? 0);
+      if (bear >= sideways && bear >= bull) return 'bear';
+      if (bull >= bear && bull >= sideways) return 'bull';
+      return 'sideways';
+    }}
+
     function renderMetrics(payload) {{
       const summary = payload.summary || {{}};
       const benchmarkTicker = payload.benchmark_ticker || 'SPY';
@@ -795,6 +829,63 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       ].join('');
     }}
 
+    function renderHmmOverview(payload) {{
+      const hmmContext = payload.hmm_evaluation_context || {{}};
+      const benchmarkTicker = payload.benchmark_ticker || 'SPY';
+      const benchmarkSeries = Array.isArray(payload.benchmark_market_regime_series) ? payload.benchmark_market_regime_series : [];
+      const benchmarkPrices = Array.isArray(payload.benchmark_price_series) ? payload.benchmark_price_series : [];
+      const trainingWindows = Array.isArray(hmmContext.training_windows) ? hmmContext.training_windows : [];
+      const sourceManifestKeys = Array.isArray(hmmContext.source_manifest_keys) ? hmmContext.source_manifest_keys : [];
+      const inputFeatureColumns = Array.isArray(hmmContext.input_feature_columns_used) ? hmmContext.input_feature_columns_used : [];
+      const missingFeatureColumns = Array.isArray(hmmContext.dropped_feature_columns) ? hmmContext.dropped_feature_columns : [];
+      const warnings = Array.isArray(hmmContext.warnings) ? hmmContext.warnings : [];
+      const expectedFeatureColumns = Array.isArray(hmmContext.expected_input_feature_columns) ? hmmContext.expected_input_feature_columns : [];
+      if (hmmSummaryCardsEl) {{
+        hmmSummaryCardsEl.innerHTML = [
+          metricCard('Benchmark', benchmarkTicker, 'benchmark_ticker', 'The market benchmark used for the HMM regime chart and date rows.'),
+          metricCard('Date rows', benchmarkSeries.length, 'benchmark_market_regime_series.length', 'How many benchmark/HMM rows are available for review.'),
+          metricCard('Benchmark prices', benchmarkPrices.length, 'benchmark_price_series.length', 'How many SPY/S&P 500 price rows are available.'),
+          metricCard('Training windows', trainingWindows.length, 'hmm_evaluation_context.training_windows.length', 'How many HMM training-window metadata blocks are present.'),
+        ].join('');
+      }}
+      if (hmmContextCardsEl) {{
+        hmmContextCardsEl.innerHTML = [
+          compactCard('Scope', hmmContext.scope || 'n/a', 'raw: hmm_evaluation_context.scope'),
+          compactCard('Applies to', hmmContext.applies_to || 'n/a', 'raw: hmm_evaluation_context.applies_to'),
+          compactCard('Input columns used', inputFeatureColumns.length ? inputFeatureColumns.join(', ') : 'n/a', 'raw: hmm_evaluation_context.input_feature_columns_used'),
+          compactCard('Missing feature columns', missingFeatureColumns.length ? missingFeatureColumns.join(', ') : 'none', 'raw: hmm_evaluation_context.dropped_feature_columns'),
+          compactCard('Source manifest keys', sourceManifestKeys.length ? sourceManifestKeys.join(', ') : 'n/a', 'raw: hmm_evaluation_context.source_manifest_keys'),
+          compactCard('Warnings', warnings.length ? warnings.join(', ') : 'none', 'raw: hmm_evaluation_context.warnings'),
+          compactCard('Expected feature columns', expectedFeatureColumns.length ? expectedFeatureColumns.join(', ') : 'n/a', 'raw: hmm_evaluation_context.expected_input_feature_columns'),
+        ].join('');
+      }}
+      if (hmmDateRowsEl) {{
+        hmmDateRowsEl.innerHTML = benchmarkSeries.length
+          ? benchmarkSeries.map((row) => {{
+              const regime = row.hmm_regime || {{}};
+              const price = row.price || {{}};
+              const label = regime.regime || dominanceLabel(regime);
+              const closeValue = price.adj_close ?? price.close;
+              const rowWarnings = Array.isArray(row.warnings) && row.warnings.length ? row.warnings.join(', ') : 'none';
+              return `
+                <div class="row-item">
+                  <div class="article-title">
+                    <span class="badge">${{escapeHtml(row.date || 'n/a')}}</span>
+                    <span class="badge ${{label === 'bear' ? 'bad' : label === 'bull' ? 'good' : 'warn'}}">${{escapeHtml(label)}}</span>
+                    <span class="badge">confidence ${{formatNumber(regime.confidence, 2)}}</span>
+                  </div>
+                  <div class="compact-grid">
+                    <div class="compact"><div class="k">Benchmark close</div><div class="v">${{formatNumber(closeValue, 2)}}</div><div class="k">raw: close / adj_close</div></div>
+                    <div class="compact"><div class="k">Bear prob</div><div class="v">${{formatNumber(regime.prob_bear, 2)}}</div><div class="k">raw: prob_bear</div></div>
+                    <div class="compact"><div class="k">Sideways prob</div><div class="v">${{formatNumber(regime.prob_sideways, 2)}}</div><div class="k">raw: prob_sideways</div></div>
+                    <div class="compact"><div class="k">Bull prob</div><div class="v">${{formatNumber(regime.prob_bull, 2)}}</div><div class="k">raw: prob_bull</div></div>
+                    <div class="compact"><div class="k">Warnings</div><div class="v">${{escapeHtml(rowWarnings)}}</div><div class="k">raw: row.warnings</div></div>
+                  </div>
+                </div>`;
+            }}).join('')
+          : '<p class="muted">No benchmark/HMM rows are available for this run.</p>';
+      }}
+    }}
     function renderSummaryGateStatus(payload) {{
       const readiness = payload.run_readiness || {{}};
       const cards = Array.isArray(payload.summary_cards) ? payload.summary_cards : [];
@@ -1226,7 +1317,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       button.addEventListener('click', () => setActiveTab(button.dataset.tabTarget || 'summary-gate-tab'));
     }});
 
-    function renderPipelineSection(sections) {{
+    function renderNlpPipelineSection(sections) {{
       const orderedSections = [
         ['Ticker/entity preprocessing', 'raw_preprocessing_rows'],
         ['Article embeddings', 'article_embedding_rows'],
@@ -1234,11 +1325,8 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
         ['Pre-FinBERT relevance gate', 'relevance_gate_rows'],
         ['Sentence/chunk FinBERT rows', 'finbert_sentence_rows'],
         ['Semantic aggregates', 'semantic_aggregate_rows'],
-        ['Date-level HMM regime', 'date_level_regime_rows'],
-        ['Stock benchmark rows', 'stock_price_rows'],
-        ['Date-aligned benchmark/HMM rows', 'date_aligned_price_hmm_rows'],
       ];
-      pipelineEl.innerHTML = orderedSections.map(([label, key]) => {{
+      nlpPipelineEl.innerHTML = orderedSections.map(([label, key]) => {{
         const rows = Array.isArray(sections?.[key]) ? sections[key] : [];
         const sample = rows[0] || null;
         return `
@@ -1246,6 +1334,26 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
             <summary>${{escapeHtml(label)}} <span class="badge">rows: ${{rows.length}}</span></summary>
             <div class="body">
               <p class="section-note">What am I looking at? A technical sample from the ${{escapeHtml(label.toLowerCase())}} stage. Why does it matter? It helps debug the pipeline when the human-friendly view says something is missing. What would make this good or bad? Good: rows exist and the sample is coherent. Bad: an empty section or a sample that shows unexpected nulls or keys.</p>
+              ${{sample ? `<div class="row-item"><pre>${{escapeHtml(JSON.stringify(sample, null, 2))}}</pre></div>` : '<p class="muted">No rows available.</p>'}}
+            </div>
+          </details>`;
+      }}).join('');
+    }}
+
+    function renderHmmPipelineSection(sections) {{
+      const orderedSections = [
+        ['Date-level HMM regime', 'date_level_regime_rows'],
+        ['Stock benchmark rows', 'stock_price_rows'],
+        ['Date-aligned benchmark/HMM rows', 'date_aligned_price_hmm_rows'],
+      ];
+      hmmPipelineEl.innerHTML = orderedSections.map(([label, key]) => {{
+        const rows = Array.isArray(sections?.[key]) ? sections[key] : [];
+        const sample = rows[0] || null;
+        return `
+          <details>
+            <summary>${{escapeHtml(label)}} <span class="badge">rows: ${{rows.length}}</span></summary>
+            <div class="body">
+              <p class="section-note">What am I looking at? A technical sample from the ${{escapeHtml(label.toLowerCase())}} stage. Why does it matter? It confirms the HMM tab is backed by real date-level regime rows and benchmark price context. What would make this good or bad? Good: rows exist and the sample is coherent. Bad: an empty section or a sample that shows unexpected nulls or keys.</p>
               ${{sample ? `<div class="row-item"><pre>${{escapeHtml(JSON.stringify(sample, null, 2))}}</pre></div>` : '<p class="muted">No rows available.</p>'}}
             </div>
           </details>`;
@@ -1261,7 +1369,9 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       renderChart(payload);
       renderArticleReview(payload);
       renderFinbertSentenceReview(payload);
-      renderPipelineSection(payload.pipeline_sections || {{}});
+      renderHmmOverview(payload);
+      renderNlpPipelineSection(payload.pipeline_sections || {{}});
+      renderHmmPipelineSection(payload.pipeline_sections || {{}});
       setActiveTab('summary-gate-tab');
     }}
 

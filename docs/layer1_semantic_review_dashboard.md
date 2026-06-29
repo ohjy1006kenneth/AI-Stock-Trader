@@ -13,15 +13,17 @@ review in plain language before showing raw evidence.
 - Separate Article Review and FinBERT Sentence Review tabs so accepted AAPL
   article groups do not get mixed with contamination/no-ticker-evidence rows,
   and sentence-level FinBERT review can show the scored text directly.
-- Stable gate cards for preprocessing, embeddings, topic labels, relevance
-  gate rows, FinBERT rows, semantic aggregates, HMM rows, selected-ticker price
-  rows, benchmark price rows, and benchmark/HMM chart rows.
+- A dedicated HMM Regime tab that stays benchmark-first, uses SPY by default,
+  and separates market-wide regime context from article/sentence evidence.
 - A simple status card that says whether the page is ready to review, needs a
   data fix, needs a model/pipeline fix, or does not yet have enough evidence.
 - Plain-language overview cards that answer:
   - What am I looking at?
   - Why does it matter?
   - What would make this good or bad?
+- Stable gate cards for preprocessing, embeddings, topic labels, relevance
+  gate rows, FinBERT rows, semantic aggregates, HMM rows, selected-ticker price
+  rows, benchmark price rows, and benchmark/HMM chart rows.
 - A market benchmark chart that uses SPY by default, because the HMM regime is
   market-wide and date-level rather than company-specific.
 - Article review cards that stay collapsed by default and show accepted AAPL
@@ -51,8 +53,10 @@ shows a blocker card instead of an empty chart.
 
 1. Check the benchmark chart first.
 2. Read the review state.
-3. Open the Article Review tab when you want article-level evidence.
-4. Open the FinBERT Sentence Review tab when you need the scored sentence text
+3. Open the HMM Regime tab when you want market-wide regime context,
+   benchmark price rows, and HMM metadata.
+4. Open the Article Review tab when you want article-level evidence.
+5. Open the FinBERT Sentence Review tab when you need the scored sentence text
    and row-level probabilities.
 
 ## Local run
