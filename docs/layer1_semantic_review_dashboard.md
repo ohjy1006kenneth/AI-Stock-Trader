@@ -15,6 +15,12 @@ review in plain language before showing raw evidence.
   contamination/no-ticker-evidence rows, sentence-level FinBERT review can show
   the scored text directly, and the final `(date, ticker)` Layer 1 aggregate
   rows stay clearly distinct from article evidence.
+- A Topic / Relevance Pipeline tab that follows each article from ticker/entity
+  preprocessing through article embeddings, BERTopic labels, and the
+  pre-FinBERT relevance gate. It shows ticker/source ticker evidence, entity
+  evidence, embedding cache/model metadata, topic ID/probability/model metadata,
+  relevance decisions, relevance score components, reason codes, and missing
+  evidence flags.
 - A dedicated HMM Regime tab that stays benchmark-first, uses SPY by default,
   and separates market-wide regime context from article/sentence evidence.
 - A simple status card that says whether the page is ready to review, needs a
@@ -59,8 +65,11 @@ shows a blocker card instead of an empty chart.
    benchmark price rows, and HMM metadata.
 4. Open the Ticker-Date Semantic Aggregates tab when you want the final Layer 1
    `(date, ticker)` feature row and its repeated context / aggregate values.
-5. Open the Article Review tab when you want article-level evidence.
-6. Open the FinBERT Sentence Review tab when you need the scored sentence text
+5. Open the Topic / Relevance Pipeline tab when you need to know why an article
+   was accepted, marked borderline, rejected, or blocked by missing/default
+   relevance evidence.
+6. Open the Article Review tab when you want article-level evidence.
+7. Open the FinBERT Sentence Review tab when you need the scored sentence text
    and row-level probabilities.
 
 ## Local run
@@ -124,6 +133,10 @@ Top-level response fields include:
 - `article_review`: tab-ready accepted and contamination date groups plus counts
 - `finbert_sentence_review`: article-level sentence rows, full-text availability,
   missing-text warnings, and source-artifact gaps
+- `topic_relevance_review`: article-level topic/relevance rows grouped by date,
+  summary counts for accepted/borderline/rejected/missing-or-default states, and
+  blocker rows when embeddings, topic labels, relevance-gate rows, ticker/entity
+  evidence, or supporting semantic evidence are missing
 - `price_series`: selected-ticker price context rows
 - `benchmark_ticker`: the market benchmark used for the HMM chart
 - `benchmark_price_series`: benchmark price rows
@@ -171,6 +184,27 @@ Each `articles[]` entry contains:
 
 The raw rows are intentionally hidden behind expanders so the default page stays
 clean and easy to scan.
+
+## Topic / Relevance Pipeline tab
+
+The Topic / Relevance Pipeline tab is the reviewer-facing evidence trail for
+pre-FinBERT inclusion decisions. Each article row includes:
+
+- ticker evidence from requested ticker hits, preprocessing ticker mentions, and
+  source ticker tags
+- entity evidence from preprocessing and relevance-gate rows
+- article embedding cache metadata, including cache key, model, revision, and
+  dimension when available
+- BERTopic metadata, including topic ID, probability, label, keywords, model,
+  model version, and artifact key when available
+- relevance decision, relevance score, ticker/financial/topic sub-scores, reason
+  codes, and missing evidence flags
+
+If `relevance_score=1.0` appears without supporting ticker/entity/semantic
+evidence, the tab labels the score as `default_or_unknown_not_strong_evidence`
+and flags `default_relevance_without_supporting_evidence`. Missing embedding or
+topic rows appear as evidence blockers and keep final human acceptance blocked
+through the existing gate-card readiness checks.
 
 ## Summary / Gate Status tab
 

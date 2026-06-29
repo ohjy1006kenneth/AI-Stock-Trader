@@ -252,6 +252,107 @@ def test_semantic_review_payload_separates_tabs_and_reports_missing_sentence_tex
     assert any(row["missing_text_warning"] for row in missing_article["sentence_rows"])
 
 
+def test_semantic_review_topic_relevance_tab_flags_default_relevance(
+    tmp_path: Path,
+) -> None:
+    """Topic/relevance review should expose supporting evidence and default relevance flags."""
+    fixture = seed_semantic_review_fixture(local_root=tmp_path / "r2")
+    report = build_layer1_aapl_evidence_report(
+        run_id=str(fixture["run_id"]),
+        from_date="2026-05-21",
+        to_date="2026-05-22",
+        ticker="AAPL",
+        writer=fixture["writer"],
+    )
+    payload = cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report))
+    review = cast(dict[str, Any], payload["topic_relevance_review"])
+    articles = {
+        str(item["article_id"]): cast(dict[str, Any], item)
+        for item in cast(list[dict[str, Any]], review["articles"])
+    }
+
+    accepted = articles["aapl-003"]
+    defaulted = articles["ferrari-001"]
+
+    assert cast(dict[str, Any], review["summary"])["accepted_count"] == 3
+    assert accepted["evidence_status"] == "accepted"
+    assert accepted["ticker_relevance_score"] == 1.0
+    assert accepted["financial_relevance_score"] == 0.8
+    assert accepted["topic_relevance_score"] == 0.82
+    assert accepted["reason_codes"] == ["target_entity_mention"]
+    assert accepted["embedding_evidence"][0]["embedding_model"] == "sentence-transformers/test"
+    assert accepted["topic_evidence"][0]["topic_id"] == 0
+    assert accepted["topic_evidence"][0]["topic_probability"] == 0.82
+    assert accepted["missing_evidence_flags"] == []
+
+    assert defaulted["relevance_score"] == 1.0
+    assert defaulted["evidence_status"] == "missing_or_default"
+    assert defaulted["relevance_score_interpretation"] == "default_or_unknown_not_strong_evidence"
+    assert "missing_ticker_evidence" in defaulted["missing_evidence_flags"]
+    assert "rejected_by_relevance_gate" in defaulted["missing_evidence_flags"]
+    assert "default_relevance_without_supporting_evidence" in defaulted["missing_evidence_flags"]
+    assert defaulted["ticker_evidence"]["source_tickers"] == ["AAPL"]
+    assert defaulted["entity_evidence"]["preprocessing_entity_mentions"] == ["Ferrari"]
+    assert review["missing_evidence_blockers"]
+
+
+def test_semantic_review_topic_relevance_tab_covers_borderline_rejected_and_missing_rows(
+    tmp_path: Path,
+) -> None:
+    """Topic/relevance review should classify borderline, rejected, and missing-evidence rows."""
+    fixture = seed_semantic_review_fixture(local_root=tmp_path / "r2")
+    report = build_layer1_aapl_evidence_report(
+        run_id=str(fixture["run_id"]),
+        from_date="2026-05-21",
+        to_date="2026-05-22",
+        ticker="AAPL",
+        writer=fixture["writer"],
+    )
+    report_dict = cast(dict[str, Any], report.to_dict())
+    report_dict["embedding_rows"] = [
+        row
+        for row in cast(list[dict[str, Any]], report_dict["embedding_rows"])
+        if row["article_id"] != "aapl-001"
+    ]
+    report_dict["topic_label_rows"] = [
+        row
+        for row in cast(list[dict[str, Any]], report_dict["topic_label_rows"])
+        if row["article_id"] != "aapl-001"
+    ]
+    for row in cast(list[dict[str, Any]], report_dict["relevance_gate_rows"]):
+        if row["article_id"] == "aapl-002":
+            row["relevance_decision"] = "borderline"
+            row["relevance_score"] = 0.64
+            row["reason_codes"] = ["borderline_topic_evidence"]
+        if row["article_id"] == "aapl-003":
+            row["relevance_decision"] = "rejected"
+            row["relevance_score"] = 0.2
+            row["ticker_relevance_score"] = 0.0
+            row["reason_codes"] = ["low_ticker_relevance"]
+
+    payload = cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report_dict))
+    review = cast(dict[str, Any], payload["topic_relevance_review"])
+    articles = {
+        str(item["article_id"]): cast(dict[str, Any], item)
+        for item in cast(list[dict[str, Any]], review["articles"])
+    }
+    summary = cast(dict[str, Any], review["summary"])
+
+    assert articles["aapl-001"]["evidence_status"] == "missing_or_default"
+    assert "missing_embedding" in articles["aapl-001"]["missing_evidence_flags"]
+    assert "missing_topic_label" in articles["aapl-001"]["missing_evidence_flags"]
+    assert articles["aapl-002"]["evidence_status"] == "borderline"
+    assert articles["aapl-002"]["relevance_score_interpretation"] == "computed_borderline"
+    assert "borderline_relevance_gate" in articles["aapl-002"]["missing_evidence_flags"]
+    assert articles["aapl-003"]["evidence_status"] == "rejected"
+    assert articles["aapl-003"]["relevance_score_interpretation"] == "computed_rejected"
+    assert "rejected_by_relevance_gate" in articles["aapl-003"]["missing_evidence_flags"]
+    assert summary["missing_embedding_count"] == 1
+    assert summary["missing_topic_count"] == 1
+    assert summary["borderline_count"] == 1
+    assert summary["rejected_count"] == 1
+
+
 def test_semantic_review_summary_gate_status_allows_complete_evidence(tmp_path: Path) -> None:
     """Complete raw evidence should produce ready summary and gate-card fields."""
     fixture = seed_semantic_review_fixture(local_root=tmp_path / "r2")
@@ -520,6 +621,10 @@ def test_semantic_review_dashboard_html_is_beginner_friendly_and_collapsed() -> 
     assert "Summary / Gate Status" in html
     assert "Article Review" in html
     assert "FinBERT Sentence Review" in html
+    assert "Topic / Relevance Pipeline" in html
+    assert "topic-relevance-tab" in html
+    assert "topic-relevance-content" in html
+    assert "default score shown without support" in html
     assert "Ticker-Date Semantic Aggregates" in html
     assert "semantic-aggregate-tab" in html
     assert "Repeated context / aggregate value" in html

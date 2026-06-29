@@ -604,6 +604,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
         <button class="tab-button active" type="button" role="tab" aria-selected="true" aria-controls="summary-gate-tab" data-tab-target="summary-gate-tab">Summary / Gate Status</button>
         <button class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="article-review-tab" data-tab-target="article-review-tab">Article Review</button>
         <button class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="finbert-sentence-review-tab" data-tab-target="finbert-sentence-review-tab">FinBERT Sentence Review</button>
+        <button class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="topic-relevance-tab" data-tab-target="topic-relevance-tab">Topic / Relevance Pipeline</button>
         <button class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="semantic-aggregate-tab" data-tab-target="semantic-aggregate-tab">Ticker-Date Semantic Aggregates</button>
         <button class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="hmm-regime-tab" data-tab-target="hmm-regime-tab">HMM Regime</button>
       </nav>
@@ -639,6 +640,14 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
             <div id="nlp-pipeline"></div>
           </div>
         </details>
+      </section>
+
+      <section class="panel tab-panel hidden" id="topic-relevance-tab" role="tabpanel" aria-hidden="true">
+        <div>
+          <h2>Topic / Relevance Pipeline</h2>
+          <p class="section-note">This tab follows the article from ticker/entity preprocessing through embedding cache, BERTopic label, and pre-FinBERT relevance-gate evidence. A score of 1.0 is not treated as strong evidence when the supporting ticker, entity, embedding, topic, or gate rows are missing.</p>
+        </div>
+        <div id="topic-relevance-content"></div>
       </section>
 
       <section class="panel tab-panel hidden" id="semantic-aggregate-tab" role="tabpanel" aria-hidden="true">
@@ -707,6 +716,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
     const chartContainerEl = document.getElementById('chart-container');
     const articleReviewEl = document.getElementById('article-review-content');
     const finbertReviewEl = document.getElementById('finbert-sentence-review-content');
+    const topicRelevanceReviewEl = document.getElementById('topic-relevance-content');
     const semanticAggregateReviewEl = document.getElementById('semantic-aggregate-content');
     const nlpPipelineEl = document.getElementById('nlp-pipeline');
     const hmmSummaryCardsEl = document.getElementById('hmm-summary-cards');
@@ -1312,6 +1322,109 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
         </div>`;
     }}
 
+    function evidenceStatusClass(status) {{
+      if (status === 'accepted') return 'good';
+      if (status === 'rejected' || status === 'missing_or_default') return 'bad';
+      return 'warn';
+    }}
+
+    function renderTopicRelevanceArticle(row) {{
+      const flags = Array.isArray(row.missing_evidence_flags) ? row.missing_evidence_flags : [];
+      const reasonCodes = Array.isArray(row.reason_codes) ? row.reason_codes : [];
+      const tickerEvidence = row.ticker_evidence || {{}};
+      const entityEvidence = row.entity_evidence || {{}};
+      const embeddingEvidence = Array.isArray(row.embedding_evidence) ? row.embedding_evidence : [];
+      const topicEvidence = Array.isArray(row.topic_evidence) ? row.topic_evidence : [];
+      const relevanceRows = Array.isArray(row.relevance_gate_rows) ? row.relevance_gate_rows : [];
+      const preprocessingRows = Array.isArray(row.preprocessing_rows) ? row.preprocessing_rows : [];
+      const tickerHits = Array.isArray(tickerEvidence.requested_ticker_term_hits) ? tickerEvidence.requested_ticker_term_hits : [];
+      const sourceTickers = Array.isArray(tickerEvidence.source_tickers) ? tickerEvidence.source_tickers : [];
+      const tickerMentions = Array.isArray(tickerEvidence.preprocessing_ticker_mentions) ? tickerEvidence.preprocessing_ticker_mentions : [];
+      const entityMentions = Array.isArray(entityEvidence.preprocessing_entity_mentions) ? entityEvidence.preprocessing_entity_mentions : [];
+      const gateEntities = Array.isArray(entityEvidence.relevance_gate_entity_mentions) ? entityEvidence.relevance_gate_entity_mentions : [];
+      const status = row.evidence_status || 'missing_or_default';
+      const statusClassName = evidenceStatusClass(status);
+      return `
+        <details class="article">
+          <summary>
+            <span class="article-title">${{escapeHtml(row.headline || row.article_id || 'Article')}}</span>
+            <span class="badge ${{statusClassName}}" title="Raw field: evidence_status">${{escapeHtml(status)}}</span>
+            <span class="badge" title="Raw field: relevance_decision">gate: ${{escapeHtml(row.relevance_decision || 'missing')}}</span>
+            <span class="badge" title="Raw field: relevance_score">score: ${{formatNumber(row.relevance_score, 2)}}</span>
+            <span class="badge" title="Raw field: article_id">article_id: ${{escapeHtml(row.article_id || 'n/a')}}</span>
+          </summary>
+          <div class="body">
+            <p class="article-copy">What am I looking at? The evidence trail that decides whether this story belongs to the selected ticker before FinBERT sentiment should count. Why does it matter? Ticker/entity evidence, embeddings, topics, and relevance-gate sub-scores should agree before the row is trusted. What would make this good or bad? Good: direct ticker or entity support, embedding and topic rows, an accepted gate decision, and coherent reason codes. Bad: missing evidence, rejected gate rows, or a default score shown without support.</p>
+            ${{flags.length ? `<div class="chart-blocker"><h3>Evidence blocker</h3><p>${{escapeHtml(row.relevance_score_interpretation || 'missing/default evidence')}}</p><ul>${{flags.map((flag) => `<li>${{escapeHtml(flag)}}</li>`).join('')}}</ul></div>` : ''}}
+            <div class="compact-grid">
+              <div class="compact"><div class="k">Evidence status</div><div class="v">${{escapeHtml(status)}}</div><div class="k">raw: evidence_status</div></div>
+              <div class="compact"><div class="k">Relevance score</div><div class="v">${{formatNumber(row.relevance_score, 3)}}</div><div class="k">raw: relevance_score</div></div>
+              <div class="compact"><div class="k">Score interpretation</div><div class="v">${{escapeHtml(row.relevance_score_interpretation || 'n/a')}}</div><div class="k">raw: relevance_score_interpretation</div></div>
+              <div class="compact"><div class="k">Ticker / financial / topic scores</div><div class="v">${{formatNumber(row.ticker_relevance_score, 2)}} / ${{formatNumber(row.financial_relevance_score, 2)}} / ${{formatNumber(row.topic_relevance_score, 2)}}</div><div class="k">raw: ticker_relevance_score / financial_relevance_score / topic_relevance_score</div></div>
+              <div class="compact"><div class="k">Reason codes</div><div class="v">${{escapeHtml(reasonCodes.length ? reasonCodes.join(', ') : 'none')}}</div><div class="k">raw: reason_codes</div></div>
+              <div class="compact"><div class="k">Missing evidence flags</div><div class="v">${{escapeHtml(flags.length ? flags.join(', ') : 'none')}}</div><div class="k">raw: missing_evidence_flags</div></div>
+            </div>
+            <div class="compact-grid">
+              <div class="compact"><div class="k">Requested ticker hits</div><div class="v">${{escapeHtml(tickerHits.length ? tickerHits.join(', ') : 'none')}}</div><div class="k">raw: ticker_evidence.requested_ticker_term_hits</div></div>
+              <div class="compact"><div class="k">Preprocessing ticker mentions</div><div class="v">${{escapeHtml(tickerMentions.length ? tickerMentions.join(', ') : 'none')}}</div><div class="k">raw: preprocessing ticker_mentions</div></div>
+              <div class="compact"><div class="k">Source ticker tags</div><div class="v">${{escapeHtml(sourceTickers.length ? sourceTickers.join(', ') : 'none')}}</div><div class="k">raw: ticker_evidence.source_tickers</div></div>
+              <div class="compact"><div class="k">Entity mentions</div><div class="v">${{escapeHtml(entityMentions.length ? entityMentions.join(', ') : 'none')}}</div><div class="k">raw: preprocessing entity_mentions</div></div>
+              <div class="compact"><div class="k">Gate entities</div><div class="v">${{escapeHtml(gateEntities.length ? gateEntities.join(', ') : 'none')}}</div><div class="k">raw: relevance_gate entity_evidence</div></div>
+              <div class="compact"><div class="k">Embedding rows</div><div class="v">${{embeddingEvidence.length}}</div><div class="k">raw: embedding_evidence</div></div>
+              <div class="compact"><div class="k">Topic rows</div><div class="v">${{topicEvidence.length}}</div><div class="k">raw: topic_evidence</div></div>
+              <div class="compact"><div class="k">Relevance-gate rows</div><div class="v">${{relevanceRows.length}}</div><div class="k">raw: relevance_gate_rows</div></div>
+            </div>
+            <details class="row-item">
+              <summary>Embedding cache and BERTopic metadata</summary>
+              <div class="body">
+                <div class="row-item"><strong>Embedding evidence</strong><pre>${{escapeHtml(JSON.stringify(embeddingEvidence, null, 2))}}</pre></div>
+                <div class="row-item"><strong>Topic evidence</strong><pre>${{escapeHtml(JSON.stringify(topicEvidence, null, 2))}}</pre></div>
+              </div>
+            </details>
+            <details class="row-item">
+              <summary>Ticker/entity and relevance-gate raw rows</summary>
+              <div class="body">
+                <div class="row-item"><strong>Preprocessing rows</strong><pre>${{escapeHtml(JSON.stringify(preprocessingRows, null, 2))}}</pre></div>
+                <div class="row-item"><strong>Relevance-gate rows</strong><pre>${{escapeHtml(JSON.stringify(relevanceRows, null, 2))}}</pre></div>
+              </div>
+            </details>
+          </div>
+        </details>`;
+    }}
+
+    function renderTopicRelevanceReview(payload) {{
+      const review = payload.topic_relevance_review || {{}};
+      const summary = review.summary || {{}};
+      const dateGroups = Array.isArray(review.date_groups) ? review.date_groups : [];
+      const blockers = Array.isArray(review.missing_evidence_blockers) ? review.missing_evidence_blockers : [];
+      topicRelevanceReviewEl.innerHTML = `
+        <div class="hero-grid">
+          ${{metricCard('Articles', summary.article_count ?? 0, 'topic_relevance_review.summary.article_count', 'Article-level topic/relevance evidence rows.')}}
+          ${{metricCard('Accepted', summary.accepted_count ?? 0, 'topic_relevance_review.summary.accepted_count', 'Rows accepted by the relevance gate with supporting evidence.')}}
+          ${{metricCard('Borderline', summary.borderline_count ?? 0, 'topic_relevance_review.summary.borderline_count', 'Rows that need human attention before trust.')}}
+          ${{metricCard('Rejected', summary.rejected_count ?? 0, 'topic_relevance_review.summary.rejected_count', 'Rows rejected by the relevance gate.')}}
+          ${{metricCard('Missing/default', summary.missing_or_default_count ?? 0, 'topic_relevance_review.summary.missing_or_default_count', 'Rows missing required topic, embedding, or relevance support.')}}
+        </div>
+        ${{blockers.length ? `<div class="chart-blocker"><h3>Topic / relevance evidence blockers</h3><p>These articles have missing evidence or default relevance scores that should block final human acceptance until the upstream artifacts are present.</p><ul>${{blockers.map((item) => `<li>${{escapeHtml(item.date || 'n/a')}} · ${{escapeHtml(item.article_id || 'n/a')}} · ${{escapeHtml((item.missing_evidence_flags || []).join(', '))}}</li>`).join('')}}</ul></div>` : ''}}
+        <div class="date-grid">
+          ${{dateGroups.length ? dateGroups.map((group) => `
+            <details class="date-card">
+              <summary>
+                <span>${{escapeHtml(group.date || 'n/a')}}</span>
+                <span class="badge">accepted: ${{Number(group.accepted_count || 0)}}</span>
+                <span class="badge">borderline: ${{Number(group.borderline_count || 0)}}</span>
+                <span class="badge">rejected: ${{Number(group.rejected_count || 0)}}</span>
+                <span class="badge">missing/default: ${{Number(group.missing_or_default_count || 0)}}</span>
+              </summary>
+              <div class="body">
+                <div class="row-list">
+                  ${{(Array.isArray(group.articles) ? group.articles : []).map(renderTopicRelevanceArticle).join('') || '<p class="muted">No topic/relevance rows were loaded for this date.</p>'}}
+                </div>
+              </div>
+            </details>`).join('') : '<p class="muted">No topic/relevance rows were loaded for this run.</p>'}}
+        </div>`;
+    }}
+
     function semanticAggregateWarnings(payload) {{
       return (Array.isArray(payload.warnings) ? payload.warnings : []).filter((warning) => String(warning.scope || '') === 'sentiment_features');
     }}
@@ -1452,6 +1565,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       renderChart(payload);
       renderArticleReview(payload);
       renderFinbertSentenceReview(payload);
+      renderTopicRelevanceReview(payload);
       renderSemanticAggregateReview(payload);
       renderHmmOverview(payload);
       renderNlpPipelineSection(payload.pipeline_sections || {{}});

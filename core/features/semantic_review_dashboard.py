@@ -103,8 +103,111 @@ def build_layer1_semantic_review_dashboard_payload(
 ) -> dict[str, object]:
     """Return the JSON payload rendered by the semantic-review dashboard UI."""
     payload = _build_payload_from_report(report)
+    payload["topic_relevance_review"] = build_layer1_topic_relevance_review(payload)
     payload.update(build_layer1_semantic_review_readiness_summary(payload))
     return payload
+
+
+def build_layer1_topic_relevance_review(
+    payload: Mapping[str, object],
+) -> dict[str, object]:
+    """Return article-level topic, embedding, and relevance-gate review evidence."""
+    sections = _json_mapping(payload.get("pipeline_sections"))
+    articles = [
+        dict(item)
+        for item in _json_list(payload.get("article_groups"))
+        if isinstance(item, Mapping)
+    ]
+    preprocessing_by_article = _rows_by_article(sections.get("raw_preprocessing_rows"))
+    embedding_by_article = _rows_by_article(sections.get("article_embedding_rows"))
+    topic_by_article = _rows_by_article(sections.get("topic_label_rows"))
+    relevance_by_article = _rows_by_article(sections.get("relevance_gate_rows"))
+
+    rows = [
+        _topic_relevance_article_row(
+            article=article,
+            preprocessing_rows=preprocessing_by_article.get(_article_key(article), []),
+            embedding_rows=embedding_by_article.get(_article_key(article), []),
+            topic_rows=topic_by_article.get(_article_key(article), []),
+            relevance_rows=relevance_by_article.get(_article_key(article), []),
+        )
+        for article in articles
+    ]
+    date_groups: list[dict[str, object]] = []
+    for date_text in _dedupe_preserve_order(
+        str(row.get("date")) for row in rows if row.get("date") is not None
+    ):
+        grouped_rows = [row for row in rows if row.get("date") == date_text]
+        date_groups.append(
+            {
+                "date": date_text,
+                "article_count": len(grouped_rows),
+                "accepted_count": sum(
+                    1 for row in grouped_rows if row.get("evidence_status") == "accepted"
+                ),
+                "borderline_count": sum(
+                    1 for row in grouped_rows if row.get("evidence_status") == "borderline"
+                ),
+                "rejected_count": sum(
+                    1 for row in grouped_rows if row.get("evidence_status") == "rejected"
+                ),
+                "missing_or_default_count": sum(
+                    1
+                    for row in grouped_rows
+                    if row.get("evidence_status") == "missing_or_default"
+                ),
+                "articles": grouped_rows,
+            }
+        )
+
+    missing_blockers = [
+        {
+            "date": row.get("date"),
+            "article_id": row.get("article_id"),
+            "headline": row.get("headline"),
+            "missing_evidence_flags": row.get("missing_evidence_flags"),
+            "evidence_status": row.get("evidence_status"),
+            "relevance_score_interpretation": row.get("relevance_score_interpretation"),
+        }
+        for row in rows
+        if _json_string_list(row.get("missing_evidence_flags"))
+    ]
+    return {
+        "summary": {
+            "article_count": len(rows),
+            "accepted_count": sum(
+                1 for row in rows if row.get("evidence_status") == "accepted"
+            ),
+            "borderline_count": sum(
+                1 for row in rows if row.get("evidence_status") == "borderline"
+            ),
+            "rejected_count": sum(
+                1 for row in rows if row.get("evidence_status") == "rejected"
+            ),
+            "missing_or_default_count": sum(
+                1 for row in rows if row.get("evidence_status") == "missing_or_default"
+            ),
+            "missing_embedding_count": sum(
+                1
+                for row in rows
+                if "missing_embedding" in _json_string_list(row.get("missing_evidence_flags"))
+            ),
+            "missing_topic_count": sum(
+                1
+                for row in rows
+                if "missing_topic_label" in _json_string_list(row.get("missing_evidence_flags"))
+            ),
+            "default_relevance_count": sum(
+                1
+                for row in rows
+                if "default_relevance_without_supporting_evidence"
+                in _json_string_list(row.get("missing_evidence_flags"))
+            ),
+        },
+        "date_groups": date_groups,
+        "articles": rows,
+        "missing_evidence_blockers": missing_blockers,
+    }
 
 
 def build_layer1_semantic_review_readiness_summary(
@@ -231,6 +334,260 @@ def _gate_card_payload(
         ),
         "message": _gate_message(definition.label, status, len(rows), matching_failures),
     }
+
+
+def _topic_relevance_article_row(
+    *,
+    article: Mapping[str, object],
+    preprocessing_rows: Sequence[Mapping[str, object]],
+    embedding_rows: Sequence[Mapping[str, object]],
+    topic_rows: Sequence[Mapping[str, object]],
+    relevance_rows: Sequence[Mapping[str, object]],
+) -> dict[str, object]:
+    relevance_decisions = _dedupe_preserve_order(
+        str(row.get("relevance_decision"))
+        for row in relevance_rows
+        if row.get("relevance_decision") is not None
+    )
+    reason_codes = _dedupe_preserve_order(
+        code
+        for row in relevance_rows
+        for code in _json_string_list(row.get("reason_codes"))
+    )
+    source_tickers = _dedupe_preserve_order(
+        ticker
+        for row in relevance_rows
+        for ticker in _ticker_evidence_values(row.get("ticker_evidence"))
+    )
+    ticker_mentions = _dedupe_preserve_order(
+        ticker
+        for row in preprocessing_rows
+        for ticker in _json_string_list(row.get("ticker_mentions"))
+    )
+    entity_mentions = _dedupe_preserve_order(
+        entity
+        for row in preprocessing_rows
+        for entity in _json_string_list(row.get("entity_mentions"))
+    )
+    relevance_score = _first_float(
+        [row.get("relevance_score") for row in relevance_rows]
+        + [article.get("relevance_score")]
+    )
+    ticker_score = _first_float([row.get("ticker_relevance_score") for row in relevance_rows])
+    financial_score = _first_float(
+        [row.get("financial_relevance_score") for row in relevance_rows]
+    )
+    topic_score = _first_float([row.get("topic_relevance_score") for row in relevance_rows])
+    has_embedding = bool(embedding_rows)
+    has_topic = bool(topic_rows)
+    has_relevance_gate = bool(relevance_rows)
+    has_ticker_evidence = bool(ticker_mentions) or (
+        ticker_score is not None and ticker_score > 0.0
+    )
+    has_entity_evidence = bool(entity_mentions)
+    has_semantic_evidence = has_embedding and has_topic and (
+        topic_score is None or topic_score > 0.0
+    )
+    missing_flags = _topic_relevance_missing_flags(
+        has_embedding=has_embedding,
+        has_topic=has_topic,
+        has_relevance_gate=has_relevance_gate,
+        has_ticker_evidence=has_ticker_evidence,
+        has_entity_evidence=has_entity_evidence,
+        has_semantic_evidence=has_semantic_evidence,
+        relevance_score=relevance_score,
+        relevance_decisions=relevance_decisions,
+    )
+    evidence_status = _topic_relevance_status(
+        relevance_decisions=relevance_decisions,
+        missing_flags=missing_flags,
+    )
+    return {
+        "date": article.get("date"),
+        "ticker": article.get("ticker"),
+        "article_id": article.get("article_id"),
+        "headline": article.get("headline"),
+        "normalized_headline": article.get("normalized_headline"),
+        "article_status": article.get("article_status"),
+        "evidence_status": evidence_status,
+        "relevance_score": relevance_score,
+        "relevance_score_interpretation": _relevance_score_interpretation(
+            relevance_score=relevance_score,
+            missing_flags=missing_flags,
+            relevance_decisions=relevance_decisions,
+        ),
+        "relevance_decision": relevance_decisions[0] if relevance_decisions else "missing",
+        "relevance_decisions": relevance_decisions,
+        "ticker_relevance_score": ticker_score,
+        "financial_relevance_score": financial_score,
+        "topic_relevance_score": topic_score,
+        "reason_codes": reason_codes,
+        "missing_evidence_flags": missing_flags,
+        "ticker_evidence": {
+            "requested_ticker_term_hits": _json_string_list(
+                article.get("requested_ticker_term_hits")
+            ),
+            "preprocessing_ticker_mentions": ticker_mentions,
+            "source_tickers": source_tickers,
+        },
+        "entity_evidence": {
+            "preprocessing_entity_mentions": entity_mentions,
+            "relevance_gate_entity_mentions": _dedupe_preserve_order(
+                entity
+                for row in relevance_rows
+                for entity in _json_string_list(row.get("entity_evidence"))
+            ),
+        },
+        "embedding_evidence": [
+            {
+                "embedding_cache_key": row.get("embedding_cache_key"),
+                "embedding_model": row.get("embedding_model"),
+                "embedding_revision": row.get("embedding_revision"),
+                "embedding_dimension": row.get("embedding_dimension"),
+                "artifact_key": row.get("artifact_key"),
+            }
+            for row in embedding_rows
+        ],
+        "topic_evidence": [
+            {
+                "topic_id": row.get("topic_id"),
+                "topic_probability": row.get("topic_probability"),
+                "topic_label": row.get("topic_label"),
+                "topic_keywords": row.get("topic_keywords"),
+                "topic_model": row.get("topic_model"),
+                "topic_model_version": row.get("topic_model_version"),
+                "embedding_cache_key": row.get("embedding_cache_key"),
+                "artifact_key": row.get("artifact_key"),
+            }
+            for row in topic_rows
+        ],
+        "relevance_gate_rows": [dict(row) for row in relevance_rows],
+        "preprocessing_rows": [dict(row) for row in preprocessing_rows],
+    }
+
+
+def _topic_relevance_missing_flags(
+    *,
+    has_embedding: bool,
+    has_topic: bool,
+    has_relevance_gate: bool,
+    has_ticker_evidence: bool,
+    has_entity_evidence: bool,
+    has_semantic_evidence: bool,
+    relevance_score: float | None,
+    relevance_decisions: Sequence[str],
+) -> list[str]:
+    flags: list[str] = []
+    lowered_decisions = {decision.lower() for decision in relevance_decisions}
+    if not has_relevance_gate:
+        flags.append("missing_relevance_gate")
+    if not has_ticker_evidence:
+        flags.append("missing_ticker_evidence")
+    if not has_entity_evidence:
+        flags.append("missing_entity_evidence")
+    if not has_embedding:
+        flags.append("missing_embedding")
+    if not has_topic:
+        flags.append("missing_topic_label")
+    if lowered_decisions & {"rejected", "reject"}:
+        flags.append("rejected_by_relevance_gate")
+    if lowered_decisions & {"borderline", "review", "needs_review"}:
+        flags.append("borderline_relevance_gate")
+    if relevance_score == 1.0 and (
+        not has_ticker_evidence
+        or not has_entity_evidence
+        or not has_semantic_evidence
+        or lowered_decisions & {"rejected", "reject"}
+    ):
+        flags.append("default_relevance_without_supporting_evidence")
+    return _dedupe_preserve_order(flags)
+
+
+def _topic_relevance_status(
+    *,
+    relevance_decisions: Sequence[str],
+    missing_flags: Sequence[str],
+) -> str:
+    lowered_flags = set(missing_flags)
+    lowered_decisions = {decision.lower() for decision in relevance_decisions}
+    if "default_relevance_without_supporting_evidence" in lowered_flags:
+        return "missing_or_default"
+    if "missing_embedding" in lowered_flags or "missing_topic_label" in lowered_flags:
+        return "missing_or_default"
+    if lowered_decisions & {"rejected", "reject"}:
+        return "rejected"
+    if lowered_decisions & {"borderline", "review", "needs_review"}:
+        return "borderline"
+    if lowered_decisions & {"accepted", "accept"}:
+        return "accepted"
+    if "missing_relevance_gate" in lowered_flags:
+        return "missing_or_default"
+    return "borderline"
+
+
+def _relevance_score_interpretation(
+    *,
+    relevance_score: float | None,
+    missing_flags: Sequence[str],
+    relevance_decisions: Sequence[str],
+) -> str:
+    if relevance_score is None:
+        return "missing"
+    if "default_relevance_without_supporting_evidence" in set(missing_flags):
+        return "default_or_unknown_not_strong_evidence"
+    lowered_decisions = {decision.lower() for decision in relevance_decisions}
+    if lowered_decisions & {"rejected", "reject"}:
+        return "computed_rejected"
+    if lowered_decisions & {"borderline", "review", "needs_review"}:
+        return "computed_borderline"
+    return "computed"
+
+
+def _rows_by_article(value: object) -> dict[tuple[str, str], list[dict[str, object]]]:
+    rows_by_article: dict[tuple[str, str], list[dict[str, object]]] = {}
+    for row in _json_list(value):
+        if not isinstance(row, Mapping):
+            continue
+        row_dict = dict(row)
+        key = _article_key(row_dict)
+        if key == ("", ""):
+            continue
+        rows_by_article.setdefault(key, []).append(row_dict)
+    return rows_by_article
+
+
+def _article_key(row: Mapping[str, object]) -> tuple[str, str]:
+    date_text = str(row.get("date") or "")
+    article_id = str(row.get("article_id") or "")
+    return date_text, article_id
+
+
+def _ticker_evidence_values(value: object) -> list[str]:
+    evidence = _json_mapping(value)
+    values: list[str] = []
+    for key in ("source_tickers", "article_tickers", "ticker_mentions", "chunk_tickers"):
+        values.extend(_json_string_list(evidence.get(key)))
+    return values
+
+
+def _first_float(values: object) -> float | None:
+    for value in _json_list(values):
+        number = _maybe_float(value)
+        if number is not None:
+            return number
+    return None
+
+
+def _maybe_float(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number:
+        return None
+    return number
 
 
 def _summary_cards(run_readiness: Mapping[str, object]) -> list[dict[str, object]]:
