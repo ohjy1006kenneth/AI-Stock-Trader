@@ -604,6 +604,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
         <button class="tab-button active" type="button" role="tab" aria-selected="true" aria-controls="summary-gate-tab" data-tab-target="summary-gate-tab">Summary / Gate Status</button>
         <button class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="article-review-tab" data-tab-target="article-review-tab">Article Review</button>
         <button class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="finbert-sentence-review-tab" data-tab-target="finbert-sentence-review-tab">FinBERT Sentence Review</button>
+        <button class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="semantic-aggregate-tab" data-tab-target="semantic-aggregate-tab">Ticker-Date Semantic Aggregates</button>
         <button class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="hmm-regime-tab" data-tab-target="hmm-regime-tab">HMM Regime</button>
       </nav>
 
@@ -634,10 +635,18 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
         <details class="panel" id="advanced-section">
           <summary>Advanced evidence and raw rows</summary>
           <div class="body" id="advanced-content">
-            <p class="section-note">This section stays collapsed by default so the dashboard remains easy to scan. It is only here when you need the raw preprocessing, embeddings, topic labels, relevance-gate rows, FinBERT rows, and semantic aggregates for debugging.</p>
+            <p class="section-note">This section stays collapsed by default so the dashboard remains easy to scan. It is only here when you need the raw preprocessing, embeddings, topic labels, relevance-gate rows, FinBERT rows, and ticker-date semantic aggregates for debugging.</p>
             <div id="nlp-pipeline"></div>
           </div>
         </details>
+      </section>
+
+      <section class="panel tab-panel hidden" id="semantic-aggregate-tab" role="tabpanel" aria-hidden="true">
+        <div>
+          <h2>Ticker-Date Semantic Aggregates</h2>
+          <p class="section-note">This tab shows the final Layer 1 NLP feature rows as one record per <strong>(date, ticker)</strong>. These are repeated context / aggregate values, not article evidence: use them to inspect the ticker-date feature row, its source and stage keys, and the aggregated values that Layer 2 consumes.</p>
+        </div>
+        <div id="semantic-aggregate-content"></div>
       </section>
 
       <section class="panel tab-panel hidden" id="hmm-regime-tab" role="tabpanel" aria-hidden="true">
@@ -698,6 +707,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
     const chartContainerEl = document.getElementById('chart-container');
     const articleReviewEl = document.getElementById('article-review-content');
     const finbertReviewEl = document.getElementById('finbert-sentence-review-content');
+    const semanticAggregateReviewEl = document.getElementById('semantic-aggregate-content');
     const nlpPipelineEl = document.getElementById('nlp-pipeline');
     const hmmSummaryCardsEl = document.getElementById('hmm-summary-cards');
     const hmmContextCardsEl = document.getElementById('hmm-context-cards');
@@ -1302,6 +1312,79 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
         </div>`;
     }}
 
+    function semanticAggregateWarnings(payload) {{
+      return (Array.isArray(payload.warnings) ? payload.warnings : []).filter((warning) => String(warning.scope || '') === 'sentiment_features');
+    }}
+
+    function semanticAggregateValue(value) {{
+      if (Array.isArray(value)) return value.length ? value.join(', ') : 'none';
+      if (value && typeof value === 'object') return JSON.stringify(value);
+      return value ?? 'n/a';
+    }}
+
+    function renderSemanticAggregateRow(row) {{
+      const features = row.features || {{}};
+      const contributingArticleIds = Array.isArray(row.contributing_article_ids) ? row.contributing_article_ids : [];
+      const sourceWeightSummary = Array.isArray(row.source_weight_summary) ? row.source_weight_summary : [];
+      const topicSentimentSummary = Array.isArray(row.topic_sentiment_summary) ? row.topic_sentiment_summary : [];
+      const relevanceReasonCodes = Array.isArray(row.relevance_reason_codes) ? row.relevance_reason_codes : [];
+      const semanticWarningCodes = Array.isArray(row.semantic_warning_codes) ? row.semantic_warning_codes : [];
+      const rowGranularity = row.row_granularity || 'n/a';
+      const rowGranularityLabel = rowGranularity === 'ticker-date' ? 'Repeated context / aggregate value' : rowGranularity;
+      return `
+        <details class="row-item">
+          <summary>
+            <span class="article-title">${{escapeHtml(row.date || 'n/a')}} · ${{escapeHtml(row.ticker || 'n/a')}}</span>
+            <span class="badge" title="Raw field: row_granularity">${{escapeHtml(rowGranularityLabel)}}</span>
+            <span class="badge" title="Raw field: stage">stage: ${{escapeHtml(row.stage || 'n/a')}}</span>
+            <span class="badge" title="Raw field: artifact_key">artifact: ${{escapeHtml(row.artifact_key || 'n/a')}}</span>
+          </summary>
+          <div class="body">
+            <p class="article-copy">What am I looking at? The final Layer 1 ticker-date feature row for this trading day. Why does it matter? This is the aggregate output that should feed later stages, not article or sentence evidence. What would make this good or bad? Good: the row is present once per <strong>(date, ticker)</strong> and its values are clearly labeled as repeated context / aggregate values. Bad: the row is missing, duplicated, or presented like article-level evidence.</p>
+            <div class="compact-grid">
+              <div class="compact"><div class="k">Row granularity</div><div class="v">${{escapeHtml(rowGranularityLabel)}}</div><div class="k">raw: row_granularity</div></div>
+              <div class="compact"><div class="k">Stage</div><div class="v">${{escapeHtml(row.stage || 'n/a')}}</div><div class="k">raw: stage</div></div>
+              <div class="compact"><div class="k">Artifact key</div><div class="v">${{escapeHtml(row.artifact_key || 'n/a')}}</div><div class="k">raw: artifact_key</div></div>
+              <div class="compact"><div class="k">Sentiment score</div><div class="v">${{formatNumber(features.nlp_sentiment_score, 3)}}</div><div class="k">raw: features.nlp_sentiment_score</div></div>
+              <div class="compact"><div class="k">Article count</div><div class="v">${{formatNumber(features.nlp_article_count, 0)}}</div><div class="k">raw: features.nlp_article_count</div></div>
+              <div class="compact"><div class="k">Sentence count</div><div class="v">${{formatNumber(features.nlp_sentence_count, 0)}}</div><div class="k">raw: features.nlp_sentence_count</div></div>
+              <div class="compact"><div class="k">Relevance score</div><div class="v">${{formatNumber(features.nlp_relevance_score, 3)}}</div><div class="k">raw: features.nlp_relevance_score</div></div>
+              <div class="compact"><div class="k">Source weight mean / sum</div><div class="v">${{formatNumber(features.nlp_source_weight_mean, 2)}} / ${{formatNumber(features.nlp_source_weight_sum, 2)}}</div><div class="k">raw: features.nlp_source_weight_mean / features.nlp_source_weight_sum</div></div>
+              <div class="compact"><div class="k">Effective weight sum</div><div class="v">${{formatNumber(features.nlp_effective_weight_sum, 2)}}</div><div class="k">raw: features.nlp_effective_weight_sum</div></div>
+              <div class="compact"><div class="k">Relevance accepted / borderline</div><div class="v">${{formatNumber(features.nlp_relevance_accepted_count, 0)}} / ${{formatNumber(features.nlp_relevance_borderline_count, 0)}}</div><div class="k">raw: features.nlp_relevance_accepted_count / features.nlp_relevance_borderline_count</div></div>
+              <div class="compact"><div class="k">Contributing articles</div><div class="v">${{escapeHtml(contributingArticleIds.length ? contributingArticleIds.join(', ') : 'none')}}</div><div class="k">raw: contributing_article_ids</div></div>
+              <div class="compact"><div class="k">Source weight summary</div><div class="v">${{escapeHtml(semanticAggregateValue(sourceWeightSummary))}}</div><div class="k">raw: source_weight_summary</div></div>
+              <div class="compact"><div class="k">Topic sentiment summary</div><div class="v">${{escapeHtml(semanticAggregateValue(topicSentimentSummary))}}</div><div class="k">raw: topic_sentiment_summary</div></div>
+              <div class="compact"><div class="k">Relevance reason codes</div><div class="v">${{escapeHtml(semanticAggregateValue(relevanceReasonCodes))}}</div><div class="k">raw: relevance_reason_codes</div></div>
+              <div class="compact"><div class="k">Semantic warning codes</div><div class="v">${{escapeHtml(semanticAggregateValue(semanticWarningCodes))}}</div><div class="k">raw: semantic_warning_codes</div></div>
+            </div>
+            <details class="row-item">
+              <summary>Raw feature payload</summary>
+              <div class="body">
+                <div class="row-item"><pre>${{escapeHtml(JSON.stringify(features, null, 2))}}</pre></div>
+              </div>
+            </details>
+          </div>
+        </details>`;
+    }}
+
+    function renderSemanticAggregateReview(payload) {{
+      const sections = payload.pipeline_sections || {{}};
+      const rows = Array.isArray(sections.semantic_aggregate_rows) ? sections.semantic_aggregate_rows : [];
+      const warnings = semanticAggregateWarnings(payload);
+      semanticAggregateReviewEl.innerHTML = `
+        <div class="hero-grid">
+          ${{metricCard('Aggregate rows', rows.length, 'pipeline_sections.semantic_aggregate_rows', 'Final ticker-date Layer 1 feature rows available in the review payload.')}}
+          ${{metricCard('Missing aggregate warnings', warnings.length, 'warnings[scope=sentiment_features]', 'Warnings for missing or incomplete ticker-date aggregate rows.')}}
+          ${{metricCard('Row granularity', 'ticker-date', 'row_granularity', 'These rows are repeated ticker-date context, not article evidence.')}}
+        </div>
+        ${{warnings.length ? `<div class="chart-blocker"><h3>Missing ticker-date semantic aggregate rows</h3><p>The review payload reported missing or incomplete ticker-date aggregate artifacts, so these rows should not be treated as complete Layer 1 output.</p><ul>${{warnings.map((warning) => `<li>${{escapeHtml(warning.message || warning.reason || 'Missing ticker-date aggregate evidence')}}${{warning.key ? ` · key: ${{escapeHtml(warning.key)}}` : ''}}${{warning.fallback_key ? ` · fallback: ${{escapeHtml(warning.fallback_key)}}` : ''}}${{warning.artifact_key ? ` · artifact: ${{escapeHtml(warning.artifact_key)}}` : ''}}${{warning.manifest_key ? ` · manifest: ${{escapeHtml(warning.manifest_key)}}` : ''}}</li>`).join('')}}</ul></div>` : ''}}
+        <p class="section-note">What am I looking at? The final Layer 1 ticker-date NLP outputs. Why does it matter? Layer 2 consumes these aggregates, so they need to stay visually separate from article and sentence evidence. What would make this good or bad? Good: every row is clearly labeled as a ticker-date aggregate with its source, stage, artifact, and repeated context values. Bad: rows are missing or the page makes them look like duplicate article evidence.</p>
+        <div class="row-list">
+          ${{rows.length ? rows.map(renderSemanticAggregateRow).join('') : '<p class="muted">No ticker-date semantic aggregate rows were loaded for this run.</p>'}}
+        </div>`;
+    }}
+
     function setActiveTab(targetId) {{
       tabButtons.forEach((button) => {{
         const isActive = button.dataset.tabTarget === targetId;
@@ -1324,7 +1407,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
         ['BERTopic labels', 'topic_label_rows'],
         ['Pre-FinBERT relevance gate', 'relevance_gate_rows'],
         ['Sentence/chunk FinBERT rows', 'finbert_sentence_rows'],
-        ['Semantic aggregates', 'semantic_aggregate_rows'],
+        ['Ticker-date semantic aggregates', 'semantic_aggregate_rows'],
       ];
       nlpPipelineEl.innerHTML = orderedSections.map(([label, key]) => {{
         const rows = Array.isArray(sections?.[key]) ? sections[key] : [];
@@ -1369,6 +1452,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       renderChart(payload);
       renderArticleReview(payload);
       renderFinbertSentenceReview(payload);
+      renderSemanticAggregateReview(payload);
       renderHmmOverview(payload);
       renderNlpPipelineSection(payload.pipeline_sections || {{}});
       renderHmmPipelineSection(payload.pipeline_sections || {{}});

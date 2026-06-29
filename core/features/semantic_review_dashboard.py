@@ -62,7 +62,7 @@ _GATE_DEFINITIONS = (
     ),
     _GateDefinition(
         key="sentiment_features",
-        label="Ticker-date semantic aggregates",
+        label="Ticker-Date Semantic Aggregates",
         section_key="semantic_aggregate_rows",
         artifact_key="sentiment_features",
         failure_stages=("sentiment_features",),

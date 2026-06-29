@@ -85,6 +85,20 @@ def test_semantic_review_report_includes_benchmark_rows(tmp_path: Path) -> None:
     assert date_groups["2026-05-21"]["sentence_count"] == 5
     assert date_groups["2026-05-21"]["semantic_aggregates"][0]["source_weight_summary"]
 
+    semantic_rows = cast(list[dict[str, Any]], report_dict["semantic_aggregate_rows"])
+    assert len(semantic_rows) == 2
+    assert semantic_rows[0]["date"] == "2026-05-21"
+    assert semantic_rows[0]["ticker"] == "AAPL"
+    assert semantic_rows[0]["row_granularity"] == "ticker-date"
+    assert semantic_rows[0]["stage"] == "source_weighted_semantic_aggregation"
+    assert semantic_rows[0]["artifact_key"].endswith("sentiment_features/layer1-semantic-review-fixture.parquet")
+    assert semantic_rows[0]["features"]["nlp_article_count"] == 2.0
+    assert semantic_rows[0]["features"]["nlp_contributing_article_ids"] == ["aapl-001", "ferrari-001"]
+
+    semantic_group = cast(list[dict[str, Any]], date_groups["2026-05-21"]["semantic_aggregates"])
+    assert semantic_group[0]["row_granularity"] == "ticker-date"
+    assert semantic_group[0]["contributing_article_ids"] == ["aapl-001", "ferrari-001"]
+
     context = cast(dict[str, Any], report_dict["hmm_evaluation_context"])
     assert context["requested_inference_dates"] == ["2026-05-21", "2026-05-22"]
     assert context["observed_inference_dates"] == ["2026-05-21", "2026-05-22"]
@@ -310,6 +324,42 @@ def test_semantic_review_summary_gate_status_blocks_missing_evidence(tmp_path: P
     ]
 
 
+def test_semantic_review_summary_gate_status_blocks_missing_semantic_aggregate_rows(
+    tmp_path: Path,
+) -> None:
+    """Missing ticker-date aggregate rows should block readiness and name the aggregate gate."""
+    fixture = seed_semantic_review_fixture(local_root=tmp_path / "r2")
+    writer = fixture["writer"]
+    run_id = str(fixture["run_id"])
+    writer.delete_object(layer1_sentiment_feature_path("2026-05-22", run_id))
+
+    report = build_layer1_aapl_evidence_report(
+        run_id=run_id,
+        from_date="2026-05-21",
+        to_date="2026-05-22",
+        ticker="AAPL",
+        writer=writer,
+    )
+    payload = cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report))
+    readiness = cast(dict[str, Any], payload["run_readiness"])
+    gates = {
+        str(item["key"]): cast(dict[str, Any], item)
+        for item in cast(list[dict[str, Any]], payload["gate_cards"])
+    }
+    missing_labels = {
+        str(item["label"])
+        for item in cast(list[dict[str, Any]], payload["missing_pipeline_sections"])
+    }
+
+    assert payload["warnings"]
+    assert any(item["scope"] == "sentiment_features" for item in cast(list[dict[str, Any]], payload["warnings"]))
+    assert readiness["ready_for_final_human_acceptance"] is False
+    assert readiness["recommendation"] == "not ready for final human acceptance"
+    assert readiness["human_review_status"] == "blocked_by_missing_pipeline_evidence"
+    assert gates["sentiment_features"]["status"] == "blocked"
+    assert "Ticker-Date Semantic Aggregates" in missing_labels
+    assert layer1_sentiment_feature_path("2026-05-22", run_id) in gates["sentiment_features"]["missing_or_tried_keys"]
+
 def test_semantic_review_summary_gate_status_blocks_cached_bundle_fallback(
     tmp_path: Path,
 ) -> None:
@@ -470,6 +520,10 @@ def test_semantic_review_dashboard_html_is_beginner_friendly_and_collapsed() -> 
     assert "Summary / Gate Status" in html
     assert "Article Review" in html
     assert "FinBERT Sentence Review" in html
+    assert "Ticker-Date Semantic Aggregates" in html
+    assert "semantic-aggregate-tab" in html
+    assert "Repeated context / aggregate value" in html
+    assert "one record per <strong>(date, ticker)</strong>" in html
     assert "HMM Regime" in html
     assert "hmm-regime-tab" in html
     assert "hmm-summary-cards" in html
