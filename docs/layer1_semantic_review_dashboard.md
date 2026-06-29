@@ -10,6 +10,9 @@ review in plain language before showing raw evidence.
 - A Summary / Gate Status tab that says whether human semantic review can start
   or is `not ready for final human acceptance` because required NLP, HMM, or
   price evidence is missing.
+- Separate Article Review and FinBERT Sentence Review tabs so accepted AAPL
+  article groups do not get mixed with contamination/no-ticker-evidence rows,
+  and sentence-level FinBERT review can show the scored text directly.
 - Stable gate cards for preprocessing, embeddings, topic labels, relevance
   gate rows, FinBERT rows, semantic aggregates, HMM rows, selected-ticker price
   rows, benchmark price rows, and benchmark/HMM chart rows.
@@ -21,8 +24,13 @@ review in plain language before showing raw evidence.
   - What would make this good or bad?
 - A market benchmark chart that uses SPY by default, because the HMM regime is
   market-wide and date-level rather than company-specific.
-- Daily review cards that stay collapsed by default and only expand when a
-  reviewer wants article-level evidence.
+- Article review cards that stay collapsed by default and show accepted AAPL
+  groups first, with flagged/no-ticker-evidence contamination kept separate.
+- FinBERT sentence review cards that show the full scored text, source text
+  field/order, sentiment probabilities, sentiment score, relevance score/state,
+  and row granularity for each scored row.
+- Explicit missing-text warnings and source-artifact gap cards when the scored
+  sentence text is unavailable.
 - Advanced technical sections for preprocessing, embeddings, topic labels,
   relevance-gate rows, FinBERT rows, semantic aggregates, benchmark rows, and
   HMM artifacts.
@@ -43,8 +51,9 @@ shows a blocker card instead of an empty chart.
 
 1. Check the benchmark chart first.
 2. Read the review state.
-3. Open a day only when you want the article-level evidence.
-4. Open the nested technical rows only when you need raw debug details.
+3. Open the Article Review tab when you want article-level evidence.
+4. Open the FinBERT Sentence Review tab when you need the scored sentence text
+   and row-level probabilities.
 
 ## Local run
 
@@ -104,6 +113,9 @@ Top-level response fields include:
 - `article_groups`: flat article cards for cross-date inspection
 - `accepted_articles`: accepted article cards
 - `flagged_articles`: flagged article cards
+- `article_review`: tab-ready accepted and contamination date groups plus counts
+- `finbert_sentence_review`: article-level sentence rows, full-text availability,
+  missing-text warnings, and source-artifact gaps
 - `price_series`: selected-ticker price context rows
 - `benchmark_ticker`: the market benchmark used for the HMM chart
 - `benchmark_price_series`: benchmark price rows
@@ -121,7 +133,7 @@ Top-level response fields include:
 - `smoke`: machine-readable smoke result with required stage row counts, visual/browser QA
   assertions, and exact missing/tried artifact keys when the dashboard cannot be accepted
 
-## What the daily cards contain
+## What the article review cards contain
 
 Each `date_groups[]` entry contains:
 
