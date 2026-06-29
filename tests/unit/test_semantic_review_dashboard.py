@@ -1,6 +1,7 @@
 """Unit tests for the Layer 1 semantic-review dashboard."""
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 from typing import Any, cast
 
@@ -397,6 +398,34 @@ def test_semantic_review_payload_suppresses_benchmark_chart_when_benchmark_missi
     assert "no_renderable_benchmark_prices" in failure_reasons
 
 
+def test_semantic_review_smoke_reports_missing_hmm_manifest_metadata(tmp_path: Path) -> None:
+    """Missing HMM manifest or training-window metadata should block final acceptance."""
+    fixture = seed_semantic_review_fixture(local_root=tmp_path / "r2")
+    report = build_layer1_aapl_evidence_report(
+        run_id=str(fixture["run_id"]),
+        from_date="2026-05-21",
+        to_date="2026-05-22",
+        ticker="AAPL",
+        writer=fixture["writer"],
+    )
+    payload = copy.deepcopy(cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report)))
+    hmm_context = cast(dict[str, Any], payload["hmm_evaluation_context"])
+    hmm_context["source_manifest_keys"] = []
+    hmm_context["training_windows"] = []
+
+    smoke = validate_layer1_semantic_review_dashboard_payload(payload)
+    failures = cast(list[dict[str, Any]], smoke["failures"])
+    failure_reasons = {
+        item["reason"]
+        for item in failures
+        if item["stage"] in {"hmm_manifest", "hmm_evaluation_context"}
+    }
+
+    assert smoke["status"] == "fail"
+    assert "missing_hmm_manifest" in failure_reasons
+    assert "missing_training_window_metadata" in failure_reasons
+
+
 def test_semantic_review_smoke_reports_missing_stage_keys(tmp_path: Path) -> None:
     """The smoke result should name missing raw stage keys needed to repair the pilot."""
     fixture = seed_semantic_review_fixture(local_root=tmp_path / "r2")
@@ -441,6 +470,11 @@ def test_semantic_review_dashboard_html_is_beginner_friendly_and_collapsed() -> 
     assert "Summary / Gate Status" in html
     assert "Article Review" in html
     assert "FinBERT Sentence Review" in html
+    assert "HMM Regime" in html
+    assert "hmm-regime-tab" in html
+    assert "hmm-summary-cards" in html
+    assert "hmm-context-cards" in html
+    assert "hmm-date-rows" in html
     assert "not ready for final human acceptance" in html
     assert "What am I looking at?" in html
     assert "Why does it matter?" in html
@@ -448,6 +482,7 @@ def test_semantic_review_dashboard_html_is_beginner_friendly_and_collapsed() -> 
     assert "Benchmark chart blocked" in html
     assert "SPY" in html
     assert "Advanced evidence and raw rows" in html
+    assert "Advanced HMM evidence and raw rows" in html
     assert "data-smoke-status" in html
     assert "<details open" not in html
     assert "<table" not in html
