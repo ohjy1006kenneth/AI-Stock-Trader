@@ -247,9 +247,66 @@ def test_semantic_review_payload_separates_tabs_and_reports_missing_sentence_tex
     assert finbert_review["has_missing_text"] is True
     assert finbert_review["missing_text_warning_count"] == 1
     assert finbert_review["source_artifact_gaps"][0]["gap"] == "missing_full_scored_sentence_text"
+    assert finbert_review["sentiment_label_counts"]["positive"] == 6
+    assert finbert_review["sentiment_label_counts"]["negative"] == 2
     assert missing_article["full_scored_text_available"] is False
     assert missing_article["full_scored_text_warning"]
-    assert any(row["missing_text_warning"] for row in missing_article["sentence_rows"])
+    sentence_rows = cast(list[dict[str, Any]], missing_article["sentence_rows"])
+    assert sentence_rows[0]["sentiment_label"] == "positive"
+    assert sentence_rows[0]["sentiment_label_confidence"] == 0.78
+    assert any(row["missing_text_warning"] for row in sentence_rows)
+
+
+def test_semantic_review_payload_explains_unreviewable_missing_relevance_gate(
+    tmp_path: Path,
+) -> None:
+    """The topic/relevance tab should explain missing gate artifacts once, not as row spam."""
+    fixture = seed_semantic_review_fixture(local_root=tmp_path / "r2")
+    report = build_layer1_aapl_evidence_report(
+        run_id=str(fixture["run_id"]),
+        from_date="2026-05-21",
+        to_date="2026-05-22",
+        ticker="AAPL",
+        writer=fixture["writer"],
+    )
+    report_dict = cast(dict[str, Any], report.to_dict())
+    report_dict["relevance_gate_rows"] = []
+
+    payload = cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report_dict))
+    review = cast(dict[str, Any], payload["topic_relevance_review"])
+    summary = cast(dict[str, Any], review["summary"])
+
+    assert summary["relevance_gate_row_count"] == 0
+    assert summary["embedding_row_count"] > 0
+    assert summary["topic_label_row_count"] > 0
+    assert summary["reviewable"] is False
+    assert summary["review_status"] == "not_reviewable_missing_relevance_gate"
+    assert "Pre-FinBERT relevance gate artifact is missing" in summary["review_explanation"]
+
+
+def test_semantic_review_payload_adds_human_focused_aggregate_review(
+    tmp_path: Path,
+) -> None:
+    """Ticker-date aggregates should expose useful NLP review cards instead of mostly n/a fields."""
+    fixture = seed_semantic_review_fixture(local_root=tmp_path / "r2")
+    report = build_layer1_aapl_evidence_report(
+        run_id=str(fixture["run_id"]),
+        from_date="2026-05-21",
+        to_date="2026-05-22",
+        ticker="AAPL",
+        writer=fixture["writer"],
+    )
+
+    payload = cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report))
+    review = cast(dict[str, Any], payload["semantic_aggregate_review"])
+    rows = cast(list[dict[str, Any]], review["rows"])
+
+    assert review["summary"]["row_count"] == 2
+    assert rows[0]["sentiment_label"] in {"positive", "negative", "neutral"}
+    assert rows[0]["human_review_summary"].startswith("Overall NLP sentiment is")
+    card_labels = {str(card["label"]) for card in cast(list[dict[str, Any]], rows[0]["review_value_cards"])}
+    assert {"Overall sentiment", "Positive / negative / neutral mix", "Articles / sentences", "Relevance score"}.issubset(card_labels)
+    assert "Source weight mean / sum" not in card_labels
 
 
 def test_semantic_review_topic_relevance_tab_flags_default_relevance(
@@ -670,3 +727,22 @@ def test_semantic_review_dashboard_hmm_tab_puts_chart_before_diagnostics() -> No
     assert context_details_index < date_rows_index
     assert "Model inputs and date-by-date regime rows" in html
     assert "Evidence blocker" not in html
+
+
+def test_semantic_review_dashboard_html_names_human_review_outputs() -> None:
+    """Visible dashboard copy should describe exactly what a human can review."""
+    html = _render_dashboard_html(
+        _DashboardDefaults(
+            run_id="run-123",
+            from_date="2026-05-21",
+            to_date="2026-05-22",
+            ticker="AAPL",
+            host="127.0.0.1",
+            port=8766,
+        )
+    )
+
+    assert "Sentence sentiment label" in html
+    assert "Pre-FinBERT relevance gate artifact is missing" in html
+    assert "Human-review digest" in html
+    assert "Only AI/ML/NLP evidence belongs here" in html

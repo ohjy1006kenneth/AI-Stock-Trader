@@ -104,6 +104,7 @@ def build_layer1_semantic_review_dashboard_payload(
     """Return the JSON payload rendered by the semantic-review dashboard UI."""
     payload = _build_payload_from_report(report)
     payload["topic_relevance_review"] = build_layer1_topic_relevance_review(payload)
+    payload["semantic_aggregate_review"] = build_layer1_semantic_aggregate_review(payload)
     payload.update(build_layer1_semantic_review_readiness_summary(payload))
     return payload
 
@@ -122,6 +123,10 @@ def build_layer1_topic_relevance_review(
     embedding_by_article = _rows_by_article(sections.get("article_embedding_rows"))
     topic_by_article = _rows_by_article(sections.get("topic_label_rows"))
     relevance_by_article = _rows_by_article(sections.get("relevance_gate_rows"))
+    preprocessing_rows = _json_list(sections.get("raw_preprocessing_rows"))
+    embedding_rows = _json_list(sections.get("article_embedding_rows"))
+    topic_rows = _json_list(sections.get("topic_label_rows"))
+    relevance_rows = _json_list(sections.get("relevance_gate_rows"))
 
     rows = [
         _topic_relevance_article_row(
@@ -175,6 +180,11 @@ def build_layer1_topic_relevance_review(
     return {
         "summary": {
             "article_count": len(rows),
+            "preprocessing_row_count": len(preprocessing_rows),
+            "embedding_row_count": len(embedding_rows),
+            "topic_label_row_count": len(topic_rows),
+            "relevance_gate_row_count": len(relevance_rows),
+            "relevance_gate_available": bool(relevance_rows),
             "accepted_count": sum(
                 1 for row in rows if row.get("evidence_status") == "accepted"
             ),
@@ -203,10 +213,37 @@ def build_layer1_topic_relevance_review(
                 if "default_relevance_without_supporting_evidence"
                 in _json_string_list(row.get("missing_evidence_flags"))
             ),
+            **_topic_relevance_reviewability_summary(
+                article_count=len(rows),
+                relevance_gate_row_count=len(relevance_rows),
+                embedding_row_count=len(embedding_rows),
+                topic_label_row_count=len(topic_rows),
+            ),
         },
         "date_groups": date_groups,
         "articles": rows,
         "missing_evidence_blockers": missing_blockers,
+    }
+
+
+def build_layer1_semantic_aggregate_review(
+    payload: Mapping[str, object],
+) -> dict[str, object]:
+    """Return human-focused ticker-date NLP aggregate review rows."""
+    sections = _json_mapping(payload.get("pipeline_sections"))
+    rows = [
+        _semantic_aggregate_review_row(row)
+        for row in _json_list(sections.get("semantic_aggregate_rows"))
+        if isinstance(row, Mapping)
+    ]
+    return {
+        "summary": {
+            "row_count": len(rows),
+            "date_count": len({str(row.get("date")) for row in rows if row.get("date") is not None}),
+            "reviewable": bool(rows),
+            "review_focus": "ticker-date NLP summary consumed by later model layers",
+        },
+        "rows": rows,
     }
 
 
@@ -541,6 +578,141 @@ def _relevance_score_interpretation(
     if lowered_decisions & {"borderline", "review", "needs_review"}:
         return "computed_borderline"
     return "computed"
+
+
+def _topic_relevance_reviewability_summary(
+    *,
+    article_count: int,
+    relevance_gate_row_count: int,
+    embedding_row_count: int,
+    topic_label_row_count: int,
+) -> dict[str, object]:
+    if article_count and relevance_gate_row_count == 0:
+        return {
+            "reviewable": False,
+            "review_status": "not_reviewable_missing_relevance_gate",
+            "review_explanation": (
+                "Pre-FinBERT relevance gate artifact is missing. Embeddings and BERTopic "
+                "topic rows are present, but the dashboard cannot prove accept/reject "
+                "relevance decisions or sub-scores for human acceptance."
+            ),
+        }
+    if article_count and (embedding_row_count == 0 or topic_label_row_count == 0):
+        return {
+            "reviewable": False,
+            "review_status": "not_reviewable_missing_topic_or_embedding_evidence",
+            "review_explanation": (
+                "Embedding or BERTopic evidence is missing, so topic relevance cannot be reviewed."
+            ),
+        }
+    return {
+        "reviewable": bool(article_count),
+        "review_status": "reviewable" if article_count else "no_topic_relevance_rows",
+        "review_explanation": (
+            "Review ticker/entity evidence, topic assignment, and pre-FinBERT relevance "
+            "gate decisions before trusting FinBERT sentiment."
+        ),
+    }
+
+
+def _semantic_aggregate_review_row(row: Mapping[str, object]) -> dict[str, object]:
+    features = _json_mapping(row.get("features"))
+    sentiment_score = _maybe_float(features.get("nlp_sentiment_score"))
+    sentiment_label = _sentiment_label_from_score(sentiment_score)
+    cards = _semantic_aggregate_review_cards(features)
+    return {
+        **dict(row),
+        "sentiment_label": sentiment_label,
+        "human_review_summary": _semantic_aggregate_human_summary(
+            sentiment_label=sentiment_label,
+            sentiment_score=sentiment_score,
+            article_count=_maybe_float(features.get("nlp_article_count")),
+            sentence_count=_maybe_float(features.get("nlp_sentence_count")),
+        ),
+        "review_value_cards": cards,
+    }
+
+
+def _sentiment_label_from_score(score: float | None) -> str:
+    if score is None:
+        return "unknown"
+    if score > 0.05:
+        return "positive"
+    if score < -0.05:
+        return "negative"
+    return "neutral"
+
+
+def _semantic_aggregate_human_summary(
+    *,
+    sentiment_label: str,
+    sentiment_score: float | None,
+    article_count: float | None,
+    sentence_count: float | None,
+) -> str:
+    return (
+        f"Overall NLP sentiment is {sentiment_label} "
+        f"(score={_display_number(sentiment_score, 3)}) from "
+        f"{_display_number(article_count, 0)} article(s) and "
+        f"{_display_number(sentence_count, 0)} sentence/chunk row(s)."
+    )
+
+
+def _semantic_aggregate_review_cards(features: Mapping[str, object]) -> list[dict[str, object]]:
+    cards: list[dict[str, object]] = []
+    sentiment_score = _maybe_float(features.get("nlp_sentiment_score"))
+    if sentiment_score is not None:
+        cards.append(
+            {
+                "label": "Overall sentiment",
+                "value": _display_number(sentiment_score, 3),
+                "field": "features.nlp_sentiment_score",
+            }
+        )
+    mix_values = [
+        _maybe_float(features.get("nlp_sentiment_positive")),
+        _maybe_float(features.get("nlp_sentiment_negative")),
+        _maybe_float(features.get("nlp_sentiment_neutral")),
+    ]
+    if all(value is not None for value in mix_values):
+        cards.append(
+            {
+                "label": "Positive / negative / neutral mix",
+                "value": " / ".join(_display_number(value, 3) for value in mix_values),
+                "field": "features.nlp_sentiment_positive / negative / neutral",
+            }
+        )
+    article_count = _maybe_float(features.get("nlp_article_count"))
+    sentence_count = _maybe_float(features.get("nlp_sentence_count"))
+    if article_count is not None or sentence_count is not None:
+        cards.append(
+            {
+                "label": "Articles / sentences",
+                "value": (
+                    f"{_display_number(article_count, 0)} / "
+                    f"{_display_number(sentence_count, 0)}"
+                ),
+                "field": "features.nlp_article_count / features.nlp_sentence_count",
+            }
+        )
+    relevance_score = _maybe_float(features.get("nlp_relevance_score"))
+    if relevance_score is not None:
+        cards.append(
+            {
+                "label": "Relevance score",
+                "value": _display_number(relevance_score, 3),
+                "field": "features.nlp_relevance_score",
+            }
+        )
+    return cards
+
+
+def _display_number(value: float | None, decimals: int) -> str:
+    if value is None:
+        return "n/a"
+    if decimals == 0:
+        return str(int(round(value)))
+    return f"{value:.{decimals}f}"
 
 
 def _rows_by_article(value: object) -> dict[tuple[str, str], list[dict[str, object]]]:

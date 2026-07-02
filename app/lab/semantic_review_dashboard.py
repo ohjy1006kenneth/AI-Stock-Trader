@@ -588,6 +588,10 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
     .good {{ color: #baf7c9; }}
     .warn {{ color: #fde68a; }}
     .bad {{ color: #fecdd3; }}
+    .sentiment-positive {{ color: #baf7c9; }}
+    .sentiment-negative {{ color: #fecdd3; }}
+    .sentiment-neutral {{ color: #dbeafe; }}
+    .sentiment-unknown {{ color: var(--muted); }}
     .hidden {{ display: none !important; }}
     .section-note {{ color: var(--muted); max-width: 90ch; }}
     .footer-note {{ color: var(--muted); font-size: 0.9rem; }}
@@ -605,7 +609,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       <section class="panel state-card" id="state-panel">
         <div class="state-pill warn" id="review-state">Loading review…</div>
         <h2>What am I looking at?</h2>
-        <p id="state-explainer" class="section-note">This page loads the day-by-day Apple review evidence, plus a market benchmark chart for the HMM regime check.</p>
+        <p id="state-explainer" class="section-note">Only AI/ML/NLP evidence belongs here: article relevance, embeddings/topics, FinBERT sentence sentiment, ticker-date NLP aggregates, and market-wide HMM regime context.</p>
         <div class="hero-grid" id="metrics"></div>
       </section>
 
@@ -639,7 +643,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       <section class="panel tab-panel hidden" id="finbert-sentence-review-tab" role="tabpanel" aria-hidden="true">
         <div>
           <h2>FinBERT Sentence Review</h2>
-          <p class="section-note">This tab shows the full scored sentence rows, sentence/chunk index, source text field/order, sentiment probabilities, sentiment score, relevance score/state, and row granularity. If the scored-news artifact is missing full text, the dashboard shows a warning instead of pretending the evidence is complete.</p>
+          <p class="section-note">Review one scored sentence/chunk at a time. Each row now shows a Sentence sentiment label, positive/negative/neutral probabilities, sentiment score, and the exact text FinBERT scored.</p>
         </div>
         <div id="finbert-sentence-review-content"></div>
         <details class="panel" id="advanced-section">
@@ -654,7 +658,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       <section class="panel tab-panel hidden" id="topic-relevance-tab" role="tabpanel" aria-hidden="true">
         <div>
           <h2>Topic / Relevance Pipeline</h2>
-          <p class="section-note">This tab follows the article from ticker/entity preprocessing through embedding cache, BERTopic label, and pre-FinBERT relevance-gate evidence. A score of 1.0 is not treated as strong evidence when the supporting ticker, entity, embedding, topic, or gate rows are missing.</p>
+          <p class="section-note">This tab follows the article from ticker/entity preprocessing through embedding cache, BERTopic label, and pre-FinBERT relevance-gate evidence. If the Pre-FinBERT relevance gate artifact is missing, this tab is not reviewable yet even when embeddings and topics exist.</p>
         </div>
         <div id="topic-relevance-content"></div>
       </section>
@@ -662,7 +666,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       <section class="panel tab-panel hidden" id="semantic-aggregate-tab" role="tabpanel" aria-hidden="true">
         <div>
           <h2>Ticker-Date Semantic Aggregates</h2>
-          <p class="section-note">This tab shows the final Layer 1 NLP feature rows as one record per <strong>(date, ticker)</strong>. These are repeated context / aggregate values, not article evidence: use them to inspect the ticker-date feature row, its source and stage keys, and the aggregated values that Layer 2 consumes.</p>
+          <p class="section-note">Human-review digest for the final Layer 1 NLP feature rows: one record per <strong>(date, ticker)</strong>, focused on sentiment direction, positive/negative/neutral mix, article/sentence volume, and relevance.</p>
         </div>
         <div id="semantic-aggregate-content"></div>
       </section>
@@ -753,6 +757,23 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       const number = Number(value);
       if (!Number.isFinite(number)) return 'n/a';
       return number.toFixed(digits);
+    }}
+
+    function sentimentClass(label) {{
+      if (label === 'positive') return 'sentiment-positive';
+      if (label === 'negative') return 'sentiment-negative';
+      if (label === 'neutral') return 'sentiment-neutral';
+      return 'sentiment-unknown';
+    }}
+
+    function sentimentBadge(label) {{
+      const safeLabel = label || 'unknown';
+      return `<span class="badge ${{sentimentClass(safeLabel)}}">${{escapeHtml(safeLabel)}}</span>`;
+    }}
+
+    function sentimentLabelCounts(counts) {{
+      const source = counts || {{}};
+      return `positive: ${{Number(source.positive || 0)}} · negative: ${{Number(source.negative || 0)}} · neutral: ${{Number(source.neutral || 0)}} · unknown: ${{Number(source.unknown || 0)}}`;
     }}
 
     function labelState(state) {{
@@ -1231,6 +1252,8 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       const chunkIndex = row.chunk_index ?? 'n/a';
       const rowGranularity = row.row_granularity || 'n/a';
       const relevanceState = row.relevance_state || 'missing';
+      const sentimentLabel = row.sentiment_label || 'unknown';
+      const sentimentConfidence = row.sentiment_label_confidence;
       const probabilities = [
         `pos: ${{formatNumber(row.positive_probability, 2)}}`,
         `neg: ${{formatNumber(row.negative_probability, 2)}}`,
@@ -1240,6 +1263,8 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
         <details class="row-item">
           <summary>
             <span class="article-title">Sentence ${{escapeHtml(sentenceIndex)}} / chunk ${{escapeHtml(chunkIndex)}}</span>
+            ${{sentimentBadge(sentimentLabel)}}
+            <span class="badge" title="Raw field: sentiment_label_confidence">confidence: ${{formatNumber(sentimentConfidence, 2)}}</span>
             <span class="badge">${{escapeHtml(rowGranularity)}}</span>
             <span class="badge ${{hasText ? 'good' : 'warn'}}">${{hasText ? 'Text available' : 'Text missing'}}</span>
             <span class="badge" title="Raw field: relevance_state">relevance: ${{escapeHtml(relevanceState)}}</span>
@@ -1250,6 +1275,8 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
             <div class="compact-grid">
               <div class="compact"><div class="k">Source text field</div><div class="v">${{escapeHtml(sourceTextField)}}</div><div class="k">raw: source_text_field</div></div>
               <div class="compact"><div class="k">Source text order</div><div class="v">${{escapeHtml(sourceTextOrder)}}</div><div class="k">raw: source_text_order</div></div>
+              <div class="compact"><div class="k">Sentence sentiment label</div><div class="v ${{sentimentClass(sentimentLabel)}}">${{escapeHtml(sentimentLabel)}}</div><div class="k">raw: sentiment_label</div></div>
+              <div class="compact"><div class="k">Label confidence</div><div class="v">${{formatNumber(sentimentConfidence, 3)}}</div><div class="k">raw: sentiment_label_confidence</div></div>
               <div class="compact"><div class="k">Sentiment score</div><div class="v">${{formatNumber(row.sentiment_score, 2)}}</div><div class="k">raw: sentiment_score</div></div>
               <div class="compact"><div class="k">Relevance score</div><div class="v">${{formatNumber(row.relevance_score, 2)}}</div><div class="k">raw: relevance_score</div></div>
             </div>
@@ -1267,6 +1294,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
           <summary>
             <span class="article-title">${{escapeHtml(article.headline || article.article_id || 'Article')}}</span>
             <span class="badge ${{article.article_status === 'accepted' ? 'good' : 'warn'}}">${{article.article_status === 'accepted' ? 'Accepted for review' : 'Needs a closer look'}}</span>
+            <span class="badge" title="Derived from sentence-level sentiment labels">${{escapeHtml(sentimentLabelCounts(article.sentiment_label_counts))}}</span>
             <span class="badge" title="Raw field: article_id">article_id: ${{escapeHtml(article.article_id || 'n/a')}}</span>
             <span class="badge" title="Raw field: sentence rows">rows: ${{rowCount}}</span>
           </summary>
@@ -1325,10 +1353,12 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       const missingTextWarnings = Array.isArray(review.missing_text_warnings) ? review.missing_text_warnings : [];
       const sourceArtifactGaps = Array.isArray(review.source_artifact_gaps) ? review.source_artifact_gaps : [];
       const rowCount = Number(review.row_count || 0);
+      const labelCounts = sentimentLabelCounts(review.sentiment_label_counts);
       finbertReviewEl.innerHTML = `
         <div class="hero-grid">
           ${{metricCard('Articles', articles.length, 'finbert_sentence_review.article_count', 'How many article-level FinBERT review cards are available.')}}
           ${{metricCard('Sentence rows', rowCount, 'finbert_sentence_review.row_count', 'How many sentence/chunk rows were reviewed.')}}
+          ${{metricCard('Sentence sentiment labels', labelCounts, 'finbert_sentence_review.sentiment_label_counts', 'Positive/negative/neutral labels derived from FinBERT probabilities.')}}
           ${{metricCard('Missing text rows', missingTextWarnings.length, 'finbert_sentence_review.missing_text_warning_count', 'How many scored rows are missing the full scored sentence text.')}}
         </div>
         ${{sourceArtifactGaps.length ? `<div class="chart-blocker"><h3>Source artifact gap</h3><p>The scored-news artifact is incomplete for at least one row, so the dashboard is telling you that instead of inventing missing text.</p><ul>${{sourceArtifactGaps.map((gap) => `<li>${{escapeHtml(gap.date || 'n/a')}} · ${{escapeHtml(gap.article_id || 'n/a')}} · sentence ${{escapeHtml(gap.sentence_index ?? 'n/a')}} / chunk ${{escapeHtml(gap.chunk_index ?? 'n/a')}}${{gap.source_text_field ? ` · source field: ${{escapeHtml(gap.source_text_field)}}` : ''}}${{gap.source_text_order !== undefined && gap.source_text_order !== null ? ` · source order: ${{escapeHtml(gap.source_text_order)}}` : ''}}</li>`).join('')}}</ul></div>` : ''}}
@@ -1412,15 +1442,19 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       const summary = review.summary || {{}};
       const dateGroups = Array.isArray(review.date_groups) ? review.date_groups : [];
       const blockers = Array.isArray(review.missing_evidence_blockers) ? review.missing_evidence_blockers : [];
+      const blockerPreview = blockers.slice(0, 12);
+      const reviewable = summary.reviewable === true;
       topicRelevanceReviewEl.innerHTML = `
         <div class="hero-grid">
           ${{metricCard('Articles', summary.article_count ?? 0, 'topic_relevance_review.summary.article_count', 'Article-level topic/relevance evidence rows.')}}
+          ${{metricCard('Relevance-gate rows', summary.relevance_gate_row_count ?? 0, 'topic_relevance_review.summary.relevance_gate_row_count', 'Rows from the pre-FinBERT relevance gate. Zero means this tab cannot be accepted yet.')}}
+          ${{metricCard('Embeddings / topic rows', `${{summary.embedding_row_count ?? 0}} / ${{summary.topic_label_row_count ?? 0}}`, 'topic_relevance_review.summary.embedding_row_count / topic_label_row_count', 'ML topic evidence available before the missing relevance-gate decision.')}}
           ${{metricCard('Accepted', summary.accepted_count ?? 0, 'topic_relevance_review.summary.accepted_count', 'Rows accepted by the relevance gate with supporting evidence.')}}
           ${{metricCard('Borderline', summary.borderline_count ?? 0, 'topic_relevance_review.summary.borderline_count', 'Rows that need human attention before trust.')}}
           ${{metricCard('Rejected', summary.rejected_count ?? 0, 'topic_relevance_review.summary.rejected_count', 'Rows rejected by the relevance gate.')}}
           ${{metricCard('Missing/default', summary.missing_or_default_count ?? 0, 'topic_relevance_review.summary.missing_or_default_count', 'Rows missing required topic, embedding, or relevance support.')}}
         </div>
-        ${{blockers.length ? `<div class="chart-blocker"><h3>Topic / relevance evidence blockers</h3><p>These articles have missing evidence or default relevance scores that should block final human acceptance until the upstream artifacts are present.</p><ul>${{blockers.map((item) => `<li>${{escapeHtml(item.date || 'n/a')}} · ${{escapeHtml(item.article_id || 'n/a')}} · ${{escapeHtml((item.missing_evidence_flags || []).join(', '))}}</li>`).join('')}}</ul></div>` : ''}}
+        ${{!reviewable ? `<div class="chart-blocker"><h3>Topic / relevance is not reviewable yet</h3><p>${{escapeHtml(summary.review_explanation || 'Required topic/relevance evidence is missing.')}}</p><details><summary>Show sample affected articles (${{blockers.length}} total)</summary><div class="body"><ul>${{blockerPreview.map((item) => `<li>${{escapeHtml(item.date || 'n/a')}} · ${{escapeHtml(item.article_id || 'n/a')}} · ${{escapeHtml((item.missing_evidence_flags || []).join(', '))}}</li>`).join('')}}</ul></div></details></div>` : ''}}
         <div class="date-grid">
           ${{dateGroups.length ? dateGroups.map((group) => `
             <details class="date-card">
@@ -1453,36 +1487,27 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
     function renderSemanticAggregateRow(row) {{
       const features = row.features || {{}};
       const contributingArticleIds = Array.isArray(row.contributing_article_ids) ? row.contributing_article_ids : [];
-      const sourceWeightSummary = Array.isArray(row.source_weight_summary) ? row.source_weight_summary : [];
-      const topicSentimentSummary = Array.isArray(row.topic_sentiment_summary) ? row.topic_sentiment_summary : [];
       const relevanceReasonCodes = Array.isArray(row.relevance_reason_codes) ? row.relevance_reason_codes : [];
       const semanticWarningCodes = Array.isArray(row.semantic_warning_codes) ? row.semantic_warning_codes : [];
+      const reviewCards = Array.isArray(row.review_value_cards) ? row.review_value_cards : [];
       const rowGranularity = row.row_granularity || 'n/a';
       const rowGranularityLabel = rowGranularity === 'ticker-date' ? 'Repeated context / aggregate value' : rowGranularity;
       return `
         <details class="row-item">
           <summary>
             <span class="article-title">${{escapeHtml(row.date || 'n/a')}} · ${{escapeHtml(row.ticker || 'n/a')}}</span>
+            ${{sentimentBadge(row.sentiment_label || 'unknown')}}
             <span class="badge" title="Raw field: row_granularity">${{escapeHtml(rowGranularityLabel)}}</span>
             <span class="badge" title="Raw field: stage">stage: ${{escapeHtml(row.stage || 'n/a')}}</span>
-            <span class="badge" title="Raw field: artifact_key">artifact: ${{escapeHtml(row.artifact_key || 'n/a')}}</span>
           </summary>
           <div class="body">
-            <p class="article-copy">What am I looking at? The final Layer 1 ticker-date feature row for this trading day. Why does it matter? This is the aggregate output that should feed later stages, not article or sentence evidence. What would make this good or bad? Good: the row is present once per <strong>(date, ticker)</strong> and its values are clearly labeled as repeated context / aggregate values. Bad: the row is missing, duplicated, or presented like article-level evidence.</p>
+            <p class="article-copy"><strong>Human-review digest:</strong> ${{escapeHtml(row.human_review_summary || 'No aggregate review summary available.')}}</p>
             <div class="compact-grid">
+              ${{reviewCards.map((card) => `<div class="compact"><div class="k">${{escapeHtml(card.label)}}</div><div class="v">${{escapeHtml(card.value)}}</div><div class="k">raw: ${{escapeHtml(card.field)}}</div></div>`).join('')}}
               <div class="compact"><div class="k">Row granularity</div><div class="v">${{escapeHtml(rowGranularityLabel)}}</div><div class="k">raw: row_granularity</div></div>
               <div class="compact"><div class="k">Stage</div><div class="v">${{escapeHtml(row.stage || 'n/a')}}</div><div class="k">raw: stage</div></div>
               <div class="compact"><div class="k">Artifact key</div><div class="v">${{escapeHtml(row.artifact_key || 'n/a')}}</div><div class="k">raw: artifact_key</div></div>
-              <div class="compact"><div class="k">Sentiment score</div><div class="v">${{formatNumber(features.nlp_sentiment_score, 3)}}</div><div class="k">raw: features.nlp_sentiment_score</div></div>
-              <div class="compact"><div class="k">Article count</div><div class="v">${{formatNumber(features.nlp_article_count, 0)}}</div><div class="k">raw: features.nlp_article_count</div></div>
-              <div class="compact"><div class="k">Sentence count</div><div class="v">${{formatNumber(features.nlp_sentence_count, 0)}}</div><div class="k">raw: features.nlp_sentence_count</div></div>
-              <div class="compact"><div class="k">Relevance score</div><div class="v">${{formatNumber(features.nlp_relevance_score, 3)}}</div><div class="k">raw: features.nlp_relevance_score</div></div>
-              <div class="compact"><div class="k">Source weight mean / sum</div><div class="v">${{formatNumber(features.nlp_source_weight_mean, 2)}} / ${{formatNumber(features.nlp_source_weight_sum, 2)}}</div><div class="k">raw: features.nlp_source_weight_mean / features.nlp_source_weight_sum</div></div>
-              <div class="compact"><div class="k">Effective weight sum</div><div class="v">${{formatNumber(features.nlp_effective_weight_sum, 2)}}</div><div class="k">raw: features.nlp_effective_weight_sum</div></div>
-              <div class="compact"><div class="k">Relevance accepted / borderline</div><div class="v">${{formatNumber(features.nlp_relevance_accepted_count, 0)}} / ${{formatNumber(features.nlp_relevance_borderline_count, 0)}}</div><div class="k">raw: features.nlp_relevance_accepted_count / features.nlp_relevance_borderline_count</div></div>
               <div class="compact"><div class="k">Contributing articles</div><div class="v">${{escapeHtml(contributingArticleIds.length ? contributingArticleIds.join(', ') : 'none')}}</div><div class="k">raw: contributing_article_ids</div></div>
-              <div class="compact"><div class="k">Source weight summary</div><div class="v">${{escapeHtml(semanticAggregateValue(sourceWeightSummary))}}</div><div class="k">raw: source_weight_summary</div></div>
-              <div class="compact"><div class="k">Topic sentiment summary</div><div class="v">${{escapeHtml(semanticAggregateValue(topicSentimentSummary))}}</div><div class="k">raw: topic_sentiment_summary</div></div>
               <div class="compact"><div class="k">Relevance reason codes</div><div class="v">${{escapeHtml(semanticAggregateValue(relevanceReasonCodes))}}</div><div class="k">raw: relevance_reason_codes</div></div>
               <div class="compact"><div class="k">Semantic warning codes</div><div class="v">${{escapeHtml(semanticAggregateValue(semanticWarningCodes))}}</div><div class="k">raw: semantic_warning_codes</div></div>
             </div>
@@ -1497,12 +1522,14 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
     }}
 
     function renderSemanticAggregateReview(payload) {{
-      const sections = payload.pipeline_sections || {{}};
-      const rows = Array.isArray(sections.semantic_aggregate_rows) ? sections.semantic_aggregate_rows : [];
+      const review = payload.semantic_aggregate_review || {{}};
+      const summary = review.summary || {{}};
+      const rows = Array.isArray(review.rows) ? review.rows : [];
       const warnings = semanticAggregateWarnings(payload);
       semanticAggregateReviewEl.innerHTML = `
         <div class="hero-grid">
-          ${{metricCard('Aggregate rows', rows.length, 'pipeline_sections.semantic_aggregate_rows', 'Final ticker-date Layer 1 feature rows available in the review payload.')}}
+          ${{metricCard('Aggregate rows', summary.row_count ?? rows.length, 'semantic_aggregate_review.summary.row_count', 'Final ticker-date Layer 1 feature rows available in the review payload.')}}
+          ${{metricCard('Dates covered', summary.date_count ?? 0, 'semantic_aggregate_review.summary.date_count', 'Dates with ticker-date NLP aggregate rows.')}}
           ${{metricCard('Missing aggregate warnings', warnings.length, 'warnings[scope=sentiment_features]', 'Warnings for missing or incomplete ticker-date aggregate rows.')}}
           ${{metricCard('Row granularity', 'ticker-date', 'row_granularity', 'These rows are repeated ticker-date context, not article evidence.')}}
         </div>
