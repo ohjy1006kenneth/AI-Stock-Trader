@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from threading import Lock
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
@@ -52,6 +53,8 @@ class _DashboardHTTPServer(ThreadingHTTPServer):
     def __init__(self, server_address: tuple[str, int], defaults: _DashboardDefaults) -> None:
         super().__init__(server_address, _DashboardRequestHandler)
         self.defaults = defaults
+        self.payload_cache: dict[tuple[str, str, str, str], dict[str, object]] = {}
+        self.payload_cache_lock = Lock()
 
 
 class _DashboardRequestHandler(BaseHTTPRequestHandler):
@@ -84,13 +87,19 @@ class _DashboardRequestHandler(BaseHTTPRequestHandler):
         params = parse_qs(query_text, keep_blank_values=False)
         try:
             query = _query_from_params(params=params, defaults=self.server.defaults)
-            payload = _build_dashboard_payload(
-                run_id=query.run_id,
-                from_date=query.from_date,
-                to_date=query.to_date,
-                ticker=query.ticker,
-                local_root=self.server.defaults.local_root,
-            )
+            cache_key = (query.run_id, query.from_date, query.to_date, query.ticker)
+            with self.server.payload_cache_lock:
+                payload = self.server.payload_cache.get(cache_key)
+            if payload is None:
+                payload = _build_dashboard_payload(
+                    run_id=query.run_id,
+                    from_date=query.from_date,
+                    to_date=query.to_date,
+                    ticker=query.ticker,
+                    local_root=self.server.defaults.local_root,
+                )
+                with self.server.payload_cache_lock:
+                    self.server.payload_cache[cache_key] = payload
         except ValueError as exc:
             self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return
@@ -664,14 +673,20 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
           <p class="section-note">HMM applies once per market/inference date and is shared context for every ticker/news row on that date. This tab is intentionally benchmark-first: it uses the market benchmark, usually SPY, so reviewers can validate the regime context without confusing it with company-specific article evidence.</p>
         </div>
         <div class="hero-grid" id="hmm-summary-cards"></div>
-        <div class="compact-grid" id="hmm-context-cards"></div>
-        <div class="row-list" id="hmm-date-rows"></div>
         <section class="panel chart-shell" id="chart-section">
           <h3>Market benchmark and HMM regime</h3>
           <p class="chart-note">HMM regime is market-wide and date-level, so the default chart uses <strong>SPY</strong> as the benchmark instead of the selected company ticker. The line shows the benchmark price trend; the colored markers and bars show which regime was most likely on each date and how confident the model was.</p>
           <div id="chart-meta" class="chart-meta"></div>
           <div id="chart-container" class="loading">Loading benchmark chart…</div>
         </section>
+        <details class="panel" id="hmm-context-section">
+          <summary>Model inputs and date-by-date regime rows</summary>
+          <div class="body">
+            <p class="section-note">These diagnostics stay collapsed by default so the SPY graph is visible first. Open them when you need the model inputs, missing feature summary, and per-date close/probability rows.</p>
+            <div class="compact-grid" id="hmm-context-cards"></div>
+            <div class="row-list" id="hmm-date-rows"></div>
+          </div>
+        </details>
         <details class="panel" id="hmm-advanced-section">
           <summary>Advanced HMM evidence and raw rows</summary>
           <div class="body">
@@ -1355,7 +1370,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
           </summary>
           <div class="body">
             <p class="article-copy">What am I looking at? The evidence trail that decides whether this story belongs to the selected ticker before FinBERT sentiment should count. Why does it matter? Ticker/entity evidence, embeddings, topics, and relevance-gate sub-scores should agree before the row is trusted. What would make this good or bad? Good: direct ticker or entity support, embedding and topic rows, an accepted gate decision, and coherent reason codes. Bad: missing evidence, rejected gate rows, or a default score shown without support.</p>
-            ${{flags.length ? `<div class="chart-blocker"><h3>Evidence blocker</h3><p>${{escapeHtml(row.relevance_score_interpretation || 'missing/default evidence')}}</p><ul>${{flags.map((flag) => `<li>${{escapeHtml(flag)}}</li>`).join('')}}</ul></div>` : ''}}
+            ${{flags.length ? `<details class="row-item"><summary>Evidence flags <span class="badge ${{statusClassName}}">${{flags.length}}</span></summary><div class="body"><p class="article-copy">${{escapeHtml(row.relevance_score_interpretation || 'missing/default evidence')}}</p><ul>${{flags.map((flag) => `<li>${{escapeHtml(flag)}}</li>`).join('')}}</ul></div></details>` : ''}}
             <div class="compact-grid">
               <div class="compact"><div class="k">Evidence status</div><div class="v">${{escapeHtml(status)}}</div><div class="k">raw: evidence_status</div></div>
               <div class="compact"><div class="k">Relevance score</div><div class="v">${{formatNumber(row.relevance_score, 3)}}</div><div class="k">raw: relevance_score</div></div>

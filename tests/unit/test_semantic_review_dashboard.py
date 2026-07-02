@@ -647,3 +647,26 @@ def test_semantic_review_dashboard_html_is_beginner_friendly_and_collapsed() -> 
     assert "<table" not in html
     assert "date_aligned_price_hmm_rows" in html
     assert "/api/review" in html
+
+
+def test_semantic_review_dashboard_hmm_tab_puts_chart_before_diagnostics() -> None:
+    """The HMM tab should show the SPY chart before raw model/date diagnostics."""
+    html = _render_dashboard_html(
+        _DashboardDefaults(
+            run_id="run-123",
+            from_date="2026-05-21",
+            to_date="2026-05-22",
+            ticker="AAPL",
+            host="127.0.0.1",
+            port=8766,
+        )
+    )
+
+    chart_index = html.index('id="chart-section"')
+    context_details_index = html.index('id="hmm-context-section"')
+    date_rows_index = html.index('id="hmm-date-rows"')
+
+    assert chart_index < context_details_index
+    assert context_details_index < date_rows_index
+    assert "Model inputs and date-by-date regime rows" in html
+    assert "Evidence blocker" not in html
