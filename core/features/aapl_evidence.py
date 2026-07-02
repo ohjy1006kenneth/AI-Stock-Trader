@@ -2126,6 +2126,7 @@ def _build_finbert_sentence_review_payload(article_groups: Sequence[Mapping[str,
     articles: list[dict[str, object]] = []
     missing_text_warnings: list[dict[str, object]] = []
     source_artifact_gaps: list[dict[str, object]] = []
+    sentiment_label_counts: dict[str, int] = defaultdict(int)
     row_count = 0
 
     for article in article_groups:
@@ -2134,9 +2135,13 @@ def _build_finbert_sentence_review_payload(article_groups: Sequence[Mapping[str,
         article_missing_text = 0
         full_text_parts: list[str] = []
         decorated_rows: list[dict[str, object]] = []
+        article_sentiment_label_counts: dict[str, int] = defaultdict(int)
         for row in sentence_rows:
             text = _optional_str(row.get("text"))
             relevance_score = _maybe_float(row.get("relevance_score"))
+            sentiment_label, sentiment_label_confidence = _sentiment_label_from_probabilities(row)
+            sentiment_label_counts[sentiment_label] += 1
+            article_sentiment_label_counts[sentiment_label] += 1
             missing_text = text is None
             if text is not None:
                 full_text_parts.append(text)
@@ -2161,6 +2166,8 @@ def _build_finbert_sentence_review_payload(article_groups: Sequence[Mapping[str,
             decorated_rows.append(
                 {
                     **row,
+                    "sentiment_label": sentiment_label,
+                    "sentiment_label_confidence": sentiment_label_confidence,
                     "relevance_state": _relevance_state(relevance_score, threshold=DEFAULT_RELEVANCE_THRESHOLD),
                     "has_full_scored_text": not missing_text,
                     "missing_text_warning": (
@@ -2181,6 +2188,7 @@ def _build_finbert_sentence_review_payload(article_groups: Sequence[Mapping[str,
                 **article,
                 "sentence_rows": decorated_rows,
                 "full_scored_text": " ".join(full_text_parts) if has_full_scored_text else None,
+                "sentiment_label_counts": dict(sorted(article_sentiment_label_counts.items())),
                 "full_scored_text_available": has_full_scored_text,
                 "missing_text_row_count": article_missing_text,
                 "full_scored_text_warning": (
@@ -2206,6 +2214,7 @@ def _build_finbert_sentence_review_payload(article_groups: Sequence[Mapping[str,
         "articles": articles,
         "article_count": len(articles),
         "row_count": row_count,
+        "sentiment_label_counts": dict(sorted(sentiment_label_counts.items())),
         "missing_text_warning_count": len(missing_text_warnings),
         "missing_text_warnings": missing_text_warnings,
         "source_artifact_gaps": source_artifact_gaps,
@@ -2271,6 +2280,20 @@ def _maybe_int(value: Any) -> int | None:
     if maybe_value is None:
         return None
     return int(maybe_value)
+
+
+def _sentiment_label_from_probabilities(row: Mapping[str, object]) -> tuple[str, float | None]:
+    """Return the human review sentiment label implied by FinBERT probabilities."""
+    probabilities = {
+        "positive": _maybe_float(row.get("positive_probability")),
+        "negative": _maybe_float(row.get("negative_probability")),
+        "neutral": _maybe_float(row.get("neutral_probability")),
+    }
+    available = {key: value for key, value in probabilities.items() if value is not None}
+    if not available:
+        return "unknown", None
+    label = max(available, key=lambda key: available[key] if available[key] is not None else -1.0)
+    return label, available[label]
 
 
 def _optional_str(value: Any) -> str | None:
