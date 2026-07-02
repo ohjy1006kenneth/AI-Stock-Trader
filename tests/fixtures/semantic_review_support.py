@@ -334,6 +334,9 @@ def _semantic_aggregate_frame(scored_frame: pd.DataFrame) -> pd.DataFrame:
     for date_text, group in scored_frame.groupby("date", sort=True):
         features = {
             "nlp_sentiment_score": float(group["sentiment_score"].mean()),
+            "nlp_sentiment_positive": float(group["positive_probability"].mean()),
+            "nlp_sentiment_negative": float(group["negative_probability"].mean()),
+            "nlp_sentiment_neutral": float(group["neutral_probability"].mean()),
             "nlp_article_count": int(group["article_id"].nunique()),
             "nlp_sentence_count": int(len(group)),
             "nlp_relevance_score": float(group["relevance_score"].mean()),
