@@ -144,6 +144,8 @@ Notes:
 - raw news is stored as an archival dataset in Layer 0 storage
 - this archive is not a replacement for `NewsSentimentRecord`
 - `NewsSentimentRecord` remains a Layer 1 contract produced from raw news
+- Layer 1 preprocessing also writes a non-contract ticker-assignment provenance sidecar at
+  `features/layer1/news_assignment_provenance/{date}/{run_id}.json` for semantic review and dashboard evidence
 - no schema changes in `core/contracts/schemas.py` are required for this archive
 
 ### Layer 0 raw fundamentals archive (non-contract artifact)
@@ -336,6 +338,22 @@ Notes:
   `relevance_decision`, `relevance_score`, ticker/financial/topic sub-scores,
   `reason_codes`, entity/ticker evidence, topic metadata, and embedding cache metadata
 - this is a non-contract artifact; no `core/contracts/schemas.py` change is required
+
+### Layer 1 news assignment provenance (non-contract artifact)
+
+Purpose:
+- expose deterministic, human-reviewable ticker-assignment evidence for each preprocessed
+  article chunk without changing the `NewsSentimentRecord` schema
+- let semantic-review dashboards explain whether a row came from a provider ticker tag, exact
+  ticker mention, company alias/entity match, contextual similarity, or fallback-only logic
+
+Notes:
+- the provenance sidecar is written alongside preprocessed news under
+  `features/{YYYY-MM-DD}/news_assignment_provenance/{run_id}.json`
+- each row records the article id, ticker, sentence index, evidence kinds, classification,
+  and compact reason text used by the review UI
+- provenance is derived from the same Layer 1 preprocessing pass that emits
+  `NewsSentimentRecord` rows; it does not require a new Pydantic inter-layer contract
 
 ### Layer 1 topic-aware sentiment aggregation (non-contract artifact)
 

@@ -21,7 +21,12 @@ from services.r2.client import (
     R2_ENDPOINT_ENV,
     R2_SECRET_KEY_ENV,
 )
-from services.r2.paths import pipeline_manifest_path, raw_news_path, raw_universe_path
+from services.r2.paths import (
+    layer1_news_assignment_provenance_path,
+    pipeline_manifest_path,
+    raw_news_path,
+    raw_universe_path,
+)
 from services.r2.writer import R2Writer
 
 
@@ -90,6 +95,15 @@ def test_run_news_preprocessing_reads_r2_and_writes_outputs(
     assert manifest["status"] == RunStatus.COMPLETED
     assert manifest["metadata"]["article_rows"] == 1
     assert manifest["metadata"]["sentence_rows"] == 4
+    assert manifest["metadata"]["provenance_rows"] == 4
+    assert manifest["metadata"]["provenance_key"] == layer1_news_assignment_provenance_path(
+        "2024-01-02",
+        "nlp-test-run",
+    )
+    provenance = json.loads(writer.get_object(result.provenance_key))
+    assert len(provenance) == 4
+    assert {row["classification"] for row in provenance} == {"direct"}
+    assert all("provider ticker tag" in row["reason"] or "ticker symbol mention" in row["reason"] for row in provenance)
 
 
 def test_run_news_preprocessing_honors_requested_ticker_scope(

@@ -32,7 +32,7 @@ sys.path.insert(0, str(_REPO_ROOT))
 from core.contracts.schemas import PipelineManifestRecord, RunStatus  # noqa: E402
 from core.features.news_preprocessing import (  # noqa: E402
     NewsPreprocessingConfig,
-    preprocess_news_articles,
+    preprocess_news_articles_with_provenance,
     records_to_news_sentiment_frame,
 )
 from services.modal.secrets import (  # noqa: E402
@@ -41,6 +41,7 @@ from services.modal.secrets import (  # noqa: E402
     build_modal_secrets,
 )
 from services.r2.paths import (  # noqa: E402
+    layer1_news_assignment_provenance_path,
     layer1_news_preprocessing_path,
     pipeline_manifest_path,
     raw_news_path,
@@ -106,9 +107,11 @@ class NewsPreprocessingPipelineResult:
 
     run_id: str
     output_key: str
+    provenance_key: str
     manifest_key: str
     article_rows: int
     sentence_rows: int
+    provenance_rows: int
 
 
 @dataclass(frozen=True)
@@ -147,7 +150,7 @@ def run_news_preprocessing(
             config.as_of_date,
             requested_tickers=config.tickers,
         )
-        records = preprocess_news_articles(
+        records, provenance_rows = preprocess_news_articles_with_provenance(
             articles,
             as_of_date=config.as_of_date,
             point_in_time_tickers=tickers,
@@ -158,8 +161,31 @@ def run_news_preprocessing(
                 fallback_chunk_chars=config.fallback_chunk_chars,
             ),
         )
-        active_writer.put_object(output_key, _records_to_parquet_bytes(records))
-        metadata.update({"article_rows": len(articles), "sentence_rows": len(records)})
+        provenance_key = layer1_news_assignment_provenance_path(
+            config.as_of_date,
+            config.run_id,
+        )
+        active_writer.put_object(
+            output_key,
+            _records_to_parquet_bytes(records),
+        )
+        active_writer.put_object(
+            provenance_key,
+            json.dumps(
+                [row.to_dict() for row in provenance_rows],
+                indent=2,
+                sort_keys=True,
+                ensure_ascii=False,
+            ),
+        )
+        metadata.update(
+            {
+                "article_rows": len(articles),
+                "sentence_rows": len(records),
+                "provenance_key": provenance_key,
+                "provenance_rows": len(provenance_rows),
+            }
+        )
         _write_manifest(
             writer=active_writer,
             key=manifest_key,
@@ -173,9 +199,11 @@ def run_news_preprocessing(
         return NewsPreprocessingPipelineResult(
             run_id=config.run_id,
             output_key=output_key,
+            provenance_key=provenance_key,
             manifest_key=manifest_key,
             article_rows=len(articles),
             sentence_rows=len(records),
+            provenance_rows=len(provenance_rows),
         )
     except Exception as exc:
         metadata["error"] = {"type": type(exc).__name__, "message": str(exc)}
