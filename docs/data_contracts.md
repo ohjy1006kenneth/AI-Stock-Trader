@@ -222,6 +222,8 @@ Notes:
 ### NewsSentimentRecord
 
 Represents one sentence-level, article-level, or aggregated ticker-day sentiment view.
+Layer 1 preprocessing now emits bounded, human-reviewable sentence/chunk rows from cleaned
+article text rather than large raw HTML paragraphs.
 
 Fields:
 - `date`
@@ -263,6 +265,11 @@ Input note:
 - sentence/chunk rows should populate `text`, `sentence_index`, `chunk_index`,
   `ticker_mentions`, and `entity_mentions`; aggregated ticker-day rows may leave those
   fields unset
+- splitting is configured by `config/news_preprocessing.json` using
+  `target_chunk_chars`, `max_chunk_chars`, and `fallback_chunk_chars`
+- the splitter keeps paragraph and list boundaries when possible, emits readable sentence-
+  sized or bounded chunk rows, and falls back to smaller chunks for oversized text instead
+  of silently truncating important content
 - `published_at` must preserve the raw article timestamp exactly for downstream leakage checks
 
 ### Layer 1 text embeddings and topic labels (non-contract artifacts)
