@@ -122,6 +122,7 @@ def test_score_news_sentiment_distinguishes_missing_and_explicit_relevance() -> 
     )
     by_ticker = {record.ticker: record for record in aggregates}
     assert by_ticker["AAPL"].features["nlp_relevance_score"] is None
+    assert by_ticker["AAPL"].features["nlp_sentiment_score"] is None
     assert by_ticker["MSFT"].features["nlp_relevance_score"] == pytest.approx(0.25)
     assert by_ticker["SPY"].features["nlp_relevance_score"] == pytest.approx(0.9)
     assert json.loads(str(by_ticker["AAPL"].features["nlp_semantic_warning_codes"])) == [
@@ -314,7 +315,7 @@ def test_aggregate_sentiment_by_ticker_day_rejects_bad_probability() -> None:
 
 
 def test_aggregate_sentiment_by_ticker_day_handles_nan_relevance() -> None:
-    """NaN relevance does not prevent source-weighted sentiment aggregation."""
+    """NaN relevance is treated as non-direct evidence, not full-weight support."""
     scored_news = pd.DataFrame([_row(relevance_score=float("nan"))])
 
     aggregates = aggregate_sentiment_by_ticker_day(
@@ -325,7 +326,7 @@ def test_aggregate_sentiment_by_ticker_day_handles_nan_relevance() -> None:
         ),
     )
 
-    assert aggregates.loc[0, "sentiment_score"] == pytest.approx(0.7)
+    assert aggregates.loc[0, "sentiment_score"] is None
     assert pd.isna(aggregates.loc[0, "relevance_score"])
 
 

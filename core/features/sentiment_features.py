@@ -758,10 +758,13 @@ def _topic_effective_weight(row: Mapping[str, Any]) -> float:
 
 
 def _relevance_weight(value: Any) -> float:
-    """Return the non-negative article relevance multiplier."""
+    """Return the non-negative article relevance multiplier.
+
+    Missing relevance stays non-direct evidence by contributing zero weight.
+    """
     numeric = _to_float_or_none(value)
     if numeric is None:
-        return 1.0
+        return 0.0
     return max(numeric, 0.0)
 
 
