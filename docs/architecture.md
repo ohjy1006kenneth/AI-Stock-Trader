@@ -206,7 +206,7 @@ r2/
     YYYY-MM-DD/       # Canonical date-first Layer 1 feature partition
       TICKER.parquet  # Complete FeatureRecord shard for one date/ticker
       regime/         # Colocated Layer 1.5 regime artifacts for the date
-      news_sentiment/ # Layer 1 news preprocessing rows with article and chunk provenance
+      news_sentiment/ # Layer 1 news preprocessing rows with readable sentence/chunk provenance
       text_embeddings/# Article embedding cache keyed by pinned model/version
       topic_labels/   # Article-level BERTopic labels from Modal
       topic_features/ # Ticker-day FeatureRecord topic summaries
@@ -359,13 +359,19 @@ migration inputs, but they are not the authoritative production handoff path.
 
 #### Text / NLP branch
 
+Layer 1 news preprocessing is driven by `config/news_preprocessing.json`. The configured
+`target_chunk_chars` sets the preferred chunk size, `max_chunk_chars` is the hard upper
+bound before fallback splitting, and `fallback_chunk_chars` is the last-resort split size for
+oversized tokens or text that still exceeds the hard limit.
+
 **Pipeline order (must be executed in this sequence):**
 
 ```
 RAW ARTICLES (Alpaca news)
   → Step 1: Preprocessing
       Read raw/news and raw/universe from R2, clean provider HTML/entities into plain text,
-      split into sentences, tag point-in-time tickers, write NewsSentimentRecord rows to
+      split cleaned article text into bounded sentence/chunk rows, preserve paragraph/list
+      breaks where possible, tag point-in-time tickers, write NewsSentimentRecord rows to
       features/{date}/news_sentiment/{run_id}.parquet
   → Step 2a: Sentence Transformers (per article)
       Model: all-mpnet-base-v2

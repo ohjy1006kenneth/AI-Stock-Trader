@@ -1,5 +1,11 @@
 {
   "app_name": "ai-stock-trader-news-preprocessing",
   "r2_secret_name": "ai-stock-trader-r2",
-  "timeout_seconds": 1800
+  "timeout_seconds": 1800,
+  "news_preprocessing": {
+    "min_sentence_chars": 2,
+    "target_chunk_chars": 240,
+    "max_chunk_chars": 360,
+    "fallback_chunk_chars": 160
+  }
 }
