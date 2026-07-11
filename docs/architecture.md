@@ -364,8 +364,8 @@ migration inputs, but they are not the authoritative production handoff path.
 ```
 RAW ARTICLES (Alpaca news)
   → Step 1: Preprocessing
-      Read raw/news and raw/universe from R2, split into sentences, tag
-      point-in-time tickers, write NewsSentimentRecord rows to
+      Read raw/news and raw/universe from R2, clean provider HTML/entities into plain text,
+      split into sentences, tag point-in-time tickers, write NewsSentimentRecord rows to
       features/{date}/news_sentiment/{run_id}.parquet
   → Step 2a: Sentence Transformers (per article)
       Model: all-mpnet-base-v2
