@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 from core.contracts.schemas import NewsSentimentRecord
+from core.features.news_preprocessing import records_to_news_sentiment_frame
 from core.features.sentiment_features import (
     SENTIMENT_AGGREGATE_COLUMNS,
     SentimentScore,
@@ -70,8 +71,8 @@ class _BadScorer:
         return []
 
 
-def test_score_news_sentiment_populates_finbert_fields() -> None:
-    """Preprocessed news records are scored without changing identity fields."""
+def test_score_news_sentiment_distinguishes_missing_and_explicit_relevance() -> None:
+    """Preprocessed news records keep explicit relevance separate from missing fallback."""
     records = [
         NewsSentimentRecord(
             date="2024-04-10",
@@ -88,17 +89,45 @@ def test_score_news_sentiment_populates_finbert_fields() -> None:
             article_id="a2",
             sentence_index=0,
             source="Reuters",
+            relevance_score=0.25,
+        ),
+        NewsSentimentRecord(
+            date="2024-04-10",
+            ticker="SPY",
+            text="S&P 500 rises as Fed holds rates.",
+            article_id="a3",
+            sentence_index=0,
+            source="Reuters",
+            relevance_score=0.9,
         ),
     ]
 
     scored = score_news_sentiment(records, scorer=_FakeScorer(), batch_size=1)
 
-    assert [record.ticker for record in scored] == ["AAPL", "MSFT"]
+    assert [record.ticker for record in scored] == ["AAPL", "MSFT", "SPY"]
     assert scored[0].sentiment_positive == pytest.approx(0.8)
     assert scored[0].sentiment_score == pytest.approx(0.7)
     assert scored[1].sentiment_negative == pytest.approx(0.6)
     assert scored[1].sentiment_score == pytest.approx(-0.4)
-    assert scored[0].relevance_score == pytest.approx(1.0)
+    assert scored[0].relevance_score is None
+    assert scored[1].relevance_score == pytest.approx(0.25)
+    assert scored[2].relevance_score == pytest.approx(0.9)
+
+    aggregates = sentiment_feature_records_from_scored_news(
+        records_to_news_sentiment_frame(scored),
+        credibility_config=SourceCredibilityConfig(
+            default_source_weight=1.0,
+            source_weights={},
+        ),
+    )
+    by_ticker = {record.ticker: record for record in aggregates}
+    assert by_ticker["AAPL"].features["nlp_relevance_score"] is None
+    assert by_ticker["MSFT"].features["nlp_relevance_score"] == pytest.approx(0.25)
+    assert by_ticker["SPY"].features["nlp_relevance_score"] == pytest.approx(0.9)
+    assert json.loads(str(by_ticker["AAPL"].features["nlp_semantic_warning_codes"])) == [
+        "missing_relevance_evidence",
+        "missing_topic_artifact",
+    ]
 
 
 def test_score_news_sentiment_skips_rows_without_text_or_headline() -> None:
