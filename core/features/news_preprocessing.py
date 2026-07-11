@@ -11,14 +11,18 @@ from datetime import date as Date
 from datetime import datetime
 from typing import Any
 
+from pydantic import TypeAdapter
+
 from core.contracts.schemas import NewsSentimentRecord
 from services.wikipedia.sp500_universe import canonicalize_ticker
 
-_SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?])\s+(?=[\"'A-Z0-9])")
-_WHITESPACE = re.compile(r"\s+")
-_HTML_BLOCK_BREAK = re.compile(
-    r"(?is)</?(?:p|div|li|tr|td|th|h[1-6]|section|article|header|footer|blockquote|br|hr)[^>]*>"
+_HTML_BLOCK_BREAK_START = re.compile(
+    r"(?is)<\s*(?:p|div|li|tr|td|th|h[1-6]|section|article|header|footer|blockquote|ul|ol)\b[^>]*>"
 )
+_HTML_BLOCK_BREAK_END = re.compile(
+    r"(?is)</\s*(?:p|div|li|tr|td|th|h[1-6]|section|article|header|footer|blockquote|ul|ol)\b[^>]*>"
+)
+_HTML_LINE_BREAK = re.compile(r"(?is)<\s*(?:br|hr)\b[^>]*>")
 _HTML_NOISE_BLOCKS = (
     re.compile(r"(?is)<script\b[^>]*>.*?</script>"),
     re.compile(r"(?is)<style\b[^>]*>.*?</style>"),
@@ -36,13 +40,43 @@ _HTML_NOISE_BLOCKS = (
     ),
 )
 _HTML_TAG = re.compile(r"<[^>]+>")
+_INLINE_WHITESPACE = re.compile(r"[ \t\f\v]+")
+_PARAGRAPH_BREAK = re.compile(r"\n+")
+_SENTENCE_BOUNDARY = re.compile(r'([.!?]+(?:["\')\]]+)?)\s+')
+_ABBREVIATION_TOKENS = {
+    "a.m",
+    "co",
+    "corp",
+    "dr",
+    "e.u",
+    "fig",
+    "inc",
+    "jr",
+    "ltd",
+    "mr",
+    "mrs",
+    "ms",
+    "mt",
+    "no",
+    "p.m",
+    "prof",
+    "sr",
+    "st",
+    "u.k",
+    "u.s",
+    "vs",
+}
+_DATETIME_ADAPTER = TypeAdapter(datetime)
 
 
 @dataclass(frozen=True)
 class NewsPreprocessingConfig:
-    """Text and filtering settings for sentence-level news preprocessing."""
+    """Text splitting and filtering settings for sentence-level news preprocessing."""
 
     min_sentence_chars: int = 2
+    target_chunk_chars: int = 240
+    max_chunk_chars: int = 360
+    fallback_chunk_chars: int = 160
     include_headline: bool = True
     include_summary: bool = True
     include_content: bool = True
@@ -51,6 +85,16 @@ class NewsPreprocessingConfig:
         """Validate text preprocessing settings."""
         if self.min_sentence_chars <= 0:
             raise ValueError("min_sentence_chars must be positive")
+        if self.target_chunk_chars <= 0:
+            raise ValueError("target_chunk_chars must be positive")
+        if self.max_chunk_chars <= 0:
+            raise ValueError("max_chunk_chars must be positive")
+        if self.fallback_chunk_chars <= 0:
+            raise ValueError("fallback_chunk_chars must be positive")
+        if self.target_chunk_chars > self.max_chunk_chars:
+            raise ValueError("target_chunk_chars must be <= max_chunk_chars")
+        if self.fallback_chunk_chars > self.target_chunk_chars:
+            raise ValueError("fallback_chunk_chars must be <= target_chunk_chars")
         if not (self.include_headline or self.include_summary or self.include_content):
             raise ValueError("At least one text field must be included")
 
@@ -62,7 +106,7 @@ def preprocess_news_articles(
     point_in_time_tickers: Iterable[str] | None,
     config: NewsPreprocessingConfig | None = None,
 ) -> list[NewsSentimentRecord]:
-    """Convert raw Layer 0 news articles into sentence-level sentiment records."""
+    """Convert raw Layer 0 news articles into sentence/chunk sentiment records."""
     normalized_date = _validate_date(as_of_date)
     settings = config or NewsPreprocessingConfig()
     allowed_tickers = _normalize_allowed_tickers(point_in_time_tickers)
@@ -75,8 +119,8 @@ def preprocess_news_articles(
         if not article_tickers:
             continue
 
-        sentences = split_article_sentences(article, config=settings)
-        if not sentences:
+        chunks = split_article_sentences(article, config=settings)
+        if not chunks:
             continue
 
         article_id = _article_id(article)
@@ -85,14 +129,14 @@ def preprocess_news_articles(
         url = _optional_text(article.get("url"))
         published_at = _published_at(article)
 
-        for sentence_index, sentence in enumerate(sentences):
+        for sentence_index, chunk in enumerate(chunks):
             for ticker in article_tickers:
                 records.append(
                     NewsSentimentRecord(
                         date=normalized_date,
                         ticker=ticker,
                         headline=headline,
-                        text=sentence,
+                        text=chunk,
                         article_id=article_id,
                         sentence_index=sentence_index,
                         source=source,
@@ -117,7 +161,7 @@ def split_article_sentences(
     *,
     config: NewsPreprocessingConfig | None = None,
 ) -> list[str]:
-    """Return normalized article sentences from configured raw text fields."""
+    """Return normalized article sentences/chunks from configured raw text fields."""
     settings = config or NewsPreprocessingConfig()
     chunks: list[str] = []
     if settings.include_headline:
@@ -223,17 +267,127 @@ def _normalize_allowed_tickers(tickers: Iterable[str] | None) -> set[str] | None
 
 
 def _sentences_from_text(value: Any, *, settings: NewsPreprocessingConfig) -> list[str]:
-    """Split and normalize one raw text field into sentence strings."""
+    """Split and normalize one raw text field into bounded sentence/chunk strings."""
     text = _clean_article_text(value)
     if text is None:
         return []
-    normalized = _WHITESPACE.sub(" ", text).strip()
-    sentences = [
-        sentence.strip(" \t\r\n")
-        for sentence in _SENTENCE_BOUNDARY.split(normalized)
-        if len(sentence.strip(" \t\r\n")) >= settings.min_sentence_chars
-    ]
-    return sentences
+
+    chunks: list[str] = []
+    for block in _split_text_blocks(text):
+        block_chunks = _split_block_into_chunks(block, settings=settings)
+        chunks.extend(block_chunks)
+    return chunks
+
+
+def _split_text_blocks(text: str) -> list[str]:
+    """Return paragraph- and list-level blocks from cleaned article text."""
+    blocks: list[str] = []
+    for raw_block in _PARAGRAPH_BREAK.split(text):
+        block = _INLINE_WHITESPACE.sub(" ", raw_block).strip()
+        if block:
+            blocks.append(block)
+    return blocks
+
+
+def _split_block_into_chunks(
+    block: str,
+    *,
+    settings: NewsPreprocessingConfig,
+) -> list[str]:
+    """Split one paragraph-like block into bounded chunks."""
+    sentence_like = _split_sentence_candidates(block, settings=settings)
+    chunks: list[str] = []
+    for sentence in sentence_like:
+        if len(sentence) > settings.max_chunk_chars:
+            chunks.extend(_split_oversized_text(sentence, settings=settings))
+        else:
+            chunks.append(sentence)
+    return chunks
+
+
+def _split_sentence_candidates(
+    text: str,
+    *,
+    settings: NewsPreprocessingConfig,
+) -> list[str]:
+    """Split a cleaned block into sentence-like units while honoring abbreviations."""
+    sentences: list[str] = []
+    start = 0
+    for match in _SENTENCE_BOUNDARY.finditer(text):
+        boundary_end = match.end(1)
+        candidate = text[start:boundary_end].strip()
+        remainder = text[match.end():]
+        if not candidate:
+            start = match.end()
+            continue
+        if _should_split_sentence(candidate, remainder):
+            sentences.append(candidate)
+            start = match.end()
+    tail = text[start:].strip()
+    if tail:
+        sentences.append(tail)
+    return [sentence for sentence in sentences if len(sentence) >= settings.min_sentence_chars]
+
+
+def _should_split_sentence(candidate: str, remainder: str) -> bool:
+    """Return True when a punctuation boundary should end the current sentence."""
+    if not remainder.strip():
+        return True
+    return not _looks_like_abbreviation(candidate)
+
+
+def _looks_like_abbreviation(text: str) -> bool:
+    """Return True when trailing punctuation belongs to a known abbreviation."""
+    stripped = text.rstrip('"\'”’)]}')
+    if not stripped.endswith((".", "!", "?")):
+        return False
+    last_token = stripped.split()[-1]
+    normalized = re.sub(r"[^A-Za-z0-9]", "", last_token).lower()
+    if normalized in _ABBREVIATION_TOKENS:
+        return True
+    if re.fullmatch(r"(?:[A-Za-z]\.){2,}", last_token):
+        return True
+    return False
+
+
+def _split_oversized_text(text: str, *, settings: NewsPreprocessingConfig) -> list[str]:
+    """Split an oversized sentence into readable fallback chunks."""
+    if len(text) <= settings.max_chunk_chars:
+        return [text]
+
+    words = text.split()
+    if len(words) <= 1:
+        return _split_single_token(text, limit=settings.fallback_chunk_chars)
+
+    chunks: list[str] = []
+    current_words: list[str] = []
+    current_length = 0
+    for word in words:
+        candidate_length = len(word) if not current_words else current_length + 1 + len(word)
+        if current_words and candidate_length > settings.target_chunk_chars:
+            chunks.append(" ".join(current_words))
+            current_words = [word]
+            current_length = len(word)
+            continue
+        current_words.append(word)
+        current_length = candidate_length
+
+    if current_words:
+        chunks.append(" ".join(current_words))
+
+    if all(len(chunk) <= settings.max_chunk_chars for chunk in chunks):
+        return chunks
+    return [chunk for piece in chunks for chunk in _split_single_token(piece, limit=settings.fallback_chunk_chars)]
+
+
+def _split_single_token(text: str, *, limit: int) -> list[str]:
+    """Split a long token into fixed-size pieces without dropping text."""
+    if len(text) <= limit:
+        return [text]
+    pieces: list[str] = []
+    for start in range(0, len(text), limit):
+        pieces.append(text[start : start + limit])
+    return pieces
 
 
 def _dedupe_preserving_order(values: Sequence[str]) -> list[str]:
@@ -286,22 +440,30 @@ def _clean_article_text(value: Any) -> str | None:
     text = _optional_text(value)
     if text is None:
         return None
+
     cleaned = html.unescape(text)
     for pattern in _HTML_NOISE_BLOCKS:
         cleaned = pattern.sub(" ", cleaned)
-    cleaned = _HTML_BLOCK_BREAK.sub(" ", cleaned)
+    cleaned = _HTML_LINE_BREAK.sub("\n", cleaned)
+    cleaned = _HTML_BLOCK_BREAK_START.sub("\n", cleaned)
+    cleaned = _HTML_BLOCK_BREAK_END.sub("\n", cleaned)
     cleaned = _HTML_TAG.sub(" ", cleaned)
     cleaned = cleaned.replace("\xa0", " ")
-    cleaned = _WHITESPACE.sub(" ", cleaned).strip()
+    cleaned = re.sub(r"[ \t\f\v]*\n[ \t\f\v]*", "\n", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    cleaned = _INLINE_WHITESPACE.sub(" ", cleaned)
+    cleaned = re.sub(r" *\n *", "\n", cleaned)
     cleaned = re.sub(r"\s+([,.;:!?])", r"\1", cleaned)
+    cleaned = cleaned.strip(" \n\t\r")
     return cleaned or None
+
 
 def _optional_datetime(value: Any) -> datetime | None:
     """Return an ISO timestamp parsed by Pydantic, or None when missing."""
     text = _optional_text(value)
     if text is None:
         return None
-    return NewsSentimentRecord(date="2000-01-01", ticker="SPY", published_at=text).published_at
+    return _DATETIME_ADAPTER.validate_python(text)
 
 
 def _optional_float(value: Any) -> float | None:

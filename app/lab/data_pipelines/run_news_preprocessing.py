@@ -12,7 +12,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from loguru import logger
 
@@ -70,6 +70,9 @@ class NewsPreprocessingPipelineConfig:
     run_id: str
     as_of_date: str
     min_sentence_chars: int = 2
+    target_chunk_chars: int = 240
+    max_chunk_chars: int = 360
+    fallback_chunk_chars: int = 160
 
     def __post_init__(self) -> None:
         """Validate run identity and date settings."""
@@ -81,6 +84,16 @@ class NewsPreprocessingPipelineConfig:
             raise ValueError("as_of_date must be YYYY-MM-DD") from exc
         if self.min_sentence_chars <= 0:
             raise ValueError("min_sentence_chars must be positive")
+        if self.target_chunk_chars <= 0:
+            raise ValueError("target_chunk_chars must be positive")
+        if self.max_chunk_chars <= 0:
+            raise ValueError("max_chunk_chars must be positive")
+        if self.fallback_chunk_chars <= 0:
+            raise ValueError("fallback_chunk_chars must be positive")
+        if self.target_chunk_chars > self.max_chunk_chars:
+            raise ValueError("target_chunk_chars must be <= max_chunk_chars")
+        if self.fallback_chunk_chars > self.target_chunk_chars:
+            raise ValueError("fallback_chunk_chars must be <= target_chunk_chars")
 
 
 @dataclass(frozen=True)
@@ -129,7 +142,12 @@ def run_news_preprocessing(
             articles,
             as_of_date=config.as_of_date,
             point_in_time_tickers=tickers,
-            config=NewsPreprocessingConfig(min_sentence_chars=config.min_sentence_chars),
+            config=NewsPreprocessingConfig(
+                min_sentence_chars=config.min_sentence_chars,
+                target_chunk_chars=config.target_chunk_chars,
+                max_chunk_chars=config.max_chunk_chars,
+                fallback_chunk_chars=config.fallback_chunk_chars,
+            ),
         )
         active_writer.put_object(output_key, _records_to_parquet_bytes(records))
         metadata.update({"article_rows": len(articles), "sentence_rows": len(records)})
@@ -180,6 +198,18 @@ def load_modal_runtime_config(path: Path = MODAL_CONFIG_PATH) -> ModalRuntimeCon
         python_version=str(payload.get("python_version", "3.11")),
         requirements_path=str(payload.get("requirements_path", "requirements/modal.txt")),
     )
+
+
+def _load_news_preprocessing_settings(path: Path = MODAL_CONFIG_PATH) -> dict[str, int]:
+    """Load sentence/chunk defaults for Layer 1 news preprocessing."""
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    settings = payload.get("news_preprocessing", {})
+    return {
+        "min_sentence_chars": int(settings.get("min_sentence_chars", 2)),
+        "target_chunk_chars": int(settings.get("target_chunk_chars", 240)),
+        "max_chunk_chars": int(settings.get("max_chunk_chars", 360)),
+        "fallback_chunk_chars": int(settings.get("fallback_chunk_chars", 160)),
+    }
 
 
 def _load_raw_news_articles(writer: ObjectStore, as_of_date: str) -> list[dict[str, object]]:
@@ -272,10 +302,14 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def _config_from_args(args: argparse.Namespace) -> NewsPreprocessingPipelineConfig:
     """Build a validated pipeline config from CLI arguments."""
+    defaults = _load_news_preprocessing_settings()
     return NewsPreprocessingPipelineConfig(
         run_id=args.run_id,
         as_of_date=args.as_of_date,
         min_sentence_chars=args.min_sentence_chars,
+        target_chunk_chars=defaults["target_chunk_chars"],
+        max_chunk_chars=defaults["max_chunk_chars"],
+        fallback_chunk_chars=defaults["fallback_chunk_chars"],
     )
 
 
@@ -301,11 +335,15 @@ def _modal_run_news_preprocessing_entry(
     min_sentence_chars: int = 2,
 ) -> dict[str, object]:
     """Run Layer 1 news preprocessing on Modal."""
+    defaults = _load_news_preprocessing_settings()
     result = run_news_preprocessing(
         NewsPreprocessingPipelineConfig(
             run_id=run_id,
             as_of_date=as_of_date,
             min_sentence_chars=min_sentence_chars,
+            target_chunk_chars=defaults["target_chunk_chars"],
+            max_chunk_chars=defaults["max_chunk_chars"],
+            fallback_chunk_chars=defaults["fallback_chunk_chars"],
         )
     )
     return {
@@ -345,7 +383,7 @@ def _define_modal_app() -> object | None:
     return app
 
 
-def _build_modal_image(modal_module: object, runtime: ModalRuntimeConfig):
+def _build_modal_image(modal_module: Any, runtime: ModalRuntimeConfig):
     """Build the Modal image while preserving local `-r base.txt` includes."""
     requirements_path = Path(runtime.requirements_path)
     requirements_dir = requirements_path.parent

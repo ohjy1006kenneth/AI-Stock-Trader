@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import re
 from datetime import UTC
 
 import pandas as pd
@@ -94,6 +95,34 @@ def test_split_article_sentences_cleans_provider_html_and_preserves_meaningful_t
     assert all("&nbsp;" not in sentence for sentence in sentences)
 
 
+def test_split_article_sentences_preserves_headings_lists_and_quote_punctuation() -> None:
+    """Headings, list items, abbreviations, and quoted sentences stay readable."""
+    article = {
+        "headline": '<h1><a href="https://example.test/aapl">AAPL</a> gains on AI rollout.</h1>',
+        "summary": '<p>Analyst says, "Buy now." Revenue may accelerate.</p>',
+        "content": (
+            "<h2>Key points</h2>"
+            "<p>U.S. regulators review the deal.</p>"
+            "<ul><li>Revenue beat expectations.</li><li>Margins improved.</li></ul>"
+        ),
+        "symbols": ["AAPL"],
+    }
+
+    sentences = split_article_sentences(article)
+
+    assert sentences == [
+        "AAPL gains on AI rollout.",
+        'Analyst says, "Buy now."',
+        "Revenue may accelerate.",
+        "Key points",
+        "U.S. regulators review the deal.",
+        "Revenue beat expectations.",
+        "Margins improved.",
+    ]
+    assert all("<" not in sentence and ">" not in sentence for sentence in sentences)
+    assert all("aapl" not in sentence.lower() or sentence == "AAPL gains on AI rollout." for sentence in sentences)
+
+
 def test_split_article_sentences_handles_abbreviations_and_deduplicates() -> None:
     """Sentence splitting avoids common abbreviation splits and removes duplicate text."""
     article = {
@@ -109,6 +138,41 @@ def test_split_article_sentences_handles_abbreviations_and_deduplicates() -> Non
         "Apple Inc. reported earnings.",
         "Shares rose!",
     ]
+
+
+def test_preprocess_news_articles_chunks_oversized_paragraphs_without_truncation() -> None:
+    """Oversized blocks are split into bounded chunks without dropping content."""
+    paragraph = " ".join(
+        [
+            "Alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu",
+            "nu xi omicron pi rho sigma tau upsilon phi chi psi omega",
+        ]
+        * 6
+    )
+    article = {
+        "id": "chunk-limit",
+        "content": f"<p>{paragraph}</p>",
+        "symbols": ["AAPL"],
+    }
+    config = NewsPreprocessingConfig(
+        target_chunk_chars=80,
+        max_chunk_chars=120,
+        fallback_chunk_chars=60,
+    )
+
+    records = preprocess_news_articles(
+        [article],
+        as_of_date="2024-01-02",
+        point_in_time_tickers=["AAPL"],
+        config=config,
+    )
+
+    assert len(records) > 1
+    assert all(len(record.text or "") <= 120 for record in records)
+    reconstructed = re.sub(r"\s+", " ", " ".join(record.text or "" for record in records)).strip()
+    expected = re.sub(r"\s+", " ", paragraph).strip()
+    assert reconstructed == expected
+    assert [record.sentence_index for record in records] == list(range(len(records)))
 
 
 def test_preprocess_news_articles_filters_empty_text_and_missing_universe_symbols() -> None:
