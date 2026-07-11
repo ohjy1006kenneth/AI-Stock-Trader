@@ -126,6 +126,7 @@ from services.modal.secrets import (  # noqa: E402
 )
 from services.order_book.config import load_order_book_feature_config  # noqa: E402
 from services.r2.paths import (  # noqa: E402
+    layer1_news_assignment_provenance_path,
     layer1_ticker_history_path,
     pipeline_manifest_path,
     raw_fundamentals_path,
@@ -2237,9 +2238,11 @@ def _existing_news_runner(
         return NewsPreprocessingPipelineResult(
             run_id=config.run_id,
             output_key=output_key,
+            provenance_key=layer1_news_assignment_provenance_path(config.as_of_date, config.run_id),
             manifest_key=manifest_key,
             article_rows=0,
             sentence_rows=0,
+            provenance_rows=0,
         )
 
     return _runner

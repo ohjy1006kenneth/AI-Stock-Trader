@@ -15,6 +15,10 @@ from typing import Any
 from pydantic import TypeAdapter
 
 from core.contracts.schemas import NewsSentimentRecord
+from core.features.news_assignment_provenance import (
+    TickerAssignmentProvenance,
+    build_ticker_assignment_provenance,
+)
 from services.wikipedia.sp500_universe import canonicalize_ticker
 
 _HTML_BLOCK_BREAK_START = re.compile(
@@ -187,11 +191,29 @@ def preprocess_news_articles(
     config: NewsPreprocessingConfig | None = None,
 ) -> list[NewsSentimentRecord]:
     """Convert raw Layer 0 news articles into reviewable sentence/chunk records."""
+    records, _ = preprocess_news_articles_with_provenance(
+        articles,
+        as_of_date=as_of_date,
+        point_in_time_tickers=point_in_time_tickers,
+        config=config,
+    )
+    return records
+
+
+def preprocess_news_articles_with_provenance(
+    articles: Sequence[Mapping[str, Any]],
+    *,
+    as_of_date: str,
+    point_in_time_tickers: Iterable[str] | None,
+    config: NewsPreprocessingConfig | None = None,
+) -> tuple[list[NewsSentimentRecord], list[TickerAssignmentProvenance]]:
+    """Convert raw Layer 0 news articles into records plus assignment provenance."""
     normalized_date = _validate_date(as_of_date)
     settings = config or NewsPreprocessingConfig()
     allowed_tickers = _normalize_allowed_tickers(point_in_time_tickers)
 
     records: list[NewsSentimentRecord] = []
+    provenance_rows: list[TickerAssignmentProvenance] = []
     for article in articles:
         article_tickers = sorted(
             {
@@ -251,8 +273,18 @@ def preprocess_news_articles(
                         entity_mentions=entity_mentions,
                     )
                 )
+                provenance_rows.append(
+                    build_ticker_assignment_provenance(
+                        article,
+                        ticker,
+                        date=normalized_date,
+                        sentence_index=chunk.chunk_index,
+                        headline=headline,
+                        text=chunk.text,
+                    )
+                )
 
-    return sorted(
+    sorted_records = sorted(
         records,
         key=lambda record: (
             record.published_at.isoformat() if record.published_at else "",
@@ -261,6 +293,15 @@ def preprocess_news_articles(
             record.ticker,
         ),
     )
+    sorted_provenance = sorted(
+        provenance_rows,
+        key=lambda row: (
+            row.article_id or "",
+            row.sentence_index if row.sentence_index is not None else -1,
+            row.ticker,
+        ),
+    )
+    return sorted_records, sorted_provenance
 
 
 def split_article_sentences(

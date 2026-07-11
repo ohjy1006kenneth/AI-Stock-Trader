@@ -210,6 +210,7 @@ r2/
       text_embeddings/# Article embedding cache keyed by pinned model/version
       topic_labels/   # Article-level BERTopic labels from Modal
       topic_features/ # Ticker-day FeatureRecord topic summaries
+      news_assignment_provenance/ # Sentence-level ticker-assignment review evidence JSON sidecars
       news_relevance_gate/ # Pre-FinBERT ticker/financial relevance audit rows
       news_sentiment_scored/ # Sentence-level NewsSentimentRecord rows scored by FinBERT
       sentiment_features/ # Ticker-day FeatureRecord sentiment summaries
@@ -371,8 +372,9 @@ RAW ARTICLES (Alpaca news)
   → Step 1: Preprocessing
       Read raw/news and raw/universe from R2, clean provider HTML/entities into plain text,
       split cleaned article text into bounded sentence/chunk rows, preserve paragraph/list
-      breaks where possible, tag point-in-time tickers, write NewsSentimentRecord rows to
-      features/{date}/news_sentiment/{run_id}.parquet
+      breaks where possible, tag point-in-time tickers, write `NewsSentimentRecord` rows to
+      `features/{date}/news_sentiment/{run_id}.parquet`, and write the ticker-assignment
+      provenance sidecar to `features/layer1/news_assignment_provenance/{date}/{run_id}.json`
   → Step 2a: Sentence Transformers (per article)
       Model: all-mpnet-base-v2
       Output: pinned-version article embedding cache in R2

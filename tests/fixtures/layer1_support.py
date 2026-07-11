@@ -42,6 +42,7 @@ from services.r2.client import (
     R2_SECRET_KEY_ENV,
 )
 from services.r2.paths import (
+    layer1_news_assignment_provenance_path,
     layer1_news_preprocessing_path,
     layer1_regime_path,
     layer1_sentiment_feature_path,
@@ -138,6 +139,8 @@ def fake_news_runner(writer: R2Writer, tickers: Sequence[str]):
             manifest_key=pipeline_manifest_path("layer1_news_preprocessing", config.run_id),
             article_rows=1,
             sentence_rows=1,
+            provenance_key=layer1_news_assignment_provenance_path(config.as_of_date, config.run_id),
+            provenance_rows=1,
         )
 
     return _runner

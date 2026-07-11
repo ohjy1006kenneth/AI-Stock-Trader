@@ -48,6 +48,7 @@ from services.modal.secrets import (  # noqa: E402
     build_modal_secrets,
 )
 from services.r2.paths import (  # noqa: E402
+    layer1_news_assignment_provenance_path,
     layer1_news_relevance_gate_path,
     layer1_sentiment_feature_path,
     layer1_sentiment_score_path,
@@ -181,6 +182,10 @@ def run_finbert_sentiment(
         "relevance_gate_key": relevance_gate_key,
         "scored_news_key": scored_news_key,
         "sentiment_feature_key": sentiment_feature_key,
+        "assignment_provenance_key": layer1_news_assignment_provenance_path(
+            config.as_of_date,
+            config.run_id,
+        ),
         "model_name": runtime.model_name,
         "model_revision": runtime.model_revision,
         "bucket_timezone": runtime.bucket_timezone,
