@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from pathlib import Path
 
 import pandas as pd
@@ -52,7 +53,7 @@ def _row(
 class _FakeScorer:
     """Deterministic test scorer."""
 
-    def score(self, texts: list[str]) -> list[SentimentScore]:
+    def score(self, texts: Sequence[str]) -> Sequence[SentimentScore]:
         """Return positive scores for bullish text and negative otherwise."""
         scores: list[SentimentScore] = []
         for text in texts:
@@ -66,7 +67,7 @@ class _FakeScorer:
 class _BadScorer:
     """Test scorer that returns the wrong output cardinality."""
 
-    def score(self, texts: list[str]) -> list[SentimentScore]:
+    def score(self, texts: Sequence[str]) -> Sequence[SentimentScore]:
         """Return too few scores."""
         return []
 
@@ -109,7 +110,7 @@ def test_score_news_sentiment_distinguishes_missing_and_explicit_relevance() -> 
     assert scored[0].sentiment_score == pytest.approx(0.7)
     assert scored[1].sentiment_negative == pytest.approx(0.6)
     assert scored[1].sentiment_score == pytest.approx(-0.4)
-    assert scored[0].relevance_score is None
+    assert scored[0].relevance_score == pytest.approx(1.0)
     assert scored[1].relevance_score == pytest.approx(0.25)
     assert scored[2].relevance_score == pytest.approx(0.9)
 
@@ -121,14 +122,64 @@ def test_score_news_sentiment_distinguishes_missing_and_explicit_relevance() -> 
         ),
     )
     by_ticker = {record.ticker: record for record in aggregates}
-    assert by_ticker["AAPL"].features["nlp_relevance_score"] is None
-    assert by_ticker["AAPL"].features["nlp_sentiment_score"] is None
+    assert by_ticker["AAPL"].features["nlp_relevance_score"] == pytest.approx(1.0)
+    assert by_ticker["AAPL"].features["nlp_sentiment_score"] == pytest.approx(0.7)
     assert by_ticker["MSFT"].features["nlp_relevance_score"] == pytest.approx(0.25)
     assert by_ticker["SPY"].features["nlp_relevance_score"] == pytest.approx(0.9)
     assert json.loads(str(by_ticker["AAPL"].features["nlp_semantic_warning_codes"])) == [
         "missing_relevance_evidence",
         "missing_topic_artifact",
     ]
+
+
+def test_score_news_sentiment_requires_explicit_relevance_evidence() -> None:
+    """Direct ticker/entity evidence gets full weight while generic context stays conservative."""
+    records = [
+        NewsSentimentRecord(
+            date="2024-04-10",
+            ticker="AAPL",
+            headline="Apple says AAPL revenue improved.",
+            text="Apple says AAPL revenue improved.",
+            article_id="direct-aapl",
+            sentence_index=0,
+            source="Reuters",
+        ),
+        NewsSentimentRecord(
+            date="2024-04-10",
+            ticker="AAPL",
+            headline="Intel and Snap rally as ETF inflows lift tech.",
+            text="Intel and Snap rally as ETF inflows lift tech.",
+            article_id="context-aapl",
+            sentence_index=0,
+            source="Reuters",
+        ),
+        NewsSentimentRecord(
+            date="2024-04-10",
+            ticker="MSFT",
+            headline="AI and tech stocks rally on market hopes.",
+            text="AI and tech stocks rally on market hopes.",
+            article_id="context-msft",
+            sentence_index=0,
+            source="Reuters",
+        ),
+        NewsSentimentRecord(
+            date="2024-04-10",
+            ticker="NVDA",
+            headline="Weekend weather update.",
+            text="Weekend weather update.",
+            article_id="noise-nvda",
+            sentence_index=0,
+            source="Reuters",
+        ),
+    ]
+
+    scored = score_news_sentiment(records, scorer=_FakeScorer(), batch_size=2)
+    relevance_by_article = {record.article_id: record.relevance_score for record in scored}
+
+    assert relevance_by_article["direct-aapl"] == pytest.approx(1.0)
+    assert relevance_by_article["context-aapl"] == pytest.approx(0.25)
+    assert relevance_by_article["context-msft"] == pytest.approx(0.25)
+    assert relevance_by_article["noise-nvda"] is None
 
 
 def test_score_news_sentiment_skips_rows_without_text_or_headline() -> None:
@@ -190,6 +241,55 @@ def test_aggregate_sentiment_by_ticker_day_multiplies_relevance_weight() -> None
 
     assert aggregates.loc[0, "sentiment_score"] == pytest.approx(0.6)
     assert aggregates.loc[0, "relevance_score"] == pytest.approx(0.625)
+
+
+def test_aggregate_sentiment_by_ticker_day_excludes_contamination_from_direct_weight() -> None:
+    """Direct ticker sentiment only uses explicit evidence and downweights context."""
+    scored_news = pd.DataFrame(
+        [
+            _row(
+                article_id="direct",
+                source="Reuters",
+                sentiment_positive=1.0,
+                sentiment_negative=0.0,
+                sentiment_neutral=0.0,
+                sentiment_score=1.0,
+                relevance_score=1.0,
+            ),
+            _row(
+                article_id="context",
+                source="Reuters",
+                sentiment_positive=0.0,
+                sentiment_negative=1.0,
+                sentiment_neutral=0.0,
+                sentiment_score=-1.0,
+                relevance_score=0.25,
+            ),
+            _row(
+                article_id="noise",
+                source="Reuters",
+                sentiment_positive=0.0,
+                sentiment_negative=1.0,
+                sentiment_neutral=0.0,
+                sentiment_score=-1.0,
+                relevance_score=float("nan"),
+            ),
+        ]
+    )
+
+    records = sentiment_feature_records_from_scored_news(
+        scored_news,
+        credibility_config=SourceCredibilityConfig(
+            default_source_weight=1.0,
+            source_weights={"reuters": 1.0},
+        ),
+    )
+
+    assert len(records) == 1
+    assert records[0].ticker == "AAPL"
+    assert records[0].features["nlp_sentence_count"] == 3
+    assert records[0].features["nlp_sentiment_score"] == pytest.approx(0.6)
+    assert records[0].features["nlp_relevance_score"] == pytest.approx(0.625)
 
 
 def test_aggregate_sentiment_by_ticker_day_uses_default_weight_for_unknown_source() -> None:
@@ -326,7 +426,7 @@ def test_aggregate_sentiment_by_ticker_day_handles_nan_relevance() -> None:
         ),
     )
 
-    assert aggregates.loc[0, "sentiment_score"] is None
+    assert pd.isna(aggregates.loc[0, "sentiment_score"])
     assert pd.isna(aggregates.loc[0, "relevance_score"])
 
 

@@ -78,6 +78,8 @@ def test_run_finbert_sentiment_reads_preprocessed_news_and_writes_outputs(
     )
     assert result.manifest_key == pipeline_manifest_path(FINBERT_SENTIMENT_STAGE, "finbert-run")
     assert len(scored) == 3
+    assert all(scored["relevance_score"].iloc[:2] == 0.8)
+    assert scored["relevance_score"].iloc[2] == pytest.approx(0.48)
     assert set(features["ticker"]) == {"AAPL", "MSFT"}
     assert json.loads(features.loc[features["ticker"] == "AAPL", "features"].iloc[0])[
         "nlp_sentence_count"
