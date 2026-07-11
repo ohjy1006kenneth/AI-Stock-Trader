@@ -349,7 +349,7 @@ Purpose:
 
 Notes:
 - the provenance sidecar is written alongside preprocessed news under
-  `features/{YYYY-MM-DD}/news_assignment_provenance/{run_id}.json`
+  `features/layer1/news_assignment_provenance/{date}/{run_id}.json`
 - each row records the article id, ticker, sentence index, evidence kinds, classification,
   and compact reason text used by the review UI
 - provenance is derived from the same Layer 1 preprocessing pass that emits

@@ -374,7 +374,7 @@ RAW ARTICLES (Alpaca news)
       split cleaned article text into bounded sentence/chunk rows, preserve paragraph/list
       breaks where possible, tag point-in-time tickers, write `NewsSentimentRecord` rows to
       `features/{date}/news_sentiment/{run_id}.parquet`, and write the ticker-assignment
-      provenance sidecar to `features/{date}/news_assignment_provenance/{run_id}.json`
+      provenance sidecar to `features/layer1/news_assignment_provenance/{date}/{run_id}.json`
   → Step 2a: Sentence Transformers (per article)
       Model: all-mpnet-base-v2
       Output: pinned-version article embedding cache in R2
