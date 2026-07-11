@@ -392,7 +392,8 @@ RAW ARTICLES (Alpaca news)
       Output: (positive, negative, neutral) probabilities per sentence/chunk
   → Step 5: Aggregation
       Combine FinBERT scores + topic assignments + source credibility weights
-      into per-ticker per-day features
+      into per-ticker per-day features; only explicit relevance scores should be
+      treated as direct relevance evidence
 ```
 
 **Output features from NLP branch:**

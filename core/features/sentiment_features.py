@@ -154,14 +154,17 @@ def score_news_sentiment(
     *,
     scorer: SentimentScorer,
     batch_size: int = 32,
-    default_relevance_score: float = 1.0,
+    default_relevance_score: float | None = None,
 ) -> list[NewsSentimentRecord]:
     """Score preprocessed news rows with an injected FinBERT-compatible scorer."""
     if batch_size <= 0:
         raise ValueError("batch_size must be positive")
-    relevance = _to_float_or_none(default_relevance_score)
-    if relevance is None or relevance < 0.0:
-        raise ValueError("default_relevance_score must be a non-negative finite number")
+    if default_relevance_score is None:
+        relevance = None
+    else:
+        relevance = _to_float_or_none(default_relevance_score)
+        if relevance is None or relevance < 0.0:
+            raise ValueError("default_relevance_score must be a non-negative finite number")
 
     scorable_records: list[NewsSentimentRecord] = []
     texts: list[str] = []
@@ -755,10 +758,13 @@ def _topic_effective_weight(row: Mapping[str, Any]) -> float:
 
 
 def _relevance_weight(value: Any) -> float:
-    """Return the non-negative article relevance multiplier."""
+    """Return the non-negative article relevance multiplier.
+
+    Missing relevance stays non-direct evidence by contributing zero weight.
+    """
     numeric = _to_float_or_none(value)
     if numeric is None:
-        return 1.0
+        return 0.0
     return max(numeric, 0.0)
 
 

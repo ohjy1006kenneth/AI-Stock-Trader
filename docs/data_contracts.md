@@ -271,6 +271,9 @@ Input note:
   sized or bounded chunk rows, and falls back to smaller chunks for oversized text instead
   of silently truncating important content
 - `published_at` must preserve the raw article timestamp exactly for downstream leakage checks
+- `relevance_score` is optional and may remain null until an explicit relevance computation
+  assigns a non-default value; missing relevance must not be treated as proof of ticker
+  relevance
 
 ### Layer 1 text embeddings and topic labels (non-contract artifacts)
 
