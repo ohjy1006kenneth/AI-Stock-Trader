@@ -37,8 +37,16 @@ def test_run_news_preprocessing_reads_r2_and_writes_outputs(
         [
             {
                 "id": 1001,
-                "headline": "Apple reports earnings.",
-                "summary": "Shares rose.",
+                "headline": "<div>Apple <a href='https://example.test/apple'>reports</a> earnings today.</div>",
+                "summary": (
+                    '<p>Revenue rose 10% to $100.2B.</p>'
+                    '<blockquote class="twitter-tweet"><p>Tweet boilerplate.</p></blockquote>'
+                ),
+                "content": (
+                    '<div><p>Gross margin improved to 45% &#8212; per the company.</p>'
+                    '<script>window.widget = true;</script>'
+                    '<p>Source: Benzinga</p></div>'
+                ),
                 "created_at": "2024-01-02T12:00:00+00:00",
                 "source": "benzinga",
                 "symbols": ["AAPL", "MSFT"],
@@ -70,10 +78,18 @@ def test_run_news_preprocessing_reads_r2_and_writes_outputs(
     assert result.output_key == news_preprocessing_output_path("nlp-test-run", "2024-01-02")
     assert result.manifest_key == pipeline_manifest_path(NLP_PREPROCESSING_STAGE, "nlp-test-run")
     assert output["ticker"].unique().tolist() == ["AAPL"]
-    assert output["text"].tolist() == ["Apple reports earnings.", "Shares rose."]
+    assert output["text"].tolist() == [
+        "Apple reports earnings today.",
+        "Revenue rose 10% to $100.2B.",
+        "Gross margin improved to 45% — per the company.",
+        "Source: Benzinga",
+    ]
+    assert all("<" not in text and ">" not in text for text in output["text"].tolist())
+    assert all("twitter" not in text.lower() for text in output["text"].tolist())
+    assert all("widget" not in text.lower() for text in output["text"].tolist())
     assert manifest["status"] == RunStatus.COMPLETED
     assert manifest["metadata"]["article_rows"] == 1
-    assert manifest["metadata"]["sentence_rows"] == 2
+    assert manifest["metadata"]["sentence_rows"] == 4
 
 
 def test_run_news_preprocessing_honors_requested_ticker_scope(

@@ -254,6 +254,9 @@ Use cases:
 
 Input note:
 - generated from Layer 0 raw point-in-time news archives
+- provider HTML, boilerplate widgets, and common HTML entities are normalized into plain text
+  before sentence/chunk splitting so `text` stores readable article content rather than raw
+  markup
 - preprocessing rows should preserve article provenance in `article_id`, `headline`,
   `normalized_headline`, `source`, `url`, `published_at`, `source_text_field`,
   `source_text_order`, and `source_text_provenance`
