@@ -274,6 +274,9 @@ Input note:
 - `relevance_score` is optional and may remain null until an explicit relevance computation
   assigns a non-default value; missing relevance must not be treated as proof of ticker
   relevance
+- `relevance_score` should only be populated when there is explicit ticker/entity evidence or
+  a deliberate contextual classification; downstream ticker-day aggregation treats unset
+  relevance as zero direct weight
 
 ### Layer 1 text embeddings and topic labels (non-contract artifacts)
 

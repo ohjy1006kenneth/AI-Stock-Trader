@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from core.contracts.schemas import FeatureRecord, NewsSentimentRecord
+from services.wikipedia.sp500_universe import canonicalize_ticker
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -99,6 +100,47 @@ SENTIMENT_FEATURE_COLUMNS: tuple[str, ...] = (
     "nlp_semantic_warning_codes",
 )
 
+DIRECT_RELEVANCE_SCORE = 1.0
+CONTEXTUAL_RELEVANCE_SCORE = 0.25
+
+_CONTEXTUAL_EVIDENCE_TERMS: tuple[str, ...] = (
+    "ai",
+    "analyst",
+    "broad market",
+    "chip",
+    "competitor",
+    "etf",
+    "equities",
+    "guidance",
+    "index",
+    "investor",
+    "market",
+    "peer",
+    "rally",
+    "rival",
+    "sector",
+    "semiconductor",
+    "stocks",
+    "tech",
+    "technology",
+)
+
+_TICKER_ENTITY_ALIASES: dict[str, tuple[str, ...]] = {
+    "AAPL": ("apple", "apple inc", "apple inc.", "apple computer"),
+    "AMD": ("amd", "advanced micro devices"),
+    "AMZN": ("amazon", "amazon.com", "amazon inc"),
+    "BRK-B": ("berkshire hathaway", "berkshire"),
+    "GOOGL": ("alphabet", "google", "google parent"),
+    "INTC": ("intel", "intel corp", "intel corporation"),
+    "META": ("meta", "facebook"),
+    "MSFT": ("microsoft", "microsoft corp", "microsoft corporation"),
+    "NVDA": ("nvidia", "nvidia corp", "nvidia corporation"),
+    "QQQ": ("nasdaq 100", "invesco qqq", "qqq etf"),
+    "SNAP": ("snap", "snap inc", "snapchat"),
+    "SPY": ("spdr s&p 500", "s&p 500 etf", "spy etf"),
+    "TSLA": ("tesla", "tesla inc"),
+}
+
 
 @dataclass(frozen=True)
 class SourceCredibilityConfig:
@@ -185,9 +227,10 @@ def score_news_sentiment(
 
     scored_records: list[NewsSentimentRecord] = []
     for record, score in zip(scorable_records, scores, strict=True):
-        active_relevance = record.relevance_score
-        if active_relevance is None:
-            active_relevance = relevance
+        active_relevance = _resolve_relevance_score(
+            record,
+            default_relevance_score=relevance,
+        )
         scored_records.append(
             NewsSentimentRecord(
                 date=record.date,
@@ -765,7 +808,86 @@ def _relevance_weight(value: Any) -> float:
     numeric = _to_float_or_none(value)
     if numeric is None:
         return 0.0
-    return max(numeric, 0.0)
+    return min(max(numeric, 0.0), 1.0)
+
+
+def _resolve_relevance_score(
+    record: NewsSentimentRecord,
+    *,
+    default_relevance_score: float | None,
+) -> float | None:
+    """Return a conservative relevance score inferred from explicit evidence.
+
+    Rows that already carry a relevance score keep it, while rows without
+    explicit relevance are only scored when the text contains direct ticker or
+    entity evidence. Broad-market or competitor context is allowed only as a
+    weaker contextual signal. Rows with no evidence remain unset so they carry
+    no direct aggregation weight.
+    """
+    existing = _to_float_or_none(record.relevance_score)
+    if existing is not None:
+        return min(max(existing, 0.0), 1.0)
+
+    text = _scoring_text(record)
+    if text is None:
+        return None
+
+    evidence = _ticker_relevance_evidence(record.ticker, text)
+    if evidence == "direct":
+        return DIRECT_RELEVANCE_SCORE
+    if evidence == "contextual":
+        if default_relevance_score is None:
+            return CONTEXTUAL_RELEVANCE_SCORE
+        return min(max(default_relevance_score, 0.0), CONTEXTUAL_RELEVANCE_SCORE)
+    return None
+
+
+def _ticker_relevance_evidence(ticker: str, text: str) -> str | None:
+    """Classify ticker evidence as direct, contextual, or absent."""
+    normalized_ticker = canonicalize_ticker(ticker)
+    if not normalized_ticker:
+        return None
+
+    normalized_text = text.lower()
+    if _contains_ticker_mention(normalized_ticker, normalized_text):
+        return "direct"
+    if _contains_alias_mention(normalized_ticker, normalized_text):
+        return "direct"
+    if _contains_contextual_evidence(normalized_text):
+        return "contextual"
+    return None
+
+
+def _contains_ticker_mention(ticker: str, text: str) -> bool:
+    """Return True when the article explicitly mentions the ticker symbol."""
+    aliases = {ticker}
+    if "-" in ticker:
+        aliases.add(ticker.replace("-", "."))
+        aliases.add(ticker.replace("-", ""))
+    for alias in aliases:
+        pattern = rf"(?<![A-Z0-9]){re.escape(alias)}(?![A-Z0-9])"
+        if re.search(pattern, text, flags=re.IGNORECASE):
+            return True
+    return False
+
+
+def _contains_alias_mention(ticker: str, text: str) -> bool:
+    """Return True when the article explicitly names the company entity."""
+    aliases = _TICKER_ENTITY_ALIASES.get(ticker, ())
+    for alias in aliases:
+        pattern = rf"(?<![A-Z0-9]){re.escape(alias)}(?![A-Z0-9])"
+        if re.search(pattern, text, flags=re.IGNORECASE):
+            return True
+    return False
+
+
+def _contains_contextual_evidence(text: str) -> bool:
+    """Return True when the article only offers broad-market or peer context."""
+    for term in _CONTEXTUAL_EVIDENCE_TERMS:
+        pattern = rf"(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])"
+        if re.search(pattern, text):
+            return True
+    return False
 
 
 def _weighted_average(values: pd.Series, weights: pd.Series) -> float | None:
