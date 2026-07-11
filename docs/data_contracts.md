@@ -247,8 +247,8 @@ Use cases:
 
 Input note:
 - generated from Layer 0 raw point-in-time news archives
-- sentence-level preprocessing rows should populate `text`, `article_id`, and
-  `sentence_index`; aggregated ticker-day rows may leave those fields unset
+- sentence-level preprocessing rows should populate `text` with cleaned plain text,
+  `article_id`, and `sentence_index`; aggregated ticker-day rows may leave those fields unset
 - `published_at` must preserve the raw article timestamp exactly for downstream leakage checks
 
 ### FeatureRecord

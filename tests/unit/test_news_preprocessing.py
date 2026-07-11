@@ -54,6 +54,46 @@ def test_preprocess_news_articles_emits_sentence_records_for_multiple_alias_tick
     assert records[0].published_at.isoformat() == "2024-01-02T12:00:00+00:00"
 
 
+def test_split_article_sentences_cleans_provider_html_and_preserves_meaningful_text() -> None:
+    """Provider HTML is stripped before splitting without losing useful article text."""
+    article = {
+        "headline": (
+            '<div><a href="https://example.test/apple">Apple</a> shares rise &nbsp; '
+            "on <strong>AI</strong> push.</div>"
+        ),
+        "summary": (
+            '<p>Analyst calls it a "strong quarter" &#8212; target rises to $210.</p>'
+            '<blockquote class="twitter-tweet"><p>Ignore this tweet embed.</p></blockquote>'
+        ),
+        "content": (
+            '<div><p>AAPL traded at <span>$189.20</span>.</p>'
+            '<script>window.widget = true;</script>'
+            '<div class="widget">widget boilerplate</div>'
+            '<p>Source: Benzinga</p></div>'
+        ),
+        "symbols": ["AAPL"],
+    }
+
+    sentences = split_article_sentences(article)
+    records = preprocess_news_articles(
+        [article],
+        as_of_date="2024-01-02",
+        point_in_time_tickers=["AAPL"],
+    )
+
+    assert sentences == [
+        "Apple shares rise on AI push.",
+        'Analyst calls it a "strong quarter" — target rises to $210.',
+        "AAPL traded at $189.20.",
+        "Source: Benzinga",
+    ]
+    assert [record.text for record in records] == sentences
+    assert all("<" not in sentence and ">" not in sentence for sentence in sentences)
+    assert all("twitter" not in sentence.lower() for sentence in sentences)
+    assert all("widget" not in sentence.lower() for sentence in sentences)
+    assert all("&nbsp;" not in sentence for sentence in sentences)
+
+
 def test_split_article_sentences_handles_abbreviations_and_deduplicates() -> None:
     """Sentence splitting avoids common abbreviation splits and removes duplicate text."""
     article = {

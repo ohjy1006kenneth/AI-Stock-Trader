@@ -360,9 +360,9 @@ history file is refreshed.
 ```
 RAW ARTICLES (Alpaca news)
   → Step 1: Preprocessing
-      Read raw/news and raw/universe from R2, split into sentences, tag
-      point-in-time tickers, write NewsSentimentRecord rows to
-      features/layer1/news_sentiment/{date}/{run_id}.parquet
+      Read raw/news and raw/universe from R2, clean provider HTML/entities,
+      split into sentences, tag point-in-time tickers, write NewsSentimentRecord rows to
+      features/{date}/news_sentiment/{run_id}.parquet
   → Step 2a: Sentence Transformers (per article)
       Model: all-mpnet-base-v2
       Output: pinned-version sentence embedding cache in R2

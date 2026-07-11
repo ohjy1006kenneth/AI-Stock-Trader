@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import html
 import math
 import re
 from collections.abc import Iterable, Mapping, Sequence
@@ -15,6 +16,26 @@ from services.wikipedia.sp500_universe import canonicalize_ticker
 
 _SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?])\s+(?=[\"'A-Z0-9])")
 _WHITESPACE = re.compile(r"\s+")
+_HTML_BLOCK_BREAK = re.compile(
+    r"(?is)</?(?:p|div|li|tr|td|th|h[1-6]|section|article|header|footer|blockquote|br|hr)[^>]*>"
+)
+_HTML_NOISE_BLOCKS = (
+    re.compile(r"(?is)<script\b[^>]*>.*?</script>"),
+    re.compile(r"(?is)<style\b[^>]*>.*?</style>"),
+    re.compile(r"(?is)<noscript\b[^>]*>.*?</noscript>"),
+    re.compile(r"(?is)<iframe\b[^>]*>.*?</iframe>"),
+    re.compile(
+        r"(?is)<blockquote\b[^>]*class=[\"'][^\"']*"
+        r"(?:twitter-tweet|instagram-media|tiktok-embed|reddit-embed|embed|widget)"
+        r"[^\"']*[\"'][^>]*>.*?</blockquote>"
+    ),
+    re.compile(
+        r"(?is)<div\b[^>]*class=[\"'][^\"']*"
+        r"(?:widget|embed|promo|related|newsletter|ad|advert|sponsored|social-embed)"
+        r"[^\"']*[\"'][^>]*>.*?</div>"
+    ),
+)
+_HTML_TAG = re.compile(r"<[^>]+>")
 
 
 @dataclass(frozen=True)
@@ -59,7 +80,7 @@ def preprocess_news_articles(
             continue
 
         article_id = _article_id(article)
-        headline = _optional_text(article.get("headline"))
+        headline = _clean_article_text(article.get("headline"))
         source = _optional_text(article.get("source") or article.get("author"))
         url = _optional_text(article.get("url"))
         published_at = _published_at(article)
@@ -203,7 +224,7 @@ def _normalize_allowed_tickers(tickers: Iterable[str] | None) -> set[str] | None
 
 def _sentences_from_text(value: Any, *, settings: NewsPreprocessingConfig) -> list[str]:
     """Split and normalize one raw text field into sentence strings."""
-    text = _optional_text(value)
+    text = _clean_article_text(value)
     if text is None:
         return []
     normalized = _WHITESPACE.sub(" ", text).strip()
@@ -259,6 +280,21 @@ def _optional_text(value: Any) -> str | None:
     text = str(value).strip()
     return text or None
 
+
+def _clean_article_text(value: Any) -> str | None:
+    """Return readable plain text from raw provider HTML or text content."""
+    text = _optional_text(value)
+    if text is None:
+        return None
+    cleaned = html.unescape(text)
+    for pattern in _HTML_NOISE_BLOCKS:
+        cleaned = pattern.sub(" ", cleaned)
+    cleaned = _HTML_BLOCK_BREAK.sub(" ", cleaned)
+    cleaned = _HTML_TAG.sub(" ", cleaned)
+    cleaned = cleaned.replace("\xa0", " ")
+    cleaned = _WHITESPACE.sub(" ", cleaned).strip()
+    cleaned = re.sub(r"\s+([,.;:!?])", r"\1", cleaned)
+    return cleaned or None
 
 def _optional_datetime(value: Any) -> datetime | None:
     """Return an ISO timestamp parsed by Pydantic, or None when missing."""
