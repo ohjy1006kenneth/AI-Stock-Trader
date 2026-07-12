@@ -66,11 +66,12 @@ def test_build_ticker_assignment_provenance_classifies_indirect_supply_chain_con
 
 
 def test_build_ticker_assignment_provenance_classifies_broad_market_context() -> None:
-    """Generic AI/market articles are classified as broad market context."""
+    """Provider tags without target text stay review-only broad-market evidence."""
     article = {
         "id": "broad-msft",
         "headline": "AI and tech stocks rally on market optimism",
         "content": "The broader Nasdaq and S&P 500 moved higher as investors rotated into stocks.",
+        "symbols": ["MSFT"],
     }
 
     provenance = build_ticker_assignment_provenance(
@@ -83,17 +84,22 @@ def test_build_ticker_assignment_provenance_classifies_broad_market_context() ->
     )
 
     assert provenance.classification == NewsEvidenceClass.BROAD_MARKET.value
-    assert provenance.evidence_kinds == ("broad_market_context",)
+    assert provenance.evidence_kinds == (
+        "provider_ticker_tag_only",
+        "broad_market_context",
+    )
+    assert NEWS_EVIDENCE_RELEVANCE_WEIGHTS[NewsEvidenceClass.BROAD_MARKET] == pytest.approx(0.0)
+    assert "provider ticker tag only for MSFT; no textual target evidence" in provenance.reason
     assert "broad market context matched" in provenance.reason
 
 
 def test_build_ticker_assignment_provenance_classifies_contamination() -> None:
-    """Unrelated Snap/Intel/ETF rows are treated as contamination for AAPL."""
+    """Provider-tag-only rows with another company in the text are contamination."""
     article = {
         "id": "contamination-aapl",
-        "headline": "Snap and Intel rise as ETF inflows lift tech",
-        "content": "No Apple context appeared in the article.",
-        "symbols": ["SNAP", "INTC", "QQQ"],
+        "headline": "Microsoft shares rise after cloud revenue beat",
+        "content": "Microsoft reported Azure growth and stronger enterprise demand.",
+        "symbols": ["AAPL"],
     }
 
     provenance = build_ticker_assignment_provenance(
@@ -101,13 +107,20 @@ def test_build_ticker_assignment_provenance_classifies_contamination() -> None:
         "AAPL",
         date="2024-01-02",
         sentence_index=3,
-        headline="Snap and Intel rise as ETF inflows lift tech",
-        text="No Apple context appeared in the article.",
+        headline="Microsoft shares rise after cloud revenue beat",
+        text="Microsoft reported Azure growth and stronger enterprise demand.",
     )
 
     assert provenance.classification == NewsEvidenceClass.CONTAMINATION.value
-    assert "contamination evidence matched" in provenance.reason
-    assert provenance.matched_symbols == ("SNAP", "INTC", "QQQ")
+    assert provenance.evidence_kinds == (
+        "provider_ticker_tag_only",
+        "contamination_other_entity",
+    )
+    assert (
+        "provider ticker tag only for AAPL; no textual target evidence" in provenance.reason
+    )
+    assert "contamination evidence matched microsoft" in provenance.reason
+    assert provenance.matched_symbols == ("AAPL",)
 
 
 def test_build_ticker_assignment_review_payload_groups_rows_by_class() -> None:

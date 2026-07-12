@@ -320,8 +320,6 @@ def _ticker_relevance(
             evidence_class = None
         if evidence_class is not None:
             reasons.append(f"assignment_classification:{evidence_class.value}")
-            if evidence_class == NewsEvidenceClass.BROAD_MARKET:
-                return 0.25, reasons
             return NEWS_EVIDENCE_RELEVANCE_WEIGHTS[evidence_class], reasons
 
     if ticker in text_tokens or f"${ticker.lower()}" in text:

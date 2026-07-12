@@ -245,6 +245,12 @@ def build_ticker_assignment_provenance(
     alias_matches, entity_matches = _target_alias_matches(article, article_text, normalized_ticker)
     relationship_matches = _relationship_matches(article_text, normalized_ticker)
     broad_market_matches = _broad_market_matches(article_text)
+    provider_tag_only = bool(provider_matches) and not _has_textual_target_evidence(
+        direct_matches=direct_matches,
+        alias_matches=alias_matches,
+        entity_matches=entity_matches,
+        relationship_matches=relationship_matches,
+    )
     contamination_matches = _contamination_matches(
         article,
         normalized_ticker,
@@ -264,6 +270,7 @@ def build_ticker_assignment_provenance(
     )
     evidence_kinds = _evidence_kinds(
         provider_matches=provider_matches,
+        provider_tag_only=provider_tag_only,
         direct_matches=direct_matches,
         alias_matches=alias_matches,
         entity_matches=entity_matches,
@@ -275,6 +282,7 @@ def build_ticker_assignment_provenance(
         ticker=normalized_ticker,
         classification=classification,
         provider_matches=provider_matches,
+        provider_tag_only=provider_tag_only,
         direct_matches=direct_matches,
         alias_matches=alias_matches,
         entity_matches=entity_matches,
@@ -434,7 +442,7 @@ def _contamination_matches(
             _optional_text(article.get(field)) or "" for field in ("headline", "summary", "content")
         )
     ).lower()
-    if provider_matches or direct_matches:
+    if direct_matches:
         return ()
     if alias_matches and not _negated_alias_match(article_text, alias_matches):
         return ()
@@ -463,6 +471,7 @@ def _contamination_symbols(article: Mapping[str, Any]) -> tuple[str, ...]:
 def _evidence_kinds(
     *,
     provider_matches: Sequence[str],
+    provider_tag_only: bool,
     direct_matches: Sequence[str],
     alias_matches: Sequence[str],
     entity_matches: Sequence[str],
@@ -473,7 +482,7 @@ def _evidence_kinds(
     """Return granular evidence kinds for a provenance row."""
     kinds: list[str] = []
     if provider_matches:
-        kinds.append("provider_ticker_tag")
+        kinds.append("provider_ticker_tag_only" if provider_tag_only else "provider_ticker_tag")
     if direct_matches:
         kinds.append("direct_ticker_mention")
     if alias_matches:
@@ -496,6 +505,7 @@ def _build_reason(
     ticker: str,
     classification: NewsEvidenceClass,
     provider_matches: Sequence[str],
+    provider_tag_only: bool,
     direct_matches: Sequence[str],
     alias_matches: Sequence[str],
     entity_matches: Sequence[str],
@@ -509,7 +519,12 @@ def _build_reason(
     """Return a compact human-readable explanation for one assignment."""
     parts: list[str] = [f"classification={classification.value}"]
     if provider_matches:
-        parts.append(f"provider ticker tag matched {', '.join(provider_matches)}")
+        if provider_tag_only:
+            parts.append(
+                f"provider ticker tag only for {', '.join(provider_matches)}; no textual target evidence"
+            )
+        else:
+            parts.append(f"provider ticker tag matched {', '.join(provider_matches)}")
     if direct_matches:
         parts.append(f"ticker symbol mention matched {', '.join(direct_matches)}")
     if alias_matches:
@@ -540,6 +555,17 @@ def _contains_phrase(text: str, phrase: str) -> bool:
         return False
     pattern = rf"(?<![a-z0-9]){re.escape(phrase.lower())}(?![a-z0-9])"
     return re.search(pattern, text) is not None
+
+
+def _has_textual_target_evidence(
+    *,
+    direct_matches: Sequence[str],
+    alias_matches: Sequence[str],
+    entity_matches: Sequence[str],
+    relationship_matches: Sequence[str],
+) -> bool:
+    """Return True when the article text explicitly supports the target ticker."""
+    return bool(direct_matches or alias_matches or entity_matches or relationship_matches)
 
 
 def _ticker_mentions(article_text: str, ticker: str) -> tuple[str, ...]:

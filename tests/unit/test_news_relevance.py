@@ -39,17 +39,21 @@ def test_news_relevance_gate_filters_aapl_contamination_pattern() -> None:
 
     assert list(audit.columns) == list(RELEVANCE_GATE_COLUMNS)
     assert by_article["aapl-specific"] == {"accepted"}
-    assert by_article["broad-market"] == {"borderline"}
+    assert by_article["broad-market"] == {"rejected"}
     assert by_article["competitor-only"] == {"rejected"}
     assert by_article["irrelevant"] == {"rejected"}
+    assert "assignment_classification:broad_market" in _reason_codes(
+        audit.loc[audit["article_id"] == "broad-market"].iloc[0]
+    )
+    assert "low_ticker_relevance" in _reason_codes(
+        audit.loc[audit["article_id"] == "broad-market"].iloc[0]
+    )
     assert "competitor_entity_without_target:MSFT" in _reason_codes(
         audit.loc[audit["article_id"] == "competitor-only"].iloc[0]
     )
-    assert {record.article_id for record in result.finbert_records} == {
-        "aapl-specific",
-        "broad-market",
-    }
+    assert {record.article_id for record in result.finbert_records} == {"aapl-specific"}
     assert all(record.relevance_score is not None for record in result.finbert_records)
+    assert audit.loc[audit["article_id"] == "broad-market", "ticker_relevance_score"].iloc[0] == 0.0
 
 
 def test_news_relevance_gate_does_not_fully_promote_unknown_rows() -> None:
