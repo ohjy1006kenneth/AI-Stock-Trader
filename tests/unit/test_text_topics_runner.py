@@ -28,6 +28,7 @@ from services.r2.paths import (
     layer1_text_embedding_path,
     layer1_topic_feature_path,
     layer1_topic_label_path,
+    layer1_topic_review_path,
     pipeline_manifest_path,
 )
 from services.r2.writer import R2Writer
@@ -70,15 +71,19 @@ def test_run_text_topics_reads_preprocessed_news_and_writes_outputs(
 
     embeddings = pd.read_parquet(io.BytesIO(writer.get_object(result.embedding_key)))
     labels = pd.read_parquet(io.BytesIO(writer.get_object(result.topic_label_key)))
+    review = json.loads(writer.get_object(result.topic_review_key))
     features = pd.read_parquet(io.BytesIO(writer.get_object(result.topic_feature_key)))
     manifest = json.loads(writer.get_object(result.manifest_key))
 
     assert result.embedding_key == layer1_text_embedding_path("2024-01-02", "text-topics-run")
     assert result.topic_label_key == layer1_topic_label_path("2024-01-02", "text-topics-run")
+    assert result.topic_review_key == layer1_topic_review_path("2024-01-02", "text-topics-run")
     assert result.topic_feature_key == layer1_topic_feature_path("2024-01-02", "text-topics-run")
     assert result.manifest_key == pipeline_manifest_path(TEXT_TOPICS_STAGE, "text-topics-run")
     assert len(embeddings) == 1
     assert len(labels) == 2
+    assert review["diversity_status"] == "insufficient_diversity"
+    assert review["topic_count"] == 1
     assert set(features["ticker"]) == {"AAPL", "MSFT"}
     assert manifest["status"] == RunStatus.COMPLETED
     assert manifest["metadata"]["preprocessed_rows"] == 3

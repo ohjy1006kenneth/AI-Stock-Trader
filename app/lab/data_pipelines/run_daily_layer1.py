@@ -2270,6 +2270,7 @@ def _existing_text_topic_runner(
             run_id=config.run_id,
             embedding_key="",
             topic_label_key="",
+            topic_review_key="",
             topic_feature_key=output_key,
             manifest_key=manifest_key,
             sentence_rows=0,

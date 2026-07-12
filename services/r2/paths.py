@@ -167,6 +167,17 @@ def layer1_topic_label_path(as_of_date: str | Date | datetime, run_id: str) -> s
     )
 
 
+def layer1_topic_review_path(as_of_date: str | Date | datetime, run_id: str) -> str:
+    """Return the canonical date-first Layer 1 topic review JSON path."""
+    safe_run_id = _validate_key_part(run_id)
+    return build_r2_key(
+        "features",
+        _format_date(as_of_date),
+        "topic_review",
+        f"{safe_run_id}.json",
+    )
+
+
 def layer1_topic_feature_path(as_of_date: str | Date | datetime, run_id: str) -> str:
     """Return the canonical date-first Layer 1 ticker-day topic feature path."""
     safe_run_id = _validate_key_part(run_id)
