@@ -47,6 +47,7 @@ from services.r2.paths import (
     layer1_regime_path,
     layer1_sentiment_feature_path,
     layer1_topic_feature_path,
+    layer1_topic_review_path,
     pipeline_manifest_path,
     raw_fundamentals_path,
     raw_macro_path,
@@ -159,10 +160,36 @@ def fake_topic_runner(writer: R2Writer, tickers: Sequence[str]):
             )
         ]
         writer.put_object(output_key, feature_records_to_parquet_bytes(records))
+        writer.put_object(
+            layer1_topic_review_path(config.as_of_date, config.run_id),
+            json.dumps(
+                {
+                    "status": "warn",
+                    "diversity_status": "insufficient_diversity",
+                    "row_count": 1,
+                    "topic_count": 1,
+                    "dominant_topic_id": 0,
+                    "dominant_topic_share": 1.0,
+                    "topics": [
+                        {
+                            "topic_id": 0,
+                            "topic_label": "topic review",
+                            "topic_keywords": ["topic", "review"],
+                            "topic_example_text": "topic review placeholder",
+                            "topic_row_count": 1,
+                            "topic_row_share": 1.0,
+                        }
+                    ],
+                    "rows": [],
+                },
+                sort_keys=True,
+            ),
+        )
         return TextTopicPipelineResult(
             run_id=config.run_id,
             embedding_key="unused",
             topic_label_key="unused",
+            topic_review_key=layer1_topic_review_path(config.as_of_date, config.run_id),
             topic_feature_key=output_key,
             manifest_key=pipeline_manifest_path("layer1_text_topics", config.run_id),
             sentence_rows=1,

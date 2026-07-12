@@ -47,6 +47,7 @@ from services.r2.paths import (  # noqa: E402
     layer1_text_embedding_path,
     layer1_topic_feature_path,
     layer1_topic_label_path,
+    layer1_topic_review_path,
     pipeline_manifest_path,
 )
 from services.r2.writer import R2Writer  # noqa: E402
@@ -135,6 +136,7 @@ class TextTopicPipelineResult:
     run_id: str
     embedding_key: str
     topic_label_key: str
+    topic_review_key: str
     topic_feature_key: str
     manifest_key: str
     sentence_rows: int
@@ -161,6 +163,7 @@ def run_text_topics(
 
     embedding_key = layer1_text_embedding_path(config.as_of_date, config.run_id)
     topic_label_key = layer1_topic_label_path(config.as_of_date, config.run_id)
+    topic_review_key = layer1_topic_review_path(config.as_of_date, config.run_id)
     topic_feature_key = layer1_topic_feature_path(config.as_of_date, config.run_id)
     manifest_key = pipeline_manifest_path(TEXT_TOPICS_STAGE, config.run_id)
     metadata: dict[str, object] = {
@@ -169,6 +172,7 @@ def run_text_topics(
         "requested_tickers": list(config.tickers),
         "embedding_key": embedding_key,
         "topic_label_key": topic_label_key,
+        "topic_review_key": topic_review_key,
         "topic_feature_key": topic_feature_key,
         "embedding_model": runtime.embedding_config.model_name,
         "embedding_revision": runtime.embedding_config.model_revision,
@@ -196,6 +200,7 @@ def run_text_topics(
         )
         active_writer.put_object(embedding_key, _frame_to_parquet_bytes(result.embeddings))
         active_writer.put_object(topic_label_key, _frame_to_parquet_bytes(result.topic_labels))
+        active_writer.put_object(topic_review_key, json.dumps(result.topic_review, sort_keys=True))
         active_writer.put_object(
             topic_feature_key,
             _frame_to_parquet_bytes(feature_records_to_frame(result.feature_records)),
@@ -207,6 +212,7 @@ def run_text_topics(
                 "article_rows": len(result.embeddings),
                 "embedding_rows": len(result.embeddings),
                 "topic_label_rows": len(result.topic_labels),
+                "topic_review": result.topic_review,
                 "topic_feature_rows": len(result.feature_records),
             }
         )
@@ -224,6 +230,7 @@ def run_text_topics(
             run_id=config.run_id,
             embedding_key=embedding_key,
             topic_label_key=topic_label_key,
+            topic_review_key=topic_review_key,
             topic_feature_key=topic_feature_key,
             manifest_key=manifest_key,
             sentence_rows=len(records),

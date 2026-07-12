@@ -65,6 +65,24 @@ class _ResettingTopicLabeler:
         return [0 for _ in batch], [0.75 for _ in batch]
 
 
+class _ReviewTopicLabeler:
+    def fit_transform(
+        self,
+        documents: Sequence[str],
+        embeddings: Sequence[Sequence[float]],
+    ) -> tuple[Sequence[int], Sequence[float]]:
+        return [0 for _ in documents], [0.93 for _ in documents]
+
+    def get_topic_info(self) -> pd.DataFrame:
+        return pd.DataFrame(
+            [{"Topic": 0, "Name": "earnings_and_guidance", "Representation": "earnings_and_guidance"}]
+        )
+
+    def get_topic(self, topic_id: int) -> list[tuple[str, float]]:
+        assert topic_id == 0
+        return [("earnings", 0.92), ("guidance", 0.86), ("revenue", 0.81)]
+
+
 def test_compute_text_topics_caches_article_embeddings_and_topic_features() -> None:
     """Article embeddings are cached once while topic labels remain ticker-specific."""
     records = [
@@ -86,12 +104,34 @@ def test_compute_text_topics_caches_article_embeddings_and_topic_features() -> N
     assert len(result.embeddings) == 1
     assert result.embeddings.loc[0, "article_sentence_count"] == 2
     assert len(result.topic_labels) == 2
-    assert {record.ticker for record in result.feature_records} == {"AAPL", "MSFT"}
-    assert all(isinstance(record, FeatureRecord) for record in result.feature_records)
-    aapl = next(record for record in result.feature_records if record.ticker == "AAPL")
-    assert aapl.features["nlp_article_count"] == 1
-    assert aapl.features["nlp_sentence_count"] == 2
-    assert aapl.features["nlp_topic_count"] == 1
+    assert result.topic_review["row_count"] == 2
+    assert result.topic_review["topic_count"] == 1
+    assert result.topic_review["diversity_status"] == "insufficient_diversity"
+    assert len(result.topic_review["rows"]) == 2
+
+
+def test_compute_text_topics_builds_human_readable_topic_review() -> None:
+    """Topic review payload exposes readable labels, keywords, and example text."""
+    result = compute_text_topics(
+        [
+            _record(text="Apple raised guidance and discussed revenue."),
+            _record(text="Management cited stronger earnings and guidance."),
+        ],
+        embedder=_FakeEmbedder(),
+        topic_labeler=_ReviewTopicLabeler(),
+        embedding_config=_embedding_config(),
+        topic_config=_topic_config(),
+    )
+
+    review = result.topic_review
+    assert review["diversity_status"] == "insufficient_diversity"
+    assert review["topic_count"] == 1
+    assert review["dominant_topic_id"] == 0
+    assert review["dominant_topic_share"] == 1.0
+    assert review["topics"][0]["topic_keywords"] == ["earnings", "guidance", "revenue"]
+    assert review["topics"][0]["topic_example_text"]
+    assert review["rows"][0]["topic_row_count"] == 1
+    assert review["rows"][0]["topic_row_share"] == 1.0
 
 
 def test_embedding_cache_key_changes_with_model_revision() -> None:

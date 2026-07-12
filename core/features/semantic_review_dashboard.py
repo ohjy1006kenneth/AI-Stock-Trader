@@ -119,6 +119,7 @@ def build_layer1_topic_relevance_review(
         for item in _json_list(payload.get("article_groups"))
         if isinstance(item, Mapping)
     ]
+    topic_review = _json_mapping(payload.get("topic_review"))
     preprocessing_by_article = _rows_by_article(sections.get("raw_preprocessing_rows"))
     embedding_by_article = _rows_by_article(sections.get("article_embedding_rows"))
     topic_by_article = _rows_by_article(sections.get("topic_label_rows"))
@@ -127,6 +128,15 @@ def build_layer1_topic_relevance_review(
     embedding_rows = _json_list(sections.get("article_embedding_rows"))
     topic_rows = _json_list(sections.get("topic_label_rows"))
     relevance_rows = _json_list(sections.get("relevance_gate_rows"))
+    diversity_status = str(topic_review.get("diversity_status") or "unknown")
+    diversity_reason = _optional_str(topic_review.get("diversity_reason"))
+    topic_review_topics = _json_list(topic_review.get("topics"))
+    topic_review_rows = _json_list(topic_review.get("rows"))
+    topic_review_warning = (
+        None
+        if diversity_status == "diverse"
+        else diversity_reason or "Topic diversity is insufficient for a varied review sample."
+    )
 
     rows = [
         _topic_relevance_article_row(
@@ -185,6 +195,10 @@ def build_layer1_topic_relevance_review(
             "topic_label_row_count": len(topic_rows),
             "relevance_gate_row_count": len(relevance_rows),
             "relevance_gate_available": bool(relevance_rows),
+            "topic_review_row_count": len(topic_review_rows),
+            "topic_review_topic_count": len(topic_review_topics),
+            "topic_review_diversity_status": diversity_status,
+            "topic_review_warning": topic_review_warning,
             "accepted_count": sum(
                 1 for row in rows if row.get("evidence_status") == "accepted"
             ),
@@ -222,8 +236,22 @@ def build_layer1_topic_relevance_review(
         },
         "date_groups": date_groups,
         "articles": rows,
+        "topic_review": {
+            "summary": {
+                "row_count": len(topic_review_rows),
+                "topic_count": len(topic_review_topics),
+                "diversity_status": diversity_status,
+                "diversity_reason": diversity_reason,
+                "warning": topic_review_warning,
+                "dominant_topic_id": topic_review.get("dominant_topic_id"),
+                "dominant_topic_share": topic_review.get("dominant_topic_share"),
+            },
+            "topics": topic_review_topics,
+            "rows": topic_review_rows,
+        },
         "missing_evidence_blockers": missing_blockers,
     }
+
 
 
 def build_layer1_semantic_aggregate_review(
@@ -883,6 +911,14 @@ def _json_string_list(value: Any) -> list[str]:
     if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray, str)):
         return [str(item) for item in value if str(item)]
     return []
+
+
+def _optional_str(value: Any) -> str | None:
+    """Return a stripped string when a value is present."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def _dedupe_preserve_order(items: Sequence[str]) -> list[str]:

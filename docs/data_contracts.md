@@ -674,7 +674,8 @@ Never:
 - Layer 0 output → `UniverseRecord`, `OHLCVRecord`
 - Layer 0 raw archives → Alpaca news, SimFin fundamentals/earnings, FRED macro/rates
   (R2 artifacts, not separate Pydantic inter-layer contracts)
-- Layer 1 output → `NewsSentimentRecord`, `FeatureRecord`
+- Layer 1 output → `NewsSentimentRecord`, `FeatureRecord` (plus Layer 1 topic-review
+  JSON artifacts used by review dashboards; not separate Pydantic contracts)
 - Layer 2 output → `ScoreRecord`
 - Layer 3 output → `PortfolioRecord`
 - Layer 4 output → `ApprovedOrderRecord`

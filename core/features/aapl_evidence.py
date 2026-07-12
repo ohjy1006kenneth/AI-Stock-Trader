@@ -17,6 +17,7 @@ import pandas as pd
 
 from core.common.trading_calendar import skipped_non_trading_dates, trading_dates
 from core.features.regime_training import HMM_TRAINING_FEATURE_COLUMNS
+from core.features.text_topics import build_topic_review_payload
 from services.r2.paths import (
     layer1_feature_path,
     layer1_news_preprocessing_path,
@@ -213,6 +214,7 @@ class Layer1SemanticReviewReport:
     preprocessing_rows: list[dict[str, object]]
     embedding_rows: list[dict[str, object]]
     topic_label_rows: list[dict[str, object]]
+    topic_review: dict[str, object]
     relevance_gate_rows: list[dict[str, object]]
     semantic_aggregate_rows: list[dict[str, object]]
     regime_rows: list[dict[str, object]]
@@ -442,7 +444,12 @@ def build_layer1_aapl_evidence_report(
 
     preprocessing_rows = _preprocessing_rows(preprocessing_frame, requested_ticker=requested_ticker)
     embedding_rows = _embedding_rows(embedding_frame)
-    topic_label_rows = _topic_label_rows(topic_label_frame, requested_ticker=requested_ticker)
+    topic_review = build_topic_review_payload(topic_label_frame)
+    topic_label_rows = _topic_label_rows(
+        topic_label_frame,
+        requested_ticker=requested_ticker,
+        topic_review=topic_review,
+    )
     relevance_gate_rows = _relevance_gate_rows(relevance_gate_frame, requested_ticker=requested_ticker)
     semantic_aggregate_rows = _semantic_aggregate_rows(
         semantic_aggregate_frame,
@@ -531,6 +538,7 @@ def build_layer1_aapl_evidence_report(
         preprocessing_rows=preprocessing_rows,
         embedding_rows=embedding_rows,
         topic_label_rows=topic_label_rows,
+        topic_review=topic_review,
         relevance_gate_rows=relevance_gate_rows,
         semantic_aggregate_rows=semantic_aggregate_rows,
         regime_rows=[item.to_dict() for item in _regime_rows_from_map(regime_by_date)],
@@ -1467,22 +1475,31 @@ def _topic_label_rows(
     frame: pd.DataFrame,
     *,
     requested_ticker: str,
+    topic_review: Mapping[str, object] | None = None,
 ) -> list[dict[str, object]]:
     """Return normalized topic-label evidence rows for dashboard review."""
     if frame.empty:
         return []
     normalized = frame.copy()
     normalized.columns = [str(column) for column in normalized.columns]
+    review_rows_by_article_id: dict[str, dict[str, object]] = {}
+    if topic_review:
+        for review_row in _json_list(topic_review.get("rows")):
+            article_id = _optional_str(review_row.get("article_id"))
+            if article_id:
+                review_rows_by_article_id[article_id] = review_row
     rows: list[dict[str, object]] = []
     for _, row in normalized.iterrows():
         ticker = (_optional_str(row.get("ticker")) or "").upper()
         if ticker and ticker != requested_ticker:
             continue
+        article_id = _optional_str(row.get("article_id"))
+        review_row = review_rows_by_article_id.get(article_id or "")
         rows.append(
             {
                 "date": _optional_str(row.get("date")),
                 "ticker": ticker or requested_ticker,
-                "article_id": _optional_str(row.get("article_id")),
+                "article_id": article_id,
                 "normalized_headline": _optional_str(row.get("normalized_headline")),
                 "article_sentence_count": _maybe_int(row.get("article_sentence_count")),
                 "embedding_cache_key": _optional_str(row.get("embedding_cache_key")),
@@ -1490,8 +1507,29 @@ def _topic_label_rows(
                 "topic_model_version": _optional_str(row.get("topic_model_version")),
                 "topic_id": _maybe_int(row.get("topic_id")),
                 "topic_probability": _maybe_float(row.get("topic_probability")),
-                "topic_label": _optional_str(row.get("topic_label")),
-                "topic_keywords": _json_string_list(row.get("topic_keywords")),
+                "topic_label": _optional_str(review_row.get("topic_label"))
+                if review_row
+                else _optional_str(row.get("topic_label")),
+                "topic_keywords": _json_string_list(
+                    review_row.get("topic_keywords") if review_row else row.get("topic_keywords")
+                ),
+                "topic_keyword_text": _optional_str(review_row.get("topic_keyword_text"))
+                if review_row
+                else _optional_str(row.get("topic_keyword_text")),
+                "topic_example_text": _optional_str(review_row.get("topic_example_text"))
+                if review_row
+                else _optional_str(row.get("topic_example_text")),
+                "topic_example_texts": _json_string_list(
+                    review_row.get("topic_example_texts") if review_row else row.get("topic_example_texts")
+                ),
+                "topic_row_count": _maybe_int(review_row.get("topic_row_count")) if review_row else None,
+                "topic_row_share": _maybe_float(review_row.get("topic_row_share")) if review_row else None,
+                "topic_diversity_status": _optional_str(topic_review.get("diversity_status"))
+                if topic_review
+                else None,
+                "topic_diversity_reason": _optional_str(topic_review.get("diversity_reason"))
+                if topic_review
+                else None,
                 "artifact_key": _optional_str(row.get("_artifact_key")),
                 "stage": "article_topic_labels",
             }
@@ -2040,11 +2078,13 @@ def _build_payload_from_report(report: Layer1SemanticReviewReport | Mapping[str,
         "accepted_articles": accepted_articles,
         "flagged_articles": flagged_articles,
         "article_review": _build_article_review_payload(date_groups=date_groups),
+        "topic_review": _json_mapping(report_dict.get("topic_review")),
         "pipeline_sections": {
             "raw_preprocessing_rows": list(report_dict.get("preprocessing_rows", [])),
             "article_embedding_rows": list(report_dict.get("embedding_rows", [])),
             "topic_label_rows": list(report_dict.get("topic_label_rows", [])),
             "relevance_gate_rows": list(report_dict.get("relevance_gate_rows", [])),
+            "topic_review": _json_mapping(report_dict.get("topic_review")),
             "finbert_sentence_rows": [
                 row
                 for article in article_groups

@@ -5,6 +5,8 @@ import hashlib
 import importlib
 import json
 import math
+import re
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -98,6 +100,103 @@ class TopicModelConfig:
             raise ValueError("model_version cannot be empty")
 
 
+_TOPIC_FALLBACK_STOPWORDS = {
+    "a",
+    "about",
+    "after",
+    "all",
+    "also",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "before",
+    "by",
+    "for",
+    "from",
+    "has",
+    "have",
+    "in",
+    "into",
+    "is",
+    "it",
+    "its",
+    "new",
+    "of",
+    "on",
+    "or",
+    "said",
+    "shares",
+    "the",
+    "their",
+    "this",
+    "to",
+    "with",
+    "via",
+    "over",
+    "up",
+}
+
+
+def _optional_int(value: object) -> int | None:
+    """Return an int if the value is numeric, otherwise None."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return None if math.isnan(value) else int(value)
+    try:
+        parsed = float(str(value))
+    except (TypeError, ValueError):
+        return None
+    return None if math.isnan(parsed) else int(parsed)
+
+
+def _optional_float(value: object) -> float | None:
+    """Return a float if the value is numeric, otherwise None."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return None if isinstance(value, float) and math.isnan(value) else float(value)
+    try:
+        parsed = float(str(value))
+    except (TypeError, ValueError):
+        return None
+    return None if math.isnan(parsed) else parsed
+
+
+def _optional_str(value: object) -> str | None:
+    """Return a stripped string if present, otherwise None."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _coerce_string_list(value: object) -> list[str]:
+    """Return a normalized list of human-readable strings from JSON-ish values."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            return [text]
+        if isinstance(parsed, list):
+            return [str(item).strip() for item in parsed if str(item).strip()]
+        return [str(parsed).strip()]
+    if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray, str)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    text = str(value).strip()
+    return [text] if text else []
+
+
 @dataclass(frozen=True)
 class TextTopicResult:
     """Computed article embedding cache, topic labels, and ticker-day topic features."""
@@ -105,6 +204,7 @@ class TextTopicResult:
     embeddings: Any
     topic_labels: Any
     feature_records: list[FeatureRecord]
+    topic_review: dict[str, object]
 
 
 @dataclass(frozen=True)
@@ -151,7 +251,100 @@ def compute_text_topics(
         embeddings=embeddings,
         topic_labels=topic_labels,
         feature_records=topic_labels_to_feature_records(topic_labels),
+        topic_review=build_topic_review_payload(topic_labels, topic_labeler=topic_labeler),
     )
+
+
+def build_topic_review_payload(
+    topic_labels: Any,
+    *,
+    topic_labeler: Any | None = None,
+) -> dict[str, object]:
+    """Build a human-readable topic review payload from topic label rows."""
+    if len(topic_labels) == 0:
+        return {
+            "status": "warn",
+            "diversity_status": "insufficient_diversity",
+            "diversity_reason": "No topic rows were produced.",
+            "row_count": 0,
+            "topic_count": 0,
+            "dominant_topic_id": None,
+            "dominant_topic_share": None,
+            "topics": [],
+            "rows": [],
+        }
+
+    _require_columns(topic_labels, TOPIC_LABEL_COLUMNS)
+    frame = topic_labels.copy()
+    frame.columns = [str(column) for column in frame.columns]
+    frame["topic_id"] = frame["topic_id"].map(int)
+    frame["topic_probability"] = frame["topic_probability"].map(float)
+
+    topic_info = _topic_info_lookup(topic_labeler)
+    topic_summaries: list[dict[str, object]] = []
+    row_payloads: list[dict[str, object]] = []
+    valid_rows = frame[frame["topic_id"] >= 0].copy()
+    invalid_rows = frame[frame["topic_id"] < 0].copy()
+    topic_count = int(valid_rows["topic_id"].nunique()) if len(valid_rows) else 0
+
+    for topic_id, group in valid_rows.groupby("topic_id", sort=True):
+        summary = _summarize_topic_group(
+            group,
+            topic_id=int(topic_id),
+            topic_info=topic_info,
+            topic_labeler=topic_labeler,
+            total_rows=len(frame),
+        )
+        topic_summaries.append(summary)
+        row_payloads.extend(_topic_rows_with_summary(group, summary))
+
+    if len(invalid_rows):
+        invalid_summary = _summarize_topic_group(
+            invalid_rows,
+            topic_id=-1,
+            topic_info=topic_info,
+            topic_labeler=topic_labeler,
+            total_rows=len(frame),
+        )
+        invalid_summary["topic_label"] = "Outlier / Unassigned"
+        invalid_summary["topic_keywords"] = []
+        row_payloads.extend(_topic_rows_with_summary(invalid_rows, invalid_summary))
+
+    dominant_topic_id: int | None = None
+    dominant_topic_share: float | None = None
+    diversity_reason = "No non-outlier topics were detected."
+    diversity_status = "insufficient_diversity"
+    if topic_summaries:
+        dominant = max(topic_summaries, key=lambda item: float(item["topic_row_share"]))
+        dominant_topic_id = int(dominant["topic_id"])
+        dominant_topic_share = float(dominant["topic_row_share"])
+        if len(topic_summaries) == 1:
+            diversity_reason = f"Only one topic was detected across {len(valid_rows)} rows."
+            diversity_status = "insufficient_diversity"
+        elif dominant_topic_share >= 0.85:
+            diversity_reason = (
+                f"One topic covers {dominant_topic_share:.0%} of rows, so the corpus is too "
+                "concentrated for a varied review sample."
+            )
+            diversity_status = "concentrated"
+        else:
+            diversity_reason = f"Detected {len(topic_summaries)} topics across {len(valid_rows)} rows."
+            diversity_status = "diverse"
+
+    status = "pass" if diversity_status == "diverse" else "warn"
+    row_payloads.sort(key=_topic_row_sort_key)
+    topic_summaries.sort(key=_topic_summary_sort_key)
+    return {
+        "status": status,
+        "diversity_status": diversity_status,
+        "diversity_reason": diversity_reason,
+        "row_count": int(len(frame)),
+        "topic_count": topic_count,
+        "dominant_topic_id": dominant_topic_id,
+        "dominant_topic_share": dominant_topic_share,
+        "topics": topic_summaries,
+        "rows": row_payloads,
+    }
 
 
 def compute_sentence_embeddings(
@@ -333,6 +526,251 @@ def topic_labels_to_feature_records(topic_labels: Any) -> list[FeatureRecord]:
             )
         )
     return records
+
+
+def _topic_info_lookup(topic_labeler: Any | None) -> dict[int, str]:
+    """Return optional topic names keyed by topic id."""
+    if topic_labeler is None or not hasattr(topic_labeler, "get_topic_info"):
+        return {}
+
+    try:
+        topic_info = topic_labeler.get_topic_info()
+    except Exception:  # pragma: no cover - defensive against optional BERTopic APIs
+        return {}
+
+    pd = _require_pandas()
+    if not isinstance(topic_info, pd.DataFrame) or "Topic" not in topic_info.columns:
+        return {}
+
+    name_column = None
+    for candidate in ("Name", "Representation", "TopicName"):
+        if candidate in topic_info.columns:
+            name_column = candidate
+            break
+    if name_column is None:
+        return {}
+
+    names: dict[int, str] = {}
+    for _, row in topic_info.iterrows():
+        topic_value = row.get("Topic")
+        if topic_value is None:
+            continue
+        try:
+            topic_id = int(topic_value)
+        except (TypeError, ValueError):
+            continue
+        name = str(row.get(name_column, "")).strip()
+        if name:
+            names[topic_id] = name
+    return names
+
+
+def _summarize_topic_group(
+    group: Any,
+    *,
+    topic_id: int,
+    topic_info: dict[int, str],
+    topic_labeler: Any | None,
+    total_rows: int,
+) -> dict[str, object]:
+    """Summarize one topic group for review output."""
+    texts = [str(text or "") for text in group["text"].tolist() if str(text or "").strip()]
+    first_row = group.iloc[0] if len(group) else None
+    explicit_label = _optional_str(first_row["topic_label"]) if first_row is not None and "topic_label" in group.columns else None
+    explicit_keywords = _coerce_string_list(first_row["topic_keywords"]) if first_row is not None and "topic_keywords" in group.columns else []
+    keywords = explicit_keywords or _topic_keywords_for_group(
+        topic_id=topic_id,
+        texts=texts,
+        topic_labeler=topic_labeler,
+        topic_name=topic_info.get(topic_id),
+    )
+    representative_row = group.copy()
+    representative_row["_sort_text_length"] = representative_row["text"].map(
+        lambda value: len(str(value or ""))
+    )
+    representative_row = representative_row.sort_values(
+        by=["topic_probability", "_sort_text_length", "article_id", "date"],
+        ascending=[False, False, True, True],
+        kind="mergesort",
+    )
+    primary_text = str(representative_row.iloc[0]["text"] or "") if len(representative_row) else ""
+    example_texts = _representative_texts(group)
+    row_count = int(len(group))
+    return {
+        "topic_id": topic_id,
+        "topic_label": explicit_label or _format_topic_label(
+            topic_id=topic_id,
+            keywords=keywords,
+            topic_name=topic_info.get(topic_id),
+        ),
+        "topic_keywords": keywords,
+        "topic_keyword_text": ", ".join(keywords),
+        "topic_example_text": primary_text,
+        "topic_example_texts": example_texts,
+        "topic_row_count": row_count,
+        "topic_row_share": row_count / max(1, total_rows),
+        "topic_probability_mean": float(group["topic_probability"].mean()),
+        "topic_probability_max": float(group["topic_probability"].max()),
+    }
+
+
+def _topic_rows_with_summary(
+    group: Any,
+    summary: dict[str, object],
+) -> list[dict[str, object]]:
+    """Return row-level review payloads decorated with topic summary fields."""
+    rows: list[dict[str, object]] = []
+    keywords = list(summary.get("topic_keywords", []))
+    example_text = summary.get("topic_example_text")
+    for record in group.to_dict(orient="records"):
+        rows.append(
+            {
+                "date": str(record.get("date", "")),
+                "ticker": str(record.get("ticker", "")),
+                "article_id": _optional_str(record.get("article_id")),
+                "normalized_headline": _optional_str(record.get("normalized_headline")),
+                "text": _optional_str(record.get("text")),
+                "article_sentence_count": _optional_int(record.get("article_sentence_count")),
+                "topic_id": _optional_int(record.get("topic_id")),
+                "topic_probability": _optional_float(record.get("topic_probability")),
+                "topic_label": str(summary.get("topic_label", "")),
+                "topic_keywords": keywords,
+                "topic_keyword_text": str(summary.get("topic_keyword_text", "")),
+                "topic_example_text": _optional_str(example_text),
+                "topic_example_texts": list(summary.get("topic_example_texts", [])),
+                "topic_row_count": _optional_int(summary.get("topic_row_count")),
+                "topic_row_share": _optional_float(summary.get("topic_row_share")),
+            }
+        )
+    return rows
+
+
+def _topic_row_sort_key(row: dict[str, object]) -> tuple[str, str, int]:
+    """Return a stable sort key for topic review rows."""
+    return (
+        str(row.get("date", "")),
+        str(row.get("ticker", "")),
+        _optional_int(row.get("article_sentence_count")) or -1,
+    )
+
+
+def _topic_summary_sort_key(summary: dict[str, object]) -> tuple[float, int]:
+    """Return a stable sort key for topic review summaries."""
+    topic_share = _optional_float(summary.get("topic_row_share")) or 0.0
+    topic_id = _optional_int(summary.get("topic_id")) or -1
+    return (-topic_share, topic_id)
+
+
+def _topic_keywords_for_group(
+    *,
+    topic_id: int,
+    texts: Sequence[str],
+    topic_labeler: Any | None,
+    topic_name: str | None,
+) -> list[str]:
+    """Return up to five human-readable keywords for one topic group."""
+    keywords = _extract_topic_keywords(topic_labeler, topic_id)
+    if not keywords and topic_name:
+        keywords = _keywords_from_topic_name(topic_name)
+    if not keywords:
+        keywords = _keywords_from_texts(texts)
+    return keywords[:5]
+
+
+def _extract_topic_keywords(topic_labeler: Any | None, topic_id: int) -> list[str]:
+    """Extract keywords from an optional topic model wrapper."""
+    if topic_labeler is None:
+        return []
+    topic_getter = getattr(topic_labeler, "get_topic", None)
+    if topic_getter is None:
+        return []
+    try:
+        topic_data = topic_getter(topic_id)
+    except Exception:  # pragma: no cover - optional topic API fallback
+        return []
+    if not topic_data:
+        return []
+
+    keywords: list[str] = []
+    for item in topic_data:
+        if isinstance(item, tuple) and item:
+            keyword = str(item[0]).strip()
+        else:
+            keyword = str(item).strip()
+        if keyword:
+            keywords.append(keyword)
+    return keywords
+
+
+def _keywords_from_topic_name(topic_name: str) -> list[str]:
+    """Derive readable keywords from a topic name string."""
+    cleaned = re.sub(r"^\d+[_\-\s]*", "", topic_name)
+    cleaned = cleaned.replace("/", " ").replace("_", " ").replace("-", " ")
+    tokens = [token for token in cleaned.split() if token]
+    return [token.lower() for token in tokens if token.lower() not in _TOPIC_FALLBACK_STOPWORDS]
+
+
+def _keywords_from_texts(texts: Sequence[str]) -> list[str]:
+    """Derive fallback keywords from representative texts."""
+    tokens: list[str] = []
+    for text in texts:
+        tokens.extend(
+            token.lower()
+            for token in re.findall(r"[A-Za-z][A-Za-z0-9'\-]+", text)
+            if token.lower() not in _TOPIC_FALLBACK_STOPWORDS and len(token) > 2
+        )
+    counts = Counter(tokens)
+    return [word for word, _ in counts.most_common(5)]
+
+
+def _representative_texts(group: Any, *, limit: int = 2) -> list[str]:
+    """Return up to `limit` representative texts ordered by confidence."""
+    rows = group.copy()
+    rows["_sort_text_length"] = rows["text"].map(lambda value: len(str(value or "")))
+    rows = rows.sort_values(
+        by=["topic_probability", "_sort_text_length", "article_id", "date"],
+        ascending=[False, False, True, True],
+        kind="mergesort",
+    )
+    texts: list[str] = []
+    for value in rows["text"].tolist():
+        text = str(value or "").strip()
+        if not text or text in texts:
+            continue
+        texts.append(text)
+        if len(texts) >= limit:
+            break
+    return texts
+
+
+def _format_topic_label(
+    *,
+    topic_id: int,
+    keywords: Sequence[str],
+    topic_name: str | None,
+) -> str:
+    """Return a human-readable label for one topic."""
+    if topic_name:
+        label = re.sub(r"^\d+[_\-\s]*", "", topic_name).replace("_", " ").replace("-", " ")
+        label = " ".join(label.split())
+        if label:
+            return _title_case_phrase(label)
+    if keywords:
+        return " / ".join(_title_case_phrase(keyword) for keyword in keywords[:3])
+    if topic_id < 0:
+        return "Outlier / Unassigned"
+    return f"Topic {topic_id}"
+
+
+def _title_case_phrase(value: str) -> str:
+    """Title-case a phrase while preserving all-caps acronyms."""
+    parts: list[str] = []
+    for token in value.split():
+        if token.isupper() or token.isdigit():
+            parts.append(token)
+        else:
+            parts.append(token[:1].upper() + token[1:].lower())
+    return " ".join(parts)
 
 
 def feature_records_to_frame(records: Sequence[FeatureRecord]) -> Any:

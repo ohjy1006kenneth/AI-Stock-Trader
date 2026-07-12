@@ -21,6 +21,8 @@ The system is designed around four deployment surfaces:
 2. **Cloud (heavy compute) — Modal**
    Used for:
    - daily Layer 1 feature generation after the Pi finishes Layer 0
+   - Layer 1 topic-review artifacts that pair topic labels with human-readable labels,
+     keywords, examples, and diversity warnings for review dashboards
    - FinBERT inference on news text
    - offline FinBERT evaluation and optional fine-tuning from archived news plus
      return-derived labels

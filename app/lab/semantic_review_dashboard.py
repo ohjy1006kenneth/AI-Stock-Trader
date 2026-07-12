@@ -1444,6 +1444,12 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       const blockers = Array.isArray(review.missing_evidence_blockers) ? review.missing_evidence_blockers : [];
       const blockerPreview = blockers.slice(0, 12);
       const reviewable = summary.reviewable === true;
+      const topicReview = payload.topic_review || {{}};
+      const topicReviewSummary = topicReview.summary || {{}};
+      const topicReviewTopics = Array.isArray(topicReview.topics) ? topicReview.topics : [];
+      const topicReviewRows = Array.isArray(topicReview.rows) ? topicReview.rows : [];
+      const topicReviewCards = topicReviewTopics.slice(0, 6);
+      const topicReviewWarning = topicReviewSummary.warning || summary.topic_review_warning || '';
       topicRelevanceReviewEl.innerHTML = `
         <div class="hero-grid">
           ${{metricCard('Articles', summary.article_count ?? 0, 'topic_relevance_review.summary.article_count', 'Article-level topic/relevance evidence rows.')}}
@@ -1454,7 +1460,8 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
           ${{metricCard('Rejected', summary.rejected_count ?? 0, 'topic_relevance_review.summary.rejected_count', 'Rows rejected by the relevance gate.')}}
           ${{metricCard('Missing/default', summary.missing_or_default_count ?? 0, 'topic_relevance_review.summary.missing_or_default_count', 'Rows missing required topic, embedding, or relevance support.')}}
         </div>
-        ${{!reviewable ? `<div class="chart-blocker"><h3>Topic / relevance is not reviewable yet</h3><p>${{escapeHtml(summary.review_explanation || 'Required topic/relevance evidence is missing.')}}</p><details><summary>Show sample affected articles (${{blockers.length}} total)</summary><div class="body"><ul>${{blockerPreview.map((item) => `<li>${{escapeHtml(item.date || 'n/a')}} · ${{escapeHtml(item.article_id || 'n/a')}} · ${{escapeHtml((item.missing_evidence_flags || []).join(', '))}}</li>`).join('')}}</ul></div></details></div>` : ''}}
+        ${{topicReviewWarning ? `<div class="chart-blocker"><h3>Topic review diversity warning</h3><p>${{escapeHtml(topicReviewWarning)}}</p><p class="section-note">Layer 1 topic review should surface readable labels, keywords, and examples. This warning means the corpus is too concentrated or collapsed into a single catch-all topic, so the review evidence is not yet diverse.</p><p class="muted">Review rows: ${{Number(topicReviewRows.length || 0)}} · Topics: ${{Number(topicReviewCards.length || 0)}}</p></div>` : ''}}
+        ''
         <div class="date-grid">
           ${{dateGroups.length ? dateGroups.map((group) => `
             <details class="date-card">

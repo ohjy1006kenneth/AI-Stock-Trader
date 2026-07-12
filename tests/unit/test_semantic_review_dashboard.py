@@ -65,7 +65,14 @@ def test_semantic_review_report_includes_benchmark_rows(tmp_path: Path) -> None:
     assert aapl_one["sentence_rows"][0]["row_granularity"] == "sentence-level"
     assert aapl_one["preprocessing_rows"][0]["ticker_mentions"] == ["AAPL"]
     assert aapl_one["topic_evidence"][0]["topic_label"] == "earnings and demand"
+    assert aapl_one["topic_evidence"][0]["topic_keywords"] == ["earnings", "demand", "iphone"]
+    assert aapl_one["topic_evidence"][0]["topic_example_text"]
     assert aapl_one["relevance_gate_rows"][0]["relevance_decision"] == "accepted"
+
+    topic_review = cast(dict[str, Any], report_dict["topic_review"])
+    assert topic_review["topic_count"] == 2
+    assert topic_review["diversity_status"] == "diverse"
+    assert len(cast(list[dict[str, Any]], topic_review["topics"])) == 2
 
     date_groups = {
         str(item["date"]): cast(dict[str, Any], item)
@@ -742,6 +749,7 @@ def test_semantic_review_dashboard_html_names_human_review_outputs() -> None:
         )
     )
 
+    assert "Topic review diversity warning" in html
     assert "Sentence sentiment label" in html
     assert "Pre-FinBERT relevance gate artifact is missing" in html
     assert "Human-review digest" in html
