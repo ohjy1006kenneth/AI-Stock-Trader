@@ -289,6 +289,7 @@ def test_semantic_review_payload_explains_unreviewable_missing_relevance_gate(
     assert summary["reviewable"] is False
     assert summary["review_status"] == "not_reviewable_missing_relevance_gate"
     assert "Pre-FinBERT relevance gate artifact is missing" in summary["review_explanation"]
+    assert review["missing_evidence_blockers"]
 
 
 def test_semantic_review_payload_adds_human_focused_aggregate_review(
@@ -689,6 +690,16 @@ def test_semantic_review_dashboard_html_is_beginner_friendly_and_collapsed() -> 
     assert "topic-relevance-tab" in html
     assert "topic-relevance-content" in html
     assert "default score shown without support" in html
+    assert "Topic / relevance is not reviewable yet" in html
+    assert "Topic review cards" in html
+    assert "topic_label" in html
+    assert "topic_keywords" in html
+    assert "topic_example_text" in html
+    assert "topic_example_texts" in html
+    assert "topic_row_count" in html
+    assert "topic_row_share" in html
+    assert "topic_probability_mean" in html
+    assert "topic_probability_max" in html
     assert "Ticker-Date Semantic Aggregates" in html
     assert "semantic-aggregate-tab" in html
     assert "Repeated context / aggregate value" in html
@@ -750,6 +761,9 @@ def test_semantic_review_dashboard_html_names_human_review_outputs() -> None:
     )
 
     assert "Topic review diversity warning" in html
+    assert "Topic / relevance is not reviewable yet" in html
+    assert "Topic review cards" in html
+    assert "Topic review rows" in html
     assert "Sentence sentiment label" in html
     assert "Pre-FinBERT relevance gate artifact is missing" in html
     assert "Human-review digest" in html

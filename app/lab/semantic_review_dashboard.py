@@ -1437,6 +1437,89 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
         </details>`;
     }}
 
+    function topicReviewText(value, fallback = 'n/a') {{
+      if (Array.isArray(value)) {{
+        const items = value.map((item) => String(item ?? '').trim()).filter(Boolean);
+        return items.length ? items.join(', ') : fallback;
+      }}
+      const text = String(value ?? '').trim();
+      return text || fallback;
+    }}
+
+    function topicReviewList(value, fallback = 'n/a') {{
+      if (!Array.isArray(value)) return fallback;
+      const items = value.map((item) => String(item ?? '').trim()).filter(Boolean);
+      return items.length ? items.join(' | ') : fallback;
+    }}
+
+    function renderTopicReviewCard(topic) {{
+      const topicLabel = topic.topic_label || 'Topic';
+      const topicKeywords = topicReviewText(topic.topic_keywords, topic.topic_keyword_text || 'n/a');
+      const topicExamples = Array.isArray(topic.topic_example_texts) ? topic.topic_example_texts : [];
+      const topicExampleText = topic.topic_example_text || topicExamples[0] || 'n/a';
+      const topicRowCount = Number(topic.topic_row_count || 0);
+      const topicRowShare = Number(topic.topic_row_share || 0);
+      const topicProbabilityMean = Number(topic.topic_probability_mean);
+      const topicProbabilityMax = Number(topic.topic_probability_max);
+      return `
+        <details class="row-item">
+          <summary>
+            <span class="article-title">${{escapeHtml(topicLabel)}}</span>
+            <span class="badge">rows: ${{topicRowCount}}</span>
+            <span class="badge">share: ${{formatNumber(topicRowShare * 100, 1)}}%</span>
+            ${{Number.isFinite(topicProbabilityMean) ? `<span class="badge">mean prob: ${{formatNumber(topicProbabilityMean, 3)}}</span>` : ''}}
+            ${{Number.isFinite(topicProbabilityMax) ? `<span class="badge">max prob: ${{formatNumber(topicProbabilityMax, 3)}}</span>` : ''}}
+          </summary>
+          <div class="body">
+            <p class="article-copy">What am I looking at? A human-readable BERTopic summary. Why does it matter? Reviewers should see the topic label, keywords, and representative examples before accepting the corpus. What would make this good or bad? Good: the topic label and examples match the article set. Bad: empty keywords, no example text, or a single catch-all topic.</p>
+            <div class="compact-grid">
+              <div class="compact"><div class="k">Topic label</div><div class="v">${{escapeHtml(topicLabel)}}</div><div class="k">raw: topic_label</div></div>
+              <div class="compact"><div class="k">Topic keywords</div><div class="v">${{escapeHtml(topicKeywords)}}</div><div class="k">raw: topic_keywords / topic_keyword_text</div></div>
+              <div class="compact"><div class="k">Example text</div><div class="v">${{escapeHtml(topicExampleText)}}</div><div class="k">raw: topic_example_text</div></div>
+              <div class="compact"><div class="k">Example texts</div><div class="v">${{escapeHtml(topicReviewList(topicExamples))}}</div><div class="k">raw: topic_example_texts</div></div>
+              <div class="compact"><div class="k">Row count</div><div class="v">${{topicRowCount}}</div><div class="k">raw: topic_row_count</div></div>
+              <div class="compact"><div class="k">Row share</div><div class="v">${{formatNumber(topicRowShare * 100, 1)}}%</div><div class="k">raw: topic_row_share</div></div>
+              ${{Number.isFinite(topicProbabilityMean) ? `<div class="compact"><div class="k">Mean probability</div><div class="v">${{formatNumber(topicProbabilityMean, 3)}}</div><div class="k">raw: topic_probability_mean</div></div>` : ''}}
+              ${{Number.isFinite(topicProbabilityMax) ? `<div class="compact"><div class="k">Max probability</div><div class="v">${{formatNumber(topicProbabilityMax, 3)}}</div><div class="k">raw: topic_probability_max</div></div>` : ''}}
+            </div>
+          </div>
+        </details>`;
+    }}
+
+    function renderTopicReviewRow(row) {{
+      const topicLabel = row.topic_label || 'Topic';
+      const topicKeywords = topicReviewText(row.topic_keywords, row.topic_keyword_text || 'n/a');
+      const topicExamples = Array.isArray(row.topic_example_texts) ? row.topic_example_texts : [];
+      const topicExampleText = row.topic_example_text || topicExamples[0] || 'n/a';
+      const topicRowCount = Number(row.topic_row_count || 0);
+      const topicRowShare = Number(row.topic_row_share || 0);
+      const topicProbability = Number(row.topic_probability);
+      const topicProbabilityMean = Number(row.topic_probability_mean);
+      const topicProbabilityMax = Number(row.topic_probability_max);
+      return `
+        <details class="row-item">
+          <summary>
+            <span class="article-title">${{escapeHtml(row.date || 'n/a')}} · ${{escapeHtml(row.ticker || 'n/a')}}</span>
+            <span class="badge">${{escapeHtml(topicLabel)}}</span>
+            <span class="badge">prob: ${{formatNumber(topicProbability, 3)}}</span>
+            <span class="badge">rows: ${{topicRowCount}}</span>
+          </summary>
+          <div class="body">
+            <div class="compact-grid">
+              <div class="compact"><div class="k">Topic label</div><div class="v">${{escapeHtml(topicLabel)}}</div><div class="k">raw: topic_label</div></div>
+              <div class="compact"><div class="k">Topic keywords</div><div class="v">${{escapeHtml(topicKeywords)}}</div><div class="k">raw: topic_keywords / topic_keyword_text</div></div>
+              <div class="compact"><div class="k">Example text</div><div class="v">${{escapeHtml(topicExampleText)}}</div><div class="k">raw: topic_example_text</div></div>
+              <div class="compact"><div class="k">Row count</div><div class="v">${{topicRowCount}}</div><div class="k">raw: topic_row_count</div></div>
+              <div class="compact"><div class="k">Row share</div><div class="v">${{formatNumber(topicRowShare * 100, 1)}}%</div><div class="k">raw: topic_row_share</div></div>
+              <div class="compact"><div class="k">Probability</div><div class="v">${{formatNumber(topicProbability, 3)}}</div><div class="k">raw: topic_probability</div></div>
+              ${{Number.isFinite(topicProbabilityMean) ? `<div class="compact"><div class="k">Mean probability</div><div class="v">${{formatNumber(topicProbabilityMean, 3)}}</div><div class="k">raw: topic_probability_mean</div></div>` : ''}}
+              ${{Number.isFinite(topicProbabilityMax) ? `<div class="compact"><div class="k">Max probability</div><div class="v">${{formatNumber(topicProbabilityMax, 3)}}</div><div class="k">raw: topic_probability_max</div></div>` : ''}}
+            </div>
+            <p class="article-copy">${{escapeHtml(topicExamples.length ? topicReviewList(topicExamples) : topicExampleText)}}</p>
+          </div>
+        </details>`;
+    }}
+
     function renderTopicRelevanceReview(payload) {{
       const review = payload.topic_relevance_review || {{}};
       const summary = review.summary || {{}};
@@ -1461,7 +1544,28 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
           ${{metricCard('Missing/default', summary.missing_or_default_count ?? 0, 'topic_relevance_review.summary.missing_or_default_count', 'Rows missing required topic, embedding, or relevance support.')}}
         </div>
         ${{topicReviewWarning ? `<div class="chart-blocker"><h3>Topic review diversity warning</h3><p>${{escapeHtml(topicReviewWarning)}}</p><p class="section-note">Layer 1 topic review should surface readable labels, keywords, and examples. This warning means the corpus is too concentrated or collapsed into a single catch-all topic, so the review evidence is not yet diverse.</p><p class="muted">Review rows: ${{Number(topicReviewRows.length || 0)}} · Topics: ${{Number(topicReviewCards.length || 0)}}</p></div>` : ''}}
-        ''
+        ${{reviewable ? '' : `<div class="chart-blocker"><h3>Topic / relevance is not reviewable yet</h3><p>${{escapeHtml(summary.review_explanation || 'Missing topic, embedding, or relevance-gate evidence.')}}</p><p class="section-note">Missing embedding, topic, or relevance-gate evidence still blocks human acceptance.</p>${{blockerPreview.length ? `<div class="row-list">${{blockerPreview.map((blocker) => `
+          <div class="compact-grid" style="margin-bottom: 12px;">
+            <div class="compact"><div class="k">Article</div><div class="v">${{escapeHtml(blocker.article_id || 'n/a')}}</div><div class="k">raw: article_id</div></div>
+            <div class="compact"><div class="k">Status</div><div class="v">${{escapeHtml(blocker.evidence_status || 'n/a')}}</div><div class="k">raw: evidence_status</div></div>
+            <div class="compact"><div class="k">Interpretation</div><div class="v">${{escapeHtml(blocker.relevance_score_interpretation || 'n/a')}}</div><div class="k">raw: relevance_score_interpretation</div></div>
+            <div class="compact"><div class="k">Missing evidence flags</div><div class="v">${{escapeHtml(topicReviewList(blocker.missing_evidence_flags || []))}}</div><div class="k">raw: missing_evidence_flags</div></div>
+          </div>
+        `).join('')}}</div>` : ''}}</div>` : ''}}
+        <div class="panel">
+          <h3>Topic review cards</h3>
+          <p class="section-note">Layer 1 topic review should surface readable labels, keywords, examples, row counts, and probability summaries before the review is accepted.</p>
+          <div class="row-list">
+            ${{topicReviewCards.length ? topicReviewCards.map(renderTopicReviewCard).join('') : '<p class="muted">No topic review cards were loaded for this run.</p>'}}
+          </div>
+        </div>
+        <div class="panel">
+          <h3>Topic review rows</h3>
+          <p class="section-note">These rows keep the underlying article-level topic evidence visible and separate from the summary cards.</p>
+          <div class="row-list">
+            ${{topicReviewRows.length ? topicReviewRows.map(renderTopicReviewRow).join('') : '<p class="muted">No topic review rows were loaded for this run.</p>'}}
+          </div>
+        </div>
         <div class="date-grid">
           ${{dateGroups.length ? dateGroups.map((group) => `
             <details class="date-card">
