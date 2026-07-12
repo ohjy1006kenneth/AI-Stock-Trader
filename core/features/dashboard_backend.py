@@ -1,6 +1,7 @@
 """Read-only Layer 1 audit dashboard backend and local report helpers."""
 from __future__ import annotations
 
+import io
 import json
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
@@ -25,7 +26,10 @@ from core.features.market_spotchecks import (
     build_market_feature_spot_checks,
     summarize_market_feature_spot_checks,
 )
-from services.r2.paths import layer1_ticker_history_path
+from services.r2.paths import (
+    layer1_regime_path,
+    layer1_ticker_history_path,
+)
 from services.r2.writer import R2Writer
 
 DashboardStatus = Literal["pass", "warn", "fail"]
@@ -213,6 +217,7 @@ class Layer1AuditDashboardReport:
     outlier_records: list[dict[str, object]]
     spot_check_records: list[dict[str, object]]
     formula_audit_cards: list[dict[str, object]]
+    pilot_window_evidence: dict[str, object]
     summary: dict[str, int]
 
     def to_dict(self) -> dict[str, object]:
@@ -324,6 +329,12 @@ def build_layer1_audit_dashboard_report(
         records=sorted_rows,
         writer=active_writer,
     )
+    pilot_window_evidence = _build_pilot_window_evidence(
+        selection_rows=selection_rows,
+        requested_dates=(start_text, end_text),
+        requested_tickers=normalized_tickers,
+        writer=active_writer,
+    )
     summary = _build_dashboard_summary(
         selection_rows=selection_rows,
         coverage_by_date=coverage_by_date,
@@ -361,6 +372,7 @@ def build_layer1_audit_dashboard_report(
         outlier_records=[record.to_dict() for record in outlier_records],
         spot_check_records=[record.to_dict() for record in spot_check_records],
         formula_audit_cards=[card.to_dict() for card in formula_audit_cards],
+        pilot_window_evidence=pilot_window_evidence,
         summary=summary,
     )
 
@@ -478,6 +490,695 @@ def render_layer1_audit_dashboard_summary(report: Layer1AuditDashboardReport) ->
                 f"expected={item['expected_value']}"
             )
     return "\n".join(lines) + "\n"
+
+
+def _build_pilot_window_evidence(
+    *,
+    selection_rows: Sequence[DashboardSelectionRow],
+    requested_dates: Sequence[str],
+    requested_tickers: Sequence[str],
+    writer: R2Writer,
+) -> dict[str, object]:
+    """Load sentence/topic/regime evidence linked to the selected pilot window."""
+    selected_dates = _normalize_date_hints(requested_dates) or tuple(
+        sorted({row.date for row in selection_rows})
+    )
+    selected_tickers = _normalize_ticker_hints(requested_tickers) or tuple(
+        sorted({row.ticker for row in selection_rows})
+    )
+    return {
+        "selection": {
+            "dates": list(selected_dates),
+            "tickers": list(selected_tickers),
+        },
+        "sentiment": _build_sentiment_evidence(
+            writer=writer,
+            selected_dates=selected_dates,
+            selected_tickers=selected_tickers,
+        ),
+        "topics": _build_topic_evidence(
+            writer=writer,
+            selected_dates=selected_dates,
+            selected_tickers=selected_tickers,
+        ),
+        "regime": _build_regime_evidence(
+            writer=writer,
+            selected_dates=selected_dates,
+        ),
+    }
+
+
+def _build_sentiment_evidence(
+    *,
+    writer: R2Writer,
+    selected_dates: Sequence[str],
+    selected_tickers: Sequence[str],
+) -> dict[str, object]:
+    manifests = _stage_manifests(writer, "layer1_finbert_sentiment", selected_dates)
+    if not manifests:
+        return _missing_stage_evidence(
+            section="sentiment",
+            stage="layer1_finbert_sentiment",
+            selected_dates=selected_dates,
+            rows_key="rows",
+        )
+    rows: list[dict[str, object]] = []
+    blockers: list[dict[str, object]] = []
+    for manifest in manifests:
+        metadata_obj = manifest.get("metadata")
+        metadata = metadata_obj if isinstance(metadata_obj, Mapping) else {}
+        scored_key = str(metadata.get("scored_news_key") or manifest.get("output_path") or "")
+        if not scored_key:
+            blockers.append(
+                {
+                    "section": "sentiment",
+                    "manifest_key": str(manifest.get("manifest_key", "")),
+                    "run_id": str(manifest.get("run_id", "")),
+                    "artifact_key": "",
+                    "reason": "Layer 1 FinBERT sentiment manifest does not reference a scored-news artifact.",
+                }
+            )
+            continue
+        if not writer.exists(scored_key):
+            blockers.append(
+                {
+                    "section": "sentiment",
+                    "manifest_key": str(manifest.get("manifest_key", "")),
+                    "run_id": str(manifest.get("run_id", "")),
+                    "artifact_key": scored_key,
+                    "reason": "Layer 1 FinBERT scored-news artifact is missing.",
+                }
+            )
+            continue
+        try:
+            frame = _read_parquet_frame(writer, scored_key)
+        except FileNotFoundError:
+            blockers.append(
+                {
+                    "section": "sentiment",
+                    "manifest_key": str(manifest.get("manifest_key", "")),
+                    "run_id": str(manifest.get("run_id", "")),
+                    "artifact_key": scored_key,
+                    "reason": "Layer 1 FinBERT scored-news artifact could not be read.",
+                }
+            )
+            continue
+        for record in _frame_records(frame):
+            if record.get("date") not in selected_dates or record.get("ticker") not in selected_tickers:
+                continue
+            rows.append(
+                {
+                    "manifest_key": manifest.get("manifest_key", ""),
+                    "run_id": str(manifest.get("run_id", "")),
+                    "scored_news_key": scored_key,
+                    "date": str(record.get("date", "")),
+                    "ticker": str(record.get("ticker", "")),
+                    "article_id": _optional_text(record.get("article_id")),
+                    "sentence_index": _optional_int(record.get("sentence_index")),
+                    "headline": _optional_text(record.get("headline")),
+                    "text": _optional_text(record.get("text")),
+                    "source": _optional_text(record.get("source")),
+                    "published_at": _optional_text(record.get("published_at")),
+                    "sentiment_positive": _optional_float(record.get("sentiment_positive")),
+                    "sentiment_negative": _optional_float(record.get("sentiment_negative")),
+                    "sentiment_neutral": _optional_float(record.get("sentiment_neutral")),
+                    "sentiment_score": _optional_float(record.get("sentiment_score")),
+                    "relevance_score": _optional_float(record.get("relevance_score")),
+                }
+            )
+    rows.sort(key=_topic_row_sort_key)
+    return {
+        "status": "pass" if rows else "warn",
+        "row_count": len(rows),
+        "manifest_count": len(manifests),
+        "manifest_keys": [str(item.get("manifest_key", "")) for item in manifests],
+        "blockers": blockers,
+        "missing_artifact_keys": [str(item.get("artifact_key", "")) for item in blockers if item.get("artifact_key")],
+        "rows": rows,
+    }
+
+
+def _build_topic_evidence(
+    *,
+    writer: R2Writer,
+    selected_dates: Sequence[str],
+    selected_tickers: Sequence[str],
+) -> dict[str, object]:
+    manifests = _stage_manifests(writer, "layer1_text_topics", selected_dates)
+    if not manifests:
+        return _missing_stage_topic_evidence(
+            stage="layer1_text_topics",
+            selected_dates=selected_dates,
+        )
+
+    label_rows: list[dict[str, object]] = []
+    feature_rows: list[dict[str, object]] = []
+    review_topics: list[dict[str, object]] = []
+    review_rows: list[dict[str, object]] = []
+    blockers: list[dict[str, object]] = []
+    review_statuses: list[str] = []
+
+    for manifest in manifests:
+        metadata_obj = manifest.get("metadata")
+        metadata = metadata_obj if isinstance(metadata_obj, Mapping) else {}
+        label_key = str(metadata.get("topic_label_key") or manifest.get("output_path") or "")
+        feature_key = str(metadata.get("topic_feature_key") or "")
+        review_key = str(metadata.get("topic_review_key") or "")
+        loaded_review = False
+
+        if review_key:
+            if not writer.exists(review_key):
+                blockers.append(
+                    {
+                        "section": "topics",
+                        "manifest_key": str(manifest.get("manifest_key", "")),
+                        "run_id": str(manifest.get("run_id", "")),
+                        "artifact_key": review_key,
+                        "reason": "Layer 1 BERTopic review artifact is missing.",
+                    }
+                )
+            else:
+                try:
+                    review_payload = json.loads(writer.get_object(review_key).decode("utf-8"))
+                except FileNotFoundError:
+                    blockers.append(
+                        {
+                            "section": "topics",
+                            "manifest_key": str(manifest.get("manifest_key", "")),
+                            "run_id": str(manifest.get("run_id", "")),
+                            "artifact_key": review_key,
+                            "reason": "Layer 1 BERTopic review artifact could not be read.",
+                        }
+                    )
+                else:
+                    review_statuses.append(
+                        str(
+                            review_payload.get("diversity_status")
+                            or review_payload.get("status")
+                            or "warn"
+                        )
+                    )
+                    for topic in review_payload.get("topics", []):
+                        if isinstance(topic, Mapping):
+                            review_topics.append(dict(topic))
+                    for row in review_payload.get("rows", []):
+                        if not isinstance(row, Mapping):
+                            continue
+                        row_date = str(row.get("date", ""))
+                        row_ticker = str(row.get("ticker", ""))
+                        if row_date not in selected_dates or row_ticker not in selected_tickers:
+                            continue
+                        review_rows.append(dict(row))
+                    loaded_review = True
+
+        if not loaded_review and label_key:
+            if not writer.exists(label_key):
+                blockers.append(
+                    {
+                        "section": "topics",
+                        "manifest_key": str(manifest.get("manifest_key", "")),
+                        "run_id": str(manifest.get("run_id", "")),
+                        "artifact_key": label_key,
+                        "reason": "Layer 1 BERTopic label artifact is missing.",
+                    }
+                )
+            else:
+                try:
+                    frame = _read_parquet_frame(writer, label_key)
+                except FileNotFoundError:
+                    blockers.append(
+                        {
+                            "section": "topics",
+                            "manifest_key": str(manifest.get("manifest_key", "")),
+                            "run_id": str(manifest.get("run_id", "")),
+                            "artifact_key": label_key,
+                            "reason": "Layer 1 BERTopic label artifact could not be read.",
+                        }
+                    )
+                else:
+                    for record in _frame_records(frame):
+                        if record.get("date") not in selected_dates or record.get("ticker") not in selected_tickers:
+                            continue
+                        label_rows.append(
+                            {
+                                "manifest_key": manifest.get("manifest_key", ""),
+                                "run_id": str(manifest.get("run_id", "")),
+                                "topic_label_key": label_key,
+                                "date": str(record.get("date", "")),
+                                "ticker": str(record.get("ticker", "")),
+                                "article_id": _optional_text(record.get("article_id")),
+                                "sentence_index": _optional_int(record.get("sentence_index")),
+                                "text": _optional_text(record.get("text")),
+                                "embedding_cache_key": _optional_text(record.get("embedding_cache_key")),
+                                "topic_model": _optional_text(record.get("topic_model")),
+                                "topic_model_version": _optional_text(record.get("topic_model_version")),
+                                "topic_id": _optional_int(record.get("topic_id")),
+                                "topic_probability": _optional_float(record.get("topic_probability")),
+                            }
+                        )
+
+        if feature_key:
+            if not writer.exists(feature_key):
+                blockers.append(
+                    {
+                        "section": "topics",
+                        "manifest_key": str(manifest.get("manifest_key", "")),
+                        "run_id": str(manifest.get("run_id", "")),
+                        "artifact_key": feature_key,
+                        "reason": "Layer 1 BERTopic feature artifact is missing.",
+                    }
+                )
+                continue
+            try:
+                feature_frame = _read_parquet_frame(writer, feature_key)
+            except FileNotFoundError:
+                blockers.append(
+                    {
+                        "section": "topics",
+                        "manifest_key": str(manifest.get("manifest_key", "")),
+                        "run_id": str(manifest.get("run_id", "")),
+                        "artifact_key": feature_key,
+                        "reason": "Layer 1 BERTopic feature artifact could not be read.",
+                    }
+                )
+                continue
+            for record in _frame_records(feature_frame):
+                if record.get("date") not in selected_dates or record.get("ticker") not in selected_tickers:
+                    continue
+                features_obj = record.get("features")
+                features = features_obj if isinstance(features_obj, Mapping) else {}
+                feature_rows.append(
+                    {
+                        "manifest_key": manifest.get("manifest_key", ""),
+                        "run_id": str(manifest.get("run_id", "")),
+                        "topic_feature_key": feature_key,
+                        "date": str(record.get("date", "")),
+                        "ticker": str(record.get("ticker", "")),
+                        "nlp_sentence_count": _optional_int(features.get("nlp_sentence_count")),
+                        "nlp_topic_count": _optional_int(features.get("nlp_topic_count")),
+                        "nlp_dominant_topic_id": _optional_int(features.get("nlp_dominant_topic_id")),
+                        "nlp_dominant_topic_probability": _optional_float(
+                            features.get("nlp_dominant_topic_probability")
+                        ),
+                        "nlp_mean_topic_probability": _optional_float(
+                            features.get("nlp_mean_topic_probability")
+                        ),
+                    }
+                )
+
+    if review_rows:
+        rows = sorted(review_rows, key=_topic_row_sort_key)
+        topics = sorted(review_topics, key=_topic_summary_sort_key)
+        diversity_status = review_statuses[0] if review_statuses else str(
+            review_topics[0].get("diversity_status", "diverse") if review_topics else "warn"
+        )
+        status = "pass" if diversity_status == "diverse" else "warn"
+    else:
+        rows, topics = _topic_rows_from_label_rows(label_rows)
+        if topics:
+            dominant_share = max(
+                _optional_float(item.get("topic_row_share")) or 0.0 for item in topics
+            )
+            diversity_status = (
+                "diverse" if len(topics) > 1 and dominant_share < 0.85 else "insufficient_diversity"
+            )
+        else:
+            diversity_status = "insufficient_diversity"
+        status = "pass" if diversity_status == "diverse" else "warn"
+
+    feature_rows.sort(key=lambda item: (item["date"], item["ticker"]))
+    return {
+        "status": status,
+        "diversity_status": diversity_status,
+        "row_count": len(rows),
+        "feature_row_count": len(feature_rows),
+        "topic_count": len(topics),
+        "manifest_count": len(manifests),
+        "manifest_keys": [str(item.get("manifest_key", "")) for item in manifests],
+        "blockers": blockers,
+        "missing_artifact_keys": [
+            str(item.get("artifact_key", "")) for item in blockers if item.get("artifact_key")
+        ],
+        "rows": rows,
+        "topics": topics,
+        "feature_rows": feature_rows,
+    }
+
+
+def _topic_rows_from_label_rows(label_rows: Sequence[dict[str, object]]) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    """Synthesize human-readable topic review payloads from label-only topic rows."""
+    if not label_rows:
+        return [], []
+
+    grouped: dict[int, list[dict[str, object]]] = defaultdict(list)
+    for row in label_rows:
+        grouped[_optional_int(row.get("topic_id")) or -1].append(row)
+
+    total_rows = len(label_rows)
+    summaries = {
+        topic_id: _topic_summary_from_label_group(topic_id, rows, total_rows)
+        for topic_id, rows in grouped.items()
+    }
+    ordered_topics = sorted(
+        summaries.values(),
+        key=lambda item: (-float(item.get("topic_row_share", 0.0)), int(item.get("topic_id", -1))),
+    )
+
+    rows: list[dict[str, object]] = []
+    for row in label_rows:
+        topic_id = _optional_int(row.get("topic_id")) or -1
+        summary = summaries[topic_id]
+        rows.append(
+            {
+                **row,
+                "topic_label": summary["topic_label"],
+                "topic_keywords": summary["topic_keywords"],
+                "topic_keyword_text": summary["topic_keyword_text"],
+                "topic_example_text": summary["topic_example_text"],
+                "topic_row_count": summary["topic_row_count"],
+                "topic_row_share": summary["topic_row_share"],
+            }
+        )
+    rows.sort(key=_topic_row_sort_key)
+    return rows, ordered_topics
+
+
+def _topic_summary_from_label_group(
+    topic_id: int,
+    rows: Sequence[dict[str, object]],
+    total_rows: int,
+) -> dict[str, object]:
+    """Return a fallback topic summary when no review artifact exists."""
+    example_text = next((str(row.get("text", "")).strip() for row in rows if str(row.get("text", "")).strip()), "")
+    row_count = len(rows)
+    row_share = row_count / max(1, total_rows)
+    topic_label = "Outlier / Unassigned" if topic_id < 0 else f"Topic {topic_id}"
+    return {
+        "topic_id": topic_id,
+        "topic_label": topic_label,
+        "topic_keywords": [],
+        "topic_keyword_text": "",
+        "topic_example_text": example_text,
+        "topic_example_texts": [example_text] if example_text else [],
+        "topic_row_count": row_count,
+        "topic_row_share": row_share,
+        "topic_probability_mean": _mean_optional_float(
+            [row.get("topic_probability") for row in rows]
+        ),
+        "topic_probability_max": _max_optional_float(
+            [row.get("topic_probability") for row in rows]
+        ),
+        "diversity_status": "insufficient_diversity" if len(rows) <= 1 else "diverse",
+    }
+
+
+def _mean_optional_float(values: Sequence[object]) -> float | None:
+    """Return the mean of nullable numeric values."""
+    numeric_values = [value for value in (_optional_float(item) for item in values) if value is not None]
+    if not numeric_values:
+        return None
+    return sum(numeric_values) / len(numeric_values)
+
+
+def _max_optional_float(values: Sequence[object]) -> float | None:
+    """Return the max of nullable numeric values."""
+    numeric_values = [value for value in (_optional_float(item) for item in values) if value is not None]
+    if not numeric_values:
+        return None
+    return max(numeric_values)
+
+
+def _topic_row_sort_key(row: Mapping[str, object]) -> tuple[str, str, int]:
+    """Return a stable sort key for topic review rows."""
+    sentence_index = _optional_int(row.get("sentence_index"))
+    return (
+        str(row.get("date", "")),
+        str(row.get("ticker", "")),
+        sentence_index if sentence_index is not None else -1,
+    )
+
+
+def _topic_summary_sort_key(summary: Mapping[str, object]) -> tuple[float, int]:
+    """Return a stable sort key for topic review summaries."""
+    topic_share = _optional_float(summary.get("topic_row_share")) or 0.0
+    topic_id = _optional_int(summary.get("topic_id")) or -1
+    return (-topic_share, topic_id)
+
+
+def _build_regime_evidence(
+    *,
+    writer: R2Writer,
+    selected_dates: Sequence[str],
+) -> dict[str, object]:
+    """Load regime evidence for the selected dates."""
+    manifests = _stage_manifests(writer, "layer1_5_regime", selected_dates)
+    if not manifests:
+        return _missing_stage_evidence(
+            section="regime",
+            stage="layer1_5_regime",
+            selected_dates=selected_dates,
+            rows_key="rows",
+        )
+    rows: list[dict[str, object]] = []
+    blockers: list[dict[str, object]] = []
+    for manifest in manifests:
+        metadata_obj = manifest.get("metadata")
+        metadata = metadata_obj if isinstance(metadata_obj, Mapping) else {}
+        output_key = str(manifest.get("output_path") or metadata.get("output_path") or "")
+        if not output_key:
+            output_key = layer1_regime_path(str(manifest.get("run_id", "")))
+        if not writer.exists(output_key):
+            blockers.append(
+                {
+                    "section": "regime",
+                    "manifest_key": str(manifest.get("manifest_key", "")),
+                    "run_id": str(manifest.get("run_id", "")),
+                    "artifact_key": output_key,
+                    "reason": "Layer 1 regime artifact is missing.",
+                }
+            )
+            continue
+        try:
+            frame = _read_parquet_frame(writer, output_key)
+        except FileNotFoundError:
+            blockers.append(
+                {
+                    "section": "regime",
+                    "manifest_key": str(manifest.get("manifest_key", "")),
+                    "run_id": str(manifest.get("run_id", "")),
+                    "artifact_key": output_key,
+                    "reason": "Layer 1 regime artifact could not be read.",
+                }
+            )
+            continue
+        for record in _frame_records(frame):
+            if record.get("date") not in selected_dates:
+                continue
+            rows.append(
+                {
+                    "manifest_key": manifest.get("manifest_key", ""),
+                    "run_id": str(manifest.get("run_id", "")),
+                    "regime_key": output_key,
+                    "date": str(record.get("date", "")),
+                    "regime_label": _optional_text(record.get("regime_label")),
+                    "regime_confidence": _optional_float(record.get("regime_confidence")),
+                    "regime_prob_bear": _optional_float(record.get("regime_prob_bear")),
+                    "regime_prob_sideways": _optional_float(record.get("regime_prob_sideways")),
+                    "regime_prob_bull": _optional_float(record.get("regime_prob_bull")),
+                    "regime_readiness_status": _optional_text(record.get("regime_readiness_status")),
+                    "regime_readiness_reason": _optional_text(record.get("regime_readiness_reason")),
+                    "regime_probability_sum": _optional_float(record.get("regime_probability_sum")),
+                }
+            )
+    rows.sort(key=lambda item: item["date"])
+    return {
+        "status": "pass" if rows else "warn",
+        "row_count": len(rows),
+        "manifest_count": len(manifests),
+        "manifest_keys": [str(item.get("manifest_key", "")) for item in manifests],
+        "blockers": blockers,
+        "missing_artifact_keys": [str(item.get("artifact_key", "")) for item in blockers if item.get("artifact_key")],
+        "rows": rows,
+    }
+
+
+def _manifest_sort_key(item: Mapping[str, object]) -> tuple[str, str]:
+    metadata_obj = item.get("metadata")
+    metadata = metadata_obj if isinstance(metadata_obj, Mapping) else {}
+    return (str(metadata.get("as_of_date", "")), str(item.get("run_id", "")))
+
+
+def _stage_manifests(
+    writer: R2Writer,
+    stage: str,
+    selected_dates: Sequence[str],
+) -> list[dict[str, object]]:
+    manifest_prefix = f"artifacts/manifests/{stage}/"
+    manifests: list[dict[str, object]] = []
+    for manifest_key in writer.list_keys(manifest_prefix):
+        try:
+            manifest_data = json.loads(writer.get_object(manifest_key).decode("utf-8"))
+        except (FileNotFoundError, UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        if not isinstance(manifest_data, dict):
+            continue
+        manifest: dict[str, object] = manifest_data
+        metadata_obj = manifest.get("metadata")
+        manifest_dates = {str(date) for date in selected_dates}
+        manifest_date = ""
+        if isinstance(metadata_obj, Mapping):
+            manifest_date = str(metadata_obj.get("as_of_date", "")).strip()
+            if not manifest_date:
+                inference_dates = metadata_obj.get("inference_dates")
+                if isinstance(inference_dates, Sequence) and inference_dates:
+                    manifest_date = str(inference_dates[0]).strip()
+        if manifest_date and manifest_dates and manifest_date not in manifest_dates:
+            continue
+        manifests.append({**manifest, "manifest_key": manifest_key})
+    manifests.sort(key=_manifest_sort_key)
+    return manifests
+
+
+def _missing_stage_evidence(
+    *,
+    section: str,
+    stage: str,
+    selected_dates: Sequence[str],
+    rows_key: str,
+) -> dict[str, object]:
+    date_text = ", ".join(selected_dates) if selected_dates else "the selected window"
+    stage_label = _stage_label(stage)
+    artifact_key = (
+        f"artifacts/manifests/{stage}/<as_of_date={selected_dates[0] if selected_dates else 'unknown'}>"
+    )
+    return {
+        "status": "warn",
+        "row_count": 0,
+        "manifest_count": 0,
+        "manifest_keys": [],
+        "blockers": [
+            {
+                "section": section,
+                "manifest_key": f"artifacts/manifests/{stage}/",
+                "run_id": "",
+                "artifact_key": artifact_key,
+                "reason": f"No {stage_label} manifest was published for {date_text}.",
+            }
+        ],
+        "missing_artifact_keys": [artifact_key],
+        rows_key: [],
+    }
+
+
+def _missing_stage_topic_evidence(
+    *,
+    stage: str,
+    selected_dates: Sequence[str],
+) -> dict[str, object]:
+    base = _missing_stage_evidence(
+        section="topics",
+        stage=stage,
+        selected_dates=selected_dates,
+        rows_key="rows",
+    )
+    base["feature_row_count"] = 0
+    base["feature_rows"] = []
+    return base
+
+
+def _stage_label(stage: str) -> str:
+    labels = {
+        "layer1_finbert_sentiment": "Layer 1 FinBERT sentiment",
+        "layer1_text_topics": "Layer 1 BERTopic",
+        "layer1_5_regime": "Layer 1 regime",
+    }
+    return labels.get(stage, stage)
+
+
+def _normalize_date_hints(values: Sequence[str]) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            {
+                _coerce_iso_date(str(value).strip())
+                for value in values
+                if str(value).strip()
+            }
+        )
+    )
+
+
+def _normalize_ticker_hints(values: Sequence[str]) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            {
+                str(value).strip().upper()
+                for value in values
+                if str(value).strip()
+            }
+        )
+    )
+
+
+def _read_parquet_frame(writer: R2Writer, key: str):
+    """Load a Parquet frame from object storage."""
+    pd = _require_pandas()
+    return pd.read_parquet(io.BytesIO(writer.get_object(key)))
+
+
+def _frame_records(frame) -> list[dict[str, object]]:
+    records: list[dict[str, object]] = []
+    for row in frame.to_dict(orient="records"):
+        records.append({name: _json_safe(value) for name, value in row.items()})
+    return records
+
+
+def _json_safe(value: object) -> object:
+    if value is None or isinstance(value, (str, bool)):
+        return value
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if hasattr(value, "item"):
+        try:
+            value = getattr(value, "item")()
+        except Exception:
+            return str(value)
+        return _json_safe(value)
+    if isinstance(value, float):
+        if value != value or value in {float("inf"), float("-inf")}:  # NaN/inf
+            return None
+        return value
+    return value
+
+
+def _optional_int(value: object) -> int | None:
+    numeric = _optional_float(value)
+    if numeric is None:
+        return None
+    return int(numeric)
+
+
+def _optional_float(value: object) -> float | None:
+    return to_float_or_none(value)
+
+
+def _optional_text(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value)
+    return text if text else None
+
+
+def _require_pandas():
+    """Import pandas lazily when evidence loading needs Parquet access."""
+    try:
+        import pandas as pd
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError("pandas is required for pilot window evidence loading.") from exc
+    return pd
 
 
 def _build_heatmap_cells(

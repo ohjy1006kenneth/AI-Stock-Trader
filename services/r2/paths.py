@@ -167,6 +167,18 @@ def layer1_topic_feature_path(as_of_date: str | Date | datetime, run_id: str) ->
     )
 
 
+def layer1_topic_review_path(as_of_date: str | Date | datetime, run_id: str) -> str:
+    """Return the canonical Layer 1 topic review payload path."""
+    safe_run_id = _validate_key_part(run_id)
+    return build_r2_key(
+        "features",
+        "layer1",
+        "topic_reviews",
+        _format_date(as_of_date),
+        f"{safe_run_id}.json",
+    )
+
+
 def layer1_sentiment_score_path(as_of_date: str | Date | datetime, run_id: str) -> str:
     """Return the canonical Layer 1 scored FinBERT news path."""
     safe_run_id = _validate_key_part(run_id)

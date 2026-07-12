@@ -489,6 +489,11 @@ def run_daily_layer1(
                     date_text: result.topic_feature_key
                     for date_text, result in topic_results.items()
                 },
+                "topic_review_keys": {
+                    date_text: result.topic_review_key
+                    for date_text, result in topic_results.items()
+                    if result.topic_review_key
+                },
                 "sentiment_output_keys": {
                     date_text: result.sentiment_feature_key
                     for date_text, result in sentiment_results.items()

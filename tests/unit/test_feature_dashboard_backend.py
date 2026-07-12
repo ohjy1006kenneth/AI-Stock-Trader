@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -10,7 +11,7 @@ from core.features.dashboard_backend import (
     write_layer1_audit_dashboard_report,
 )
 from core.features.io import feature_records_to_parquet_bytes, read_feature_records
-from services.r2.paths import layer1_ticker_history_path
+from services.r2.paths import layer1_regime_path, layer1_ticker_history_path
 from tests.fixtures.layer1_audit_support import local_writer
 from tests.fixtures.layer1_dashboard_support import seed_layer1_dashboard_fixture
 
@@ -27,7 +28,7 @@ def test_build_layer1_audit_dashboard_report_builds_visualization_inputs(
         run_id="dashboard-unit",
         from_date=str(fixture["from_date"]),
         to_date=str(fixture["to_date"]),
-        tickers=list(fixture["tickers"]),
+        tickers=cast(list[str], fixture["tickers"]),
         writer=writer,
     )
 
@@ -99,6 +100,35 @@ def test_build_layer1_audit_dashboard_report_builds_visualization_inputs(
         formula_cards[("MSFT", "2024-05-06", "returns_1d")]["status"] == "warn"
     )
 
+    pilot_evidence = report.pilot_window_evidence
+    sentiment_evidence = cast(dict[str, object], pilot_evidence["sentiment"])
+    topic_evidence = cast(dict[str, object], pilot_evidence["topics"])
+    regime_evidence = cast(dict[str, object], pilot_evidence["regime"])
+    selection = cast(dict[str, object], pilot_evidence["selection"])
+    assert cast(list[str], selection["tickers"]) == ["AAPL", "MSFT"]
+    assert sentiment_evidence["status"] == "pass"
+    assert sentiment_evidence["row_count"] == 1
+    sentiment_rows = cast(list[dict[str, object]], sentiment_evidence["rows"])
+    article_id = cast(str, sentiment_rows[0]["article_id"])
+    assert article_id.startswith("article-")
+    assert sentiment_evidence["rows"][0]["sentiment_score"] == 0.7
+    assert sentiment_evidence["missing_artifact_keys"] == []
+    assert topic_evidence["status"] == "warn"
+    assert topic_evidence["diversity_status"] == "insufficient_diversity"
+    assert topic_evidence["row_count"] == 1
+    topic_rows = cast(list[dict[str, object]], topic_evidence["rows"])
+    topic_topics = cast(list[dict[str, object]], topic_evidence["topics"])
+    assert topic_rows[0]["topic_label"] == "Apple Results"
+    assert cast(list[str], topic_topics[0]["topic_keywords"]) == ["apple", "results", "margins"]
+    assert cast(list[str], topic_topics[0]["topic_example_texts"])[0].startswith("AAPL beats")
+    assert topic_evidence["rows"][0]["topic_probability"] == 0.9
+    assert topic_evidence["missing_artifact_keys"] == []
+    assert regime_evidence["status"] == "pass"
+    assert regime_evidence["row_count"] == 1
+    assert regime_evidence["rows"][0]["regime_label"] == "bull"
+    assert regime_evidence["rows"][0]["regime_probability_sum"] == 1.0
+    assert regime_evidence["missing_artifact_keys"] == []
+
 
 def test_write_layer1_audit_dashboard_report_writes_json_and_summary(
     tmp_path: Path,
@@ -111,7 +141,7 @@ def test_write_layer1_audit_dashboard_report_writes_json_and_summary(
         run_id="dashboard-write",
         from_date=str(fixture["from_date"]),
         to_date=str(fixture["to_date"]),
-        tickers=list(fixture["tickers"]),
+        tickers=cast(list[str], fixture["tickers"]),
         writer=writer,
     )
 
@@ -124,6 +154,75 @@ def test_write_layer1_audit_dashboard_report_writes_json_and_summary(
     assert "Layer 1 Audit Dashboard Backend" in summary
     assert "Family Status" in output_paths.summary_path.read_text(encoding="utf-8")
     assert "Market spot checks" in summary
+
+
+def test_build_layer1_audit_dashboard_report_handles_missing_regime_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Missing regime artifacts should degrade to blockers instead of aborting the report."""
+    writer = local_writer(tmp_path, monkeypatch)
+    fixture = seed_layer1_dashboard_fixture(writer)
+    writer.delete_object(layer1_regime_path("audit-regime"))
+
+    report = build_layer1_audit_dashboard_report(
+        run_id="dashboard-missing-regime",
+        from_date=str(fixture["from_date"]),
+        to_date=str(fixture["to_date"]),
+        tickers=cast(list[str], fixture["tickers"]),
+        writer=writer,
+    )
+
+    pilot_evidence = cast(dict[str, dict[str, object]], report.pilot_window_evidence)
+    regime_evidence = pilot_evidence["regime"]
+    sentiment_evidence = pilot_evidence["sentiment"]
+    topic_evidence = pilot_evidence["topics"]
+
+    assert regime_evidence["status"] == "warn"
+    assert regime_evidence["row_count"] == 0
+    assert regime_evidence["rows"] == []
+    blockers = cast(list[dict[str, object]], regime_evidence["blockers"])
+    assert regime_evidence["missing_artifact_keys"] == [layer1_regime_path("audit-regime")]
+    assert blockers[0]["artifact_key"] == layer1_regime_path("audit-regime")
+    assert sentiment_evidence["status"] == "pass"
+    assert topic_evidence["status"] == "warn"
+    assert topic_evidence["diversity_status"] == "insufficient_diversity"
+    assert report.rows_loaded == 6
+
+
+def test_build_layer1_audit_dashboard_report_surfaces_missing_semantic_manifests(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A date window with no semantic manifests should return blockers quickly."""
+    writer = local_writer(tmp_path, monkeypatch)
+    seed_layer1_dashboard_fixture(writer)
+
+    report = build_layer1_audit_dashboard_report(
+        run_id="dashboard-missing-manifests",
+        from_date="2099-01-01",
+        to_date="2099-01-01",
+        tickers=["AAPL"],
+        writer=writer,
+    )
+
+    pilot_evidence = cast(dict[str, dict[str, object]], report.pilot_window_evidence)
+    sentiment_evidence = cast(dict[str, object], pilot_evidence["sentiment"])
+    topic_evidence = cast(dict[str, object], pilot_evidence["topics"])
+    regime_evidence = cast(dict[str, object], pilot_evidence["regime"])
+
+    assert report.rows_loaded == 0
+    assert sentiment_evidence["status"] == "warn"
+    assert topic_evidence["status"] == "warn"
+    assert regime_evidence["status"] == "warn"
+    assert sentiment_evidence["row_count"] == 0
+    assert topic_evidence["row_count"] == 0
+    assert regime_evidence["row_count"] == 0
+    assert sentiment_evidence["blockers"][0]["reason"].startswith(
+        "No Layer 1 FinBERT sentiment manifest"
+    )
+    assert topic_evidence["blockers"][0]["reason"].startswith("No Layer 1 BERTopic manifest")
+    assert regime_evidence["blockers"][0]["reason"].startswith("No Layer 1 regime manifest")
 
 
 def test_build_layer1_audit_dashboard_report_surfaces_partial_coverage(
@@ -143,7 +242,7 @@ def test_build_layer1_audit_dashboard_report_surfaces_partial_coverage(
         run_id="dashboard-partial-coverage",
         from_date=str(fixture["from_date"]),
         to_date=str(fixture["to_date"]),
-        tickers=list(fixture["tickers"]),
+        tickers=cast(list[str], fixture["tickers"]),
         writer=writer,
     )
     summary = render_layer1_audit_dashboard_summary(report)

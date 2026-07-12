@@ -28,6 +28,7 @@ from services.r2.paths import (
     layer1_text_embedding_path,
     layer1_topic_feature_path,
     layer1_topic_label_path,
+    layer1_topic_review_path,
     pipeline_manifest_path,
 )
 from services.r2.writer import R2Writer
@@ -39,12 +40,29 @@ class _FakeEmbedder:
 
 
 class _FakeTopicLabeler:
+    def __init__(self) -> None:
+        self._topics = {
+            0: [("earnings", 0.5), ("guidance", 0.3), ("revenue", 0.2)],
+            1: [("cloud", 0.5), ("ai", 0.3), ("demand", 0.2)],
+        }
+
     def fit_transform(
         self,
         documents: Sequence[str],
         embeddings: Sequence[Sequence[float]],
     ) -> tuple[Sequence[int], Sequence[float]]:
         return [index for index, _ in enumerate(documents)], [0.75 for _ in documents]
+
+    def get_topic(self, topic_id: int) -> Sequence[tuple[str, float]]:
+        return self._topics.get(topic_id, [])
+
+    def get_topic_info(self) -> pd.DataFrame:
+        return pd.DataFrame(
+            [
+                {"Topic": 0, "Name": "earnings_guidance_revenue"},
+                {"Topic": 1, "Name": "cloud_ai_demand"},
+            ]
+        )
 
 
 def test_run_text_topics_reads_preprocessed_news_and_writes_outputs(
@@ -71,18 +89,25 @@ def test_run_text_topics_reads_preprocessed_news_and_writes_outputs(
     embeddings = pd.read_parquet(io.BytesIO(writer.get_object(result.embedding_key)))
     labels = pd.read_parquet(io.BytesIO(writer.get_object(result.topic_label_key)))
     features = pd.read_parquet(io.BytesIO(writer.get_object(result.topic_feature_key)))
+    review = json.loads(writer.get_object(result.topic_review_key))
     manifest = json.loads(writer.get_object(result.manifest_key))
 
     assert result.embedding_key == layer1_text_embedding_path("2024-01-02", "text-topics-run")
     assert result.topic_label_key == layer1_topic_label_path("2024-01-02", "text-topics-run")
     assert result.topic_feature_key == layer1_topic_feature_path("2024-01-02", "text-topics-run")
+    assert result.topic_review_key == layer1_topic_review_path("2024-01-02", "text-topics-run")
     assert result.manifest_key == pipeline_manifest_path(TEXT_TOPICS_STAGE, "text-topics-run")
     assert len(embeddings) == 2
     assert len(labels) == 3
     assert set(features["ticker"]) == {"AAPL", "MSFT"}
+    assert review["status"] == "pass"
+    assert review["topic_count"] == 2
+    assert review["topics"][0]["topic_label"]
     assert manifest["status"] == RunStatus.COMPLETED
     assert manifest["metadata"]["embedding_rows"] == 2
     assert manifest["metadata"]["topic_label_rows"] == 3
+    assert manifest["metadata"]["topic_review_key"] == result.topic_review_key
+    assert manifest["metadata"]["topic_review_status"] == "pass"
 
 
 def test_run_text_topics_writes_failure_manifest(

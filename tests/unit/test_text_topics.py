@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
+from typing import cast
 
 import pandas as pd
 import pytest
@@ -33,12 +34,31 @@ class _NaNEmbedder:
 
 
 class _FakeTopicLabeler:
+    def __init__(self) -> None:
+        self._topics = {
+            0: [("earnings", 0.5), ("guidance", 0.3), ("revenue", 0.2)],
+            1: [("cloud", 0.5), ("ai", 0.3), ("demand", 0.2)],
+        }
+
     def fit_transform(
         self,
         documents: Sequence[str],
         embeddings: Sequence[Sequence[float]],
     ) -> tuple[Sequence[int], Sequence[float]]:
-        return [index % 2 for index, _ in enumerate(documents)], [0.8, 0.6][: len(documents)]
+        topics = [index % 2 for index, _ in enumerate(documents)]
+        probabilities = [0.8 - (index * 0.05) for index, _ in enumerate(documents)]
+        return topics, probabilities
+
+    def get_topic(self, topic_id: int) -> Sequence[tuple[str, float]]:
+        return self._topics.get(topic_id, [])
+
+    def get_topic_info(self) -> pd.DataFrame:
+        return pd.DataFrame(
+            [
+                {"Topic": 0, "Name": "earnings_guidance_revenue"},
+                {"Topic": 1, "Name": "cloud_ai_demand"},
+            ]
+        )
 
 
 class _RecordingEmbedder:
@@ -92,7 +112,65 @@ def test_compute_text_topics_caches_unique_sentence_embeddings_and_topic_feature
     assert aapl.features["nlp_topic_count"] == 2
 
 
-def test_embedding_cache_key_changes_with_model_revision() -> None:
+
+
+def test_compute_text_topics_builds_human_readable_topic_review() -> None:
+    """Topic review output should carry labels, keywords, and representative examples."""
+    result = compute_text_topics(
+        [
+            _record(text="Apple raised guidance on iPhone demand.", sentence_index=0),
+            _record(text="Apple posted strong margins and services revenue.", sentence_index=1),
+            _record(
+                ticker="MSFT",
+                text="Microsoft cloud revenue accelerated on AI demand.",
+                sentence_index=0,
+            ),
+        ],
+        embedder=_FakeEmbedder(),
+        topic_labeler=_FakeTopicLabeler(),
+        embedding_config=_embedding_config(),
+        topic_config=_topic_config(),
+    )
+
+    review = cast(dict[str, object], result.topic_review)
+    topics = cast(list[dict[str, object]], review["topics"])
+    rows = cast(list[dict[str, object]], review["rows"])
+
+    assert review["status"] == "pass"
+    assert review["diversity_status"] == "diverse"
+    assert review["topic_count"] == 2
+    assert len(topics) == 2
+    first_topic = topics[0]
+    assert "Earnings" in str(first_topic["topic_label"])
+    assert cast(list[str], first_topic["topic_keywords"] )[:3] == ["earnings", "guidance", "revenue"]
+    assert first_topic["topic_example_text"]
+    assert len(cast(list[str], first_topic["topic_example_texts"])) >= 1
+    assert all("topic_label" in row for row in rows)
+
+
+def test_compute_text_topics_marks_insufficient_diversity_for_single_topic() -> None:
+    """A single-topic corpus should be called out explicitly in the review payload."""
+    result = compute_text_topics(
+        [
+            _record(text="Apple released results.", sentence_index=0),
+            _record(text="Margins improved.", sentence_index=1),
+        ],
+        embedder=_FakeEmbedder(),
+        topic_labeler=_ResettingTopicLabeler(),
+        embedding_config=_embedding_config(),
+        topic_config=_topic_config(),
+    )
+
+    review = cast(dict[str, object], result.topic_review)
+    topics = cast(list[dict[str, object]], review["topics"])
+
+    assert review["status"] == "warn"
+    assert review["diversity_status"] == "insufficient_diversity"
+    assert review["topic_count"] == 1
+    assert topics[0]["topic_label"]
+    assert topics[0]["topic_example_text"]
+
+
     """Embedding cache keys include the pinned model revision."""
     record = _record()
     first = embedding_cache_key(record, config=_embedding_config(model_revision="rev-a"))

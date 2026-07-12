@@ -624,6 +624,68 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       color: var(--muted);
       font-size: 0.92rem;
     }}
+    .supporting-audit-panel, .audit-only-control {{
+      display: none;
+    }}
+    .decision-grid {{
+      display: grid;
+      gap: 16px;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    }}
+    .decision-card {{
+      padding: 20px;
+      border-radius: 18px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.78);
+    }}
+    .check-list {{
+      display: grid;
+      gap: 10px;
+      margin-top: 12px;
+    }}
+    .check-list div {{
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+      color: var(--muted);
+      line-height: 1.45;
+    }}
+    .prob-bars {{
+      display: grid;
+      gap: 8px;
+      margin-top: 12px;
+    }}
+    .prob-row {{
+      display: grid;
+      grid-template-columns: 82px 1fr 64px;
+      gap: 10px;
+      align-items: center;
+      color: var(--muted);
+      font-size: 0.9rem;
+    }}
+    .prob-track {{
+      height: 12px;
+      border-radius: 999px;
+      overflow: hidden;
+      background: rgba(36, 62, 56, 0.08);
+    }}
+    .prob-fill {{
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, #0f766e, #1f8f59);
+    }}
+    .sentiment-line {{
+      stroke: #0f766e;
+    }}
+    .confidence-line {{
+      stroke: #7c3aed;
+    }}
+    .bear-line {{
+      stroke: #bc3f2f;
+    }}
+    .sideways-line {{
+      stroke: #c67b17;
+    }}
     @media (max-width: 760px) {{
       .shell {{ width: min(100vw - 20px, 100%); padding-top: 16px; }}
       .hero {{ padding: 22px; }}
@@ -634,8 +696,8 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
 <body>
   <div class="shell">
     <section class="hero">
-      <span class="eyebrow">Layer 0/1 QA Only</span>
-      <h1>Live Feature Audit Dashboard</h1>
+      <span class="eyebrow">Pilot Window Decision</span>
+      <h1>HMM + FinBERT Pilot Dashboard</h1>
       <p id="readOnlyNotice"></p>
       <div class="notice" id="statusHelp"></div>
     </section>
@@ -646,7 +708,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       <div class="panel-head">
         <div>
           <h2>Selection Controls</h2>
-          <p>Change the audit window and ticker subset, then refine the UI locally by family, feature, and focus date.</p>
+          <p>Select the pilot window and ticker subset. The visible dashboard is intentionally limited to HMM regime evidence and FinBERT sentiment evidence.</p>
         </div>
         <div class="loading" id="loadingState">Waiting for first load.</div>
       </div>
@@ -660,7 +722,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
         <label>Ticker subset
           <input type="text" id="tickerInput" placeholder="AAPL,MSFT,SPY" required>
         </label>
-        <label>Feature filter
+        <label class="audit-only-control">Feature filter
           <input type="search" id="featureSearch" placeholder="returns, regime, nlp">
         </label>
         <label>Focus date
@@ -668,11 +730,49 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
         </label>
         <button type="submit">Refresh Dashboard</button>
       </form>
-      <div id="familyFilters" class="multi-filter"></div>
+      <div id="familyFilters" class="multi-filter audit-only-control"></div>
       <div class="error-box" id="errorBox"></div>
     </section>
 
     <section class="panel">
+      <div class="panel-head">
+        <div>
+          <h2>Pilot Window Decision Evidence</h2>
+          <p>Use this compact view to decide whether to accept the pilot window before authorizing the broader historical backfill.</p>
+        </div>
+      </div>
+      <div class="decision-grid" id="pilotDecision"></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <h2>HMM Regime Graphs and Analysis</h2>
+          <p>Regime label, confidence, and bear/sideways/bull probability movement across the selected pilot window.</p>
+        </div>
+      </div>
+      <div class="chart-card">
+        <div class="chart-frame" id="hmmChart"></div>
+      </div>
+      <div class="prob-bars" id="hmmNarrative"></div>
+      <div class="heatmap-wrap" id="hmmTable" style="margin-top:16px;"></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <h2>FinBERT Sentiment Graphs and Analysis</h2>
+          <p>Sentiment score, positive/negative/neutral probabilities, relevance, and scored-news coverage for the selected pilot window.</p>
+        </div>
+      </div>
+      <div class="chart-card">
+        <div class="chart-frame" id="finbertChart"></div>
+      </div>
+      <div class="prob-bars" id="finbertNarrative"></div>
+      <div class="heatmap-wrap" id="finbertTable" style="margin-top:16px;"></div>
+    </section>
+
+    <section class="panel supporting-audit-panel">
       <div class="panel-head">
         <div>
           <h2>Feature-Family Status</h2>
@@ -687,7 +787,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       <div class="family-grid" id="familyGrid"></div>
     </section>
 
-    <section class="panel">
+    <section class="panel supporting-audit-panel">
       <div class="panel-head">
         <div>
           <h2>Completeness Heatmap</h2>
@@ -697,7 +797,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       <div class="heatmap-wrap" id="heatmapWrap"></div>
     </section>
 
-    <section class="panel">
+    <section class="panel supporting-audit-panel">
       <div class="panel-head">
         <div>
           <h2>Null-Rate Bars</h2>
@@ -716,7 +816,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       </div>
     </section>
 
-    <section class="panel">
+    <section class="panel supporting-audit-panel">
       <div class="panel-head">
         <div>
           <h2>Raw vs Computed Spot Checks</h2>
@@ -736,7 +836,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       </div>
     </section>
 
-    <section class="panel">
+    <section class="panel supporting-audit-panel">
       <div class="panel-head">
         <div>
           <h2>Formula Audit Cards</h2>
@@ -746,7 +846,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       <div class="cards" id="formulaCards"></div>
     </section>
 
-    <section class="panel">
+    <section class="panel supporting-audit-panel">
       <div class="panel-head">
         <div>
           <h2>Outlier Scatter and Table</h2>
@@ -916,6 +1016,10 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       }}
       renderMeta();
       renderSummary();
+      renderPilotDecision();
+      renderPilotEvidence();
+      renderHmmAnalysis();
+      renderFinbertAnalysis();
       renderFamilyPanels();
       renderHeatmap();
       renderNullRates();
@@ -938,33 +1042,210 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
 
     function renderSummary() {{
       const report = state.payload.report;
-      const summary = report.summary || {{}};
+      const analysis = state.payload.pilot_window_analysis || {{}};
+      const recommendation = analysis.recommendation || {{ status: "warn", label: "Review", message: "Pilot evidence is unavailable." }};
       const warnings = report.load_warnings || [];
       document.getElementById("summaryGrid").innerHTML = `
         <article class="stat-card">
-          <small>Run ID</small>
-          <strong class="mono">${{escapeHtml(report.run_id)}}</strong>
+          <small>Pilot Recommendation</small>
+          <strong><span class="badge ${{statusClass(recommendation.status)}}">${{escapeHtml(recommendation.label)}}</span></strong>
+        </article>
+        <article class="stat-card">
+          <small>HMM Status</small>
+          <strong><span class="badge ${{statusClass(analysis.hmm?.status)}}">${{upper(analysis.hmm?.status)}}</span></strong>
+        </article>
+        <article class="stat-card">
+          <small>FinBERT Status</small>
+          <strong><span class="badge ${{statusClass(analysis.finbert?.status)}}">${{upper(analysis.finbert?.status)}}</span></strong>
         </article>
         <article class="stat-card">
           <small>Rows Loaded</small>
           <strong>${{report.rows_loaded}}</strong>
         </article>
         <article class="stat-card">
-          <small>Family FAIL</small>
-          <strong>${{summary.family_fail_count || 0}}</strong>
-        </article>
-        <article class="stat-card">
-          <small>Spot Check FAIL</small>
-          <strong>${{summary.spot_check_fail_count || 0}}</strong>
-        </article>
-        <article class="stat-card">
-          <small>Outliers</small>
-          <strong>${{summary.outlier_count || 0}}</strong>
+          <small>Window</small>
+          <strong class="mono">${{escapeHtml(report.from_date)}} → ${{escapeHtml(report.to_date)}}</strong>
         </article>
         <article class="stat-card">
           <small>Load Warnings</small>
           <strong>${{warnings.length}}</strong>
         </article>
+      `;
+    }}
+
+    function renderPilotDecision() {{
+      const analysis = state.payload.pilot_window_analysis || {{}};
+      const recommendation = analysis.recommendation || {{ status: "warn", label: "Review", message: "Pilot evidence is unavailable." }};
+      document.getElementById("pilotDecision").innerHTML = `
+        <article class="decision-card">
+          <span class="badge ${{statusClass(recommendation.status)}}">${{escapeHtml(recommendation.label)}}</span>
+          <h3>Decision prompt</h3>
+          <p>${{escapeHtml(recommendation.message)}}</p>
+          <p class="mono">Accept only if both HMM regime quality and FinBERT sentiment evidence are acceptable for this pilot window.</p>
+        </article>
+        ${{decisionCard("HMM", analysis.hmm)}}
+        ${{decisionCard("FinBERT", analysis.finbert)}}
+      `;
+    }}
+
+    function decisionCard(title, section) {{
+      const checks = section?.checks || [];
+      const blockers = section?.blockers || [];
+      return `
+        <article class="decision-card">
+          <span class="badge ${{statusClass(section?.status)}}">${{upper(section?.status)}}</span>
+          <h3>${{escapeHtml(title)}}</h3>
+          <p>${{escapeHtml(section?.description || "")}}</p>
+          <div class="check-list">
+            ${{checks.map((check) => `
+              <div><span class="badge ${{statusClass(check.status)}}">${{upper(check.status)}}</span><span>${{escapeHtml(check.message)}}</span></div>
+            `).join("")}}
+          </div>
+          ${{blockers.length ? `
+            <h4 style="margin:16px 0 8px;">Blocked by missing artifacts</h4>
+            <div class="check-list">
+              ${{blockers.map((blocker) => `
+                <div>
+                  <span class="badge warn">WARN</span>
+                  <span class="mono">${{escapeHtml(blocker.artifact_key || "(missing key)")}}</span>
+                  <span>${{escapeHtml(blocker.reason || "Artifact unavailable.")}}</span>
+                </div>
+              `).join("")}}
+            </div>
+          ` : ""}}
+        </article>
+      `;
+    }}
+
+    function probabilityBars(values) {{
+      return Object.entries(values).map(([label, value]) => `
+        <div class="prob-row">
+          <span>${{escapeHtml(label)}}</span>
+          <span class="prob-track"><span class="prob-fill" style="width:${{clampPercent(value)}}%"></span></span>
+          <span class="mono">${{formatNumber(value)}}</span>
+        </div>
+      `).join("");
+    }}
+
+    function renderHmmAnalysis() {{
+      const section = state.payload.pilot_window_analysis?.hmm || {{ rows: [], checks: [] }};
+      const focusDate = selectedFocusDate();
+      const rows = (section.rows || []).filter((row) => !focusDate || row.date === focusDate);
+      document.getElementById("hmmChart").innerHTML = hmmChartMarkup(rows);
+      document.getElementById("hmmNarrative").innerHTML = section.checks.map((check) => `
+        <div><span class="badge ${{statusClass(check.status)}}">${{upper(check.status)}}</span> ${{escapeHtml(check.message)}}</div>
+      `).join("");
+      document.getElementById("hmmTable").innerHTML = tableMarkup(
+        ["Date", "Ticker", "Regime", "Confidence", "Bear", "Sideways", "Bull", "Status"],
+        rows.map((row) => [
+          row.date,
+          row.ticker,
+          row.regime_label || "n/a",
+          formatNumber(row.regime_confidence),
+          formatNumber(row.regime_prob_bear),
+          formatNumber(row.regime_prob_sideways),
+          formatNumber(row.regime_prob_bull),
+          `<span class="badge ${{statusClass(row.status)}}">${{upper(row.status)}}</span>`,
+        ]),
+      );
+    }}
+
+    function renderFinbertAnalysis() {{
+      const section = state.payload.pilot_window_analysis?.finbert || {{ rows: [], checks: [] }};
+      const focusDate = selectedFocusDate();
+      const rows = (section.rows || []).filter((row) => !focusDate || row.date === focusDate);
+      document.getElementById("finbertChart").innerHTML = finbertChartMarkup(rows);
+      document.getElementById("finbertNarrative").innerHTML = section.checks.map((check) => `
+        <div><span class="badge ${{statusClass(check.status)}}">${{upper(check.status)}}</span> ${{escapeHtml(check.message)}}</div>
+      `).join("");
+      document.getElementById("finbertTable").innerHTML = tableMarkup(
+        ["Date", "Ticker", "Score", "Positive", "Negative", "Neutral", "Articles", "Status"],
+        rows.map((row) => [
+          row.date,
+          row.ticker,
+          formatNumber(row.sentiment_score),
+          formatNumber(row.sentiment_positive),
+          formatNumber(row.sentiment_negative),
+          formatNumber(row.sentiment_neutral),
+          formatNumber(row.article_count),
+          `<span class="badge ${{statusClass(row.status)}}">${{upper(row.status)}}</span>`,
+        ]),
+      );
+    }}
+
+    function tableMarkup(headers, rows) {{
+      if (!rows.length) {{
+        return `<div class="loading">No rows match the selected focus date.</div>`;
+      }}
+      return `
+        <table>
+          <thead><tr>${{headers.map((header) => `<th>${{escapeHtml(header)}}</th>`).join("")}}</tr></thead>
+          <tbody>
+            ${{rows.map((row) => `<tr>${{row.map((cell) => `<td class="mono">${{String(cell).startsWith("<span") ? cell : escapeHtml(cell)}}</td>`).join("")}}</tr>`).join("")}}
+          </tbody>
+        </table>
+      `;
+    }}
+
+    function hmmChartMarkup(rows) {{
+      if (!rows.length) {{
+        return `<div class="loading">No HMM rows for the selected filters.</div>`;
+      }}
+      return multiLineChartMarkup(rows, [
+        ["regime_confidence", "confidence-line", "confidence"],
+        ["regime_prob_bear", "bear-line", "bear"],
+        ["regime_prob_sideways", "sideways-line", "sideways"],
+        ["regime_prob_bull", "sentiment-line", "bull"],
+      ], "HMM regime confidence and probabilities");
+    }}
+
+    function finbertChartMarkup(rows) {{
+      if (!rows.length) {{
+        return `<div class="loading">No FinBERT rows for the selected filters.</div>`;
+      }}
+      return multiLineChartMarkup(rows, [
+        ["sentiment_score", "sentiment-line", "score"],
+        ["sentiment_positive", "confidence-line", "positive"],
+        ["sentiment_negative", "bear-line", "negative"],
+        ["sentiment_neutral", "sideways-line", "neutral"],
+      ], "FinBERT sentiment score and class probabilities");
+    }}
+
+    function multiLineChartMarkup(rows, series, label) {{
+      const values = rows
+        .flatMap((row) => series.map(([key]) => toFiniteNumber(row[key])))
+        .filter((value) => value !== null);
+      if (!values.length) {{
+        return `<div class="loading">Selected rows do not contain numeric chart values.</div>`;
+      }}
+      const min = Math.min(...values, 0);
+      const max = Math.max(...values, 1);
+      const spread = Math.max(max - min, 1e-9);
+      const x = (index) => 40 + (index / Math.max(rows.length - 1, 1)) * 720;
+      const y = (value) => 230 - ((value - min) / spread) * 180;
+      const paths = series.map(([key, className, name]) => {{
+        const path = linePath(rows, key, x, y);
+        return `<path d="${{path}}" fill="none" class="${{className}}" stroke-width="3" stroke-linejoin="round"><title>${{escapeHtml(name)}}</title></path>`;
+      }}).join("");
+      const dots = rows.map((row, index) => series.map(([key, className, name]) => {{
+        const numeric = toFiniteNumber(row[key]);
+        return numeric === null ? "" : `<circle cx="${{x(index)}}" cy="${{y(numeric)}}" r="4" class="${{className}}" fill="currentColor"><title>${{escapeHtml(row.date)}} ${{escapeHtml(row.ticker)}} ${{escapeHtml(name)}}=${{formatNumber(numeric)}}</title></circle>`;
+      }}).join("")).join("");
+      const labels = rows.map((row, index) => `
+        <text x="${{x(index)}}" y="252" text-anchor="middle" font-size="11" fill="#556867">${{escapeHtml(row.date.slice(5))}}</text>
+      `).join("");
+      const legend = series.map(([, className, name]) => `<span class="mono"><svg width="12" height="8"><line x1="0" y1="4" x2="12" y2="4" class="${{className}}" stroke-width="3" /></svg> ${{escapeHtml(name)}}</span>`).join(" · ");
+      return `
+        <div class="legend" style="margin-bottom:8px;">${{legend}}</div>
+        <svg viewBox="0 0 800 260" role="img" aria-label="${{escapeAttr(label)}}">
+          <line x1="40" y1="230" x2="760" y2="230" stroke="rgba(36,62,56,0.18)" />
+          <line x1="40" y1="36" x2="40" y2="230" stroke="rgba(36,62,56,0.18)" />
+          ${{paths}}
+          ${{dots}}
+          ${{labels}}
+          <text x="40" y="24" font-size="12" fill="#556867">max ${{formatNumber(max)}}</text>
+          <text x="40" y="244" font-size="12" fill="#556867">min ${{formatNumber(min)}}</text>
+        </svg>
       `;
     }}
 

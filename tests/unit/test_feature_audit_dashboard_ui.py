@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
 from app.lab.feature_audit_dashboard import _DashboardDefaults, _render_dashboard_html
 from core.features.dashboard_backend import build_layer1_audit_dashboard_report
 from core.features.dashboard_ui import build_layer1_audit_dashboard_ui_payload
+from services.r2.paths import layer1_regime_path
 from tests.fixtures.layer1_audit_support import local_writer
 from tests.fixtures.layer1_dashboard_support import seed_layer1_dashboard_fixture
 
@@ -23,7 +25,7 @@ def test_build_layer1_audit_dashboard_ui_payload_groups_backend_data_for_the_web
         run_id="dashboard-ui",
         from_date=str(fixture["from_date"]),
         to_date=str(fixture["to_date"]),
-        tickers=list(fixture["tickers"]),
+        tickers=cast(list[str], fixture["tickers"]),
         writer=writer,
     )
 
@@ -34,6 +36,27 @@ def test_build_layer1_audit_dashboard_ui_payload_groups_backend_data_for_the_web
     assert payload["controls"]["available_tickers"] == ["AAPL", "MSFT"]
     assert payload["controls"]["default_focus_date"] == "2024-05-08"
     assert payload["controls"]["default_spot_check_feature"] == "returns_1d"
+
+    pilot_analysis = cast(dict[str, Any], payload["pilot_window_analysis"])
+    recommendation = cast(dict[str, Any], pilot_analysis["recommendation"])
+    hmm_analysis = cast(dict[str, Any], pilot_analysis["hmm"])
+    finbert_analysis = cast(dict[str, Any], pilot_analysis["finbert"])
+    hmm_rows = cast(list[dict[str, Any]], hmm_analysis["rows"])
+    finbert_rows = cast(list[dict[str, Any]], finbert_analysis["rows"])
+    pilot_evidence = cast(dict[str, Any], payload["pilot_window_evidence"])
+    sentiment_rows = cast(list[dict[str, Any]], pilot_evidence["sentiment"]["rows"])
+    topic_rows = cast(list[dict[str, Any]], pilot_evidence["topics"]["rows"])
+    regime_rows = cast(list[dict[str, Any]], pilot_evidence["regime"]["rows"])
+    assert recommendation["status"] == "warn"
+    assert hmm_analysis["status"] == "pass"
+    assert finbert_analysis["status"] == "warn"
+    assert hmm_rows[0]["regime_label"] == "bull"
+    assert hmm_rows[0]["regime_confidence"] == 0.8
+    assert finbert_rows[0]["sentiment_score"] == 0.7
+    assert finbert_rows[0]["article_count"] == 1.0
+    assert sentiment_rows[0]["article_id"].startswith("article-")
+    assert topic_rows[0]["text"].startswith("AAPL beats")
+    assert regime_rows[0]["regime_label"] == "bull"
 
     heatmap_rows = {
         item["feature_name"]: item
@@ -62,6 +85,31 @@ def test_build_layer1_audit_dashboard_ui_payload_groups_backend_data_for_the_web
     assert any(item["rule_type"] == "distribution_outlier" for item in outlier_points)
 
 
+def test_build_layer1_audit_dashboard_ui_payload_preserves_evidence_blockers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Evidence blockers should flow from the backend into the UI payload."""
+    writer = local_writer(tmp_path, monkeypatch)
+    fixture = seed_layer1_dashboard_fixture(writer)
+    writer.delete_object(layer1_regime_path("audit-regime"))
+    report = build_layer1_audit_dashboard_report(
+        run_id="dashboard-ui-blockers",
+        from_date=str(fixture["from_date"]),
+        to_date=str(fixture["to_date"]),
+        tickers=cast(list[str], fixture["tickers"]),
+        writer=writer,
+    )
+
+    payload = build_layer1_audit_dashboard_ui_payload(report)
+    pilot_evidence = cast(dict[str, Any], payload["pilot_window_evidence"])
+    regime_evidence = cast(dict[str, Any], pilot_evidence["regime"])
+    blockers = cast(list[dict[str, Any]], regime_evidence["blockers"])
+
+    assert regime_evidence["status"] == "warn"
+    assert regime_evidence["missing_artifact_keys"] == [layer1_regime_path("audit-regime")]
+    assert blockers[0]["artifact_key"] == layer1_regime_path("audit-regime")
+
 def test_build_layer1_audit_dashboard_ui_payload_accepts_mapping_reports(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -73,7 +121,7 @@ def test_build_layer1_audit_dashboard_ui_payload_accepts_mapping_reports(
         run_id="dashboard-ui-mapping",
         from_date=str(fixture["from_date"]),
         to_date=str(fixture["to_date"]),
-        tickers=list(fixture["tickers"]),
+        tickers=cast(list[str], fixture["tickers"]),
         writer=writer,
     )
 
@@ -246,5 +294,10 @@ def test_render_dashboard_html_keeps_original_point_indexes_in_line_paths() -> N
     assert "function linePath(points, valueKey, x, y)" in html
     assert 'const storedPath = linePath(points, "stored_value", x, y);' in html
     assert 'const expectedPath = linePath(points, "expected_value", x, y);' in html
+    assert "HMM + FinBERT Pilot Dashboard" in html
+    assert "Pilot Window Decision Evidence" in html
+    assert "HMM Regime Graphs and Analysis" in html
+    assert "FinBERT Sentiment Graphs and Analysis" in html
+    assert "supporting-audit-panel" in html
     assert "${y(point.expected_value)})" not in html
     assert "const escapeHtml = (value) => String(value ?? \"\")" in html

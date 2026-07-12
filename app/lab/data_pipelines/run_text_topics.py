@@ -11,7 +11,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from loguru import logger
 
@@ -47,6 +47,7 @@ from services.r2.paths import (  # noqa: E402
     layer1_text_embedding_path,
     layer1_topic_feature_path,
     layer1_topic_label_path,
+    layer1_topic_review_path,
     pipeline_manifest_path,
 )
 from services.r2.writer import R2Writer  # noqa: E402
@@ -132,11 +133,12 @@ class TextTopicPipelineResult:
     embedding_key: str
     topic_label_key: str
     topic_feature_key: str
-    manifest_key: str
-    sentence_rows: int
-    embedding_rows: int
-    topic_label_rows: int
-    topic_feature_rows: int
+    topic_review_key: str = ""
+    manifest_key: str = ""
+    sentence_rows: int = 0
+    embedding_rows: int = 0
+    topic_label_rows: int = 0
+    topic_feature_rows: int = 0
 
 
 def run_text_topics(
@@ -158,12 +160,14 @@ def run_text_topics(
     topic_label_key = layer1_topic_label_path(config.as_of_date, config.run_id)
     topic_feature_key = layer1_topic_feature_path(config.as_of_date, config.run_id)
     manifest_key = pipeline_manifest_path(TEXT_TOPICS_STAGE, config.run_id)
+    topic_review_key = layer1_topic_review_path(config.as_of_date, config.run_id)
     metadata: dict[str, object] = {
         "as_of_date": config.as_of_date,
         "preprocessed_news_key": config.preprocessed_news_key,
         "embedding_key": embedding_key,
         "topic_label_key": topic_label_key,
         "topic_feature_key": topic_feature_key,
+        "topic_review_key": topic_review_key,
         "embedding_model": runtime.embedding_config.model_name,
         "embedding_revision": runtime.embedding_config.model_revision,
         "topic_model": runtime.topic_config.model_name,
@@ -191,12 +195,25 @@ def run_text_topics(
             topic_feature_key,
             _frame_to_parquet_bytes(feature_records_to_frame(result.feature_records)),
         )
+        active_writer.put_object(
+            topic_review_key,
+            json.dumps(result.topic_review, indent=2, sort_keys=True),
+        )
         metadata.update(
             {
                 "sentence_rows": len(records),
                 "embedding_rows": len(result.embeddings),
                 "topic_label_rows": len(result.topic_labels),
                 "topic_feature_rows": len(result.feature_records),
+                "topic_review_status": str(result.topic_review.get("status", "warn")),
+                "topic_review_diversity_status": str(
+                    result.topic_review.get("diversity_status", "insufficient_diversity")
+                ),
+                "topic_review_topic_count": int(result.topic_review.get("topic_count", 0)),
+                "topic_review_dominant_topic_id": result.topic_review.get("dominant_topic_id"),
+                "topic_review_dominant_topic_share": result.topic_review.get(
+                    "dominant_topic_share"
+                ),
             }
         )
         _write_manifest(
@@ -214,6 +231,7 @@ def run_text_topics(
             embedding_key=embedding_key,
             topic_label_key=topic_label_key,
             topic_feature_key=topic_feature_key,
+            topic_review_key=topic_review_key,
             manifest_key=manifest_key,
             sentence_rows=len(records),
             embedding_rows=len(result.embeddings),
@@ -279,6 +297,14 @@ class BERTopicLabeler:
             embeddings=np.asarray(embeddings),
         )
         return list(topics), _topic_probabilities(topics, probabilities)
+
+    def get_topic(self, topic_id: int) -> Any:
+        """Return BERTopic keywords for one topic id."""
+        return self._model.get_topic(topic_id)
+
+    def get_topic_info(self) -> Any:
+        """Return the BERTopic topic-info frame."""
+        return self._model.get_topic_info()
 
 
 def load_text_model_runtime_config(path: Path = TEXT_MODEL_CONFIG_PATH) -> TextModelRuntimeConfig:
@@ -440,6 +466,7 @@ def _modal_run_text_topics_entry(
         "embedding_key": result.embedding_key,
         "topic_label_key": result.topic_label_key,
         "topic_feature_key": result.topic_feature_key,
+        "topic_review_key": result.topic_review_key,
         "manifest_key": result.manifest_key,
         "sentence_rows": result.sentence_rows,
         "embedding_rows": result.embedding_rows,

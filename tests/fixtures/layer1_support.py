@@ -46,6 +46,7 @@ from services.r2.paths import (
     layer1_regime_path,
     layer1_sentiment_feature_path,
     layer1_topic_feature_path,
+    layer1_topic_review_path,
     pipeline_manifest_path,
     raw_fundamentals_path,
     raw_macro_path,
@@ -148,6 +149,7 @@ def fake_topic_runner(writer: R2Writer, tickers: Sequence[str]):
 
     def _runner(config: TextTopicPipelineConfig, *, writer: R2Writer):
         output_key = layer1_topic_feature_path(config.as_of_date, config.run_id)
+        review_key = layer1_topic_review_path(config.as_of_date, config.run_id)
         records = [
             FeatureRecord(
                 date=config.as_of_date,
@@ -155,12 +157,54 @@ def fake_topic_runner(writer: R2Writer, tickers: Sequence[str]):
                 features={"nlp_topic_count": 1, "nlp_sentence_count": 1},
             )
         ]
+        review_payload = {
+            "status": "warn",
+            "diversity_status": "insufficient_diversity",
+            "diversity_reason": "Only one topic was detected across one row.",
+            "row_count": 1,
+            "topic_count": 1,
+            "dominant_topic_id": 0,
+            "dominant_topic_share": 1.0,
+            "topics": [
+                {
+                    "topic_id": 0,
+                    "topic_label": "Topic 0",
+                    "topic_keywords": ["market", "update", "stocks"],
+                    "topic_keyword_text": "market, update, stocks",
+                    "topic_example_text": "Stocks moved higher.",
+                    "topic_example_texts": ["Stocks moved higher."],
+                    "topic_row_count": 1,
+                    "topic_row_share": 1.0,
+                    "topic_probability_mean": 0.75,
+                    "topic_probability_max": 0.75,
+                }
+            ],
+            "rows": [
+                {
+                    "date": config.as_of_date,
+                    "ticker": tickers[0],
+                    "article_id": f"article-{config.as_of_date}",
+                    "sentence_index": 0,
+                    "text": "Stocks moved higher.",
+                    "topic_id": 0,
+                    "topic_probability": 0.75,
+                    "topic_label": "Topic 0",
+                    "topic_keywords": ["market", "update", "stocks"],
+                    "topic_keyword_text": "market, update, stocks",
+                    "topic_example_text": "Stocks moved higher.",
+                    "topic_row_count": 1,
+                    "topic_row_share": 1.0,
+                }
+            ],
+        }
         writer.put_object(output_key, feature_records_to_parquet_bytes(records))
+        writer.put_object(review_key, json.dumps(review_payload, sort_keys=True))
         return TextTopicPipelineResult(
             run_id=config.run_id,
             embedding_key="unused",
             topic_label_key="unused",
             topic_feature_key=output_key,
+            topic_review_key=review_key,
             manifest_key=pipeline_manifest_path("layer1_text_topics", config.run_id),
             sentence_rows=1,
             embedding_rows=1,

@@ -15,6 +15,18 @@ def seed_layer1_dashboard_fixture(writer: R2Writer) -> dict[str, object]:
     """Seed multi-row Layer 1 histories for dashboard backend tests."""
     audit_fixture = seed_layer1_audit_fixture(writer, as_of_date="2024-05-08")
     base_features = dict(audit_fixture["history_record"].features)
+    base_features.update(
+        {
+            "nlp_sentiment_positive": 0.8,
+            "nlp_sentiment_negative": 0.1,
+            "nlp_sentiment_neutral": 0.1,
+            "nlp_sentiment_score": 0.7,
+            "nlp_sentiment_strength": 0.8,
+            "nlp_article_count": 1,
+            "nlp_sentence_count": 1,
+            "nlp_relevance_score": 1.0,
+        }
+    )
     aapl_market_by_date = _market_features_by_date("AAPL", writer)
 
     aapl_records = [

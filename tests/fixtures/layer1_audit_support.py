@@ -38,6 +38,7 @@ from services.r2.paths import (
     layer1_ticker_history_path,
     layer1_topic_feature_path,
     layer1_topic_label_path,
+    layer1_topic_review_path,
     pipeline_manifest_path,
     raw_fundamentals_path,
     raw_macro_path,
@@ -115,6 +116,48 @@ def seed_layer1_audit_fixture(
     _write_parquet(writer, topic_label_key, topic_labels)
     topic_feature_records = topic_labels_to_feature_records(topic_labels)
     writer.put_object(topic_feature_key, feature_records_to_parquet_bytes(topic_feature_records))
+    topic_review_key = layer1_topic_review_path(as_of_date, "audit-topics")
+    topic_review = {
+        "status": "warn",
+        "diversity_status": "insufficient_diversity",
+        "diversity_reason": "Only one topic was detected across one row.",
+        "row_count": 1,
+        "topic_count": 1,
+        "dominant_topic_id": 7,
+        "dominant_topic_share": 1.0,
+        "topics": [
+            {
+                "topic_id": 7,
+                "topic_label": "Apple Results",
+                "topic_keywords": ["apple", "results", "margins"],
+                "topic_keyword_text": "apple, results, margins",
+                "topic_example_text": str(preprocessed_records[0].text),
+                "topic_example_texts": [str(preprocessed_records[0].text)],
+                "topic_row_count": 1,
+                "topic_row_share": 1.0,
+                "topic_probability_mean": 0.9,
+                "topic_probability_max": 0.9,
+            }
+        ],
+        "rows": [
+            {
+                "date": as_of_date,
+                "ticker": ticker,
+                "article_id": str(preprocessed_records[0].article_id),
+                "sentence_index": int(preprocessed_records[0].sentence_index or 0),
+                "text": str(preprocessed_records[0].text),
+                "topic_id": 7,
+                "topic_probability": 0.9,
+                "topic_label": "Apple Results",
+                "topic_keywords": ["apple", "results", "margins"],
+                "topic_keyword_text": "apple, results, margins",
+                "topic_example_text": str(preprocessed_records[0].text),
+                "topic_row_count": 1,
+                "topic_row_share": 1.0,
+            }
+        ],
+    }
+    writer.put_object(topic_review_key, json.dumps(topic_review, sort_keys=True))
     _write_manifest(
         writer,
         stage="layer1_text_topics",
@@ -124,6 +167,9 @@ def seed_layer1_audit_fixture(
             "as_of_date": as_of_date,
             "topic_label_key": topic_label_key,
             "topic_feature_key": topic_feature_key,
+            "topic_review_key": topic_review_key,
+            "topic_review_status": topic_review["status"],
+            "topic_review_diversity_status": topic_review["diversity_status"],
         },
     )
 
@@ -162,6 +208,7 @@ def seed_layer1_audit_fixture(
             "sentiment_feature_key": sentiment_feature_key,
         },
     )
+
 
     regime_key = layer1_regime_path("audit-regime")
     regime_output = pd.DataFrame(
