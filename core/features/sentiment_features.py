@@ -12,6 +12,10 @@ from typing import TYPE_CHECKING, Any, Protocol
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from core.contracts.schemas import FeatureRecord, NewsSentimentRecord
+from core.features.news_assignment_provenance import (
+    NEWS_EVIDENCE_RELEVANCE_WEIGHTS,
+    NewsEvidenceClass,
+)
 from services.wikipedia.sp500_universe import canonicalize_ticker
 
 if TYPE_CHECKING:
@@ -101,7 +105,9 @@ SENTIMENT_FEATURE_COLUMNS: tuple[str, ...] = (
 )
 
 DIRECT_RELEVANCE_SCORE = 1.0
-CONTEXTUAL_RELEVANCE_SCORE = 0.25
+INDIRECT_RELEVANCE_SCORE = 0.25
+BROAD_MARKET_RELEVANCE_SCORE = 0.0
+CONTAMINATION_RELEVANCE_SCORE = 0.0
 
 _CONTEXTUAL_EVIDENCE_TERMS: tuple[str, ...] = (
     "ai",
@@ -818,12 +824,14 @@ def _resolve_relevance_score(
 ) -> float | None:
     """Return a conservative relevance score inferred from explicit evidence.
 
-    Rows that already carry a relevance score keep it, while rows without
-    explicit relevance are only scored when the text contains direct ticker or
-    entity evidence. Broad-market or competitor context is allowed only as a
-    weaker contextual signal. Rows with no evidence remain unset so they carry
-    no direct aggregation weight.
+    Rows that already carry a relevance score keep it. When no explicit score is
+    present, provenance classification is authoritative if available; otherwise
+    we fall back to text heuristics.
     """
+    assignment_class = _assignment_classification(record)
+    if assignment_class is not None:
+        return NEWS_EVIDENCE_RELEVANCE_WEIGHTS[assignment_class]
+
     existing = _to_float_or_none(record.relevance_score)
     if existing is not None:
         return min(max(existing, 0.0), 1.0)
@@ -835,15 +843,31 @@ def _resolve_relevance_score(
     evidence = _ticker_relevance_evidence(record.ticker, text)
     if evidence == "direct":
         return DIRECT_RELEVANCE_SCORE
-    if evidence == "contextual":
-        if default_relevance_score is None:
-            return CONTEXTUAL_RELEVANCE_SCORE
-        return min(max(default_relevance_score, 0.0), CONTEXTUAL_RELEVANCE_SCORE)
+    if evidence == "indirect":
+        return INDIRECT_RELEVANCE_SCORE
+    if evidence == "broad_market":
+        return BROAD_MARKET_RELEVANCE_SCORE
+    if evidence == "contamination":
+        return CONTAMINATION_RELEVANCE_SCORE
+    if evidence is None:
+        return None
     return None
 
 
+def _assignment_classification(record: NewsSentimentRecord) -> NewsEvidenceClass | None:
+    """Return the provenance class attached to a preprocessed news record."""
+    provenance = record.source_text_provenance or {}
+    classification = _normalize_optional_string(provenance.get("assignment_classification"))
+    if classification is None:
+        return None
+    try:
+        return NewsEvidenceClass(classification)
+    except ValueError:
+        return None
+
+
 def _ticker_relevance_evidence(ticker: str, text: str) -> str | None:
-    """Classify ticker evidence as direct, contextual, or absent."""
+    """Classify ticker evidence as direct, indirect, broad-market, contamination, or absent."""
     normalized_ticker = canonicalize_ticker(ticker)
     if not normalized_ticker:
         return None
@@ -853,8 +877,12 @@ def _ticker_relevance_evidence(ticker: str, text: str) -> str | None:
         return "direct"
     if _contains_alias_mention(normalized_ticker, normalized_text):
         return "direct"
-    if _contains_contextual_evidence(normalized_text):
-        return "contextual"
+    if _contains_indirect_evidence(normalized_text):
+        return "indirect"
+    if _contains_broad_market_evidence(normalized_text):
+        return "broad_market"
+    if _contains_contamination_evidence(normalized_text):
+        return "contamination"
     return None
 
 
@@ -879,6 +907,21 @@ def _contains_alias_mention(ticker: str, text: str) -> bool:
         if re.search(pattern, text, flags=re.IGNORECASE):
             return True
     return False
+
+
+def _contains_indirect_evidence(text: str) -> bool:
+    """Return True when the article contains peer/competitor/relationship context."""
+    return _contains_contextual_evidence(text)
+
+
+def _contains_broad_market_evidence(text: str) -> bool:
+    """Return True when the article contains broad-market context."""
+    return _contains_contextual_evidence(text)
+
+
+def _contains_contamination_evidence(text: str) -> bool:
+    """Return True when the article contains unrelated company contamination."""
+    return _contains_contextual_evidence(text)
 
 
 def _contains_contextual_evidence(text: str) -> bool:

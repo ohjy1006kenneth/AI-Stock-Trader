@@ -16,6 +16,8 @@ from pydantic import TypeAdapter
 
 from core.contracts.schemas import NewsSentimentRecord
 from core.features.news_assignment_provenance import (
+    NEWS_EVIDENCE_RELEVANCE_WEIGHTS,
+    NewsEvidenceClass,
     TickerAssignmentProvenance,
     build_ticker_assignment_provenance,
 )
@@ -239,17 +241,26 @@ def preprocess_news_articles_with_provenance(
         for chunk in chunks:
             chunk_tickers = tuple(_ticker_mentions(chunk.text, article_tickers, allowed_tickers))
             entity_mentions = tuple(_entity_mentions(chunk.text, headline=headline))
-            provenance = _source_text_provenance(
-                article=article,
-                article_id=article_id,
-                headline=headline,
-                normalized_headline=normalized_headline,
-                chunk=chunk,
-                article_tickers=article_tickers,
-                chunk_tickers=chunk_tickers,
-                entity_mentions=entity_mentions,
-            )
             for ticker in article_tickers:
+                ticker_assignment = build_ticker_assignment_provenance(
+                    article,
+                    ticker,
+                    date=normalized_date,
+                    sentence_index=chunk.chunk_index,
+                    headline=headline,
+                    text=chunk.text,
+                )
+                provenance = _source_text_provenance(
+                    article=article,
+                    article_id=article_id,
+                    headline=headline,
+                    normalized_headline=normalized_headline,
+                    chunk=chunk,
+                    article_tickers=article_tickers,
+                    chunk_tickers=chunk_tickers,
+                    entity_mentions=entity_mentions,
+                    assignment=ticker_assignment,
+                )
                 record_ticker_mentions = tuple(
                     _dedupe_preserving_order([ticker, *chunk_tickers])
                 )
@@ -273,16 +284,7 @@ def preprocess_news_articles_with_provenance(
                         entity_mentions=entity_mentions,
                     )
                 )
-                provenance_rows.append(
-                    build_ticker_assignment_provenance(
-                        article,
-                        ticker,
-                        date=normalized_date,
-                        sentence_index=chunk.chunk_index,
-                        headline=headline,
-                        text=chunk.text,
-                    )
-                )
+                provenance_rows.append(ticker_assignment)
 
     sorted_records = sorted(
         records,
@@ -733,6 +735,7 @@ def _source_text_provenance(
     article_tickers: Sequence[str],
     chunk_tickers: Sequence[str],
     entity_mentions: Sequence[str],
+    assignment: TickerAssignmentProvenance,
 ) -> dict[str, Any]:
     """Return raw article and chunk provenance for one preprocessed row."""
     published_at = _published_at(article)
@@ -752,6 +755,13 @@ def _source_text_provenance(
         "article_tickers": list(article_tickers),
         "chunk_tickers": list(chunk_tickers),
         "entity_mentions": list(entity_mentions),
+        "assignment_classification": assignment.classification,
+        "assignment_reason": assignment.reason,
+        "assignment_evidence_kinds": list(assignment.evidence_kinds),
+        "assignment_weight": NEWS_EVIDENCE_RELEVANCE_WEIGHTS.get(
+            NewsEvidenceClass(assignment.classification),
+            0.0,
+        ),
     }
 
 
