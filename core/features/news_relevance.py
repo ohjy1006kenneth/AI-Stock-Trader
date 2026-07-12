@@ -10,6 +10,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from core.contracts.schemas import NewsSentimentRecord
+from core.features.news_assignment_provenance import (
+    NEWS_EVIDENCE_RELEVANCE_WEIGHTS,
+    NewsEvidenceClass,
+)
 
 RELEVANCE_GATE_COLUMNS: tuple[str, ...] = (
     "date",
@@ -88,6 +92,7 @@ _BROAD_MARKET_TERMS = frozenset(
         "wall street",
     }
 )
+_CONTEXTUAL_EVIDENCE_TERMS: tuple[str, ...] = tuple(sorted(_BROAD_MARKET_TERMS))
 _TICKER_ALIASES: Mapping[str, tuple[str, ...]] = {
     "AAPL": ("apple", "apple inc"),
     "MSFT": ("microsoft", "microsoft corp", "microsoft corporation"),
@@ -205,11 +210,14 @@ def _evaluate_record(
         provenance.get("entity_mentions") or list(record.entity_mentions)
     )
 
+    assignment_classification = _optional_text(provenance.get("assignment_classification"))
+
     ticker_score, ticker_reasons = _ticker_relevance(
         ticker=ticker,
         text=normalized_text,
         source_tickers=source_tickers,
         entity_mentions=entity_mentions,
+        assignment_classification=assignment_classification,
     )
     financial_score, financial_reasons = _financial_relevance(normalized_text)
     topic_row = topic_lookup.get((record.date, ticker, _stable_article_id(record)))
@@ -297,12 +305,22 @@ def _ticker_relevance(
     text: str,
     source_tickers: Sequence[str],
     entity_mentions: Sequence[str],
+    assignment_classification: str | None = None,
 ) -> tuple[float, list[str]]:
     """Score ticker/entity evidence separately from financial relevance."""
     reasons: list[str] = []
     upper_source_tickers = {value.strip().upper() for value in source_tickers}
     aliases = _aliases_for_ticker(ticker)
     text_tokens = {token.upper() for token in _TOKEN_RE.findall(text)}
+
+    if assignment_classification is not None:
+        try:
+            evidence_class = NewsEvidenceClass(assignment_classification)
+        except ValueError:
+            evidence_class = None
+        if evidence_class is not None:
+            reasons.append(f"assignment_classification:{evidence_class.value}")
+            return NEWS_EVIDENCE_RELEVANCE_WEIGHTS[evidence_class], reasons
 
     if ticker in text_tokens or f"${ticker.lower()}" in text:
         reasons.append("direct_ticker_mention")
@@ -319,7 +337,19 @@ def _ticker_relevance(
     if ticker in upper_source_tickers:
         reasons.append("source_ticker_tag_only")
         return 0.45, reasons
+    if _contains_contextual_evidence(text):
+        reasons.append("contextual_evidence")
+        return 0.25, reasons
     return 0.0, reasons
+
+
+def _contains_contextual_evidence(text: str) -> bool:
+    """Return True when the article only offers broad-market or peer context."""
+    for term in _CONTEXTUAL_EVIDENCE_TERMS:
+        pattern = rf"(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])"
+        if re.search(pattern, text):
+            return True
+    return False
 
 
 def _financial_relevance(text: str) -> tuple[float, list[str]]:

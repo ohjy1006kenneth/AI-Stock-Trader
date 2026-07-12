@@ -325,11 +325,15 @@ Purpose:
 Notes:
 - the gate consumes preprocessed `NewsSentimentRecord` rows plus the existing
   `text_embeddings` and `topic_labels` artifacts for the same date/stage run
-- ticker/entity evidence is scored separately from broad-market financial relevance:
-  direct ticker text or target entity aliases are strong evidence; provider/source ticker tags
-  are weaker and can only produce borderline rows without stronger target evidence
-- known competitor entity evidence caps relevance when the target ticker is only a weak
-  provider tag, which prevents AAPL-tagged Microsoft-style articles from reaching FinBERT
+- ticker/entity evidence is scored separately from broader financial relevance
+- `NEWS_EVIDENCE_RELEVANCE_WEIGHTS` is the canonical direct-ticker weighting table used by
+  the provenance sidecar and the relevance gate: `direct=1.0`, `indirect=0.25`,
+  `broad_market=0.0`, `contamination=0.0`
+- broad-market rows may remain visible in the review payload and can still carry financial or
+  topic context, but they do not count as direct ticker evidence and should not receive a
+  positive ticker-relevance weight
+- provider ticker tags without supporting target text are written as `provider_ticker_tag_only`
+  provenance evidence; they are review-only unless explicit target text is also present
 - accepted rows have `relevance_score >= 0.55`; borderline rows have
   `relevance_score >= 0.35` plus financial and weak ticker evidence; rejected rows are not
   sent to FinBERT
@@ -352,6 +356,15 @@ Notes:
   `features/layer1/news_assignment_provenance/{date}/{run_id}.json`
 - each row records the article id, ticker, sentence index, evidence kinds, classification,
   and compact reason text used by the review UI
+- the evidence classes are `direct`, `indirect`, `broad_market`, and `contamination`
+- `direct` rows are the only ones that should be treated as explicit target evidence; they
+  carry the full ticker signal and map to weight `1.0`
+- `indirect` rows capture relationship/context evidence and map to weight `0.25`
+- `broad_market` rows are review/context rows for market-wide articles and map to weight
+  `0.0`; they should remain visible in dashboard counts but not in direct ticker weighting
+- `contamination` rows flag other-company or no-target-text cases and map to weight `0.0`
+- provider ticker tags without target text are recorded explicitly as `provider_ticker_tag_only`
+  evidence so review users can distinguish tag-only rows from direct text matches
 - provenance is derived from the same Layer 1 preprocessing pass that emits
   `NewsSentimentRecord` rows; it does not require a new Pydantic inter-layer contract
 

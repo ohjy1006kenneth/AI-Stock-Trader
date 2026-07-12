@@ -358,6 +358,13 @@ point-in-time universe for that date. Legacy per-ticker histories under
 `features/layer1/{ticker}.parquet` may exist temporarily as compatibility artifacts or
 migration inputs, but they are not the authoritative production handoff path.
 
+The Layer 1 news review contract keeps two separate concepts clear:
+- provenance classes (`direct`, `indirect`, `broad_market`, `contamination`) are used for
+  dashboard grouping and audit summaries
+- ticker relevance weights used by the gate are `1.0`, `0.25`, `0.0`, and `0.0`
+  respectively, so market-wide or contaminated rows remain reviewable without being treated
+  as weighted direct ticker evidence
+
 #### Text / NLP branch
 
 Layer 1 news preprocessing is driven by `config/news_preprocessing.json`. The configured
@@ -381,7 +388,6 @@ RAW ARTICLES (Alpaca news)
   → Step 2b: BERTopic (across all articles today)
       Input: all articles in the universe today
       Output: topic assignments, probabilities, and ticker-day topic FeatureRecords
-      Recommended: 20–50 topics; tune minimum topic size
   → Step 3a: Relevance filter (cosine similarity)
       Consume article embedding-cache rows and topic-label metadata to keep only
       financially relevant articles using reference embeddings
@@ -394,8 +400,9 @@ RAW ARTICLES (Alpaca news)
       Output: (positive, negative, neutral) probabilities per sentence/chunk
   → Step 5: Aggregation
       Combine FinBERT scores + topic assignments + source credibility weights
-      into per-ticker per-day features; only explicit relevance scores should be
-      treated as direct relevance evidence
+      into per-ticker per-day features; the review contract keeps the provenance classes
+      explicit (`direct`, `indirect`, `broad_market`, `contamination`) so dashboard counts
+      can separate direct target evidence from review-only context rows
 ```
 
 **Output features from NLP branch:**
