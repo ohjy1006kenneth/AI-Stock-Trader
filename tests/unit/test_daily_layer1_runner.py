@@ -169,18 +169,157 @@ def test_run_daily_layer1_happy_path_writes_history_and_completed_manifest(
     ]
 
 
-def test_run_daily_layer1_prefers_topic_sentence_count_when_sentiment_conflicts(
+def test_assembly_safe_sentiment_records_strip_generic_coverage_counts() -> None:
+    """Assembly sanitization keeps sentiment-specific coverage and drops generic count keys."""
+    cleaned = daily_layer1_module._assembly_safe_sentiment_records(
+        {
+            "AAPL": [
+                daily_layer1_module.FeatureRecord(
+                    date="2024-01-03",
+                    ticker="AAPL",
+                    features={
+                        "nlp_sentiment_score": 0.25,
+                        "nlp_article_count": 1,
+                        "nlp_sentence_count": 3,
+                        "nlp_relevance_accepted_count": 1,
+                        "nlp_relevance_borderline_count": 0,
+                    },
+                )
+            ]
+        }
+    )
+
+    assert cleaned["AAPL"][0].features == {
+        "nlp_sentiment_score": 0.25,
+        "nlp_relevance_accepted_count": 1,
+        "nlp_relevance_borderline_count": 0,
+    }
+
+
+def test_run_daily_layer1_prefers_topic_article_and_sentence_count_when_sentiment_conflicts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Layer 1 assembly keeps the topic-owned sentence count when sentiment disagrees."""
+    """Layer 1 assembly keeps the topic-owned counts when sentiment disagrees on both axes."""
     writer = local_writer(tmp_path, monkeypatch)
     seed_layer0_archives(
         writer,
         dates=["2024-01-03"],
         tickers=["AAPL"],
-        layer0_run_ids=("layer1-conflicting-sentences",),
+        layer0_run_ids=("layer1-conflicting-counts",),
     )
+
+    def rich_news_runner(config, *, writer: R2Writer):
+        records = [
+            NewsSentimentRecord(
+                date=config.as_of_date,
+                ticker="AAPL",
+                headline="Apple releases results.",
+                normalized_headline="apple releases results.",
+                text="Apple releases results.",
+                article_id="article-1",
+                sentence_index=0,
+                chunk_index=0,
+                source_text_order=0,
+                source="Reuters",
+                published_at=datetime(2024, 1, 3, 14, 30, tzinfo=UTC),
+            ),
+            NewsSentimentRecord(
+                date=config.as_of_date,
+                ticker="AAPL",
+                headline="Apple releases results.",
+                normalized_headline="apple releases results.",
+                text="Revenue beats expectations.",
+                article_id="article-1",
+                sentence_index=1,
+                chunk_index=1,
+                source_text_order=1,
+                source="Reuters",
+                published_at=datetime(2024, 1, 3, 14, 30, tzinfo=UTC),
+            ),
+            NewsSentimentRecord(
+                date=config.as_of_date,
+                ticker="AAPL",
+                headline="Apple expands services.",
+                normalized_headline="apple expands services.",
+                text="Apple expands services.",
+                article_id="article-2",
+                sentence_index=0,
+                chunk_index=0,
+                source_text_order=2,
+                source="Reuters",
+                published_at=datetime(2024, 1, 3, 15, 0, tzinfo=UTC),
+            ),
+            NewsSentimentRecord(
+                date=config.as_of_date,
+                ticker="AAPL",
+                headline="Apple expands services.",
+                normalized_headline="apple expands services.",
+                text="Margins improved again.",
+                article_id="article-2",
+                sentence_index=1,
+                chunk_index=1,
+                source_text_order=3,
+                source="Reuters",
+                published_at=datetime(2024, 1, 3, 15, 0, tzinfo=UTC),
+            ),
+        ]
+        output_key = layer1_news_preprocessing_path(config.as_of_date, config.run_id)
+        buffer = io.BytesIO()
+        records_to_news_sentiment_frame(records).to_parquet(buffer, index=False)
+        writer.put_object(output_key, buffer.getvalue())
+        return daily_layer1_module.NewsPreprocessingPipelineResult(
+            run_id=config.run_id,
+            output_key=output_key,
+            manifest_key=pipeline_manifest_path("layer1_news_preprocessing", config.run_id),
+            article_rows=2,
+            sentence_rows=4,
+            provenance_key="unused",
+            provenance_rows=4,
+        )
+
+    class _FakeEmbedder:
+        def encode(self, sentences: Sequence[str]) -> Sequence[Sequence[float]]:
+            return [[float(index), float(len(sentence))] for index, sentence in enumerate(sentences)]
+
+    class _FakeTopicLabeler:
+        def fit_transform(
+            self,
+            documents: Sequence[str],
+            embeddings: Sequence[Sequence[float]],
+        ) -> tuple[list[int], list[float]]:
+            return [0 for _ in documents], [0.9 for _ in documents]
+
+    def rich_topic_runner(config, *, writer: R2Writer):
+        preprocessed = news_sentiment_frame_to_records(
+            pd.read_parquet(io.BytesIO(writer.get_object(config.preprocessed_news_key)))
+        )
+        result = compute_text_topics(
+            preprocessed,
+            embedder=_FakeEmbedder(),  # type: ignore[arg-type]
+            topic_labeler=_FakeTopicLabeler(),
+            embedding_config=TextEmbeddingConfig(
+                model_name="test-embedder",
+                model_revision="test-revision",
+                embedding_dimension=2,
+            ),
+            topic_config=TopicModelConfig(model_name="test-topic-model", model_version="1.0"),
+        )
+        output_key = layer1_topic_feature_path(config.as_of_date, config.run_id)
+        writer.put_object(output_key, feature_records_to_parquet_bytes(result.feature_records))
+        return daily_layer1_module.TextTopicPipelineResult(
+            run_id=config.run_id,
+            embedding_key="unused",
+            topic_label_key="unused",
+            topic_review_key="unused",
+            topic_feature_key=output_key,
+            manifest_key=pipeline_manifest_path("layer1_text_topics", config.run_id),
+            sentence_rows=len(preprocessed),
+            article_rows=len(result.embeddings),
+            embedding_rows=len(result.embeddings),
+            topic_label_rows=len(result.topic_labels),
+            topic_feature_rows=len(result.feature_records),
+        )
 
     def conflicting_sentiment_runner(config, *, writer: R2Writer):
         output_key = layer1_sentiment_feature_path(config.as_of_date, config.run_id)
@@ -192,6 +331,10 @@ def test_run_daily_layer1_prefers_topic_sentence_count_when_sentiment_conflicts(
                     "nlp_sentiment_score": 0.25,
                     "nlp_article_count": 1,
                     "nlp_sentence_count": 3,
+                    "nlp_relevance_accepted_count": 1,
+                    "nlp_relevance_borderline_count": 0,
+                    "nlp_missing_topic_count": 0,
+                    "nlp_missing_relevance_evidence_count": 0,
                 },
             )
         ]
@@ -208,13 +351,13 @@ def test_run_daily_layer1_prefers_topic_sentence_count_when_sentiment_conflicts(
 
     result = run_daily_layer1(
         Layer1DailyConfig(
-            run_id="layer1-conflicting-sentences",
+            run_id="layer1-conflicting-counts",
             from_date="2024-01-03",
             to_date="2024-01-03",
         ),
         writer=writer,
-        news_runner=fake_news_runner(writer, ["AAPL"]),
-        text_topic_runner=fake_topic_runner(writer, ["AAPL"]),
+        news_runner=rich_news_runner,
+        text_topic_runner=rich_topic_runner,
         finbert_runner=conflicting_sentiment_runner,
         regime_runner=fake_regime_runner(writer),
         validation_output_dir=tmp_path / "reports",
@@ -224,8 +367,11 @@ def test_run_daily_layer1_prefers_topic_sentence_count_when_sentiment_conflicts(
     history = read_feature_records("AAPL", writer=writer)
 
     assert result.ready_for_layer2 is True
-    assert history[0].features["nlp_sentence_count"] == 1
+    assert history[0].features["nlp_article_count"] == 2
+    assert history[0].features["nlp_sentence_count"] == 4
     assert history[0].features["nlp_sentiment_score"] == pytest.approx(0.25)
+    assert history[0].features["nlp_relevance_accepted_count"] == 1
+    assert history[0].features["nlp_relevance_borderline_count"] == 0
 
 
 def test_run_daily_layer1_assembles_text_topics_without_article_count_conflict(

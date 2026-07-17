@@ -1159,8 +1159,9 @@ def _empty_fundamentals_frame():
 def _assembly_safe_sentiment_records(
     grouped_records: Mapping[str, Sequence[FeatureRecord]],
 ) -> dict[str, list[FeatureRecord]]:
-    """Drop duplicate sentiment keys that are already owned by the topic branch."""
+    """Drop sentiment-owned generic coverage keys before Layer 1 assembly."""
     cleaned: dict[str, list[FeatureRecord]] = {}
+    dropped_keys = {"nlp_article_count", "nlp_sentence_count"}
     for ticker, records in grouped_records.items():
         cleaned[ticker] = [
             FeatureRecord(
@@ -1169,7 +1170,7 @@ def _assembly_safe_sentiment_records(
                 features={
                     key: value
                     for key, value in record.features.items()
-                    if key != "nlp_sentence_count"
+                    if key not in dropped_keys
                 },
             )
             for record in records
