@@ -6,8 +6,11 @@ import json
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
+
 from app.lab.semantic_review_dashboard import _DashboardDefaults, _render_dashboard_html
 from core.features.aapl_evidence import build_layer1_aapl_evidence_report
+from core.features.regime_training import HMM_OPTIONAL_FEATURE_COLUMNS
 from core.features.semantic_review_dashboard import (
     build_layer1_semantic_review_dashboard_payload,
     build_layer1_semantic_review_dashboard_smoke_payload,
@@ -663,6 +666,127 @@ def test_semantic_review_smoke_reports_missing_hmm_manifest_metadata(tmp_path: P
     assert smoke["status"] == "fail"
     assert "missing_hmm_manifest" in failure_reasons
     assert "missing_training_window_metadata" in failure_reasons
+
+
+def test_semantic_review_smoke_allows_degraded_hmm_feature_set_when_layer2_ready(
+    tmp_path: Path,
+) -> None:
+    """Dropped HMM input columns should degrade, not block, when the manifest says layer 2 is ready."""
+    fixture = seed_semantic_review_fixture(local_root=tmp_path / "r2")
+    report = build_layer1_aapl_evidence_report(
+        run_id=str(fixture["run_id"]),
+        from_date="2026-05-21",
+        to_date="2026-05-22",
+        ticker="AAPL",
+        writer=fixture["writer"],
+    )
+    payload = copy.deepcopy(cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report)))
+    hmm_context = cast(dict[str, Any], payload["hmm_evaluation_context"])
+    hmm_context["warnings"] = ["incomplete_hmm_feature_set"]
+    hmm_context["dropped_feature_columns"] = list(HMM_OPTIONAL_FEATURE_COLUMNS)
+    hmm_context["expected_input_feature_columns"] = [
+        "spy_log_return_1d",
+        "spy_return_5d",
+        "spy_realized_vol_21d",
+        "spy_realized_vol_63d",
+        "spy_vol_ratio_21_63",
+        "spy_drawdown_63d",
+        "vix_level",
+        "vix_change_5d",
+        "yield_curve_slope_10y_2y",
+        "yield_curve_slope_10y_3m",
+        "high_yield_spread",
+    ]
+    hmm_context["input_feature_columns_used"] = [
+        "spy_log_return_1d",
+        "spy_return_5d",
+        "spy_realized_vol_21d",
+        "spy_realized_vol_63d",
+        "spy_vol_ratio_21_63",
+        "spy_drawdown_63d",
+        "vix_level",
+        "vix_change_5d",
+        "yield_curve_slope_10y_2y",
+        "yield_curve_slope_10y_3m",
+    ]
+    hmm_context["feature_set_optional_columns"] = list(HMM_OPTIONAL_FEATURE_COLUMNS)
+    hmm_context["training_windows"] = [
+        {
+            "train_start_date": "2026-02-02",
+            "train_end_date": "2026-05-20",
+            "macro_load_start_date": "2026-02-02",
+            "macro_load_end_date": "2026-05-22",
+            "training_rows": 770,
+            "complete_training_rows": 770,
+        }
+    ]
+    hmm_context["regime_layer2_ready"] = True
+    hmm_context["complete_training_rows_sufficient"] = True
+    hmm_context["feature_set_status"] = "degraded"
+    hmm_context["feature_set_blocking"] = None
+
+    smoke = validate_layer1_semantic_review_dashboard_payload(payload)
+    failures = cast(list[dict[str, Any]], smoke["failures"])
+
+    assert smoke["status"] == "pass"
+    assert smoke["ready_for_final_human_acceptance"] is True
+    assert hmm_context["dropped_feature_columns"] == list(HMM_OPTIONAL_FEATURE_COLUMNS)
+    assert hmm_context["feature_set_optional_columns"] == list(HMM_OPTIONAL_FEATURE_COLUMNS)
+    assert hmm_context["feature_set_status"] == "degraded"
+    assert hmm_context["warnings"] == ["incomplete_hmm_feature_set"]
+    assert not any(item["stage"] == "hmm_evaluation_context" for item in failures)
+
+
+@pytest.mark.parametrize(
+    "dropped_columns",
+    [
+        ["vix_level"],
+        ["spy_log_return_1d"],
+        ["high_yield_spread", "vix_level"],
+    ],
+)
+def test_semantic_review_smoke_blocks_non_allowlisted_hmm_feature_drops(
+    tmp_path: Path,
+    dropped_columns: list[str],
+) -> None:
+    """Only the allowlisted HMM drop may degrade; other missing inputs must block smoke."""
+    fixture = seed_semantic_review_fixture(local_root=tmp_path / "r2")
+    report = build_layer1_aapl_evidence_report(
+        run_id=str(fixture["run_id"]),
+        from_date="2026-05-21",
+        to_date="2026-05-22",
+        ticker="AAPL",
+        writer=fixture["writer"],
+    )
+    payload = copy.deepcopy(cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report)))
+    hmm_context = cast(dict[str, Any], payload["hmm_evaluation_context"])
+    hmm_context["warnings"] = ["incomplete_hmm_feature_set"]
+    hmm_context["dropped_feature_columns"] = dropped_columns
+    hmm_context["feature_set_optional_columns"] = list(HMM_OPTIONAL_FEATURE_COLUMNS)
+    hmm_context["training_windows"] = [
+        {
+            "train_start_date": "2026-02-02",
+            "train_end_date": "2026-05-20",
+            "macro_load_start_date": "2026-02-02",
+            "macro_load_end_date": "2026-05-22",
+            "training_rows": 770,
+            "complete_training_rows": 770,
+        }
+    ]
+    hmm_context["regime_layer2_ready"] = True
+    hmm_context["complete_training_rows_sufficient"] = True
+    hmm_context["feature_set_status"] = "degraded"
+    hmm_context["feature_set_blocking"] = None
+
+    smoke = validate_layer1_semantic_review_dashboard_payload(payload)
+    failures = cast(list[dict[str, Any]], smoke["failures"])
+    hmm_failure = next(item for item in failures if item["stage"] == "hmm_evaluation_context")
+
+    assert smoke["status"] == "fail"
+    assert hmm_context["feature_set_optional_columns"] == list(HMM_OPTIONAL_FEATURE_COLUMNS)
+    assert hmm_context["warnings"] == ["incomplete_hmm_feature_set"]
+    assert hmm_failure["reason"] == "hmm_context_blocker_warnings"
+    assert "incomplete_hmm_feature_set" in cast(list[str], hmm_failure["warning_codes"])
 
 
 def test_semantic_review_smoke_reports_missing_stage_keys(tmp_path: Path) -> None:

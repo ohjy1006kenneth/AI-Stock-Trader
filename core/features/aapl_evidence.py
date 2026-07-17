@@ -20,7 +20,10 @@ from core.features.news_assignment_provenance import (
     NEWS_EVIDENCE_RELEVANCE_WEIGHTS,
     NewsEvidenceClass,
 )
-from core.features.regime_training import HMM_TRAINING_FEATURE_COLUMNS
+from core.features.regime_training import (
+    HMM_OPTIONAL_FEATURE_COLUMNS,
+    HMM_TRAINING_FEATURE_COLUMNS,
+)
 from core.features.text_topics import build_topic_review_payload
 from services.r2.paths import (
     layer1_feature_path,
@@ -1319,8 +1322,21 @@ def _build_hmm_evaluation_context(
             for column in _json_string_list(manifest.get("dropped_feature_columns"))
         }
     )
+    optional_columns = set(HMM_OPTIONAL_FEATURE_COLUMNS)
+    non_optional_dropped_columns = [
+        column for column in dropped_columns if column not in optional_columns
+    ]
     expected_columns = list(HMM_TRAINING_FEATURE_COLUMNS)
     active_columns = [column for column in expected_columns if column not in set(dropped_columns)]
+    training_windows = _training_windows_from_manifests(manifests)
+    regime_layer2_ready = bool(manifests) and all(
+        _maybe_bool(manifest.get("regime_layer2_ready")) is True for manifest in manifests
+    )
+    complete_training_rows_sufficient = _training_rows_are_complete(training_windows)
+    feature_set_status = "complete" if not dropped_columns else "degraded"
+    feature_set_blocking = bool(non_optional_dropped_columns) or (
+        bool(dropped_columns) and not (regime_layer2_ready and complete_training_rows_sufficient)
+    )
     warnings: list[str] = []
     if not source_manifest_keys:
         warnings.append("missing_hmm_manifest")
@@ -1344,13 +1360,19 @@ def _build_hmm_evaluation_context(
         "expected_input_feature_columns": expected_columns,
         "input_feature_columns_used": active_columns,
         "dropped_feature_columns": dropped_columns,
+        "feature_set_status": feature_set_status,
+        "feature_set_blocking": feature_set_blocking,
+        "feature_set_optional_columns": list(HMM_OPTIONAL_FEATURE_COLUMNS),
+        "feature_set_non_optional_dropped_columns": non_optional_dropped_columns,
+        "regime_layer2_ready": regime_layer2_ready,
         "requested_inference_dates": list(dates),
         "observed_inference_dates": observed_dates,
         "missing_inference_dates": missing_dates,
         "unexpected_inference_dates": unexpected_dates,
         "not_evaluated_dates": not_evaluated_dates,
         "stale_manifest_dates": stale_manifest_dates,
-        "training_windows": _training_windows_from_manifests(manifests),
+        "training_windows": training_windows,
+        "complete_training_rows_sufficient": complete_training_rows_sufficient,
         "source_artifact_keys": list(artifact_keys.get("regime", [])),
         "source_manifest_keys": source_manifest_keys,
         "manifest_summaries": manifests,
@@ -1392,6 +1414,42 @@ def _training_windows_from_manifests(
         seen.add(key)
         windows.append(window)
     return windows
+
+
+def _training_rows_are_complete(windows: Sequence[Mapping[str, object]]) -> bool:
+    """Return True when each manifest window has complete training rows available."""
+    if not windows:
+        return False
+    for window in windows:
+        training_rows = _maybe_int(window.get("training_rows"))
+        complete_training_rows = _maybe_int(window.get("complete_training_rows"))
+        if training_rows is None or complete_training_rows is None:
+            return False
+        if training_rows != complete_training_rows:
+            return False
+    return True
+
+
+def _hmm_feature_set_is_blocking(hmm_context: Mapping[str, object]) -> bool:
+    """Return True when a dropped HMM input column should still block acceptance."""
+    dropped_columns = _json_string_list(hmm_context.get("dropped_feature_columns"))
+    if not dropped_columns:
+        return False
+    non_optional_dropped_columns = [
+        column for column in dropped_columns if column not in set(HMM_OPTIONAL_FEATURE_COLUMNS)
+    ]
+    if non_optional_dropped_columns:
+        return True
+    if not _maybe_bool(hmm_context.get("regime_layer2_ready")):
+        return True
+    if not _maybe_bool(hmm_context.get("complete_training_rows_sufficient")):
+        return True
+    training_windows = hmm_context.get("training_windows")
+    if not isinstance(training_windows, Sequence) or isinstance(training_windows, str):
+        return True
+    return not _training_rows_are_complete(
+        [window for window in training_windows if isinstance(window, Mapping)]
+    )
 
 
 def _load_date_partitioned_artifacts(
@@ -2016,6 +2074,9 @@ def build_layer1_semantic_review_dashboard_smoke_result(
             }
         )
     hmm_warnings = set(_json_string_list(hmm_context.get("warnings")))
+    feature_set_blocking = _maybe_bool(hmm_context.get("feature_set_blocking"))
+    if feature_set_blocking is None:
+        feature_set_blocking = _hmm_feature_set_is_blocking(hmm_context)
     blocker_warnings = {
         "missing_hmm_manifest",
         "missing_hmm_inference_dates",
@@ -2024,6 +2085,8 @@ def build_layer1_semantic_review_dashboard_smoke_result(
         "incomplete_hmm_feature_set",
         "missing_training_window_metadata",
     }
+    if not feature_set_blocking:
+        blocker_warnings.discard("incomplete_hmm_feature_set")
     if hmm_warnings & blocker_warnings:
         failures.append(
             {

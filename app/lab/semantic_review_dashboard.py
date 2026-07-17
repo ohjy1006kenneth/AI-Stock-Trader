@@ -286,8 +286,8 @@ def _render_smoke_html(defaults: _DashboardDefaults, payload: Mapping[str, objec
             "to_date": defaults.to_date,
             "ticker": defaults.ticker,
         }
-    )
-    payload_json = json.dumps(payload, sort_keys=True)
+    ).replace("</", "<\\/")
+    payload_json = json.dumps(payload, sort_keys=True).replace("</", "<\\/")
     return f"""<!doctype html>
 <html lang=\"en\">
 <head>
