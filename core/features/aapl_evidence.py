@@ -16,6 +16,10 @@ from typing import Any
 import pandas as pd
 
 from core.common.trading_calendar import skipped_non_trading_dates, trading_dates
+from core.features.news_assignment_provenance import (
+    NEWS_EVIDENCE_RELEVANCE_WEIGHTS,
+    NewsEvidenceClass,
+)
 from core.features.regime_training import HMM_TRAINING_FEATURE_COLUMNS
 from core.features.text_topics import build_topic_review_payload
 from services.r2.paths import (
@@ -65,6 +69,10 @@ class SemanticReviewSentenceRow:
     neutral_probability: float | None
     relevance_score: float | None
     row_granularity: str
+    assignment_classification: str | None = None
+    assignment_reason: str | None = None
+    assignment_weight: float | None = None
+    assignment_evidence_kinds: tuple[str, ...] = field(default_factory=tuple)
 
     def to_dict(self) -> dict[str, object]:
         """Return a JSON-serializable representation."""
@@ -92,6 +100,8 @@ class SemanticReviewArticleGroup:
     relevance_state: str
     article_status: str
     contamination_flags: tuple[str, ...]
+    assignment_classifications: tuple[str, ...]
+    assignment_reasons: tuple[str, ...]
     requested_ticker_terms: tuple[str, ...]
     requested_ticker_term_hits: tuple[str, ...]
     evidence_snippets: tuple[str, ...]
@@ -637,7 +647,11 @@ def _build_article_groups(
                 for snippet in snippets
             )
         )
-        relevance_score = _first_non_null_float(article_frame["relevance_score"])
+        relevance_scores = [
+            score for score in (_maybe_float(value) for value in article_frame["relevance_score"])
+            if score is not None
+        ]
+        relevance_score = min(relevance_scores) if relevance_scores else None
         ticker_field = str(_first_non_null(article_frame["ticker"]))
         contamination_flags: list[str] = []
         if ticker_field and ticker_field != requested_ticker:
@@ -660,24 +674,57 @@ def _build_article_groups(
         if "low_relevance_score" in contamination_flags or "missing_relevance_score" in contamination_flags:
             weak_count += 1
 
-        sentence_rows = [
-            SemanticReviewSentenceRow(
-                sentence_index=_maybe_int(row["sentence_index"]),
-                chunk_index=_maybe_int(row.get("chunk_index")),
-                source_text_field=_optional_str(row.get("source_text_field")),
-                source_text_order=_maybe_int(row.get("source_text_order")),
-                ticker_mentions=_json_string_list(row.get("ticker_mentions")),
-                entity_mentions=_json_string_list(row.get("entity_mentions")),
-                text=_optional_str(row["text"]),
-                sentiment_score=_maybe_float(row["sentiment_score"]),
-                positive_probability=_maybe_float(row["positive_probability"]),
-                negative_probability=_maybe_float(row["negative_probability"]),
-                neutral_probability=_maybe_float(row["neutral_probability"]),
-                relevance_score=_maybe_float(row["relevance_score"]),
-                row_granularity="sentence-level",
-            ).to_dict()
-            for _, row in article_frame.iterrows()
-        ]
+        sentence_rows: list[dict[str, object]] = []
+        for _, row in article_frame.iterrows():
+            assignment_fields = _assignment_provenance_fields(
+                row,
+                fallback_rows=preprocessing_by_article.get((str(date_text), str(article_id)), []),
+            )
+            sentence_rows.append(
+                SemanticReviewSentenceRow(
+                    sentence_index=_maybe_int(row["sentence_index"]),
+                    chunk_index=_maybe_int(row.get("chunk_index")),
+                    source_text_field=_optional_str(row.get("source_text_field")),
+                    source_text_order=_maybe_int(row.get("source_text_order")),
+                    ticker_mentions=_json_string_list(row.get("ticker_mentions")),
+                    entity_mentions=_json_string_list(row.get("entity_mentions")),
+                    text=_optional_str(row["text"]),
+                    sentiment_score=_maybe_float(row["sentiment_score"]),
+                    positive_probability=_maybe_float(row["positive_probability"]),
+                    negative_probability=_maybe_float(row["negative_probability"]),
+                    neutral_probability=_maybe_float(row["neutral_probability"]),
+                    relevance_score=_maybe_float(row["relevance_score"]),
+                    assignment_classification=assignment_fields["assignment_classification"],
+                    assignment_reason=assignment_fields["assignment_reason"],
+                    assignment_weight=assignment_fields["assignment_weight"],
+                    assignment_evidence_kinds=tuple(assignment_fields["assignment_evidence_kinds"]),
+                    row_granularity="sentence-level",
+                ).to_dict()
+            )
+        assignment_classifications = tuple(
+            _dedupe_preserve_order(
+                [
+                    classification
+                    for classification in (
+                        _optional_str(row.get("assignment_classification"))
+                        for row in sentence_rows
+                    )
+                    if classification
+                ]
+            )
+        )
+        assignment_reasons = tuple(
+            _dedupe_preserve_order(
+                [
+                    reason
+                    for reason in (
+                        _optional_str(row.get("assignment_reason"))
+                        for row in sentence_rows
+                    )
+                    if reason
+                ]
+            )
+        )
         article_groups.append(
             SemanticReviewArticleGroup(
                 article_id=str(article_id),
@@ -697,6 +744,8 @@ def _build_article_groups(
                 relevance_state=_relevance_state(relevance_score, threshold=relevance_threshold),
                 article_status=article_status,
                 contamination_flags=tuple(contamination_flags),
+                assignment_classifications=assignment_classifications,
+                assignment_reasons=assignment_reasons,
                 requested_ticker_terms=_ticker_terms(requested_ticker),
                 requested_ticker_term_hits=requested_ticker_term_hits,
                 evidence_snippets=evidence_snippets,
@@ -1396,6 +1445,73 @@ def _load_date_partitioned_artifacts(
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
+def _assignment_provenance_fields(
+    row: Any,
+    *,
+    fallback_rows: Sequence[Mapping[str, object]] = (),
+) -> dict[str, object]:
+    """Return compact assignment provenance fields for dashboard payloads."""
+    provenance = _json_mapping(row.get("source_text_provenance"))
+    if not provenance and fallback_rows:
+        provenance = _assignment_provenance_from_rows(row, fallback_rows)
+    classification = _optional_str(
+        provenance.get("assignment_classification") or provenance.get("classification")
+    )
+    evidence_kinds = _json_string_list(
+        provenance.get("assignment_evidence_kinds") or provenance.get("evidence_kinds")
+    )
+    assignment_reason = _optional_str(
+        provenance.get("assignment_reason") or provenance.get("reason")
+    )
+    assignment_weight = provenance.get("assignment_weight")
+    if classification is not None:
+        try:
+            assignment_weight = NEWS_EVIDENCE_RELEVANCE_WEIGHTS[NewsEvidenceClass(classification)]
+        except ValueError:
+            assignment_weight = _maybe_float(assignment_weight)
+    else:
+        assignment_weight = _maybe_float(assignment_weight)
+    return {
+        "assignment_classification": classification,
+        "assignment_reason": assignment_reason,
+        "assignment_weight": assignment_weight,
+        "assignment_evidence_kinds": evidence_kinds,
+    }
+
+
+def _assignment_provenance_from_rows(
+    row: Any,
+    fallback_rows: Sequence[Mapping[str, object]],
+) -> dict[str, object]:
+    """Return the first matching provenance mapping from related preprocessing rows."""
+    row_date = _optional_str(row.get("date"))
+    row_article_id = _optional_str(row.get("article_id"))
+    row_sentence_index = _maybe_int(row.get("sentence_index"))
+    row_chunk_index = _maybe_int(row.get("chunk_index"))
+    row_source_text_order = _maybe_int(row.get("source_text_order"))
+    for candidate in fallback_rows:
+        candidate_provenance = _json_mapping(candidate.get("source_text_provenance"))
+        if not candidate_provenance:
+            continue
+        if row_date and _optional_str(candidate.get("date")) != row_date:
+            continue
+        if row_article_id and _optional_str(candidate.get("article_id")) != row_article_id:
+            continue
+        candidate_sentence_index = _maybe_int(candidate.get("sentence_index"))
+        candidate_chunk_index = _maybe_int(candidate.get("chunk_index"))
+        candidate_source_text_order = _maybe_int(candidate.get("source_text_order"))
+        if row_sentence_index is not None and candidate_sentence_index == row_sentence_index:
+            return candidate_provenance
+        if row_chunk_index is not None and candidate_chunk_index == row_chunk_index:
+            return candidate_provenance
+        if (
+            row_source_text_order is not None
+            and candidate_source_text_order == row_source_text_order
+        ):
+            return candidate_provenance
+    return {}
+
+
 def _preprocessing_rows(
     frame: pd.DataFrame,
     *,
@@ -1411,6 +1527,7 @@ def _preprocessing_rows(
         ticker_mentions = _json_string_list(row.get("ticker_mentions"))
         entity_mentions = _json_string_list(row.get("entity_mentions"))
         provenance = _json_mapping(row.get("source_text_provenance"))
+        assignment_fields = _assignment_provenance_fields(row)
         flags: list[str] = []
         if requested_ticker not in {value.upper() for value in ticker_mentions}:
             flags.append("missing_requested_ticker_mention")
@@ -1436,6 +1553,10 @@ def _preprocessing_rows(
                 "source_text_provenance": provenance,
                 "ticker_mentions": ticker_mentions,
                 "entity_mentions": entity_mentions,
+                "assignment_classification": assignment_fields["assignment_classification"],
+                "assignment_reason": assignment_fields["assignment_reason"],
+                "assignment_weight": assignment_fields["assignment_weight"],
+                "assignment_evidence_kinds": assignment_fields["assignment_evidence_kinds"],
                 "missing_evidence_flags": flags,
                 "artifact_key": _optional_str(row.get("_artifact_key")),
                 "stage": "ticker_entity_preprocessing",
