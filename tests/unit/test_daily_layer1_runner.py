@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import pickle
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -30,14 +31,21 @@ from app.lab.data_pipelines.run_hmm_regime_detection import REGIME_STAGE
 from app.lab.data_pipelines.run_news_preprocessing import NLP_PREPROCESSING_STAGE
 from app.lab.data_pipelines.run_text_topics import TEXT_TOPICS_STAGE
 from app.lab.data_pipelines.validate_layer1_archive import Layer1ValidationReport
-from core.contracts.schemas import PipelineManifestRecord, RunStatus
+from core.contracts.schemas import NewsSentimentRecord, PipelineManifestRecord, RunStatus
 from core.features.io import feature_records_to_parquet_bytes, read_feature_records
+from core.features.news_preprocessing import (
+    news_sentiment_frame_to_records,
+    records_to_news_sentiment_frame,
+)
 from core.features.sector_features import SectorEtfConfig
+from core.features.text_topics import TextEmbeddingConfig, TopicModelConfig, compute_text_topics
 from services.order_book.config import OrderBookFeatureConfig
 from services.r2.client import CloudflareR2Client
 from services.r2.paths import (
+    layer1_news_preprocessing_path,
     layer1_regime_path,
     layer1_sentiment_feature_path,
+    layer1_topic_feature_path,
     layer1_validation_report_path,
     pipeline_manifest_path,
     raw_macro_path,
@@ -218,6 +226,123 @@ def test_run_daily_layer1_prefers_topic_sentence_count_when_sentiment_conflicts(
     assert result.ready_for_layer2 is True
     assert history[0].features["nlp_sentence_count"] == 1
     assert history[0].features["nlp_sentiment_score"] == pytest.approx(0.25)
+
+
+def test_run_daily_layer1_assembles_text_topics_without_article_count_conflict(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Real topic aggregation keeps article counts aligned with sentiment during assembly."""
+    writer = local_writer(tmp_path, monkeypatch)
+    seed_layer0_archives(
+        writer,
+        dates=["2024-01-03"],
+        tickers=["AAPL"],
+        layer0_run_ids=("layer1-duplicate-article-topic-count",),
+    )
+
+    def duplicate_news_runner(config, *, writer: R2Writer):
+        records = [
+            NewsSentimentRecord(
+                date=config.as_of_date,
+                ticker="AAPL",
+                headline="Apple releases results.",
+                normalized_headline="apple releases results.",
+                text="Apple releases results.",
+                article_id="article-1",
+                sentence_index=0,
+                chunk_index=0,
+                source_text_order=0,
+                source="Reuters",
+                published_at=datetime(2024, 1, 3, 14, 30, tzinfo=UTC),
+            ),
+            NewsSentimentRecord(
+                date=config.as_of_date,
+                ticker="AAPL",
+                headline="Apple releases results.",
+                normalized_headline="apple releases results.",
+                text="Revenue beats expectations.",
+                article_id="article-1",
+                sentence_index=1,
+                chunk_index=1,
+                source_text_order=1,
+                source="Reuters",
+                published_at=datetime(2024, 1, 3, 14, 30, tzinfo=UTC),
+            ),
+        ]
+        output_key = layer1_news_preprocessing_path(config.as_of_date, config.run_id)
+        buffer = io.BytesIO()
+        records_to_news_sentiment_frame(records).to_parquet(buffer, index=False)
+        writer.put_object(output_key, buffer.getvalue())
+        return daily_layer1_module.NewsPreprocessingPipelineResult(
+            run_id=config.run_id,
+            output_key=output_key,
+            manifest_key=pipeline_manifest_path("layer1_news_preprocessing", config.run_id),
+            article_rows=1,
+            sentence_rows=2,
+            provenance_key="unused",
+            provenance_rows=2,
+        )
+
+    class _FakeEmbedder:
+        def encode(self, sentences: Sequence[str]) -> Sequence[Sequence[float]]:
+            return [[float(index), float(len(sentence))] for index, sentence in enumerate(sentences)]
+
+    class _FakeTopicLabeler:
+        def fit_transform(self, documents: Sequence[str], embeddings: Sequence[Sequence[float]]) -> tuple[list[int], list[float]]:
+            return [0 for _ in documents], [0.9 for _ in documents]
+
+    def topic_runner(config, *, writer: R2Writer):
+        preprocessed = news_sentiment_frame_to_records(
+            pd.read_parquet(io.BytesIO(writer.get_object(config.preprocessed_news_key)))
+        )
+        result = compute_text_topics(
+            preprocessed,
+            embedder=_FakeEmbedder(),  # type: ignore[arg-type]
+            topic_labeler=_FakeTopicLabeler(),
+            embedding_config=TextEmbeddingConfig(
+                model_name="test-embedder",
+                model_revision="test-revision",
+                embedding_dimension=2,
+            ),
+            topic_config=TopicModelConfig(model_name="test-topic-model", model_version="1.0"),
+        )
+        output_key = layer1_topic_feature_path(config.as_of_date, config.run_id)
+        writer.put_object(output_key, feature_records_to_parquet_bytes(result.feature_records))
+        return daily_layer1_module.TextTopicPipelineResult(
+            run_id=config.run_id,
+            embedding_key="unused",
+            topic_label_key="unused",
+            topic_review_key="unused",
+            topic_feature_key=output_key,
+            manifest_key=pipeline_manifest_path("layer1_text_topics", config.run_id),
+            sentence_rows=len(preprocessed),
+            article_rows=len(result.embeddings),
+            embedding_rows=len(result.embeddings),
+            topic_label_rows=len(result.topic_labels),
+            topic_feature_rows=len(result.feature_records),
+        )
+
+    result = run_daily_layer1(
+        Layer1DailyConfig(
+            run_id="layer1-duplicate-article-topic-count",
+            from_date="2024-01-03",
+            to_date="2024-01-03",
+        ),
+        writer=writer,
+        news_runner=duplicate_news_runner,
+        text_topic_runner=topic_runner,
+        finbert_runner=fake_sentiment_runner(writer, ["AAPL"]),
+        regime_runner=fake_regime_runner(writer),
+        validation_output_dir=tmp_path / "reports",
+        now=datetime(2024, 1, 4, 12, 0, tzinfo=UTC),
+    )
+
+    history = read_feature_records("AAPL", writer=writer)
+
+    assert result.ready_for_layer2 is True
+    assert history[0].features["nlp_article_count"] == 1
+    assert history[0].features["nlp_sentence_count"] == 2
 
 
 def test_run_daily_layer1_adds_optional_order_book_features_without_breaking_missing_dates(
