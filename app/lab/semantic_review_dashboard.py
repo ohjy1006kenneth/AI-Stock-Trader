@@ -1216,6 +1216,15 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
               <div class="compact"><div class="k">Normalized headline</div><div class="v">${{escapeHtml(article.normalized_headline || 'n/a')}}</div><div class="k">raw: normalized_headline</div></div>
               <div class="compact"><div class="k">Relevance state</div><div class="v">${{escapeHtml(article.relevance_state || 'n/a')}}</div><div class="k">raw: relevance_state</div></div>
             </div>
+            ${{(article.preprocessing_rows_truncated || article.topic_evidence_truncated || article.relevance_gate_rows_truncated || article.sentence_rows_truncated || article.full_scored_text_truncated) ? `<p class="article-copy muted"><strong>Representative detail:</strong> ${{
+              [
+                article.preprocessing_rows_truncated ? `preprocessing ${{article.preprocessing_rows?.length || 0}}/${{article.preprocessing_row_count || 0}}` : null,
+                article.topic_evidence_truncated ? `topic ${{article.topic_evidence?.length || 0}}/${{article.topic_evidence_row_count || 0}}` : null,
+                article.relevance_gate_rows_truncated ? `relevance gate ${{article.relevance_gate_rows?.length || 0}}/${{article.relevance_gate_row_count || 0}}` : null,
+                article.sentence_rows_truncated ? `sentence rows ${{article.sentence_rows?.length || 0}}/${{article.sentence_row_count || 0}}` : null,
+                article.full_scored_text_truncated ? 'full scored text preview only' : null,
+              ].filter(Boolean).join(' · ')
+            }}</p>` : ''}}
             <p class="article-copy"><strong>Evidence snippets:</strong> ${{snippets.length ? snippets.map(escapeHtml).join(' · ') : 'none'}}</p>
             <p class="article-copy"><strong>Ticker evidence:</strong> ${{tickerHits.length ? tickerHits.map(escapeHtml).join(', ') : 'none'}}</p>
             ${{flags.length ? `<p class="article-copy bad"><strong>Flags:</strong> ${{flags.map(escapeHtml).join(', ')}}</p>` : ''}}
@@ -1344,7 +1353,10 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
 
     function renderFinbertArticle(article) {{
       const rows = Array.isArray(article.sentence_rows) ? article.sentence_rows : [];
-      const rowCount = rows.length;
+      const sampleCount = rows.length;
+      const totalCount = Number(article.sentence_row_count || sampleCount);
+      const rowCount = sampleCount;
+      const scoredText = article.full_scored_text_preview || article.full_scored_text || '';
       return `
         <details class="article">
           <summary>
@@ -1352,18 +1364,19 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
             <span class="badge ${{article.article_status === 'accepted' ? 'good' : 'warn'}}">${{article.article_status === 'accepted' ? 'Accepted for review' : 'Needs a closer look'}}</span>
             <span class="badge" title="Derived from sentence-level sentiment labels">${{escapeHtml(sentimentLabelCounts(article.sentiment_label_counts))}}</span>
             <span class="badge" title="Raw field: article_id">article_id: ${{escapeHtml(article.article_id || 'n/a')}}</span>
-            <span class="badge" title="Raw field: sentence rows">rows: ${{rowCount}}</span>
+            <span class="badge" title="Raw field: sentence rows">rows: ${{rowCount}} / ${{totalCount}}</span>
           </summary>
           <div class="body">
-            <p class="article-copy">What am I looking at? The full FinBERT-scored text for one article and its sentence-level rows. Why does it matter? Reviewers can verify the exact text that was scored, the source-text field/order, and the sentiment/relevance outputs without guessing. What would make this good or bad? Good: all rows have full text and the ordering matches the scored artifact. Bad: the dashboard has to warn about missing text or a source-artifact gap.</p>
+            <p class="article-copy">What am I looking at? The scored text for one article and a representative sample of its sentence-level rows. Why does it matter? Reviewers can verify the exact text that was scored, the source-text field/order, and the sentiment/relevance outputs without guessing. What would make this good or bad? Good: the sample matches the scored artifact and the total row count is visible. Bad: missing text or a source-artifact gap.</p>
             <div class="compact-grid">
               <div class="compact"><div class="k">Published</div><div class="v">${{escapeHtml(article.published_at || 'n/a')}}</div><div class="k">raw: published_at</div></div>
               <div class="compact"><div class="k">Source</div><div class="v">${{escapeHtml(article.source || 'n/a')}}</div><div class="k">raw: source</div></div>
               <div class="compact"><div class="k">Full text available</div><div class="v">${{article.full_scored_text_available ? 'yes' : 'no'}}</div><div class="k">raw: full_scored_text_available</div></div>
               <div class="compact"><div class="k">Missing text rows</div><div class="v">${{Number(article.missing_text_row_count || 0)}}</div><div class="k">raw: missing_text_row_count</div></div>
             </div>
-            ${{article.full_scored_text ? `<p class="article-copy"><strong>Full scored text:</strong> ${{escapeHtml(article.full_scored_text)}}</p>` : ''}}
+            ${{article.full_scored_text_truncated ? `<p class="article-copy muted"><strong>Scored text preview:</strong> ${{escapeHtml(scoredText)}}…</p>` : scoredText ? `<p class="article-copy"><strong>Scored text:</strong> ${{escapeHtml(scoredText)}}</p>` : ''}}
             ${{article.full_scored_text_warning ? `<div class="chart-blocker"><h3>Full scored text unavailable</h3><p>${{escapeHtml(article.full_scored_text_warning)}}</p><p>${{escapeHtml(article.source_artifact_gap || 'The source artifact is missing full scored text.')}}</p></div>` : ''}}
+            ${{article.sentence_rows_truncated ? `<p class="article-copy muted">Showing ${{sampleCount}} of ${{totalCount}} sentence rows for this article.</p>` : ''}}
             <div class="row-list">
               ${{rows.length ? rows.map(renderSentenceRow).join('') : '<p class="muted">No sentence rows were loaded for this article.</p>'}}
             </div>
@@ -1456,6 +1469,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
           </summary>
           <div class="body">
             <p class="article-copy">What am I looking at? The evidence trail that decides whether this story belongs to the selected ticker before FinBERT sentiment should count. Why does it matter? Ticker/entity evidence, embeddings, topics, and relevance-gate sub-scores should agree before the row is trusted. What would make this good or bad? Good: direct ticker or entity support, embedding and topic rows, an accepted gate decision, and coherent reason codes. Bad: missing evidence, rejected gate rows, or a default score shown without support.</p>
+            ${{row.evidence_sampling_note ? `<p class="article-copy muted">${{escapeHtml(row.evidence_sampling_note)}} — preprocessing ${{preprocessingRows.length}}/${{Number(row.preprocessing_row_count || 0)}}, embeddings ${{embeddingEvidence.length}}/${{Number(row.embedding_evidence_row_count || 0)}}, topics ${{topicEvidence.length}}/${{Number(row.topic_evidence_row_count || 0)}}, relevance ${{relevanceRows.length}}/${{Number(row.relevance_gate_row_count || 0)}}.</p>` : ''}}
             ${{flags.length ? `<details class="row-item"><summary>Evidence flags <span class="badge ${{statusClassName}}">${{flags.length}}</span></summary><div class="body"><p class="article-copy">${{escapeHtml(row.relevance_score_interpretation || 'missing/default evidence')}}</p><ul>${{flags.map((flag) => `<li>${{escapeHtml(flag)}}</li>`).join('')}}</ul></div></details>` : ''}}
             <div class="compact-grid">
               <div class="compact"><div class="k">Evidence status</div><div class="v">${{escapeHtml(status)}}</div><div class="k">raw: evidence_status</div></div>
@@ -1471,9 +1485,9 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
               <div class="compact"><div class="k">Source ticker tags</div><div class="v">${{escapeHtml(sourceTickers.length ? sourceTickers.join(', ') : 'none')}}</div><div class="k">raw: ticker_evidence.source_tickers</div></div>
               <div class="compact"><div class="k">Entity mentions</div><div class="v">${{escapeHtml(entityMentions.length ? entityMentions.join(', ') : 'none')}}</div><div class="k">raw: preprocessing entity_mentions</div></div>
               <div class="compact"><div class="k">Gate entities</div><div class="v">${{escapeHtml(gateEntities.length ? gateEntities.join(', ') : 'none')}}</div><div class="k">raw: relevance_gate entity_evidence</div></div>
-              <div class="compact"><div class="k">Embedding rows</div><div class="v">${{embeddingEvidence.length}}</div><div class="k">raw: embedding_evidence</div></div>
-              <div class="compact"><div class="k">Topic rows</div><div class="v">${{topicEvidence.length}}</div><div class="k">raw: topic_evidence</div></div>
-              <div class="compact"><div class="k">Relevance-gate rows</div><div class="v">${{relevanceRows.length}}</div><div class="k">raw: relevance_gate_rows</div></div>
+              <div class="compact"><div class="k">Embedding rows</div><div class="v">${{embeddingEvidence.length}} / ${{Number(row.embedding_evidence_row_count || embeddingEvidence.length)}}</div><div class="k">raw: embedding_evidence</div></div>
+              <div class="compact"><div class="k">Topic rows</div><div class="v">${{topicEvidence.length}} / ${{Number(row.topic_evidence_row_count || topicEvidence.length)}}</div><div class="k">raw: topic_evidence</div></div>
+              <div class="compact"><div class="k">Relevance-gate rows</div><div class="v">${{relevanceRows.length}} / ${{Number(row.relevance_gate_row_count || relevanceRows.length)}}</div><div class="k">raw: relevance_gate_rows</div></div>
             </div>
             <details class="row-item">
               <summary>Embedding cache and BERTopic metadata</summary>
@@ -1722,7 +1736,9 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       button.addEventListener('click', () => setActiveTab(button.dataset.tabTarget || 'summary-gate-tab'));
     }});
 
-    function renderNlpPipelineSection(sections) {{
+    function renderNlpPipelineSection(payload) {{
+      const sections = payload.pipeline_sections || {{}};
+      const counts = payload.pipeline_section_counts || {{}};
       const orderedSections = [
         ['Ticker/entity preprocessing', 'raw_preprocessing_rows'],
         ['Article embeddings', 'article_embedding_rows'],
@@ -1734,11 +1750,14 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       nlpPipelineEl.innerHTML = orderedSections.map(([label, key]) => {{
         const rows = Array.isArray(sections?.[key]) ? sections[key] : [];
         const sample = rows[0] || null;
+        const rowCount = Number(counts?.[key]?.row_count ?? rows.length);
+        const sampleCount = Number(counts?.[key]?.sample_count ?? rows.length);
+        const truncated = counts?.[key]?.truncated === true;
         return `
           <details>
-            <summary>${{escapeHtml(label)}} <span class="badge">rows: ${{rows.length}}</span></summary>
+            <summary>${{escapeHtml(label)}} <span class="badge">rows: ${{sampleCount}} / ${{rowCount}}</span>${{truncated ? ' <span class="badge warn">sampled</span>' : ''}}</summary>
             <div class="body">
-              <p class="section-note">What am I looking at? A technical sample from the ${{escapeHtml(label.toLowerCase())}} stage. Why does it matter? It helps debug the pipeline when the human-friendly view says something is missing. What would make this good or bad? Good: rows exist and the sample is coherent. Bad: an empty section or a sample that shows unexpected nulls or keys.</p>
+              <p class="section-note">What am I looking at? A technical sample from the ${{escapeHtml(label.toLowerCase())}} stage. Why does it matter? It helps debug the pipeline when the human-friendly view says something is missing. What would make this good or bad? Good: rows exist and the sample is coherent. Bad: an empty section or a sample that shows unexpected nulls or keys.${{truncated ? ' The payload is intentionally bounded, so only representative rows are shown here.' : ''}}</p>
               ${{sample ? `<div class="row-item"><pre>${{escapeHtml(JSON.stringify(sample, null, 2))}}</pre></div>` : '<p class="muted">No rows available.</p>'}}
             </div>
           </details>`;
@@ -1777,7 +1796,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       renderTopicRelevanceReview(payload);
       renderSemanticAggregateReview(payload);
       renderHmmOverview(payload);
-      renderNlpPipelineSection(payload.pipeline_sections || {{}});
+      renderNlpPipelineSection(payload);
       renderHmmPipelineSection(payload.pipeline_sections || {{}});
       setActiveTab('summary-gate-tab');
     }}
