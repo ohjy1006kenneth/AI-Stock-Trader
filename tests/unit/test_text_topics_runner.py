@@ -4,9 +4,12 @@ import io
 import json
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
+import pytest
 
+from app.lab.data_pipelines import run_text_topics as text_topics_runner_module
 from app.lab.data_pipelines.run_news_preprocessing import news_preprocessing_output_path
 from app.lab.data_pipelines.run_text_topics import (
     TEXT_TOPICS_STAGE,
@@ -172,8 +175,80 @@ def test_load_text_model_runtime_config_reads_repo_config() -> None:
     assert config.max_document_characters == 4096
 
 
+def test_bertopic_labeler_bounds_batch_parameters_for_small_corpora(monkeypatch) -> None:
+    """Small article batches clamp BERTopic n_neighbors and cluster sizes to available rows."""
+    calls: dict[str, Any] = {}
+
+    class _FakeUMAP:
+        def __init__(self, **kwargs):
+            calls["umap_kwargs"] = kwargs
+
+    class _FakeHDBSCAN:
+        def __init__(self, **kwargs):
+            calls["hdbscan_kwargs"] = kwargs
+
+    class _FakeBERTopic:
+        def __init__(self, **kwargs):
+            calls["bertopic_kwargs"] = kwargs
+
+        def fit_transform(self, documents, embeddings):
+            calls["documents"] = list(documents)
+            calls["embeddings"] = embeddings
+            return [0, 0], [0.91, 0.84]
+
+    class _FakeNumpy:
+        class _FakeArray:
+            def __init__(self, values):
+                self._values = values
+                self.ndim = 1
+
+            def tolist(self):
+                return list(self._values)
+
+        @staticmethod
+        def asarray(embeddings):
+            calls["numpy_asarray_input"] = embeddings
+            return _FakeNumpy._FakeArray(embeddings)
+
+    def _fake_import_module(name):
+        if name == "bertopic":
+            return type("_BertopicModule", (), {"BERTopic": _FakeBERTopic})()
+        if name == "umap":
+            return type("_UmapModule", (), {"UMAP": _FakeUMAP})()
+        if name == "hdbscan":
+            return type("_HdbscanModule", (), {"HDBSCAN": _FakeHDBSCAN})()
+        if name == "numpy":
+            return _FakeNumpy()
+        raise AssertionError(f"Unexpected import: {name}")
+
+    monkeypatch.setattr(text_topics_runner_module.importlib, "import_module", _fake_import_module)
+
+    labeler = text_topics_runner_module.BERTopicLabeler(_runtime_config())
+    topics, probabilities = labeler.fit_transform(["doc-a", "doc-b"], [[0.1, 0.2], [0.3, 0.4]])
+
+    assert topics == [0, 0]
+    assert probabilities == [0.91, 0.84]
+    assert calls["documents"] == ["doc-a", "doc-b"]
+    assert calls["numpy_asarray_input"] == [0.91, 0.84]
+    assert calls["bertopic_kwargs"]["min_topic_size"] == 2
+    assert calls["bertopic_kwargs"]["calculate_probabilities"] is True
+    assert calls["umap_kwargs"]["n_neighbors"] == 2
+    assert calls["umap_kwargs"]["n_components"] == 1
+    assert calls["hdbscan_kwargs"]["min_cluster_size"] == 2
+    assert calls["hdbscan_kwargs"]["min_samples"] == 2
+    assert calls["hdbscan_kwargs"]["prediction_data"] is True
+
+
+def test_bertopic_labeler_rejects_single_document_batches() -> None:
+    """A single article cannot be clustered safely, so the labeler fails closed clearly."""
+    labeler = text_topics_runner_module.BERTopicLabeler(_runtime_config())
+
+    with pytest.raises(ValueError, match="at least 2 article documents"):
+        labeler.fit_transform(["doc-a"], [[0.1, 0.2]])
+
+
 def _local_writer(tmp_path: Path, monkeypatch) -> R2Writer:
-    """Return a local mock R2 writer regardless of developer env files."""
+
     for name in (R2_ENDPOINT_ENV, R2_ACCESS_KEY_ENV, R2_SECRET_KEY_ENV, R2_BUCKET_ENV):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr("services.r2.client.R2_ENV_FILE", tmp_path / "missing-r2.env")
