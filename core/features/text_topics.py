@@ -283,6 +283,8 @@ def build_topic_review_payload(
     topic_info = _topic_info_lookup(topic_labeler)
     topic_summaries: list[dict[str, object]] = []
     row_payloads: list[dict[str, object]] = []
+    generation_mode = _optional_str(getattr(topic_labeler, "last_generation_mode", None))
+    generation_reason = _optional_str(getattr(topic_labeler, "last_fallback_reason", None))
     valid_rows = frame[frame["topic_id"] >= 0].copy()
     invalid_rows = frame[frame["topic_id"] < 0].copy()
     topic_count = int(valid_rows["topic_id"].nunique()) if len(valid_rows) else 0
@@ -334,7 +336,7 @@ def build_topic_review_payload(
     status = "pass" if diversity_status == "diverse" else "warn"
     row_payloads.sort(key=_topic_row_sort_key)
     topic_summaries.sort(key=_topic_summary_sort_key)
-    return {
+    payload = {
         "status": status,
         "diversity_status": diversity_status,
         "diversity_reason": diversity_reason,
@@ -345,6 +347,11 @@ def build_topic_review_payload(
         "topics": topic_summaries,
         "rows": row_payloads,
     }
+    if generation_mode is not None:
+        payload["generation_mode"] = generation_mode
+    if generation_reason is not None:
+        payload["generation_reason"] = generation_reason
+    return payload
 
 
 def compute_sentence_embeddings(

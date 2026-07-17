@@ -130,6 +130,15 @@ class TextModelRuntimeConfig:
 
 
 @dataclass(frozen=True)
+class _TopicModelRuntimeParameters:
+    """Bounded BERTopic/UMAP/HDBSCAN parameters for a concrete document batch."""
+
+    min_topic_size: int
+    n_neighbors: int
+    n_components: int
+
+
+@dataclass(frozen=True)
 class TextTopicPipelineResult:
     """Storage summary for one completed text-topic run."""
 
@@ -279,12 +288,19 @@ class BERTopicLabeler:
     """BERTopic-backed labeler loaded only in Modal/runtime contexts."""
 
     def __init__(self, runtime_config: TextModelRuntimeConfig) -> None:
-        """Create the configured BERTopic model."""
-        bertopic = importlib.import_module("bertopic")
-        self._model = bertopic.BERTopic(
-            min_topic_size=runtime_config.min_topic_size,
-            calculate_probabilities=True,
+        """Store the configured BERTopic runtime settings."""
+        self._min_topic_size = runtime_config.min_topic_size
+        self.last_generation_mode = "uninitialized"
+        self.last_fallback_reason: str | None = None
+
+    def _tiny_corpus_fallback(self, document_count: int) -> tuple[list[int], list[float]]:
+        """Return a deterministic topic assignment when BERTopic cannot safely cluster."""
+        self.last_generation_mode = "tiny_corpus_fallback"
+        self.last_fallback_reason = (
+            "Used a deterministic fallback because BERTopic/UMAP spectral initialization "
+            f"is unsafe for corpora with {document_count} documents."
         )
+        return [0 for _ in range(document_count)], [1.0 for _ in range(document_count)]
 
     def fit_transform(
         self,
@@ -292,12 +308,60 @@ class BERTopicLabeler:
         embeddings: Sequence[Sequence[float]],
     ) -> tuple[Sequence[int], Sequence[float]]:
         """Return one topic id and confidence per document."""
+        documents = list(documents)
+        if len(documents) <= 6:
+            return self._tiny_corpus_fallback(len(documents))
+        parameters = _topic_model_runtime_parameters(
+            document_count=len(documents),
+            configured_min_topic_size=self._min_topic_size,
+        )
+        bertopic = importlib.import_module("bertopic")
+        umap = importlib.import_module("umap")
+        hdbscan = importlib.import_module("hdbscan")
         np = importlib.import_module("numpy")
-        topics, probabilities = self._model.fit_transform(
-            list(documents),
+        umap_model = umap.UMAP(
+            n_neighbors=parameters.n_neighbors,
+            n_components=parameters.n_components,
+            metric="cosine",
+            random_state=42,
+        )
+        cluster_model = hdbscan.HDBSCAN(
+            min_cluster_size=parameters.min_topic_size,
+            min_samples=parameters.min_topic_size,
+            prediction_data=True,
+        )
+        model = bertopic.BERTopic(
+            min_topic_size=parameters.min_topic_size,
+            umap_model=umap_model,
+            hdbscan_model=cluster_model,
+            calculate_probabilities=True,
+        )
+        topics, probabilities = model.fit_transform(
+            documents,
             embeddings=np.asarray(embeddings),
         )
+        self.last_generation_mode = "bertopic"
+        self.last_fallback_reason = None
         return list(topics), _topic_probabilities(topics, probabilities)
+
+
+def _topic_model_runtime_parameters(
+    *,
+    document_count: int,
+    configured_min_topic_size: int,
+) -> _TopicModelRuntimeParameters:
+    """Return BERTopic parameters bounded to the available batch size."""
+    if document_count < 2:
+        raise ValueError(
+            "BERTopic requires at least 2 article documents in a batch; got "
+            f"{document_count}."
+        )
+    min_topic_size = min(configured_min_topic_size, document_count)
+    return _TopicModelRuntimeParameters(
+        min_topic_size=min_topic_size,
+        n_neighbors=min(15, document_count),
+        n_components=max(1, min(5, document_count - 1)),
+    )
 
 
 def load_text_model_runtime_config(path: Path = TEXT_MODEL_CONFIG_PATH) -> TextModelRuntimeConfig:

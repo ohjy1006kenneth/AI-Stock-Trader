@@ -4,9 +4,11 @@ import io
 import json
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
+from app.lab.data_pipelines import run_text_topics as text_topics_runner_module
 from app.lab.data_pipelines.run_news_preprocessing import news_preprocessing_output_path
 from app.lab.data_pipelines.run_text_topics import (
     TEXT_TOPICS_STAGE,
@@ -172,8 +174,91 @@ def test_load_text_model_runtime_config_reads_repo_config() -> None:
     assert config.max_document_characters == 4096
 
 
+def test_bertopic_labeler_bounds_batch_parameters_for_small_corpora(monkeypatch) -> None:
+    """Sufficient article batches still wire BERTopic, UMAP, and HDBSCAN together."""
+    calls: dict[str, Any] = {}
+
+    class _FakeUMAP:
+        def __init__(self, **kwargs):
+            calls["umap_kwargs"] = kwargs
+
+    class _FakeHDBSCAN:
+        def __init__(self, **kwargs):
+            calls["hdbscan_kwargs"] = kwargs
+
+    class _FakeBERTopic:
+        def __init__(self, **kwargs):
+            calls["bertopic_kwargs"] = kwargs
+
+        def fit_transform(self, documents, embeddings):
+            calls["documents"] = list(documents)
+            calls["embeddings"] = embeddings
+            return [0 for _ in documents], [0.91 for _ in documents]
+
+    class _FakeNumpy:
+        class _FakeArray:
+            def __init__(self, values):
+                self._values = values
+                self.ndim = 1
+
+            def tolist(self):
+                return list(self._values)
+
+        @staticmethod
+        def asarray(embeddings):
+            calls.setdefault("numpy_asarray_inputs", []).append(embeddings)
+            return _FakeNumpy._FakeArray(embeddings)
+
+    def _fake_import_module(name):
+        if name == "bertopic":
+            return type("_BertopicModule", (), {"BERTopic": _FakeBERTopic})()
+        if name == "umap":
+            return type("_UmapModule", (), {"UMAP": _FakeUMAP})()
+        if name == "hdbscan":
+            return type("_HdbscanModule", (), {"HDBSCAN": _FakeHDBSCAN})()
+        if name == "numpy":
+            return _FakeNumpy()
+        raise AssertionError(f"Unexpected import: {name}")
+
+    monkeypatch.setattr(text_topics_runner_module.importlib, "import_module", _fake_import_module)
+
+    labeler = text_topics_runner_module.BERTopicLabeler(_runtime_config())
+    topics, probabilities = labeler.fit_transform(
+        [f"doc-{index}" for index in range(7)],
+        [[0.1, 0.2] for _ in range(7)],
+    )
+
+    assert topics == [0 for _ in range(7)]
+    assert probabilities == [0.91 for _ in range(7)]
+    assert calls["documents"] == [f"doc-{index}" for index in range(7)]
+    assert calls["embeddings"].tolist() == [[0.1, 0.2] for _ in range(7)]
+    assert calls["numpy_asarray_inputs"] == [
+        [[0.1, 0.2] for _ in range(7)],
+        [0.91 for _ in range(7)],
+    ]
+    assert calls["bertopic_kwargs"]["min_topic_size"] == 2
+    assert calls["bertopic_kwargs"]["calculate_probabilities"] is True
+    assert calls["umap_kwargs"]["n_neighbors"] == 7
+    assert calls["umap_kwargs"]["n_components"] == 5
+    assert calls["hdbscan_kwargs"]["min_cluster_size"] == 2
+    assert calls["hdbscan_kwargs"]["min_samples"] == 2
+    assert calls["hdbscan_kwargs"]["prediction_data"] is True
+
+
+def test_bertopic_labeler_rejects_single_document_batches() -> None:
+    """A single article uses the deterministic fallback rather than throwing."""
+    labeler = text_topics_runner_module.BERTopicLabeler(_runtime_config())
+
+    topics, probabilities = labeler.fit_transform(["doc-a"], [[0.1, 0.2]])
+
+    assert topics == [0]
+    assert probabilities == [1.0]
+    assert labeler.last_generation_mode == "tiny_corpus_fallback"
+    assert "spectral initialization" in str(labeler.last_fallback_reason)
+
+
 def _local_writer(tmp_path: Path, monkeypatch) -> R2Writer:
-    """Return a local mock R2 writer regardless of developer env files."""
+
     for name in (R2_ENDPOINT_ENV, R2_ACCESS_KEY_ENV, R2_SECRET_KEY_ENV, R2_BUCKET_ENV):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr("services.r2.client.R2_ENV_FILE", tmp_path / "missing-r2.env")
