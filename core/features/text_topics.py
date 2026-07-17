@@ -509,12 +509,13 @@ def topic_labels_to_feature_records(topic_labels: Any) -> list[FeatureRecord]:
 
         mean_probability = frame.loc[group.index, "topic_probability"].map(float).mean()
         sentence_count = group["article_sentence_count"].map(int).sum()
+        article_count = group["article_id"].map(str).nunique()
         records.append(
             FeatureRecord(
                 date=str(date_value),
                 ticker=str(ticker),
                 features={
-                    "nlp_article_count": int(len(group)),
+                    "nlp_article_count": int(article_count),
                     "nlp_sentence_count": int(sentence_count),
                     "nlp_topic_count": int(valid_topics["topic_id"].nunique()),
                     "nlp_dominant_topic_id": dominant_topic_id,

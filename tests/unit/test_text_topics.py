@@ -84,7 +84,7 @@ class _ReviewTopicLabeler:
 
 
 def test_compute_text_topics_caches_article_embeddings_and_topic_features() -> None:
-    """Article embeddings are cached once while topic labels remain ticker-specific."""
+    """Article embeddings are cached once while topic labels and article counts stay canonical."""
     records = [
         _record(ticker="AAPL", text="Apple released results.", sentence_index=0),
         _record(ticker="MSFT", text="Apple released results.", sentence_index=0),
@@ -104,6 +104,8 @@ def test_compute_text_topics_caches_article_embeddings_and_topic_features() -> N
     assert len(result.embeddings) == 1
     assert result.embeddings.loc[0, "article_sentence_count"] == 2
     assert len(result.topic_labels) == 2
+    assert result.feature_records[0].features["nlp_article_count"] == 1
+    assert result.feature_records[0].features["nlp_sentence_count"] == 2
     assert result.topic_review["row_count"] == 2
     assert result.topic_review["topic_count"] == 1
     assert result.topic_review["diversity_status"] == "insufficient_diversity"
