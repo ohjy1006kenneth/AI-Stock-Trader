@@ -20,7 +20,10 @@ from core.features.news_assignment_provenance import (
     NEWS_EVIDENCE_RELEVANCE_WEIGHTS,
     NewsEvidenceClass,
 )
-from core.features.regime_training import HMM_TRAINING_FEATURE_COLUMNS
+from core.features.regime_training import (
+    HMM_OPTIONAL_FEATURE_COLUMNS,
+    HMM_TRAINING_FEATURE_COLUMNS,
+)
 from core.features.text_topics import build_topic_review_payload
 from services.r2.paths import (
     layer1_feature_path,
@@ -1319,6 +1322,10 @@ def _build_hmm_evaluation_context(
             for column in _json_string_list(manifest.get("dropped_feature_columns"))
         }
     )
+    optional_columns = set(HMM_OPTIONAL_FEATURE_COLUMNS)
+    non_optional_dropped_columns = [
+        column for column in dropped_columns if column not in optional_columns
+    ]
     expected_columns = list(HMM_TRAINING_FEATURE_COLUMNS)
     active_columns = [column for column in expected_columns if column not in set(dropped_columns)]
     training_windows = _training_windows_from_manifests(manifests)
@@ -1327,8 +1334,8 @@ def _build_hmm_evaluation_context(
     )
     complete_training_rows_sufficient = _training_rows_are_complete(training_windows)
     feature_set_status = "complete" if not dropped_columns else "degraded"
-    feature_set_blocking = bool(dropped_columns) and not (
-        regime_layer2_ready and complete_training_rows_sufficient
+    feature_set_blocking = bool(non_optional_dropped_columns) or (
+        bool(dropped_columns) and not (regime_layer2_ready and complete_training_rows_sufficient)
     )
     warnings: list[str] = []
     if not source_manifest_keys:
@@ -1355,6 +1362,8 @@ def _build_hmm_evaluation_context(
         "dropped_feature_columns": dropped_columns,
         "feature_set_status": feature_set_status,
         "feature_set_blocking": feature_set_blocking,
+        "feature_set_optional_columns": list(HMM_OPTIONAL_FEATURE_COLUMNS),
+        "feature_set_non_optional_dropped_columns": non_optional_dropped_columns,
         "regime_layer2_ready": regime_layer2_ready,
         "requested_inference_dates": list(dates),
         "observed_inference_dates": observed_dates,
@@ -1426,6 +1435,11 @@ def _hmm_feature_set_is_blocking(hmm_context: Mapping[str, object]) -> bool:
     dropped_columns = _json_string_list(hmm_context.get("dropped_feature_columns"))
     if not dropped_columns:
         return False
+    non_optional_dropped_columns = [
+        column for column in dropped_columns if column not in set(HMM_OPTIONAL_FEATURE_COLUMNS)
+    ]
+    if non_optional_dropped_columns:
+        return True
     if not _maybe_bool(hmm_context.get("regime_layer2_ready")):
         return True
     if not _maybe_bool(hmm_context.get("complete_training_rows_sufficient")):

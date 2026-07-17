@@ -30,6 +30,10 @@ HMM_TRAINING_FEATURE_COLUMNS: tuple[str, ...] = (
     "high_yield_spread",
 )
 
+HMM_OPTIONAL_FEATURE_COLUMNS: tuple[str, ...] = (
+    "high_yield_spread",
+)
+
 HMM_TRAINING_COLUMNS: tuple[str, ...] = (
     "date",
     *HMM_TRAINING_FEATURE_COLUMNS,
