@@ -443,6 +443,7 @@ def _topic_relevance_article_row(
         [row.get("financial_relevance_score") for row in relevance_rows]
     )
     topic_score = _first_float([row.get("topic_relevance_score") for row in relevance_rows])
+    assignment_fields = _first_assignment_provenance_fields(preprocessing_rows)
     has_embedding = bool(embedding_rows)
     has_topic = bool(topic_rows)
     has_relevance_gate = bool(relevance_rows)
@@ -487,6 +488,10 @@ def _topic_relevance_article_row(
         "financial_relevance_score": financial_score,
         "topic_relevance_score": topic_score,
         "reason_codes": reason_codes,
+        "assignment_classification": assignment_fields["assignment_classification"],
+        "assignment_reason": assignment_fields["assignment_reason"],
+        "assignment_weight": assignment_fields["assignment_weight"],
+        "assignment_evidence_kinds": assignment_fields["assignment_evidence_kinds"],
         "missing_evidence_flags": missing_flags,
         "ticker_evidence": {
             "requested_ticker_term_hits": _json_string_list(
@@ -519,6 +524,8 @@ def _topic_relevance_article_row(
                 "topic_probability": row.get("topic_probability"),
                 "topic_label": row.get("topic_label"),
                 "topic_keywords": row.get("topic_keywords"),
+                "topic_example_text": row.get("topic_example_text"),
+                "topic_example_texts": row.get("topic_example_texts"),
                 "topic_model": row.get("topic_model"),
                 "topic_model_version": row.get("topic_model_version"),
                 "embedding_cache_key": row.get("embedding_cache_key"),
@@ -768,6 +775,38 @@ def _ticker_evidence_values(value: object) -> list[str]:
     for key in ("source_tickers", "article_tickers", "ticker_mentions", "chunk_tickers"):
         values.extend(_json_string_list(evidence.get(key)))
     return values
+
+
+def _first_assignment_provenance_fields(
+    rows: Sequence[Mapping[str, object]],
+) -> dict[str, object]:
+    """Return the first available assignment provenance fields from related rows."""
+    for row in rows:
+        assignment_classification = _optional_str(row.get("assignment_classification"))
+        assignment_reason = _optional_str(row.get("assignment_reason"))
+        assignment_weight = _maybe_float(row.get("assignment_weight"))
+        assignment_evidence_kinds = _dedupe_preserve_order(
+            _json_string_list(row.get("assignment_evidence_kinds"))
+        )
+        if (
+            assignment_classification is None
+            and assignment_reason is None
+            and assignment_weight is None
+            and not assignment_evidence_kinds
+        ):
+            continue
+        return {
+            "assignment_classification": assignment_classification,
+            "assignment_reason": assignment_reason,
+            "assignment_weight": assignment_weight,
+            "assignment_evidence_kinds": assignment_evidence_kinds,
+        }
+    return {
+        "assignment_classification": None,
+        "assignment_reason": None,
+        "assignment_weight": None,
+        "assignment_evidence_kinds": [],
+    }
 
 
 def _first_float(values: object) -> float | None:

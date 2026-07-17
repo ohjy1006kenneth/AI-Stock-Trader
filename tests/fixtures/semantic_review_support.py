@@ -9,6 +9,7 @@ from typing import Any
 import pandas as pd
 
 from core.contracts.schemas import PipelineManifestRecord, RunStatus
+from core.features.news_assignment_provenance import build_ticker_assignment_provenance
 from services.r2.paths import (
     layer1_news_preprocessing_path,
     layer1_news_relevance_gate_path,
@@ -206,13 +207,19 @@ def _preprocessing_frame(scored_frame: pd.DataFrame) -> pd.DataFrame:
     frame["source_text_order"] = frame["sentence_index"]
     frame["source_text_provenance"] = frame.apply(
         lambda row: json.dumps(
-            {
-                "article_id": row["article_id"],
-                "article_tickers": [row["ticker"]],
-                "chunk_tickers": [row["ticker"]] if "Ferrari" not in row["headline"] else [],
-                "entity_mentions": ["Apple"] if row["ticker"] == "AAPL" and "Ferrari" not in row["headline"] else [],
-                "raw_headline": row["headline"],
-            },
+            build_ticker_assignment_provenance(
+                {
+                    "id": row["article_id"],
+                    "headline": row["headline"],
+                    "content": row["text"],
+                    "symbols": [row["ticker"]],
+                },
+                str(row["ticker"]),
+                date=str(row["date"]),
+                sentence_index=int(row["sentence_index"]),
+                headline=str(row["headline"]),
+                text=str(row["text"]),
+            ).to_dict(),
             sort_keys=True,
         ),
         axis=1,

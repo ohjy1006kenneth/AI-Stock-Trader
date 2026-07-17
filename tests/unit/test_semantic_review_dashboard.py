@@ -63,7 +63,12 @@ def test_semantic_review_report_includes_benchmark_rows(tmp_path: Path) -> None:
     assert [row["sentence_index"] for row in cast(list[dict[str, Any]], aapl_one["sentence_rows"])] == [0, 1, 2]
     assert aapl_one["sentence_rows"][0]["text"] != aapl_one["sentence_rows"][1]["text"]
     assert aapl_one["sentence_rows"][0]["row_granularity"] == "sentence-level"
+    assert aapl_one["sentence_rows"][0]["assignment_classification"] == "direct"
+    assert aapl_one["sentence_rows"][0]["assignment_weight"] == 1.0
+    assert "provider_ticker_tag" in aapl_one["sentence_rows"][0]["assignment_evidence_kinds"]
     assert aapl_one["preprocessing_rows"][0]["ticker_mentions"] == ["AAPL"]
+    assert aapl_one["preprocessing_rows"][0]["assignment_classification"] == "direct"
+    assert aapl_one["preprocessing_rows"][0]["assignment_reason"]
     assert aapl_one["topic_evidence"][0]["topic_label"] == "earnings and demand"
     assert aapl_one["topic_evidence"][0]["topic_keywords"] == ["earnings", "demand", "iphone"]
     assert aapl_one["topic_evidence"][0]["topic_example_text"]
@@ -261,6 +266,8 @@ def test_semantic_review_payload_separates_tabs_and_reports_missing_sentence_tex
     sentence_rows = cast(list[dict[str, Any]], missing_article["sentence_rows"])
     assert sentence_rows[0]["sentiment_label"] == "positive"
     assert sentence_rows[0]["sentiment_label_confidence"] == 0.78
+    assert sentence_rows[0]["assignment_classification"] == "direct"
+    assert sentence_rows[0]["assignment_reason"]
     assert any(row["missing_text_warning"] for row in sentence_rows)
 
 
@@ -348,6 +355,10 @@ def test_semantic_review_topic_relevance_tab_flags_default_relevance(
     assert accepted["embedding_evidence"][0]["embedding_model"] == "sentence-transformers/test"
     assert accepted["topic_evidence"][0]["topic_id"] == 0
     assert accepted["topic_evidence"][0]["topic_probability"] == 0.82
+    assert accepted["topic_evidence"][0]["topic_example_text"]
+    assert accepted["assignment_classification"] == "direct"
+    assert accepted["assignment_weight"] == 1.0
+    assert accepted["assignment_evidence_kinds"]
     assert accepted["missing_evidence_flags"] == []
 
     assert defaulted["relevance_score"] == 1.0
