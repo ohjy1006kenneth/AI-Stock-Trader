@@ -1372,12 +1372,28 @@ def _compact_finbert_sentence_review(review: Mapping[str, object]) -> dict[str, 
 def _compact_finbert_article(article: Mapping[str, object]) -> dict[str, object]:
     """Return a FinBERT article card with representative sentence rows."""
     compact = dict(article)
+    preprocessing_rows = _sample_mapping_rows(
+        compact.get("preprocessing_rows"), limit=_ARTICLE_DETAIL_SAMPLE_LIMIT
+    )
+    topic_evidence = _sample_mapping_rows(compact.get("topic_evidence"), limit=_ARTICLE_DETAIL_SAMPLE_LIMIT)
+    relevance_gate_rows = _sample_mapping_rows(
+        compact.get("relevance_gate_rows"), limit=_ARTICLE_DETAIL_SAMPLE_LIMIT
+    )
     sentence_rows = _sample_mapping_rows(compact.get("sentence_rows"), limit=_FINBERT_SENTENCE_SAMPLE_LIMIT)
     full_scored_text = _optional_str(compact.get("full_scored_text"))
     if full_scored_text is not None:
         compact["full_scored_text_preview"] = full_scored_text[:_FULL_TEXT_PREVIEW_LIMIT]
         compact["full_scored_text_truncated"] = len(full_scored_text) > _FULL_TEXT_PREVIEW_LIMIT
         compact.pop("full_scored_text", None)
+    compact["preprocessing_rows"] = preprocessing_rows
+    compact["preprocessing_row_count"] = len(_json_list(article.get("preprocessing_rows")))
+    compact["preprocessing_rows_truncated"] = compact["preprocessing_row_count"] > len(preprocessing_rows)
+    compact["topic_evidence"] = topic_evidence
+    compact["topic_evidence_row_count"] = len(_json_list(article.get("topic_evidence")))
+    compact["topic_evidence_truncated"] = compact["topic_evidence_row_count"] > len(topic_evidence)
+    compact["relevance_gate_rows"] = relevance_gate_rows
+    compact["relevance_gate_row_count"] = len(_json_list(article.get("relevance_gate_rows")))
+    compact["relevance_gate_rows_truncated"] = compact["relevance_gate_row_count"] > len(relevance_gate_rows)
     compact["sentence_rows"] = sentence_rows
     compact["sentence_rows_sample_count"] = len(sentence_rows)
     compact["sentence_rows_truncated"] = len(_json_list(article.get("sentence_rows"))) > len(sentence_rows)
@@ -1434,6 +1450,7 @@ def _compact_topic_relevance_article_row(article: Mapping[str, object]) -> dict[
     embedding_evidence = _sample_mapping_rows(compact.get("embedding_evidence"), limit=_ARTICLE_DETAIL_SAMPLE_LIMIT)
     topic_evidence = _sample_mapping_rows(compact.get("topic_evidence"), limit=_ARTICLE_DETAIL_SAMPLE_LIMIT)
     relevance_gate_rows = _sample_mapping_rows(compact.get("relevance_gate_rows"), limit=_ARTICLE_DETAIL_SAMPLE_LIMIT)
+    sentence_rows = _sample_mapping_rows(compact.get("sentence_rows"), limit=_FINBERT_SENTENCE_SAMPLE_LIMIT)
     compact["preprocessing_rows"] = preprocessing_rows
     compact["preprocessing_row_count"] = len(_json_list(article.get("preprocessing_rows")))
     compact["preprocessing_rows_truncated"] = compact["preprocessing_row_count"] > len(preprocessing_rows)
@@ -1446,6 +1463,10 @@ def _compact_topic_relevance_article_row(article: Mapping[str, object]) -> dict[
     compact["relevance_gate_rows"] = relevance_gate_rows
     compact["relevance_gate_row_count"] = len(_json_list(article.get("relevance_gate_rows")))
     compact["relevance_gate_rows_truncated"] = compact["relevance_gate_row_count"] > len(relevance_gate_rows)
+    compact["sentence_rows"] = sentence_rows
+    compact["sentence_row_count"] = len(_json_list(article.get("sentence_rows")))
+    compact["sentence_rows_sample_count"] = len(sentence_rows)
+    compact["sentence_rows_truncated"] = compact["sentence_row_count"] > len(sentence_rows)
     compact["evidence_sampling_note"] = (
         "Representative rows only" if any(
             compact[key]
@@ -1454,6 +1475,7 @@ def _compact_topic_relevance_article_row(article: Mapping[str, object]) -> dict[
                 "embedding_evidence_truncated",
                 "topic_evidence_truncated",
                 "relevance_gate_rows_truncated",
+                "sentence_rows_truncated",
             )
         ) else None
     )

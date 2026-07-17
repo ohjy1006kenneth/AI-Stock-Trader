@@ -366,6 +366,8 @@ def test_semantic_review_topic_relevance_tab_flags_default_relevance(
     assert accepted["topic_evidence"][0]["topic_id"] == 0
     assert accepted["topic_evidence"][0]["topic_probability"] == 0.82
     assert accepted["topic_evidence"][0]["topic_example_text"]
+    assert len(cast(list[dict[str, Any]], accepted["sentence_rows"])) <= 3
+    assert len(cast(list[dict[str, Any]], accepted["preprocessing_rows"])) <= 1
     assert accepted["assignment_classification"] == "direct"
     assert accepted["assignment_weight"] == 1.0
     assert accepted["assignment_evidence_kinds"]
@@ -816,6 +818,12 @@ def test_semantic_review_dashboard_payload_is_bounded_and_valid(tmp_path: Path) 
     assert "report_summary" in payload
     assert len(cast(list[dict[str, Any]], payload["article_groups"])) == 4
     assert cast(list[dict[str, Any]], payload["article_groups"])[0]["sentence_rows_sample_count"] <= 3
+    finbert_articles = cast(list[dict[str, Any]], payload["finbert_sentence_review"]["articles"])
+    first_finbert_article = finbert_articles[0]
+    assert first_finbert_article["preprocessing_row_count"] == 3
+    assert len(cast(list[dict[str, Any]], first_finbert_article["preprocessing_rows"])) == 1
+    assert first_finbert_article["preprocessing_rows_truncated"] is True
+    assert first_finbert_article["sentence_rows_sample_count"] <= 3
 
 
 def test_semantic_review_dashboard_smoke_payload_is_compact_and_valid(tmp_path: Path) -> None:
