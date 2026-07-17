@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
+from datetime import UTC, datetime
 
 import pandas as pd
 import pytest
 
+from app.lab.data_pipelines.run_text_topics import BERTopicLabeler, TextModelRuntimeConfig
 from core.contracts.schemas import FeatureRecord, NewsSentimentRecord
 from core.features.text_topics import (
     EMBEDDING_COLUMNS,
@@ -146,6 +148,101 @@ def test_embedding_cache_key_changes_with_model_revision() -> None:
     assert sentence_identity(record) == sentence_identity(_record(ticker="MSFT"))
 
 
+@pytest.mark.parametrize("document_count", range(2, 7))
+def test_compute_text_topics_falls_back_for_tiny_corpora(document_count: int) -> None:
+    """Tiny corpora use the deterministic fallback instead of BERTopic/UMAP."""
+    records = [
+        _record(
+            text=f"Apple earnings and iPhone demand headline {index}.",
+            article_id=f"article-{index}",
+            sentence_index=0,
+        )
+        for index in range(document_count)
+    ]
+
+    result = compute_text_topics(
+        records,
+        embedder=_FakeEmbedder(),
+        topic_labeler=BERTopicLabeler(_runtime_config()),
+        embedding_config=_embedding_config(),
+        topic_config=_topic_config(),
+    )
+
+    assert result.topic_labels["topic_id"].tolist() == [0 for _ in range(document_count)]
+    assert result.topic_labels["topic_probability"].tolist() == [1.0 for _ in range(document_count)]
+    assert result.topic_review["generation_mode"] == "tiny_corpus_fallback"
+    assert "spectral initialization" in str(result.topic_review["generation_reason"])
+    assert result.topic_review["dominant_topic_id"] == 0
+    assert result.topic_review["dominant_topic_share"] == 1.0
+
+
+def test_bertopic_labeler_uses_bertopic_path_for_sufficient_corpora(monkeypatch) -> None:
+    """Document batches above the tiny-corpus cutoff still use BERTopic."""
+    import_count = 0
+    calls: dict[str, object] = {}
+
+    class _FakeModel:
+        def __init__(self, **kwargs: object) -> None:
+            calls["kwargs"] = kwargs
+
+        def fit_transform(
+            self,
+            documents: Sequence[str],
+            embeddings: object,
+        ) -> tuple[list[int], None]:
+            calls["documents"] = list(documents)
+            calls["embeddings"] = embeddings
+            return [1 for _ in documents], None
+
+    class _FakeBertopicModule:
+        BERTopic = _FakeModel
+
+    class _FakeNumpyModule:
+        @staticmethod
+        def asarray(values: object) -> object:
+            return values
+
+    class _FakeUmapModel:
+        def __init__(self, **kwargs: object) -> None:
+            calls["umap_kwargs"] = kwargs
+
+    class _FakeHdbscanModel:
+        def __init__(self, **kwargs: object) -> None:
+            calls["hdbscan_kwargs"] = kwargs
+
+    class _FakeUmapModule:
+        UMAP = _FakeUmapModel
+
+    class _FakeHdbscanModule:
+        HDBSCAN = _FakeHdbscanModel
+
+    def fake_import_module(name: str) -> object:
+        nonlocal import_count
+        if name == "bertopic":
+            import_count += 1
+            return _FakeBertopicModule()
+        if name == "numpy":
+            return _FakeNumpyModule()
+        if name == "umap":
+            return _FakeUmapModule()
+        if name == "hdbscan":
+            return _FakeHdbscanModule()
+        raise AssertionError(f"Unexpected import requested: {name}")
+
+    monkeypatch.setattr("app.lab.data_pipelines.run_text_topics.importlib.import_module", fake_import_module)
+    labeler = BERTopicLabeler(_runtime_config())
+    topics, probabilities = labeler.fit_transform(
+        [f"doc {index}" for index in range(7)],
+        [[float(index)] for index in range(7)],
+    )
+
+    assert topics == [1 for _ in range(7)]
+    assert probabilities == [1.0 for _ in range(7)]
+    assert labeler.last_generation_mode == "bertopic"
+    assert import_count == 1
+    assert calls["documents"] == [f"doc {index}" for index in range(7)]
+
+
 def test_compute_sentence_embeddings_empty_input_returns_canonical_frame() -> None:
     """Empty article rows return a canonical empty embedding cache."""
     embeddings = compute_sentence_embeddings(
@@ -269,7 +366,7 @@ def _record(
         chunk_index=sentence_index,
         source_text_order=sentence_index,
         source="benzinga",
-        published_at="2024-01-02T12:00:00+00:00",
+        published_at=datetime(2024, 1, 2, 12, 0, tzinfo=UTC),
     )
 
 
@@ -288,3 +385,17 @@ def _embedding_config(
 def _topic_config() -> TopicModelConfig:
     """Return a test topic model config."""
     return TopicModelConfig(model_name="test-topic-model", model_version="1.0")
+
+
+def _runtime_config() -> TextModelRuntimeConfig:
+    """Return a small runtime config that still exercises the real BERTopic labeler path."""
+    return TextModelRuntimeConfig(
+        app_name="test-text-topics",
+        r2_secret_name="ai-stock-trader-r2",
+        timeout_seconds=60,
+        python_version="3.11",
+        requirements_path="requirements/modal.txt",
+        embedding_config=_embedding_config(),
+        topic_config=_topic_config(),
+        min_topic_size=2,
+    )

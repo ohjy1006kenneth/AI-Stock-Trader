@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-import pytest
 
 from app.lab.data_pipelines import run_text_topics as text_topics_runner_module
 from app.lab.data_pipelines.run_news_preprocessing import news_preprocessing_output_path
@@ -176,7 +175,7 @@ def test_load_text_model_runtime_config_reads_repo_config() -> None:
 
 
 def test_bertopic_labeler_bounds_batch_parameters_for_small_corpora(monkeypatch) -> None:
-    """Small article batches clamp BERTopic n_neighbors and cluster sizes to available rows."""
+    """Sufficient article batches still wire BERTopic, UMAP, and HDBSCAN together."""
     calls: dict[str, Any] = {}
 
     class _FakeUMAP:
@@ -194,7 +193,7 @@ def test_bertopic_labeler_bounds_batch_parameters_for_small_corpora(monkeypatch)
         def fit_transform(self, documents, embeddings):
             calls["documents"] = list(documents)
             calls["embeddings"] = embeddings
-            return [0, 0], [0.91, 0.84]
+            return [0 for _ in documents], [0.91 for _ in documents]
 
     class _FakeNumpy:
         class _FakeArray:
@@ -207,7 +206,7 @@ def test_bertopic_labeler_bounds_batch_parameters_for_small_corpora(monkeypatch)
 
         @staticmethod
         def asarray(embeddings):
-            calls["numpy_asarray_input"] = embeddings
+            calls.setdefault("numpy_asarray_inputs", []).append(embeddings)
             return _FakeNumpy._FakeArray(embeddings)
 
     def _fake_import_module(name):
@@ -224,27 +223,38 @@ def test_bertopic_labeler_bounds_batch_parameters_for_small_corpora(monkeypatch)
     monkeypatch.setattr(text_topics_runner_module.importlib, "import_module", _fake_import_module)
 
     labeler = text_topics_runner_module.BERTopicLabeler(_runtime_config())
-    topics, probabilities = labeler.fit_transform(["doc-a", "doc-b"], [[0.1, 0.2], [0.3, 0.4]])
+    topics, probabilities = labeler.fit_transform(
+        [f"doc-{index}" for index in range(7)],
+        [[0.1, 0.2] for _ in range(7)],
+    )
 
-    assert topics == [0, 0]
-    assert probabilities == [0.91, 0.84]
-    assert calls["documents"] == ["doc-a", "doc-b"]
-    assert calls["numpy_asarray_input"] == [0.91, 0.84]
+    assert topics == [0 for _ in range(7)]
+    assert probabilities == [0.91 for _ in range(7)]
+    assert calls["documents"] == [f"doc-{index}" for index in range(7)]
+    assert calls["embeddings"].tolist() == [[0.1, 0.2] for _ in range(7)]
+    assert calls["numpy_asarray_inputs"] == [
+        [[0.1, 0.2] for _ in range(7)],
+        [0.91 for _ in range(7)],
+    ]
     assert calls["bertopic_kwargs"]["min_topic_size"] == 2
     assert calls["bertopic_kwargs"]["calculate_probabilities"] is True
-    assert calls["umap_kwargs"]["n_neighbors"] == 2
-    assert calls["umap_kwargs"]["n_components"] == 1
+    assert calls["umap_kwargs"]["n_neighbors"] == 7
+    assert calls["umap_kwargs"]["n_components"] == 5
     assert calls["hdbscan_kwargs"]["min_cluster_size"] == 2
     assert calls["hdbscan_kwargs"]["min_samples"] == 2
     assert calls["hdbscan_kwargs"]["prediction_data"] is True
 
 
 def test_bertopic_labeler_rejects_single_document_batches() -> None:
-    """A single article cannot be clustered safely, so the labeler fails closed clearly."""
+    """A single article uses the deterministic fallback rather than throwing."""
     labeler = text_topics_runner_module.BERTopicLabeler(_runtime_config())
 
-    with pytest.raises(ValueError, match="at least 2 article documents"):
-        labeler.fit_transform(["doc-a"], [[0.1, 0.2]])
+    topics, probabilities = labeler.fit_transform(["doc-a"], [[0.1, 0.2]])
+
+    assert topics == [0]
+    assert probabilities == [1.0]
+    assert labeler.last_generation_mode == "tiny_corpus_fallback"
+    assert "spectral initialization" in str(labeler.last_fallback_reason)
 
 
 def _local_writer(tmp_path: Path, monkeypatch) -> R2Writer:

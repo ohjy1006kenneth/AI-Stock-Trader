@@ -290,6 +290,17 @@ class BERTopicLabeler:
     def __init__(self, runtime_config: TextModelRuntimeConfig) -> None:
         """Store the configured BERTopic runtime settings."""
         self._min_topic_size = runtime_config.min_topic_size
+        self.last_generation_mode = "uninitialized"
+        self.last_fallback_reason: str | None = None
+
+    def _tiny_corpus_fallback(self, document_count: int) -> tuple[list[int], list[float]]:
+        """Return a deterministic topic assignment when BERTopic cannot safely cluster."""
+        self.last_generation_mode = "tiny_corpus_fallback"
+        self.last_fallback_reason = (
+            "Used a deterministic fallback because BERTopic/UMAP spectral initialization "
+            f"is unsafe for corpora with {document_count} documents."
+        )
+        return [0 for _ in range(document_count)], [1.0 for _ in range(document_count)]
 
     def fit_transform(
         self,
@@ -298,11 +309,8 @@ class BERTopicLabeler:
     ) -> tuple[Sequence[int], Sequence[float]]:
         """Return one topic id and confidence per document."""
         documents = list(documents)
-        if len(documents) < 2:
-            raise ValueError(
-                "BERTopic requires at least 2 article documents in a batch; got "
-                f"{len(documents)}."
-            )
+        if len(documents) <= 6:
+            return self._tiny_corpus_fallback(len(documents))
         parameters = _topic_model_runtime_parameters(
             document_count=len(documents),
             configured_min_topic_size=self._min_topic_size,
@@ -332,6 +340,8 @@ class BERTopicLabeler:
             documents,
             embeddings=np.asarray(embeddings),
         )
+        self.last_generation_mode = "bertopic"
+        self.last_fallback_reason = None
         return list(topics), _topic_probabilities(topics, probabilities)
 
 
