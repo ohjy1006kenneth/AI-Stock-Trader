@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import json
 from pathlib import Path
 from typing import Any, cast
 
@@ -9,6 +10,7 @@ from app.lab.semantic_review_dashboard import _DashboardDefaults, _render_dashbo
 from core.features.aapl_evidence import build_layer1_aapl_evidence_report
 from core.features.semantic_review_dashboard import (
     build_layer1_semantic_review_dashboard_payload,
+    build_layer1_semantic_review_dashboard_smoke_payload,
     build_layer1_semantic_review_readiness_summary,
     validate_layer1_semantic_review_dashboard_payload,
 )
@@ -192,9 +194,13 @@ def test_semantic_review_payload_flags_weak_and_duplicate_articles(tmp_path: Pat
     assert payload["benchmark_ticker"] == "SPY"
     assert len(cast(list[dict[str, Any]], payload["benchmark_price_series"])) == 2
     assert len(cast(list[dict[str, Any]], payload["benchmark_market_regime_series"])) == 2
-    assert len(cast(list[dict[str, Any]], sections["raw_preprocessing_rows"])) == 8
-    assert len(cast(list[dict[str, Any]], sections["topic_label_rows"])) == 4
-    assert len(cast(list[dict[str, Any]], sections["relevance_gate_rows"])) == 8
+    assert cast(dict[str, Any], payload["pipeline_section_counts"])["raw_preprocessing_rows"]["row_count"] == 8
+    assert cast(dict[str, Any], payload["pipeline_section_counts"])["topic_label_rows"]["row_count"] == 4
+    assert cast(dict[str, Any], payload["pipeline_section_counts"])["relevance_gate_rows"]["row_count"] == 8
+    assert cast(dict[str, Any], payload["pipeline_section_counts"])["semantic_aggregate_rows"]["row_count"] == 2
+    assert len(cast(list[dict[str, Any]], sections["raw_preprocessing_rows"])) == 1
+    assert len(cast(list[dict[str, Any]], sections["topic_label_rows"])) == 1
+    assert len(cast(list[dict[str, Any]], sections["relevance_gate_rows"])) == 1
     assert len(cast(list[dict[str, Any]], sections["semantic_aggregate_rows"])) == 2
     assert len(cast(list[dict[str, Any]], payload["price_series"])) == 2
     assert len(cast(list[dict[str, Any]], payload["market_regime_series"])) == 2
@@ -210,12 +216,16 @@ def test_semantic_review_payload_flags_weak_and_duplicate_articles(tmp_path: Pat
     ferrari = next(item for item in article_groups if item["article_id"] == "ferrari-001")
     assert "no_requested_ticker_evidence" in ferrari["contamination_flags"]
     assert ferrari["requested_ticker_term_hits"] == []
-    assert ferrari["sentence_rows"][0]["sentence_index"] == 0
-    assert ferrari["sentence_rows"][0]["text"].startswith("Ferrari shares fell sharply")
+    finbert_articles = {
+        str(item["article_id"]): cast(dict[str, Any], item)
+        for item in cast(list[dict[str, Any]], payload["finbert_sentence_review"]["articles"])
+    }
+    assert finbert_articles["ferrari-001"]["sentence_rows"][0]["sentence_index"] == 0
+    assert finbert_articles["ferrari-001"]["sentence_rows"][0]["text"].startswith("Ferrari shares fell sharply")
 
     duplicate = next(item for item in article_groups if item["article_id"] == "aapl-001")
     assert "duplicate_normalized_headline" in duplicate["contamination_flags"]
-    assert duplicate["sentence_rows"][0]["text"].startswith("Apple shares climbed")
+    assert duplicate["requested_ticker_term_hits"] == ["apple"]
     assert payload["article_review"]["accepted_article_count"] == 1
     assert payload["article_review"]["contamination_article_count"] == 3
 
@@ -356,6 +366,8 @@ def test_semantic_review_topic_relevance_tab_flags_default_relevance(
     assert accepted["topic_evidence"][0]["topic_id"] == 0
     assert accepted["topic_evidence"][0]["topic_probability"] == 0.82
     assert accepted["topic_evidence"][0]["topic_example_text"]
+    assert len(cast(list[dict[str, Any]], accepted["sentence_rows"])) <= 3
+    assert len(cast(list[dict[str, Any]], accepted["preprocessing_rows"])) <= 1
     assert accepted["assignment_classification"] == "direct"
     assert accepted["assignment_weight"] == 1.0
     assert accepted["assignment_evidence_kinds"]
@@ -779,3 +791,60 @@ def test_semantic_review_dashboard_html_names_human_review_outputs() -> None:
     assert "Pre-FinBERT relevance gate artifact is missing" in html
     assert "Human-review digest" in html
     assert "Only AI/ML/NLP evidence belongs here" in html
+
+
+def test_semantic_review_dashboard_payload_is_bounded_and_valid(tmp_path: Path) -> None:
+    """The normal dashboard payload should stay bounded and still validate."""
+    fixture = seed_semantic_review_fixture(local_root=tmp_path / "r2")
+    report = build_layer1_aapl_evidence_report(
+        run_id=str(fixture["run_id"]),
+        from_date="2026-05-21",
+        to_date="2026-05-22",
+        ticker="AAPL",
+        writer=fixture["writer"],
+    )
+
+    payload = cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report))
+    payload_json = json.dumps(payload)
+
+    assert payload["smoke"]["status"] == "pass"
+    assert payload["report_summary"]["row_count"] == 8
+    assert payload["pipeline_section_counts"]["raw_preprocessing_rows"]["row_count"] == 8
+    assert payload["pipeline_section_counts"]["raw_preprocessing_rows"]["sample_count"] == 1
+    assert payload["pipeline_section_counts"]["raw_preprocessing_rows"]["truncated"] is True
+    assert len(payload_json.encode("utf-8")) < 200_000
+    assert validate_layer1_semantic_review_dashboard_payload(payload)["status"] == "pass"
+    assert "report" not in payload
+    assert "report_summary" in payload
+    assert len(cast(list[dict[str, Any]], payload["article_groups"])) == 4
+    assert cast(list[dict[str, Any]], payload["article_groups"])[0]["sentence_rows_sample_count"] <= 3
+    finbert_articles = cast(list[dict[str, Any]], payload["finbert_sentence_review"]["articles"])
+    first_finbert_article = finbert_articles[0]
+    assert first_finbert_article["preprocessing_row_count"] == 3
+    assert len(cast(list[dict[str, Any]], first_finbert_article["preprocessing_rows"])) == 1
+    assert first_finbert_article["preprocessing_rows_truncated"] is True
+    assert first_finbert_article["sentence_rows_sample_count"] <= 3
+
+
+def test_semantic_review_dashboard_smoke_payload_is_compact_and_valid(tmp_path: Path) -> None:
+    """Smoke payloads should stay compact enough for Pi browser QA."""
+    fixture = seed_semantic_review_fixture(local_root=tmp_path / "r2")
+    report = build_layer1_aapl_evidence_report(
+        run_id=str(fixture["run_id"]),
+        from_date="2026-05-21",
+        to_date="2026-05-22",
+        ticker="AAPL",
+        writer=fixture["writer"],
+    )
+
+    payload = cast(dict[str, Any], build_layer1_semantic_review_dashboard_smoke_payload(report))
+
+    assert payload["smoke"]["status"] == "pass"
+    assert payload["summary"]["article_count"] == 4
+    assert payload["summary"]["date_count"] == 2
+    assert "report" not in payload
+    assert "article_groups" not in payload
+    assert "date_groups" not in payload
+    assert len(cast(list[dict[str, Any]], payload["pipeline_sections"]["raw_preprocessing_rows"])) == 1
+    assert len(cast(list[dict[str, Any]], payload["pipeline_sections"]["finbert_sentence_rows"])) == 1
+    assert len(json.dumps(payload)) < 50_000

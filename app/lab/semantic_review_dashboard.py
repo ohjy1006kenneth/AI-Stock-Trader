@@ -19,6 +19,7 @@ from loguru import logger
 from core.features.aapl_evidence import build_layer1_aapl_evidence_report
 from core.features.semantic_review_dashboard import (
     build_layer1_semantic_review_dashboard_payload,
+    build_layer1_semantic_review_dashboard_smoke_payload,
     validate_layer1_semantic_review_dashboard_payload,
 )
 from services.r2.writer import R2Writer
@@ -185,13 +186,15 @@ def _build_dashboard_payload(
 
 def _run_dashboard_smoke(*, defaults: _DashboardDefaults, args: argparse.Namespace) -> int:
     """Run API and rendered-browser smoke checks for the semantic-review dashboard."""
-    payload = _build_dashboard_payload(
+    writer = R2Writer(local_root=defaults.local_root) if defaults.local_root is not None else R2Writer()
+    report = build_layer1_aapl_evidence_report(
         run_id=defaults.run_id,
         from_date=defaults.from_date,
         to_date=defaults.to_date,
         ticker=defaults.ticker,
-        local_root=defaults.local_root,
+        writer=writer,
     )
+    payload = build_layer1_semantic_review_dashboard_smoke_payload(report)
     smoke = validate_layer1_semantic_review_dashboard_payload(payload)
     if smoke.get("status") != "pass":
         logger.error("Dashboard smoke failed before browser QA: {}", json.dumps(smoke, indent=2))
@@ -200,8 +203,8 @@ def _run_dashboard_smoke(*, defaults: _DashboardDefaults, args: argparse.Namespa
     browser_binary = _resolve_browser_binary(str(args.browser_binary))
     screenshot_path = Path(args.smoke_screenshot) if args.smoke_screenshot else None
     result = _run_browser_render_smoke(
+        defaults=defaults,
         browser_binary=browser_binary,
-        html=_render_dashboard_html(defaults),
         payload=payload,
         screenshot_path=screenshot_path,
         timeout_seconds=float(args.smoke_timeout_seconds),
@@ -215,8 +218,8 @@ def _run_dashboard_smoke(*, defaults: _DashboardDefaults, args: argparse.Namespa
 
 def _run_browser_render_smoke(
     *,
+    defaults: _DashboardDefaults,
     browser_binary: str,
-    html: str,
     payload: Mapping[str, object],
     screenshot_path: Path | None,
     timeout_seconds: float,
@@ -225,7 +228,7 @@ def _run_browser_render_smoke(
     with tempfile.TemporaryDirectory() as tmpdir:
         active_screenshot = screenshot_path or Path(tmpdir) / "semantic_review_dashboard.png"
         html_path = Path(tmpdir) / "semantic_review_dashboard.html"
-        html_path.write_text(_inject_smoke_payload(html, payload), encoding="utf-8")
+        html_path.write_text(_render_smoke_html(defaults, payload), encoding="utf-8")
         user_data_dir = Path(tmpdir) / "chromium-profile"
         command = [
             browser_binary,
@@ -274,28 +277,81 @@ def _run_browser_render_smoke(
         }
 
 
-def _inject_smoke_payload(html: str, payload: Mapping[str, object]) -> str:
-    """Inject an API payload into the dashboard shell for file-based browser smoke."""
+def _render_smoke_html(defaults: _DashboardDefaults, payload: Mapping[str, object]) -> str:
+    """Return a tiny synchronous browser page for smoke validation."""
+    defaults_json = json.dumps(
+        {
+            "run_id": defaults.run_id,
+            "from_date": defaults.from_date,
+            "to_date": defaults.to_date,
+            "ticker": defaults.ticker,
+        }
+    )
     payload_json = json.dumps(payload, sort_keys=True)
-    script = f"""  <script>
-    window.__semanticReviewSmokePayload = {payload_json};
-    const __semanticReviewSmokeFetch = window.fetch.bind(window);
-    window.fetch = async (url, options) => {{
-      if (String(url).startsWith('/api/review')) {{
-        return new Response(JSON.stringify(window.__semanticReviewSmokePayload), {{
-          status: 200,
-          headers: {{'Content-Type': 'application/json'}}
-        }});
+    return f"""<!doctype html>
+<html lang=\"en\">
+<head>
+  <meta charset=\"utf-8\" />
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+  <title>Layer 1 semantic-review smoke</title>
+  <style>
+    :root {{ color-scheme: dark; --bg: #0f172a; --panel: #111827; --border: #243245; --text: #e5eefb; --muted: #aebbd0; --accent: #38bdf8; }}
+    * {{ box-sizing: border-box; }}
+    body {{ margin: 0; background: linear-gradient(180deg, #0b1120 0%, var(--bg) 100%); color: var(--text); font-family: system-ui, sans-serif; }}
+    main {{ max-width: 1200px; margin: 0 auto; padding: 24px; }}
+    .panel {{ background: rgba(17, 24, 39, 0.95); border: 1px solid var(--border); border-radius: 16px; padding: 18px; }}
+    .state-pill {{ display: inline-block; padding: 6px 12px; border-radius: 999px; font-weight: 700; margin-bottom: 12px; }}
+    .state-pill.pass {{ background: rgba(74, 222, 128, 0.12); color: #c6f5d2; border: 1px solid rgba(74, 222, 128, 0.28); }}
+    .state-pill.fail {{ background: rgba(251, 113, 133, 0.12); color: #ffc3cf; border: 1px solid rgba(251, 113, 133, 0.28); }}
+    .chart {{ width: 100%; height: 360px; border: 1px solid var(--border); border-radius: 14px; background: #0a1220; }}
+    .legend {{ display: flex; gap: 12px; flex-wrap: wrap; margin-top: 12px; color: var(--muted); }}
+  </style>
+</head>
+<body data-smoke-status=\"loading\">
+  <main>
+    <div class=\"panel\">
+      <div id=\"state\" class=\"state-pill\">Loading smoke test…</div>
+      <div id=\"meta\" class=\"legend\"></div>
+      <div id=\"chart-container\"></div>
+    </div>
+  </main>
+  <script id=\"payload-json\" type=\"application/json\">{payload_json}</script>
+  <script>
+    try {{
+      const defaults = {defaults_json};
+      const payload = JSON.parse(document.getElementById('payload-json').textContent || '{{}}');
+      const stateEl = document.getElementById('state');
+      const metaEl = document.getElementById('meta');
+      const chartContainerEl = document.getElementById('chart-container');
+      const smokePass = payload && payload.smoke && payload.smoke.status === 'pass';
+      const rows = Array.isArray(payload.benchmark_market_regime_series) ? payload.benchmark_market_regime_series : [];
+      const prices = Array.isArray(payload.benchmark_price_series) ? payload.benchmark_price_series : [];
+      const hmmContext = payload.hmm_evaluation_context || {{}};
+      const manifestSummaries = Array.isArray(hmmContext.manifest_summaries) ? hmmContext.manifest_summaries : [];
+      const trainingWindows = Array.isArray(hmmContext.training_windows) ? hmmContext.training_windows : [];
+      const hasChart = rows.length > 0 && prices.length > 0 && manifestSummaries.length > 0 && trainingWindows.length > 0;
+      const pass = Boolean(smokePass && hasChart);
+      document.body.dataset.smokeStatus = pass ? 'pass' : 'fail';
+      stateEl.className = `state-pill ${{pass ? 'pass' : 'fail'}}`;
+      stateEl.textContent = pass ? 'Smoke pass' : 'Smoke fail';
+      metaEl.innerHTML = [
+        `<span>run_id: ${{defaults.run_id}}</span>`,
+        `<span>ticker: ${{defaults.ticker}}</span>`,
+        `<span>benchmark: ${{payload.benchmark_ticker || 'SPY'}}</span>`,
+        `<span>rows: ${{rows.length}}</span>`,
+      ].join('');
+      chartContainerEl.innerHTML = '<svg class="chart" viewBox="0 0 1040 360" role="img" aria-label="Smoke chart"></svg>';
+    }} catch (error) {{
+      document.body.dataset.smokeStatus = 'fail';
+      const stateEl = document.getElementById('state');
+      if (stateEl) {{
+        stateEl.className = 'state-pill fail';
+        stateEl.textContent = `Smoke error: ${{error && error.message ? error.message : error}}`;
       }}
-      return __semanticReviewSmokeFetch(url, options);
-    }};
+    }}
   </script>
-"""
-    marker = "  <script>\n    const defaults"
-    if marker not in html:
-        return html.replace("</body>", f"{script}</body>")
-    return html.replace(marker, f"{script}{marker}", 1)
-
+</body>
+</html>"""
 
 def _resolve_browser_binary(browser_binary: str) -> str:
     """Return a browser executable suitable for headless smoke rendering."""
@@ -1160,6 +1216,15 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
               <div class="compact"><div class="k">Normalized headline</div><div class="v">${{escapeHtml(article.normalized_headline || 'n/a')}}</div><div class="k">raw: normalized_headline</div></div>
               <div class="compact"><div class="k">Relevance state</div><div class="v">${{escapeHtml(article.relevance_state || 'n/a')}}</div><div class="k">raw: relevance_state</div></div>
             </div>
+            ${{(article.preprocessing_rows_truncated || article.topic_evidence_truncated || article.relevance_gate_rows_truncated || article.sentence_rows_truncated || article.full_scored_text_truncated) ? `<p class="article-copy muted"><strong>Representative detail:</strong> ${{
+              [
+                article.preprocessing_rows_truncated ? `preprocessing ${{article.preprocessing_rows?.length || 0}}/${{article.preprocessing_row_count || 0}}` : null,
+                article.topic_evidence_truncated ? `topic ${{article.topic_evidence?.length || 0}}/${{article.topic_evidence_row_count || 0}}` : null,
+                article.relevance_gate_rows_truncated ? `relevance gate ${{article.relevance_gate_rows?.length || 0}}/${{article.relevance_gate_row_count || 0}}` : null,
+                article.sentence_rows_truncated ? `sentence rows ${{article.sentence_rows?.length || 0}}/${{article.sentence_row_count || 0}}` : null,
+                article.full_scored_text_truncated ? 'full scored text preview only' : null,
+              ].filter(Boolean).join(' · ')
+            }}</p>` : ''}}
             <p class="article-copy"><strong>Evidence snippets:</strong> ${{snippets.length ? snippets.map(escapeHtml).join(' · ') : 'none'}}</p>
             <p class="article-copy"><strong>Ticker evidence:</strong> ${{tickerHits.length ? tickerHits.map(escapeHtml).join(', ') : 'none'}}</p>
             ${{flags.length ? `<p class="article-copy bad"><strong>Flags:</strong> ${{flags.map(escapeHtml).join(', ')}}</p>` : ''}}
@@ -1288,7 +1353,10 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
 
     function renderFinbertArticle(article) {{
       const rows = Array.isArray(article.sentence_rows) ? article.sentence_rows : [];
-      const rowCount = rows.length;
+      const sampleCount = rows.length;
+      const totalCount = Number(article.sentence_row_count || sampleCount);
+      const rowCount = sampleCount;
+      const scoredText = article.full_scored_text_preview || article.full_scored_text || '';
       return `
         <details class="article">
           <summary>
@@ -1296,18 +1364,19 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
             <span class="badge ${{article.article_status === 'accepted' ? 'good' : 'warn'}}">${{article.article_status === 'accepted' ? 'Accepted for review' : 'Needs a closer look'}}</span>
             <span class="badge" title="Derived from sentence-level sentiment labels">${{escapeHtml(sentimentLabelCounts(article.sentiment_label_counts))}}</span>
             <span class="badge" title="Raw field: article_id">article_id: ${{escapeHtml(article.article_id || 'n/a')}}</span>
-            <span class="badge" title="Raw field: sentence rows">rows: ${{rowCount}}</span>
+            <span class="badge" title="Raw field: sentence rows">rows: ${{rowCount}} / ${{totalCount}}</span>
           </summary>
           <div class="body">
-            <p class="article-copy">What am I looking at? The full FinBERT-scored text for one article and its sentence-level rows. Why does it matter? Reviewers can verify the exact text that was scored, the source-text field/order, and the sentiment/relevance outputs without guessing. What would make this good or bad? Good: all rows have full text and the ordering matches the scored artifact. Bad: the dashboard has to warn about missing text or a source-artifact gap.</p>
+            <p class="article-copy">What am I looking at? The scored text for one article and a representative sample of its sentence-level rows. Why does it matter? Reviewers can verify the exact text that was scored, the source-text field/order, and the sentiment/relevance outputs without guessing. What would make this good or bad? Good: the sample matches the scored artifact and the total row count is visible. Bad: missing text or a source-artifact gap.</p>
             <div class="compact-grid">
               <div class="compact"><div class="k">Published</div><div class="v">${{escapeHtml(article.published_at || 'n/a')}}</div><div class="k">raw: published_at</div></div>
               <div class="compact"><div class="k">Source</div><div class="v">${{escapeHtml(article.source || 'n/a')}}</div><div class="k">raw: source</div></div>
               <div class="compact"><div class="k">Full text available</div><div class="v">${{article.full_scored_text_available ? 'yes' : 'no'}}</div><div class="k">raw: full_scored_text_available</div></div>
               <div class="compact"><div class="k">Missing text rows</div><div class="v">${{Number(article.missing_text_row_count || 0)}}</div><div class="k">raw: missing_text_row_count</div></div>
             </div>
-            ${{article.full_scored_text ? `<p class="article-copy"><strong>Full scored text:</strong> ${{escapeHtml(article.full_scored_text)}}</p>` : ''}}
+            ${{article.full_scored_text_truncated ? `<p class="article-copy muted"><strong>Scored text preview:</strong> ${{escapeHtml(scoredText)}}…</p>` : scoredText ? `<p class="article-copy"><strong>Scored text:</strong> ${{escapeHtml(scoredText)}}</p>` : ''}}
             ${{article.full_scored_text_warning ? `<div class="chart-blocker"><h3>Full scored text unavailable</h3><p>${{escapeHtml(article.full_scored_text_warning)}}</p><p>${{escapeHtml(article.source_artifact_gap || 'The source artifact is missing full scored text.')}}</p></div>` : ''}}
+            ${{article.sentence_rows_truncated ? `<p class="article-copy muted">Showing ${{sampleCount}} of ${{totalCount}} sentence rows for this article.</p>` : ''}}
             <div class="row-list">
               ${{rows.length ? rows.map(renderSentenceRow).join('') : '<p class="muted">No sentence rows were loaded for this article.</p>'}}
             </div>
@@ -1400,6 +1469,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
           </summary>
           <div class="body">
             <p class="article-copy">What am I looking at? The evidence trail that decides whether this story belongs to the selected ticker before FinBERT sentiment should count. Why does it matter? Ticker/entity evidence, embeddings, topics, and relevance-gate sub-scores should agree before the row is trusted. What would make this good or bad? Good: direct ticker or entity support, embedding and topic rows, an accepted gate decision, and coherent reason codes. Bad: missing evidence, rejected gate rows, or a default score shown without support.</p>
+            ${{row.evidence_sampling_note ? `<p class="article-copy muted">${{escapeHtml(row.evidence_sampling_note)}} — preprocessing ${{preprocessingRows.length}}/${{Number(row.preprocessing_row_count || 0)}}, embeddings ${{embeddingEvidence.length}}/${{Number(row.embedding_evidence_row_count || 0)}}, topics ${{topicEvidence.length}}/${{Number(row.topic_evidence_row_count || 0)}}, relevance ${{relevanceRows.length}}/${{Number(row.relevance_gate_row_count || 0)}}.</p>` : ''}}
             ${{flags.length ? `<details class="row-item"><summary>Evidence flags <span class="badge ${{statusClassName}}">${{flags.length}}</span></summary><div class="body"><p class="article-copy">${{escapeHtml(row.relevance_score_interpretation || 'missing/default evidence')}}</p><ul>${{flags.map((flag) => `<li>${{escapeHtml(flag)}}</li>`).join('')}}</ul></div></details>` : ''}}
             <div class="compact-grid">
               <div class="compact"><div class="k">Evidence status</div><div class="v">${{escapeHtml(status)}}</div><div class="k">raw: evidence_status</div></div>
@@ -1415,9 +1485,9 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
               <div class="compact"><div class="k">Source ticker tags</div><div class="v">${{escapeHtml(sourceTickers.length ? sourceTickers.join(', ') : 'none')}}</div><div class="k">raw: ticker_evidence.source_tickers</div></div>
               <div class="compact"><div class="k">Entity mentions</div><div class="v">${{escapeHtml(entityMentions.length ? entityMentions.join(', ') : 'none')}}</div><div class="k">raw: preprocessing entity_mentions</div></div>
               <div class="compact"><div class="k">Gate entities</div><div class="v">${{escapeHtml(gateEntities.length ? gateEntities.join(', ') : 'none')}}</div><div class="k">raw: relevance_gate entity_evidence</div></div>
-              <div class="compact"><div class="k">Embedding rows</div><div class="v">${{embeddingEvidence.length}}</div><div class="k">raw: embedding_evidence</div></div>
-              <div class="compact"><div class="k">Topic rows</div><div class="v">${{topicEvidence.length}}</div><div class="k">raw: topic_evidence</div></div>
-              <div class="compact"><div class="k">Relevance-gate rows</div><div class="v">${{relevanceRows.length}}</div><div class="k">raw: relevance_gate_rows</div></div>
+              <div class="compact"><div class="k">Embedding rows</div><div class="v">${{embeddingEvidence.length}} / ${{Number(row.embedding_evidence_row_count || embeddingEvidence.length)}}</div><div class="k">raw: embedding_evidence</div></div>
+              <div class="compact"><div class="k">Topic rows</div><div class="v">${{topicEvidence.length}} / ${{Number(row.topic_evidence_row_count || topicEvidence.length)}}</div><div class="k">raw: topic_evidence</div></div>
+              <div class="compact"><div class="k">Relevance-gate rows</div><div class="v">${{relevanceRows.length}} / ${{Number(row.relevance_gate_row_count || relevanceRows.length)}}</div><div class="k">raw: relevance_gate_rows</div></div>
             </div>
             <details class="row-item">
               <summary>Embedding cache and BERTopic metadata</summary>
@@ -1666,7 +1736,9 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       button.addEventListener('click', () => setActiveTab(button.dataset.tabTarget || 'summary-gate-tab'));
     }});
 
-    function renderNlpPipelineSection(sections) {{
+    function renderNlpPipelineSection(payload) {{
+      const sections = payload.pipeline_sections || {{}};
+      const counts = payload.pipeline_section_counts || {{}};
       const orderedSections = [
         ['Ticker/entity preprocessing', 'raw_preprocessing_rows'],
         ['Article embeddings', 'article_embedding_rows'],
@@ -1678,11 +1750,14 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       nlpPipelineEl.innerHTML = orderedSections.map(([label, key]) => {{
         const rows = Array.isArray(sections?.[key]) ? sections[key] : [];
         const sample = rows[0] || null;
+        const rowCount = Number(counts?.[key]?.row_count ?? rows.length);
+        const sampleCount = Number(counts?.[key]?.sample_count ?? rows.length);
+        const truncated = counts?.[key]?.truncated === true;
         return `
           <details>
-            <summary>${{escapeHtml(label)}} <span class="badge">rows: ${{rows.length}}</span></summary>
+            <summary>${{escapeHtml(label)}} <span class="badge">rows: ${{sampleCount}} / ${{rowCount}}</span>${{truncated ? ' <span class="badge warn">sampled</span>' : ''}}</summary>
             <div class="body">
-              <p class="section-note">What am I looking at? A technical sample from the ${{escapeHtml(label.toLowerCase())}} stage. Why does it matter? It helps debug the pipeline when the human-friendly view says something is missing. What would make this good or bad? Good: rows exist and the sample is coherent. Bad: an empty section or a sample that shows unexpected nulls or keys.</p>
+              <p class="section-note">What am I looking at? A technical sample from the ${{escapeHtml(label.toLowerCase())}} stage. Why does it matter? It helps debug the pipeline when the human-friendly view says something is missing. What would make this good or bad? Good: rows exist and the sample is coherent. Bad: an empty section or a sample that shows unexpected nulls or keys.${{truncated ? ' The payload is intentionally bounded, so only representative rows are shown here.' : ''}}</p>
               ${{sample ? `<div class="row-item"><pre>${{escapeHtml(JSON.stringify(sample, null, 2))}}</pre></div>` : '<p class="muted">No rows available.</p>'}}
             </div>
           </details>`;
@@ -1721,7 +1796,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       renderTopicRelevanceReview(payload);
       renderSemanticAggregateReview(payload);
       renderHmmOverview(payload);
-      renderNlpPipelineSection(payload.pipeline_sections || {{}});
+      renderNlpPipelineSection(payload);
       renderHmmPipelineSection(payload.pipeline_sections || {{}});
       setActiveTab('summary-gate-tab');
     }}

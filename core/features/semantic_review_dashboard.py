@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from core.features.aapl_evidence import (
     Layer1SemanticReviewReport,
@@ -105,6 +105,120 @@ def build_layer1_semantic_review_dashboard_payload(
     payload = _build_payload_from_report(report)
     payload["topic_relevance_review"] = build_layer1_topic_relevance_review(payload)
     payload["semantic_aggregate_review"] = build_layer1_semantic_aggregate_review(payload)
+    payload.update(build_layer1_semantic_review_readiness_summary(payload))
+    return _compact_layer1_semantic_review_dashboard_payload(payload)
+
+
+def build_layer1_semantic_review_dashboard_smoke_payload(
+    report: Layer1SemanticReviewReport | Mapping[str, object],
+) -> dict[str, object]:
+    """Return a compact payload for dashboard smoke rendering.
+
+    The full dashboard payload is intentionally rich and highly duplicated so the
+    human-facing UI can render article, sentence, and topic detail tabs. That is
+    appropriate for the API, but it is too expensive to materialize in the smoke
+    path on memory-constrained hardware. This helper keeps the smoke payload
+    small by sampling representative rows while preserving the data the smoke
+    gate and chart renderer need.
+    """
+    if isinstance(report, Layer1SemanticReviewReport):
+        summary = dict(report.summary)
+        controls = {
+            "ticker": report.ticker,
+            "run_id": report.run_id,
+            "from_date": report.from_date,
+            "to_date": report.to_date,
+        }
+        benchmark_price_rows_source = report.benchmark_price_rows
+        benchmark_market_regime_rows_source = report.benchmark_market_regime_rows
+        preprocessing_rows_source = report.preprocessing_rows
+        embedding_rows_source = report.embedding_rows
+        topic_label_rows_source = report.topic_label_rows
+        relevance_gate_rows_source = report.relevance_gate_rows
+        semantic_aggregate_rows_source = report.semantic_aggregate_rows
+        regime_rows_source = report.regime_rows
+        price_rows_source = report.price_rows
+        market_regime_rows_source = report.market_regime_rows
+        article_groups_source = report.article_groups
+        warnings_source = report.load_warnings
+        artifact_keys = {key: list(value) for key, value in report.artifact_keys.items()}
+        hmm_context = dict(report.hmm_evaluation_context)
+        benchmark_ticker = report.benchmark_ticker
+    else:
+        report_dict = dict(report)
+        summary = _json_mapping(report_dict.get("summary"))
+        controls = {
+            "ticker": report_dict.get("ticker"),
+            "run_id": report_dict.get("run_id"),
+            "from_date": report_dict.get("from_date"),
+            "to_date": report_dict.get("to_date"),
+        }
+        benchmark_price_rows_source = report_dict.get("benchmark_price_rows", [])
+        benchmark_market_regime_rows_source = report_dict.get("benchmark_market_regime_rows", [])
+        preprocessing_rows_source = report_dict.get("preprocessing_rows", [])
+        embedding_rows_source = report_dict.get("embedding_rows", [])
+        topic_label_rows_source = report_dict.get("topic_label_rows", [])
+        relevance_gate_rows_source = report_dict.get("relevance_gate_rows", [])
+        semantic_aggregate_rows_source = report_dict.get("semantic_aggregate_rows", [])
+        regime_rows_source = report_dict.get("regime_rows", [])
+        price_rows_source = report_dict.get("price_rows", [])
+        market_regime_rows_source = report_dict.get("market_regime_rows", [])
+        article_groups_source = report_dict.get("article_groups", [])
+        warnings_source = report_dict.get("load_warnings", [])
+        artifact_keys = {
+            str(key): _json_string_list(value)
+            for key, value in _json_mapping(report_dict.get("artifact_keys")).items()
+        }
+        hmm_context = _json_mapping(report_dict.get("hmm_evaluation_context"))
+        benchmark_ticker = report_dict.get("benchmark_ticker")
+
+    payload: dict[str, object] = {
+        "title": "Layer 1 semantic review dashboard",
+        "description": (
+            "Beginner-friendly review of whether the Layer 1 Apple news signal, "
+            "the market benchmark, and the market-regime evidence look trustworthy."
+        ),
+        "human_semantic_review_status": "needs_human_review",
+        "recommendation_for_issue_202": "needs_human_review",
+        "summary": summary,
+        "controls": controls,
+        "benchmark_ticker": benchmark_ticker,
+        "benchmark_price_series": [
+            dict(item) for item in _smoke_sample_rows(benchmark_price_rows_source, limit=3)
+        ],
+        "benchmark_market_regime_series": [
+            dict(item) for item in _smoke_sample_rows(benchmark_market_regime_rows_source, limit=3)
+        ],
+        "hmm_evaluation_context": hmm_context,
+        "artifact_keys": artifact_keys,
+        "warnings": [dict(item) for item in _smoke_sample_rows(warnings_source, limit=12)],
+        "pipeline_sections": {
+            "raw_preprocessing_rows": [
+                dict(item) for item in _smoke_sample_rows(preprocessing_rows_source, limit=1)
+            ],
+            "article_embedding_rows": [
+                dict(item) for item in _smoke_sample_rows(embedding_rows_source, limit=1)
+            ],
+            "topic_label_rows": [
+                dict(item) for item in _smoke_sample_rows(topic_label_rows_source, limit=1)
+            ],
+            "relevance_gate_rows": [
+                dict(item) for item in _smoke_sample_rows(relevance_gate_rows_source, limit=1)
+            ],
+            "finbert_sentence_rows": _smoke_sentence_rows(article_groups_source),
+            "semantic_aggregate_rows": [
+                dict(item) for item in _smoke_sample_rows(semantic_aggregate_rows_source, limit=1)
+            ],
+            "date_level_regime_rows": [
+                dict(item) for item in _smoke_sample_rows(regime_rows_source, limit=1)
+            ],
+            "stock_price_rows": [dict(item) for item in _smoke_sample_rows(price_rows_source, limit=3)],
+            "date_aligned_price_hmm_rows": [
+                dict(item) for item in _smoke_sample_rows(market_regime_rows_source, limit=3)
+            ],
+        },
+    }
+    payload["smoke"] = build_layer1_semantic_review_dashboard_smoke_result(payload)
     payload.update(build_layer1_semantic_review_readiness_summary(payload))
     return payload
 
@@ -344,6 +458,62 @@ def build_layer1_semantic_review_readiness_summary(
         "gate_cards": gate_cards,
         "missing_pipeline_sections": missing_pipeline_sections,
     }
+
+
+def _smoke_sample_rows(value: object, *, limit: int) -> list[Mapping[str, object]]:
+    """Return a small, ordered sample of mapping rows for smoke payloads."""
+    rows = [item for item in _json_list(value) if isinstance(item, Mapping)]
+    return rows[: max(limit, 0)]
+
+
+def _smoke_sentence_rows(article_groups_value: object) -> list[dict[str, object]]:
+    """Return a compact sample of scored sentence rows for the smoke payload."""
+    def _text(value: object) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    def _int(value: object) -> int | None:
+        try:
+            if value is None:
+                return None
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        return int(number)
+
+    def _float(value: object) -> float | None:
+        try:
+            if value is None:
+                return None
+            return float(cast(Any, value))
+        except (TypeError, ValueError):
+            return None
+
+    article_groups = [item for item in _json_list(article_groups_value) if isinstance(item, Mapping)]
+    for article in article_groups:
+        sentence_rows = [item for item in _json_list(article.get("sentence_rows")) if isinstance(item, Mapping)]
+        if sentence_rows:
+            row = sentence_rows[0]
+            return [
+                {
+                    "date": _text(row.get("date")) or _text(article.get("date")),
+                    "article_id": _text(row.get("article_id")) or _text(article.get("article_id")),
+                    "sentence_index": _int(row.get("sentence_index")),
+                    "chunk_index": _int(row.get("chunk_index")),
+                    "source_text_field": _text(row.get("source_text_field")),
+                    "source_text_order": _int(row.get("source_text_order")),
+                    "text": _text(row.get("text")),
+                    "positive_probability": _float(row.get("positive_probability")),
+                    "negative_probability": _float(row.get("negative_probability")),
+                    "neutral_probability": _float(row.get("neutral_probability")),
+                    "relevance_score": _float(row.get("relevance_score")),
+                    "assignment_classification": _text(row.get("assignment_classification")),
+                }
+            ]
+    return []
+
 
 
 def validate_layer1_semantic_review_dashboard_payload(
@@ -969,3 +1139,349 @@ def _dedupe_preserve_order(items: Sequence[str]) -> list[str]:
         seen.add(item)
         values.append(item)
     return values
+
+
+_PIPELINE_SECTION_SAMPLE_LIMITS: dict[str, int] = {
+    "raw_preprocessing_rows": 1,
+    "article_embedding_rows": 1,
+    "topic_label_rows": 1,
+    "relevance_gate_rows": 1,
+    "finbert_sentence_rows": 1,
+    "semantic_aggregate_rows": 2,
+    "date_level_regime_rows": 2,
+    "stock_price_rows": 2,
+    "date_aligned_price_hmm_rows": 2,
+}
+_ARTICLE_DETAIL_SAMPLE_LIMIT = 1
+_FINBERT_SENTENCE_SAMPLE_LIMIT = 3
+_FULL_TEXT_PREVIEW_LIMIT = 280
+
+
+def _compact_layer1_semantic_review_dashboard_payload(payload: Mapping[str, object]) -> dict[str, object]:
+    """Return a bounded dashboard payload with representative detail samples."""
+    compact: dict[str, object] = dict(payload)
+    report = _json_mapping(compact.pop("report", None))
+    if report:
+        compact["report_summary"] = {
+            "run_id": report.get("run_id"),
+            "ticker": report.get("ticker"),
+            "from_date": report.get("from_date"),
+            "to_date": report.get("to_date"),
+            "row_count": report.get("row_count"),
+            "article_count": report.get("article_count"),
+            "date_count": report.get("date_count"),
+            "summary": _json_mapping(report.get("summary")),
+            "artifact_keys": _json_mapping(report.get("artifact_keys")),
+        }
+
+    article_groups = [dict(item) for item in _json_list(compact.get("article_groups")) if isinstance(item, Mapping)]
+    compact["article_groups"] = [_compact_article_summary_row(article) for article in article_groups]
+    compact["accepted_articles"] = [
+        _compact_article_summary_row(article)
+        for article in _json_list(compact.get("accepted_articles"))
+        if isinstance(article, Mapping)
+    ]
+    compact["flagged_articles"] = [
+        _compact_article_summary_row(article)
+        for article in _json_list(compact.get("flagged_articles"))
+        if isinstance(article, Mapping)
+    ]
+    compact["date_groups"] = [
+        _compact_date_summary_row(dict(item))
+        for item in _json_list(compact.get("date_groups"))
+        if isinstance(item, Mapping)
+    ]
+
+    article_review = _json_mapping(compact.get("article_review"))
+    if article_review:
+        compact["article_review"] = _compact_article_review(article_review)
+
+    topic_relevance_review = _json_mapping(compact.get("topic_relevance_review"))
+    if topic_relevance_review:
+        compact["topic_relevance_review"] = _compact_topic_relevance_review(topic_relevance_review)
+
+    finbert_sentence_review = _json_mapping(compact.get("finbert_sentence_review"))
+    if finbert_sentence_review:
+        compact["finbert_sentence_review"] = _compact_finbert_sentence_review(finbert_sentence_review)
+
+    pipeline_sections = _json_mapping(compact.get("pipeline_sections"))
+    compact["pipeline_section_counts"] = {
+        str(key): {
+            "row_count": len(rows),
+            "sample_count": min(len(rows), _PIPELINE_SECTION_SAMPLE_LIMITS.get(str(key), 1)),
+            "truncated": len(rows) > _PIPELINE_SECTION_SAMPLE_LIMITS.get(str(key), 1),
+        }
+        for key, rows in ((str(key), _json_list(value)) for key, value in pipeline_sections.items())
+    }
+    compact["pipeline_sections"] = {
+        str(key): [
+            dict(item)
+            for item in _json_list(value)[: _PIPELINE_SECTION_SAMPLE_LIMITS.get(str(key), 1)]
+            if isinstance(item, Mapping)
+        ]
+        for key, value in pipeline_sections.items()
+    }
+    return compact
+
+
+def _compact_article_summary_row(article: Mapping[str, object]) -> dict[str, object]:
+    """Return a minimal article summary for top-level payload indexes."""
+    article_dict = dict(article)
+    preprocessing_rows = _json_list(article_dict.get("preprocessing_rows"))
+    topic_evidence = _json_list(article_dict.get("topic_evidence"))
+    relevance_gate_rows = _json_list(article_dict.get("relevance_gate_rows"))
+    sentence_rows = _json_list(article_dict.get("sentence_rows"))
+    compact = {
+        "date": article_dict.get("date"),
+        "ticker": article_dict.get("ticker"),
+        "article_id": article_dict.get("article_id"),
+        "headline": article_dict.get("headline"),
+        "normalized_headline": article_dict.get("normalized_headline"),
+        "article_status": article_dict.get("article_status"),
+        "relevance_state": article_dict.get("relevance_state"),
+        "relevance_score": article_dict.get("relevance_score"),
+        "article_row_count": article_dict.get("article_row_count"),
+        "sentence_count": article_dict.get("sentence_count"),
+        "unique_sentence_count": article_dict.get("unique_sentence_count"),
+        "duplicate_sentence_count": article_dict.get("duplicate_sentence_count"),
+        "headline_duplicate_count": article_dict.get("headline_duplicate_count"),
+        "contamination_flags": article_dict.get("contamination_flags"),
+        "assignment_classifications": article_dict.get("assignment_classifications"),
+        "assignment_reasons": article_dict.get("assignment_reasons"),
+        "requested_ticker_terms": article_dict.get("requested_ticker_terms"),
+        "requested_ticker_term_hits": article_dict.get("requested_ticker_term_hits"),
+        "evidence_snippets": article_dict.get("evidence_snippets"),
+        "preprocessing_row_count": len(preprocessing_rows),
+        "topic_evidence_row_count": len(topic_evidence),
+        "relevance_gate_row_count": len(relevance_gate_rows),
+        "sentence_row_count": len(sentence_rows),
+        "sentence_rows_sample_count": min(len(sentence_rows), _FINBERT_SENTENCE_SAMPLE_LIMIT),
+        "sentence_rows_truncated": len(sentence_rows) > _FINBERT_SENTENCE_SAMPLE_LIMIT,
+    }
+    return compact
+
+
+def _compact_date_summary_row(date_group: Mapping[str, object]) -> dict[str, object]:
+    """Return a minimal date summary for top-level payload indexes."""
+    articles = [dict(item) for item in _json_list(date_group.get("articles")) if isinstance(item, Mapping)]
+    return {
+        "date": date_group.get("date"),
+        "article_count": date_group.get("article_count", len(articles)),
+        "accepted_count": date_group.get("accepted_count"),
+        "flagged_count": date_group.get("flagged_count"),
+        "sentence_count": date_group.get("sentence_count"),
+        "article_ids": [str(article.get("article_id") or "") for article in articles if article.get("article_id")],
+        "regime": _json_mapping(date_group.get("regime")),
+        "price": _json_mapping(date_group.get("price")),
+        "semantic_aggregate_count": len(_json_list(date_group.get("semantic_aggregates"))),
+    }
+
+
+def _compact_article_group_row(article: Mapping[str, object]) -> dict[str, object]:
+    """Return a representative article card with bounded nested evidence rows."""
+    compact = dict(article)
+    preprocessing_rows = _sample_mapping_rows(compact.get("preprocessing_rows"), limit=_ARTICLE_DETAIL_SAMPLE_LIMIT)
+    topic_evidence = _sample_mapping_rows(compact.get("topic_evidence"), limit=_ARTICLE_DETAIL_SAMPLE_LIMIT)
+    relevance_gate_rows = _sample_mapping_rows(compact.get("relevance_gate_rows"), limit=_ARTICLE_DETAIL_SAMPLE_LIMIT)
+    sentence_rows = _sample_mapping_rows(compact.get("sentence_rows"), limit=_FINBERT_SENTENCE_SAMPLE_LIMIT)
+    full_scored_text = _optional_str(compact.get("full_scored_text"))
+    if full_scored_text is not None:
+        compact["full_scored_text_preview"] = full_scored_text[:_FULL_TEXT_PREVIEW_LIMIT]
+        compact["full_scored_text_truncated"] = len(full_scored_text) > _FULL_TEXT_PREVIEW_LIMIT
+        compact.pop("full_scored_text", None)
+    compact["preprocessing_rows"] = preprocessing_rows
+    compact["preprocessing_row_count"] = len(_json_list(article.get("preprocessing_rows")))
+    compact["preprocessing_rows_truncated"] = compact["preprocessing_row_count"] > len(preprocessing_rows)
+    compact["topic_evidence"] = topic_evidence
+    compact["topic_evidence_row_count"] = len(_json_list(article.get("topic_evidence")))
+    compact["topic_evidence_truncated"] = compact["topic_evidence_row_count"] > len(topic_evidence)
+    compact["relevance_gate_rows"] = relevance_gate_rows
+    compact["relevance_gate_row_count"] = len(_json_list(article.get("relevance_gate_rows")))
+    compact["relevance_gate_rows_truncated"] = compact["relevance_gate_row_count"] > len(relevance_gate_rows)
+    compact["sentence_rows"] = sentence_rows
+    compact["sentence_row_count"] = len(_json_list(article.get("sentence_rows")))
+    compact["sentence_rows_sample_count"] = len(sentence_rows)
+    compact["sentence_rows_truncated"] = compact["sentence_row_count"] > len(sentence_rows)
+    return compact
+
+
+def _compact_date_group_row(date_group: Mapping[str, object]) -> dict[str, object]:
+    """Return a date-group card with bounded article evidence rows."""
+    compact = dict(date_group)
+    articles = [
+        _compact_article_group_row(article)
+        for article in _json_list(compact.get("articles"))
+        if isinstance(article, Mapping)
+    ]
+    compact["articles"] = articles
+    compact["article_count"] = len(articles)
+    compact["accepted_count"] = sum(1 for article in articles if article.get("article_status") == "accepted")
+    compact["flagged_count"] = sum(1 for article in articles if article.get("article_status") != "accepted")
+    return compact
+
+
+def _compact_article_review(review: Mapping[str, object]) -> dict[str, object]:
+    """Return the article-review tab with bounded accepted and contamination evidence."""
+    compact = dict(review)
+    compact["accepted_date_groups"] = [
+        _compact_date_group_row(group)
+        for group in _json_list(compact.get("accepted_date_groups"))
+        if isinstance(group, Mapping)
+    ]
+    compact["contamination_date_groups"] = [
+        _compact_date_group_row(group)
+        for group in _json_list(compact.get("contamination_date_groups"))
+        if isinstance(group, Mapping)
+    ]
+    compact["accepted_articles"] = [
+        _compact_article_group_row(article)
+        for article in _json_list(compact.get("accepted_articles"))
+        if isinstance(article, Mapping)
+    ]
+    compact["contamination_articles"] = [
+        _compact_article_group_row(article)
+        for article in _json_list(compact.get("contamination_articles"))
+        if isinstance(article, Mapping)
+    ]
+    return compact
+
+
+def _compact_finbert_sentence_review(review: Mapping[str, object]) -> dict[str, object]:
+    """Return the FinBERT review tab with bounded article and sentence detail."""
+    compact = dict(review)
+    compact["articles"] = [
+        _compact_finbert_article(article)
+        for article in _json_list(compact.get("articles"))
+        if isinstance(article, Mapping)
+    ]
+    compact["missing_text_warnings"] = [
+        dict(item)
+        for item in _json_list(compact.get("missing_text_warnings"))[:25]
+        if isinstance(item, Mapping)
+    ]
+    compact["source_artifact_gaps"] = [
+        dict(item)
+        for item in _json_list(compact.get("source_artifact_gaps"))[:25]
+        if isinstance(item, Mapping)
+    ]
+    compact["missing_text_warning_count"] = len(_json_list(review.get("missing_text_warnings")))
+    compact["source_artifact_gap_count"] = len(_json_list(review.get("source_artifact_gaps")))
+    return compact
+
+
+def _compact_finbert_article(article: Mapping[str, object]) -> dict[str, object]:
+    """Return a FinBERT article card with representative sentence rows."""
+    compact = dict(article)
+    preprocessing_rows = _sample_mapping_rows(
+        compact.get("preprocessing_rows"), limit=_ARTICLE_DETAIL_SAMPLE_LIMIT
+    )
+    topic_evidence = _sample_mapping_rows(compact.get("topic_evidence"), limit=_ARTICLE_DETAIL_SAMPLE_LIMIT)
+    relevance_gate_rows = _sample_mapping_rows(
+        compact.get("relevance_gate_rows"), limit=_ARTICLE_DETAIL_SAMPLE_LIMIT
+    )
+    sentence_rows = _sample_mapping_rows(compact.get("sentence_rows"), limit=_FINBERT_SENTENCE_SAMPLE_LIMIT)
+    full_scored_text = _optional_str(compact.get("full_scored_text"))
+    if full_scored_text is not None:
+        compact["full_scored_text_preview"] = full_scored_text[:_FULL_TEXT_PREVIEW_LIMIT]
+        compact["full_scored_text_truncated"] = len(full_scored_text) > _FULL_TEXT_PREVIEW_LIMIT
+        compact.pop("full_scored_text", None)
+    compact["preprocessing_rows"] = preprocessing_rows
+    compact["preprocessing_row_count"] = len(_json_list(article.get("preprocessing_rows")))
+    compact["preprocessing_rows_truncated"] = compact["preprocessing_row_count"] > len(preprocessing_rows)
+    compact["topic_evidence"] = topic_evidence
+    compact["topic_evidence_row_count"] = len(_json_list(article.get("topic_evidence")))
+    compact["topic_evidence_truncated"] = compact["topic_evidence_row_count"] > len(topic_evidence)
+    compact["relevance_gate_rows"] = relevance_gate_rows
+    compact["relevance_gate_row_count"] = len(_json_list(article.get("relevance_gate_rows")))
+    compact["relevance_gate_rows_truncated"] = compact["relevance_gate_row_count"] > len(relevance_gate_rows)
+    compact["sentence_rows"] = sentence_rows
+    compact["sentence_rows_sample_count"] = len(sentence_rows)
+    compact["sentence_rows_truncated"] = len(_json_list(article.get("sentence_rows"))) > len(sentence_rows)
+    return compact
+
+
+def _compact_topic_relevance_review(review: Mapping[str, object]) -> dict[str, object]:
+    """Return the topic/relevance tab with bounded article and blocker evidence."""
+    compact = dict(review)
+    compact["date_groups"] = [
+        _compact_topic_relevance_date_group(group)
+        for group in _json_list(compact.get("date_groups"))
+        if isinstance(group, Mapping)
+    ]
+    compact["articles"] = [
+        _compact_topic_relevance_article_row(article)
+        for article in _json_list(compact.get("articles"))
+        if isinstance(article, Mapping)
+    ]
+    compact["missing_evidence_blockers"] = [
+        dict(item)
+        for item in _json_list(compact.get("missing_evidence_blockers"))[:25]
+        if isinstance(item, Mapping)
+    ]
+    compact["missing_evidence_blocker_count"] = len(_json_list(review.get("missing_evidence_blockers")))
+    topic_review = _json_mapping(compact.get("topic_review"))
+    if topic_review:
+        topic_review = dict(topic_review)
+        topic_review["rows"] = [
+            dict(item)
+            for item in _json_list(topic_review.get("rows"))[:12]
+            if isinstance(item, Mapping)
+        ]
+        compact["topic_review"] = topic_review
+    return compact
+
+
+def _compact_topic_relevance_date_group(date_group: Mapping[str, object]) -> dict[str, object]:
+    """Return a topic/relevance date bucket with bounded article evidence."""
+    compact = dict(date_group)
+    compact["articles"] = [
+        _compact_topic_relevance_article_row(article)
+        for article in _json_list(compact.get("articles"))
+        if isinstance(article, Mapping)
+    ]
+    compact["article_count"] = len(_json_list(date_group.get("articles")))
+    return compact
+
+
+def _compact_topic_relevance_article_row(article: Mapping[str, object]) -> dict[str, object]:
+    """Return an article row with representative topic/relevance evidence only."""
+    compact = dict(article)
+    preprocessing_rows = _sample_mapping_rows(compact.get("preprocessing_rows"), limit=_ARTICLE_DETAIL_SAMPLE_LIMIT)
+    embedding_evidence = _sample_mapping_rows(compact.get("embedding_evidence"), limit=_ARTICLE_DETAIL_SAMPLE_LIMIT)
+    topic_evidence = _sample_mapping_rows(compact.get("topic_evidence"), limit=_ARTICLE_DETAIL_SAMPLE_LIMIT)
+    relevance_gate_rows = _sample_mapping_rows(compact.get("relevance_gate_rows"), limit=_ARTICLE_DETAIL_SAMPLE_LIMIT)
+    sentence_rows = _sample_mapping_rows(compact.get("sentence_rows"), limit=_FINBERT_SENTENCE_SAMPLE_LIMIT)
+    compact["preprocessing_rows"] = preprocessing_rows
+    compact["preprocessing_row_count"] = len(_json_list(article.get("preprocessing_rows")))
+    compact["preprocessing_rows_truncated"] = compact["preprocessing_row_count"] > len(preprocessing_rows)
+    compact["embedding_evidence"] = embedding_evidence
+    compact["embedding_evidence_row_count"] = len(_json_list(article.get("embedding_evidence")))
+    compact["embedding_evidence_truncated"] = compact["embedding_evidence_row_count"] > len(embedding_evidence)
+    compact["topic_evidence"] = topic_evidence
+    compact["topic_evidence_row_count"] = len(_json_list(article.get("topic_evidence")))
+    compact["topic_evidence_truncated"] = compact["topic_evidence_row_count"] > len(topic_evidence)
+    compact["relevance_gate_rows"] = relevance_gate_rows
+    compact["relevance_gate_row_count"] = len(_json_list(article.get("relevance_gate_rows")))
+    compact["relevance_gate_rows_truncated"] = compact["relevance_gate_row_count"] > len(relevance_gate_rows)
+    compact["sentence_rows"] = sentence_rows
+    compact["sentence_row_count"] = len(_json_list(article.get("sentence_rows")))
+    compact["sentence_rows_sample_count"] = len(sentence_rows)
+    compact["sentence_rows_truncated"] = compact["sentence_row_count"] > len(sentence_rows)
+    compact["evidence_sampling_note"] = (
+        "Representative rows only" if any(
+            compact[key]
+            for key in (
+                "preprocessing_rows_truncated",
+                "embedding_evidence_truncated",
+                "topic_evidence_truncated",
+                "relevance_gate_rows_truncated",
+                "sentence_rows_truncated",
+            )
+        ) else None
+    )
+    return compact
+
+
+def _sample_mapping_rows(value: object, *, limit: int) -> list[dict[str, object]]:
+    """Return a bounded list of JSON-mapping rows."""
+    return [dict(item) for item in _json_list(value)[: max(limit, 0)] if isinstance(item, Mapping)]
