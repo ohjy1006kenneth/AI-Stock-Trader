@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from core.features.aapl_evidence import (
     Layer1SemanticReviewReport,
@@ -105,6 +105,120 @@ def build_layer1_semantic_review_dashboard_payload(
     payload = _build_payload_from_report(report)
     payload["topic_relevance_review"] = build_layer1_topic_relevance_review(payload)
     payload["semantic_aggregate_review"] = build_layer1_semantic_aggregate_review(payload)
+    payload.update(build_layer1_semantic_review_readiness_summary(payload))
+    return payload
+
+
+def build_layer1_semantic_review_dashboard_smoke_payload(
+    report: Layer1SemanticReviewReport | Mapping[str, object],
+) -> dict[str, object]:
+    """Return a compact payload for dashboard smoke rendering.
+
+    The full dashboard payload is intentionally rich and highly duplicated so the
+    human-facing UI can render article, sentence, and topic detail tabs. That is
+    appropriate for the API, but it is too expensive to materialize in the smoke
+    path on memory-constrained hardware. This helper keeps the smoke payload
+    small by sampling representative rows while preserving the data the smoke
+    gate and chart renderer need.
+    """
+    if isinstance(report, Layer1SemanticReviewReport):
+        summary = dict(report.summary)
+        controls = {
+            "ticker": report.ticker,
+            "run_id": report.run_id,
+            "from_date": report.from_date,
+            "to_date": report.to_date,
+        }
+        benchmark_price_rows_source = report.benchmark_price_rows
+        benchmark_market_regime_rows_source = report.benchmark_market_regime_rows
+        preprocessing_rows_source = report.preprocessing_rows
+        embedding_rows_source = report.embedding_rows
+        topic_label_rows_source = report.topic_label_rows
+        relevance_gate_rows_source = report.relevance_gate_rows
+        semantic_aggregate_rows_source = report.semantic_aggregate_rows
+        regime_rows_source = report.regime_rows
+        price_rows_source = report.price_rows
+        market_regime_rows_source = report.market_regime_rows
+        article_groups_source = report.article_groups
+        warnings_source = report.load_warnings
+        artifact_keys = {key: list(value) for key, value in report.artifact_keys.items()}
+        hmm_context = dict(report.hmm_evaluation_context)
+        benchmark_ticker = report.benchmark_ticker
+    else:
+        report_dict = dict(report)
+        summary = _json_mapping(report_dict.get("summary"))
+        controls = {
+            "ticker": report_dict.get("ticker"),
+            "run_id": report_dict.get("run_id"),
+            "from_date": report_dict.get("from_date"),
+            "to_date": report_dict.get("to_date"),
+        }
+        benchmark_price_rows_source = report_dict.get("benchmark_price_rows", [])
+        benchmark_market_regime_rows_source = report_dict.get("benchmark_market_regime_rows", [])
+        preprocessing_rows_source = report_dict.get("preprocessing_rows", [])
+        embedding_rows_source = report_dict.get("embedding_rows", [])
+        topic_label_rows_source = report_dict.get("topic_label_rows", [])
+        relevance_gate_rows_source = report_dict.get("relevance_gate_rows", [])
+        semantic_aggregate_rows_source = report_dict.get("semantic_aggregate_rows", [])
+        regime_rows_source = report_dict.get("regime_rows", [])
+        price_rows_source = report_dict.get("price_rows", [])
+        market_regime_rows_source = report_dict.get("market_regime_rows", [])
+        article_groups_source = report_dict.get("article_groups", [])
+        warnings_source = report_dict.get("load_warnings", [])
+        artifact_keys = {
+            str(key): _json_string_list(value)
+            for key, value in _json_mapping(report_dict.get("artifact_keys")).items()
+        }
+        hmm_context = _json_mapping(report_dict.get("hmm_evaluation_context"))
+        benchmark_ticker = report_dict.get("benchmark_ticker")
+
+    payload: dict[str, object] = {
+        "title": "Layer 1 semantic review dashboard",
+        "description": (
+            "Beginner-friendly review of whether the Layer 1 Apple news signal, "
+            "the market benchmark, and the market-regime evidence look trustworthy."
+        ),
+        "human_semantic_review_status": "needs_human_review",
+        "recommendation_for_issue_202": "needs_human_review",
+        "summary": summary,
+        "controls": controls,
+        "benchmark_ticker": benchmark_ticker,
+        "benchmark_price_series": [
+            dict(item) for item in _smoke_sample_rows(benchmark_price_rows_source, limit=3)
+        ],
+        "benchmark_market_regime_series": [
+            dict(item) for item in _smoke_sample_rows(benchmark_market_regime_rows_source, limit=3)
+        ],
+        "hmm_evaluation_context": hmm_context,
+        "artifact_keys": artifact_keys,
+        "warnings": [dict(item) for item in _smoke_sample_rows(warnings_source, limit=12)],
+        "pipeline_sections": {
+            "raw_preprocessing_rows": [
+                dict(item) for item in _smoke_sample_rows(preprocessing_rows_source, limit=1)
+            ],
+            "article_embedding_rows": [
+                dict(item) for item in _smoke_sample_rows(embedding_rows_source, limit=1)
+            ],
+            "topic_label_rows": [
+                dict(item) for item in _smoke_sample_rows(topic_label_rows_source, limit=1)
+            ],
+            "relevance_gate_rows": [
+                dict(item) for item in _smoke_sample_rows(relevance_gate_rows_source, limit=1)
+            ],
+            "finbert_sentence_rows": _smoke_sentence_rows(article_groups_source),
+            "semantic_aggregate_rows": [
+                dict(item) for item in _smoke_sample_rows(semantic_aggregate_rows_source, limit=1)
+            ],
+            "date_level_regime_rows": [
+                dict(item) for item in _smoke_sample_rows(regime_rows_source, limit=1)
+            ],
+            "stock_price_rows": [dict(item) for item in _smoke_sample_rows(price_rows_source, limit=3)],
+            "date_aligned_price_hmm_rows": [
+                dict(item) for item in _smoke_sample_rows(market_regime_rows_source, limit=3)
+            ],
+        },
+    }
+    payload["smoke"] = build_layer1_semantic_review_dashboard_smoke_result(payload)
     payload.update(build_layer1_semantic_review_readiness_summary(payload))
     return payload
 
@@ -344,6 +458,62 @@ def build_layer1_semantic_review_readiness_summary(
         "gate_cards": gate_cards,
         "missing_pipeline_sections": missing_pipeline_sections,
     }
+
+
+def _smoke_sample_rows(value: object, *, limit: int) -> list[Mapping[str, object]]:
+    """Return a small, ordered sample of mapping rows for smoke payloads."""
+    rows = [item for item in _json_list(value) if isinstance(item, Mapping)]
+    return rows[: max(limit, 0)]
+
+
+def _smoke_sentence_rows(article_groups_value: object) -> list[dict[str, object]]:
+    """Return a compact sample of scored sentence rows for the smoke payload."""
+    def _text(value: object) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    def _int(value: object) -> int | None:
+        try:
+            if value is None:
+                return None
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        return int(number)
+
+    def _float(value: object) -> float | None:
+        try:
+            if value is None:
+                return None
+            return float(cast(Any, value))
+        except (TypeError, ValueError):
+            return None
+
+    article_groups = [item for item in _json_list(article_groups_value) if isinstance(item, Mapping)]
+    for article in article_groups:
+        sentence_rows = [item for item in _json_list(article.get("sentence_rows")) if isinstance(item, Mapping)]
+        if sentence_rows:
+            row = sentence_rows[0]
+            return [
+                {
+                    "date": _text(row.get("date")) or _text(article.get("date")),
+                    "article_id": _text(row.get("article_id")) or _text(article.get("article_id")),
+                    "sentence_index": _int(row.get("sentence_index")),
+                    "chunk_index": _int(row.get("chunk_index")),
+                    "source_text_field": _text(row.get("source_text_field")),
+                    "source_text_order": _int(row.get("source_text_order")),
+                    "text": _text(row.get("text")),
+                    "positive_probability": _float(row.get("positive_probability")),
+                    "negative_probability": _float(row.get("negative_probability")),
+                    "neutral_probability": _float(row.get("neutral_probability")),
+                    "relevance_score": _float(row.get("relevance_score")),
+                    "assignment_classification": _text(row.get("assignment_classification")),
+                }
+            ]
+    return []
+
 
 
 def validate_layer1_semantic_review_dashboard_payload(

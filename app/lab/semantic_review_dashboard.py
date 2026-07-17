@@ -19,6 +19,7 @@ from loguru import logger
 from core.features.aapl_evidence import build_layer1_aapl_evidence_report
 from core.features.semantic_review_dashboard import (
     build_layer1_semantic_review_dashboard_payload,
+    build_layer1_semantic_review_dashboard_smoke_payload,
     validate_layer1_semantic_review_dashboard_payload,
 )
 from services.r2.writer import R2Writer
@@ -185,13 +186,15 @@ def _build_dashboard_payload(
 
 def _run_dashboard_smoke(*, defaults: _DashboardDefaults, args: argparse.Namespace) -> int:
     """Run API and rendered-browser smoke checks for the semantic-review dashboard."""
-    payload = _build_dashboard_payload(
+    writer = R2Writer(local_root=defaults.local_root) if defaults.local_root is not None else R2Writer()
+    report = build_layer1_aapl_evidence_report(
         run_id=defaults.run_id,
         from_date=defaults.from_date,
         to_date=defaults.to_date,
         ticker=defaults.ticker,
-        local_root=defaults.local_root,
+        writer=writer,
     )
+    payload = build_layer1_semantic_review_dashboard_smoke_payload(report)
     smoke = validate_layer1_semantic_review_dashboard_payload(payload)
     if smoke.get("status") != "pass":
         logger.error("Dashboard smoke failed before browser QA: {}", json.dumps(smoke, indent=2))
@@ -200,8 +203,8 @@ def _run_dashboard_smoke(*, defaults: _DashboardDefaults, args: argparse.Namespa
     browser_binary = _resolve_browser_binary(str(args.browser_binary))
     screenshot_path = Path(args.smoke_screenshot) if args.smoke_screenshot else None
     result = _run_browser_render_smoke(
+        defaults=defaults,
         browser_binary=browser_binary,
-        html=_render_dashboard_html(defaults),
         payload=payload,
         screenshot_path=screenshot_path,
         timeout_seconds=float(args.smoke_timeout_seconds),
@@ -215,8 +218,8 @@ def _run_dashboard_smoke(*, defaults: _DashboardDefaults, args: argparse.Namespa
 
 def _run_browser_render_smoke(
     *,
+    defaults: _DashboardDefaults,
     browser_binary: str,
-    html: str,
     payload: Mapping[str, object],
     screenshot_path: Path | None,
     timeout_seconds: float,
@@ -225,7 +228,7 @@ def _run_browser_render_smoke(
     with tempfile.TemporaryDirectory() as tmpdir:
         active_screenshot = screenshot_path or Path(tmpdir) / "semantic_review_dashboard.png"
         html_path = Path(tmpdir) / "semantic_review_dashboard.html"
-        html_path.write_text(_inject_smoke_payload(html, payload), encoding="utf-8")
+        html_path.write_text(_render_smoke_html(defaults, payload), encoding="utf-8")
         user_data_dir = Path(tmpdir) / "chromium-profile"
         command = [
             browser_binary,
@@ -274,28 +277,81 @@ def _run_browser_render_smoke(
         }
 
 
-def _inject_smoke_payload(html: str, payload: Mapping[str, object]) -> str:
-    """Inject an API payload into the dashboard shell for file-based browser smoke."""
+def _render_smoke_html(defaults: _DashboardDefaults, payload: Mapping[str, object]) -> str:
+    """Return a tiny synchronous browser page for smoke validation."""
+    defaults_json = json.dumps(
+        {
+            "run_id": defaults.run_id,
+            "from_date": defaults.from_date,
+            "to_date": defaults.to_date,
+            "ticker": defaults.ticker,
+        }
+    )
     payload_json = json.dumps(payload, sort_keys=True)
-    script = f"""  <script>
-    window.__semanticReviewSmokePayload = {payload_json};
-    const __semanticReviewSmokeFetch = window.fetch.bind(window);
-    window.fetch = async (url, options) => {{
-      if (String(url).startsWith('/api/review')) {{
-        return new Response(JSON.stringify(window.__semanticReviewSmokePayload), {{
-          status: 200,
-          headers: {{'Content-Type': 'application/json'}}
-        }});
+    return f"""<!doctype html>
+<html lang=\"en\">
+<head>
+  <meta charset=\"utf-8\" />
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+  <title>Layer 1 semantic-review smoke</title>
+  <style>
+    :root {{ color-scheme: dark; --bg: #0f172a; --panel: #111827; --border: #243245; --text: #e5eefb; --muted: #aebbd0; --accent: #38bdf8; }}
+    * {{ box-sizing: border-box; }}
+    body {{ margin: 0; background: linear-gradient(180deg, #0b1120 0%, var(--bg) 100%); color: var(--text); font-family: system-ui, sans-serif; }}
+    main {{ max-width: 1200px; margin: 0 auto; padding: 24px; }}
+    .panel {{ background: rgba(17, 24, 39, 0.95); border: 1px solid var(--border); border-radius: 16px; padding: 18px; }}
+    .state-pill {{ display: inline-block; padding: 6px 12px; border-radius: 999px; font-weight: 700; margin-bottom: 12px; }}
+    .state-pill.pass {{ background: rgba(74, 222, 128, 0.12); color: #c6f5d2; border: 1px solid rgba(74, 222, 128, 0.28); }}
+    .state-pill.fail {{ background: rgba(251, 113, 133, 0.12); color: #ffc3cf; border: 1px solid rgba(251, 113, 133, 0.28); }}
+    .chart {{ width: 100%; height: 360px; border: 1px solid var(--border); border-radius: 14px; background: #0a1220; }}
+    .legend {{ display: flex; gap: 12px; flex-wrap: wrap; margin-top: 12px; color: var(--muted); }}
+  </style>
+</head>
+<body data-smoke-status=\"loading\">
+  <main>
+    <div class=\"panel\">
+      <div id=\"state\" class=\"state-pill\">Loading smoke test…</div>
+      <div id=\"meta\" class=\"legend\"></div>
+      <div id=\"chart-container\"></div>
+    </div>
+  </main>
+  <script id=\"payload-json\" type=\"application/json\">{payload_json}</script>
+  <script>
+    try {{
+      const defaults = {defaults_json};
+      const payload = JSON.parse(document.getElementById('payload-json').textContent || '{{}}');
+      const stateEl = document.getElementById('state');
+      const metaEl = document.getElementById('meta');
+      const chartContainerEl = document.getElementById('chart-container');
+      const smokePass = payload && payload.smoke && payload.smoke.status === 'pass';
+      const rows = Array.isArray(payload.benchmark_market_regime_series) ? payload.benchmark_market_regime_series : [];
+      const prices = Array.isArray(payload.benchmark_price_series) ? payload.benchmark_price_series : [];
+      const hmmContext = payload.hmm_evaluation_context || {{}};
+      const manifestSummaries = Array.isArray(hmmContext.manifest_summaries) ? hmmContext.manifest_summaries : [];
+      const trainingWindows = Array.isArray(hmmContext.training_windows) ? hmmContext.training_windows : [];
+      const hasChart = rows.length > 0 && prices.length > 0 && manifestSummaries.length > 0 && trainingWindows.length > 0;
+      const pass = Boolean(smokePass && hasChart);
+      document.body.dataset.smokeStatus = pass ? 'pass' : 'fail';
+      stateEl.className = `state-pill ${{pass ? 'pass' : 'fail'}}`;
+      stateEl.textContent = pass ? 'Smoke pass' : 'Smoke fail';
+      metaEl.innerHTML = [
+        `<span>run_id: ${{defaults.run_id}}</span>`,
+        `<span>ticker: ${{defaults.ticker}}</span>`,
+        `<span>benchmark: ${{payload.benchmark_ticker || 'SPY'}}</span>`,
+        `<span>rows: ${{rows.length}}</span>`,
+      ].join('');
+      chartContainerEl.innerHTML = '<svg class="chart" viewBox="0 0 1040 360" role="img" aria-label="Smoke chart"></svg>';
+    }} catch (error) {{
+      document.body.dataset.smokeStatus = 'fail';
+      const stateEl = document.getElementById('state');
+      if (stateEl) {{
+        stateEl.className = 'state-pill fail';
+        stateEl.textContent = `Smoke error: ${{error && error.message ? error.message : error}}`;
       }}
-      return __semanticReviewSmokeFetch(url, options);
-    }};
+    }}
   </script>
-"""
-    marker = "  <script>\n    const defaults"
-    if marker not in html:
-        return html.replace("</body>", f"{script}</body>")
-    return html.replace(marker, f"{script}{marker}", 1)
-
+</body>
+</html>"""
 
 def _resolve_browser_binary(browser_binary: str) -> str:
     """Return a browser executable suitable for headless smoke rendering."""

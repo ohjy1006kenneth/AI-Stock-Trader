@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import json
 from pathlib import Path
 from typing import Any, cast
 
@@ -9,6 +10,7 @@ from app.lab.semantic_review_dashboard import _DashboardDefaults, _render_dashbo
 from core.features.aapl_evidence import build_layer1_aapl_evidence_report
 from core.features.semantic_review_dashboard import (
     build_layer1_semantic_review_dashboard_payload,
+    build_layer1_semantic_review_dashboard_smoke_payload,
     build_layer1_semantic_review_readiness_summary,
     validate_layer1_semantic_review_dashboard_payload,
 )
@@ -779,3 +781,27 @@ def test_semantic_review_dashboard_html_names_human_review_outputs() -> None:
     assert "Pre-FinBERT relevance gate artifact is missing" in html
     assert "Human-review digest" in html
     assert "Only AI/ML/NLP evidence belongs here" in html
+
+
+def test_semantic_review_dashboard_smoke_payload_is_compact_and_valid(tmp_path: Path) -> None:
+    """Smoke payloads should stay compact enough for Pi browser QA."""
+    fixture = seed_semantic_review_fixture(local_root=tmp_path / "r2")
+    report = build_layer1_aapl_evidence_report(
+        run_id=str(fixture["run_id"]),
+        from_date="2026-05-21",
+        to_date="2026-05-22",
+        ticker="AAPL",
+        writer=fixture["writer"],
+    )
+
+    payload = cast(dict[str, Any], build_layer1_semantic_review_dashboard_smoke_payload(report))
+
+    assert payload["smoke"]["status"] == "pass"
+    assert payload["summary"]["article_count"] == 4
+    assert payload["summary"]["date_count"] == 2
+    assert "report" not in payload
+    assert "article_groups" not in payload
+    assert "date_groups" not in payload
+    assert len(cast(list[dict[str, Any]], payload["pipeline_sections"]["raw_preprocessing_rows"])) == 1
+    assert len(cast(list[dict[str, Any]], payload["pipeline_sections"]["finbert_sentence_rows"])) == 1
+    assert len(json.dumps(payload)) < 50_000
