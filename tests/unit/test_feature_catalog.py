@@ -60,6 +60,18 @@ def test_feature_catalog_registers_sentiment_semantic_features() -> None:
         assert catalog[feature_name].owner in {"sentiment", "nlp"}
         assert catalog[feature_name].required is False
 
+    assert catalog["nlp_relevance_category"].kind == "string"
+    assert catalog["nlp_target_impact_direction"].kind == "string"
+    assert catalog["nlp_target_impact_magnitude"].kind == "string"
+    assert catalog["nlp_target_impact_horizon"].kind == "string"
+    assert catalog["nlp_target_impact_confidence"].kind == "number"
+    assert catalog["nlp_causal_channel"].kind == "string"
+    assert catalog["nlp_document_sentiment"].kind == "string"
+    assert catalog["nlp_article_contamination_ratio"].kind == "number"
+    assert catalog["nlp_article_contamination_count"].kind == "number"
+    assert catalog["nlp_article_signal_count"].kind == "number"
+    assert catalog["nlp_article_contribution_weight"].kind == "number"
+
     assert (
         validate_feature_value(
             "nlp_sentiment_topic_score",

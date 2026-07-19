@@ -218,22 +218,72 @@ def test_score_news_sentiment_requires_explicit_relevance_evidence() -> None:
     assert relevance_by_article["noise-nvda"] is None
 
 
-def test_sentiment_feature_records_accept_legacy_relevance_gate_without_optional_target_fields() -> None:
-    """Legacy relevance-gate rows should still attach and leave optional target fields empty."""
+def test_sentiment_feature_records_accept_legacy_relevance_gate_without_reason_codes() -> None:
+    """Legacy relevance-gate rows without reason codes should still attach cleanly."""
     scored_news = pd.DataFrame([
         _row(article_id="legacy-aapl", sentence_index=0, relevance_score=0.75),
     ])
     relevance_gate = pd.DataFrame(
         [
-            _relevance_gate_row(
-                article_id="legacy-aapl",
-                relevance_decision="accepted",
-                relevance_score=0.75,
-                ticker_relevance_score=1.0,
-                financial_relevance_score=0.8,
-                topic_relevance_score=0.6,
-                reason_codes=json.dumps(["legacy_relevance_evidence"], sort_keys=True),
-            )
+            {
+                "date": "2024-04-10",
+                "ticker": "AAPL",
+                "article_id": "legacy-aapl",
+                "sentence_index": 0,
+                "chunk_index": 0,
+                "relevance_decision": "accepted",
+                "relevance_score": 0.75,
+                "ticker_relevance_score": 1.0,
+                "financial_relevance_score": 0.8,
+                "topic_relevance_score": 0.6,
+            }
+        ]
+    )
+
+    records = sentiment_feature_records_from_scored_news(
+        scored_news,
+        relevance_gate=relevance_gate,
+        credibility_config=SourceCredibilityConfig(
+            default_source_weight=1.0,
+            source_weights={},
+        ),
+    )
+
+    assert len(records) == 1
+    assert records[0].features["nlp_relevance_reason_codes"] == "[]"
+
+
+def test_sentiment_feature_records_normalize_missing_target_impact_fields_to_none() -> None:
+    """Missing semantic target-impact values should stay None instead of pd.NA."""
+    scored_news = pd.DataFrame([
+        _row(article_id="target-aapl", sentence_index=0, relevance_score=0.9),
+    ])
+    relevance_gate = pd.DataFrame(
+        [
+            {
+                "date": "2024-04-10",
+                "ticker": "AAPL",
+                "article_id": "target-aapl",
+                "sentence_index": 0,
+                "chunk_index": 0,
+                "relevance_decision": "accepted",
+                "relevance_score": 0.9,
+                "ticker_relevance_score": 1.0,
+                "financial_relevance_score": 0.85,
+                "topic_relevance_score": 0.7,
+                "relevance_category": pd.NA,
+                "target_company_impact_direction": pd.NA,
+                "target_company_impact_magnitude": pd.NA,
+                "impact_horizon": pd.NA,
+                "target_impact_confidence": pd.NA,
+                "causal_channel": pd.NA,
+                "document_sentiment": pd.NA,
+                "article_contamination_ratio": pd.NA,
+                "article_contamination_count": pd.NA,
+                "article_signal_count": pd.NA,
+                "article_contribution_weight": pd.NA,
+                "reason_codes": json.dumps([], sort_keys=True),
+            }
         ]
     )
 

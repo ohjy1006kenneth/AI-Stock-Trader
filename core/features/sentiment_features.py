@@ -709,6 +709,13 @@ def _attach_relevance_evidence(
     for column in RELEVANCE_EVIDENCE_OPTIONAL_COLUMNS:
         if column not in gate_frame.columns:
             gate_frame[column] = None
+    reason_codes_series = gate_frame.get("reason_codes")
+    if reason_codes_series is None:
+        gate_frame["reason_codes"] = "[]"
+    else:
+        gate_frame["reason_codes"] = reason_codes_series.map(
+            lambda value: json.dumps(_json_string_list(value), sort_keys=True, separators=(",", ":"))
+        )
 
     selected_columns = [
         "_artifact_date",
@@ -1301,11 +1308,12 @@ def _normalize_optional_string(value: Any) -> str | None:
 
 def _first_non_null(values: pd.Series) -> Any:
     """Return the first non-missing value from a series."""
+    pd = _require_pandas()
     for value in values.tolist():
         if value is None:
             continue
         try:
-            if value != value:
+            if pd.isna(value):
                 continue
         except (TypeError, ValueError):
             pass
