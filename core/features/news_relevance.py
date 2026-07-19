@@ -341,6 +341,7 @@ def _build_record_analysis(
         assignment_classification=assignment_classification,
         assignment_evidence_kinds=assignment_evidence_kinds,
         ticker_score=ticker_score,
+        financial_score=financial_score,
         competitor_reasons=competitor_reasons,
     )
 
@@ -406,14 +407,11 @@ def _finalize_record_analysis(
     article_contribution_weight = float(article_stats["article_contribution_weight"])
     article_contamination_dominates = bool(article_stats["article_contamination_dominates"])
 
-    category_bonus = {
-        "direct_target_event": 0.18,
-        "supplier_or_input_cost_exposure": 0.12,
-        "competitor_read_through": 0.10,
-        "industry_or_macro_exposure": 0.05,
-        "incidental_comparison": 0.0,
-        "irrelevant": 0.0,
-    }.get(str(analysis["relevance_category"]), 0.0)
+    # Keep the relevance_score backward-compatible with the historical
+    # ticker/financial/topic weighted score.  The target-conditioned category
+    # controls accept/borderline/reject semantics and auditability, but it must
+    # not inflate downstream sentiment weights by itself.
+    category_bonus = 0.0
     relevance_score = min(
         1.0,
         (float(analysis["base_relevance_score"]) * article_contribution_weight) + category_bonus,
@@ -559,6 +557,7 @@ def _target_conditioned_metadata(
     assignment_classification: str | None,
     assignment_evidence_kinds: Sequence[str],
     ticker_score: float,
+    financial_score: float,
     competitor_reasons: Sequence[str],
 ) -> tuple[str, str, str, str, str, float, list[str]]:
     """Return target-conditioned category and audit metadata for a row."""
@@ -566,6 +565,12 @@ def _target_conditioned_metadata(
     lower_text = normalized_text.lower()
     direct_evidence = ticker_score >= 1.0 or assignment_classification == "direct" or (
         assignment_classification == "indirect" and "company_alias_entity_match" in assignment_evidence_kinds
+    )
+    source_tag_financial_evidence = (
+        assignment_classification is None
+        and not competitor_reasons
+        and ticker_score >= 0.45
+        and financial_score >= 0.35
     )
     has_direct_business_context = any(
         _contains_phrase(lower_text, term) for term in _DIRECT_TARGET_BUSINESS_TERMS
@@ -613,6 +618,36 @@ def _target_conditioned_metadata(
             "short_term",
             "supplier_input_cost",
             0.78,
+            reasons,
+        )
+
+    if source_tag_financial_evidence and has_macro_context:
+        category = "industry_or_macro_exposure"
+        reasons.append("target_conditioned_category:industry_or_macro_exposure")
+        reasons.append("causal_channel:industry_macro")
+        reasons.append("source_tag_financial_evidence")
+        return (
+            category,
+            _impact_direction(lower_text),
+            "low",
+            "medium_term",
+            "industry_macro",
+            0.55,
+            reasons,
+        )
+
+    if source_tag_financial_evidence:
+        category = "direct_target_event"
+        reasons.append("target_conditioned_category:direct_target_event")
+        reasons.append("causal_channel:source_tagged_financial_event")
+        reasons.append("source_tag_financial_evidence")
+        return (
+            category,
+            _impact_direction(lower_text),
+            "medium",
+            "short_term",
+            "source_tagged_financial_event",
+            0.62,
             reasons,
         )
 
