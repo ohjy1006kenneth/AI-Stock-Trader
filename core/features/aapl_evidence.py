@@ -2026,6 +2026,18 @@ def build_layer1_semantic_review_dashboard_smoke_result(
                 ),
             }
         )
+    elif len(benchmark_prices) < 2 or len(benchmark_rows) < 2:
+        failures.append(
+            {
+                "stage": "benchmark_hmm_chart",
+                "reason": "insufficient_hmm_chart_points",
+                "message": "The benchmark/HMM chart needs at least two aligned points for auditability.",
+                "missing_or_tried_keys": _warning_keys_for_scopes(
+                    warnings,
+                    {"hmm_regime", "hmm_evaluation_context", "price_series"},
+                ),
+            }
+        )
     if benchmark_rows and not any(_row_has_renderable_price(row) for row in benchmark_rows):
         failures.append(
             {

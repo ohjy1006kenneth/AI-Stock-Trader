@@ -98,6 +98,36 @@ _GATE_DEFINITIONS = (
 )
 
 
+_DIAGNOSTIC_STATES = ("PASS", "WARN", "FAIL", "NOT_RUN", "NO_DATA")
+
+
+def _diagnostic_record(state: str, reason: str, *, reviewable: bool) -> dict[str, object]:
+    normalized_state = state.upper()
+    if normalized_state not in _DIAGNOSTIC_STATES:
+        normalized_state = "NOT_RUN"
+    return {"state": normalized_state, "reason": reason, "reviewable": reviewable}
+
+
+def _topic_label_looks_like_model_metadata(label: object) -> bool:
+    text = _optional_str(label)
+    if not text:
+        return False
+    lowered = text.lower()
+    if lowered.startswith("bertopic") and "bertopic-" in lowered:
+        return True
+    if lowered.startswith("bertopic") and any(token in lowered for token in ("v0.", "v1.", "version", "model")):
+        return True
+    return lowered in {"bertopic", "bertopic labels", "topic model metadata"}
+
+
+def _has_human_readable_topic_label(label: object) -> bool:
+    text = _optional_str(label)
+    if not text:
+        return False
+    lowered = text.lower()
+    return not _topic_label_looks_like_model_metadata(lowered) and any(char.isalpha() for char in text)
+
+
 def build_layer1_semantic_review_dashboard_payload(
     report: Layer1SemanticReviewReport | Mapping[str, object],
 ) -> dict[str, object]:
@@ -301,6 +331,16 @@ def build_layer1_topic_relevance_review(
         for row in rows
         if _json_string_list(row.get("missing_evidence_flags"))
     ]
+    reviewability = _topic_relevance_reviewability_summary(
+        article_count=len(rows),
+        relevance_gate_row_count=len(relevance_rows),
+        embedding_row_count=len(embedding_rows),
+        topic_label_row_count=len(topic_rows),
+        topic_review_rows=topic_review_rows,
+        topic_review_topics=topic_review_topics,
+        topic_review_warning=topic_review_warning,
+        relevance_rows=relevance_rows,
+    )
     return {
         "summary": {
             "article_count": len(rows),
@@ -341,12 +381,7 @@ def build_layer1_topic_relevance_review(
                 if "default_relevance_without_supporting_evidence"
                 in _json_string_list(row.get("missing_evidence_flags"))
             ),
-            **_topic_relevance_reviewability_summary(
-                article_count=len(rows),
-                relevance_gate_row_count=len(relevance_rows),
-                embedding_row_count=len(embedding_rows),
-                topic_label_row_count=len(topic_rows),
-            ),
+            **reviewability,
         },
         "date_groups": date_groups,
         "articles": rows,
@@ -359,13 +394,60 @@ def build_layer1_topic_relevance_review(
                 "warning": topic_review_warning,
                 "dominant_topic_id": topic_review.get("dominant_topic_id"),
                 "dominant_topic_share": topic_review.get("dominant_topic_share"),
+                "diagnostic_state": reviewability["topic_review_state"]["state"],
+                "reviewable": reviewability["topic_review_state"]["reviewable"],
+                "review_status": reviewability["topic_review_state"]["state"].lower(),
+                "review_explanation": reviewability["topic_review_state"]["reason"],
             },
             "topics": topic_review_topics,
             "rows": topic_review_rows,
+            "diagnostic_state": reviewability["topic_review_state"]["state"],
         },
         "missing_evidence_blockers": missing_blockers,
     }
 
+
+
+def _hmm_chart_auditability_state(payload: Mapping[str, object]) -> dict[str, object]:
+    benchmark_prices = [
+        dict(item)
+        for item in _json_list(payload.get("benchmark_price_series"))
+        if isinstance(item, Mapping)
+    ]
+    benchmark_rows = [
+        dict(item)
+        for item in _json_list(payload.get("benchmark_market_regime_series"))
+        if isinstance(item, Mapping)
+    ]
+    point_count = min(len(benchmark_prices), len(benchmark_rows))
+    if point_count == 0:
+        return {
+            **_diagnostic_record("NO_DATA", "No benchmark/HMM chart rows are available.", reviewable=False),
+            "point_count": point_count,
+            "price_row_count": len(benchmark_prices),
+            "market_regime_row_count": len(benchmark_rows),
+        }
+    if point_count < 2:
+        return {
+            **_diagnostic_record(
+                "WARN",
+                "Only one benchmark/HMM point is available, so the chart is limited for auditability.",
+                reviewable=False,
+            ),
+            "point_count": point_count,
+            "price_row_count": len(benchmark_prices),
+            "market_regime_row_count": len(benchmark_rows),
+        }
+    return {
+        **_diagnostic_record(
+            "PASS",
+            "The benchmark/HMM chart has enough points for meaningful auditability.",
+            reviewable=True,
+        ),
+        "point_count": point_count,
+        "price_row_count": len(benchmark_prices),
+        "market_regime_row_count": len(benchmark_rows),
+    }
 
 
 def build_layer1_semantic_aggregate_review(
@@ -395,6 +477,12 @@ def build_layer1_semantic_review_readiness_summary(
     """Return stable run-readiness and gate-card fields for dashboard consumers."""
     summary = _json_mapping(payload.get("summary"))
     smoke = _json_mapping(payload.get("smoke"))
+    topic_relevance_review = _json_mapping(payload.get("topic_relevance_review"))
+    topic_relevance_summary = _json_mapping(topic_relevance_review.get("summary"))
+    topic_review_state = _json_mapping(topic_relevance_summary.get("topic_review_state"))
+    relevance_state = _json_mapping(topic_relevance_summary.get("relevance_informativeness_state"))
+    embedding_state = _json_mapping(topic_relevance_summary.get("embedding_coverage_state"))
+    hmm_chart_state = _hmm_chart_auditability_state(payload)
     failures = [dict(item) for item in _json_list(smoke.get("failures")) if isinstance(item, Mapping)]
     failure_map = _failures_by_stage(failures)
     gate_cards = [
@@ -407,7 +495,17 @@ def build_layer1_semantic_review_readiness_summary(
     ]
     blocked_gates = [card for card in gate_cards if card["status"] == "blocked"]
     smoke_passed = str(smoke.get("status")) == "pass"
-    ready_for_final_acceptance = smoke_passed and not blocked_gates
+    diagnostic_states = {
+        "topic_review": str(topic_review_state.get("state") or topic_relevance_summary.get("diagnostic_state") or "NOT_RUN"),
+        "relevance_informativeness": str(relevance_state.get("state") or "NOT_RUN"),
+        "embedding_coverage": str(embedding_state.get("state") or "NOT_RUN"),
+        "hmm_chart_auditability": str(hmm_chart_state.get("state") or "NOT_RUN"),
+    }
+    diagnostics_reviewable = all(
+        state and bool(state.get("reviewable"))
+        for state in (topic_review_state, relevance_state, embedding_state, hmm_chart_state)
+    )
+    ready_for_final_acceptance = smoke_passed and not blocked_gates and diagnostics_reviewable
     readiness_status = (
         "ready_for_final_human_acceptance"
         if ready_for_final_acceptance
@@ -418,11 +516,12 @@ def build_layer1_semantic_review_readiness_summary(
         if ready_for_final_acceptance
         else "not ready for final human acceptance"
     )
-    human_review_status = (
-        "can_start"
-        if ready_for_final_acceptance
-        else "blocked_by_missing_pipeline_evidence"
-    )
+    if ready_for_final_acceptance:
+        human_review_status = "can_start"
+    elif blocked_gates:
+        human_review_status = "blocked_by_missing_pipeline_evidence"
+    else:
+        human_review_status = "blocked_by_unreviewable_diagnostics"
     missing_pipeline_sections = [
         {
             "key": str(card["key"]),
@@ -432,6 +531,25 @@ def build_layer1_semantic_review_readiness_summary(
         }
         for card in blocked_gates
     ]
+    diagnostic_blocker_reasons = [
+        str(state.get("reason") or "")
+        for state in (topic_review_state, relevance_state, embedding_state, hmm_chart_state)
+        if state and not bool(state.get("reviewable"))
+    ]
+    diagnostic_summary = {
+        "topic_review": topic_review_state,
+        "relevance_informativeness": relevance_state,
+        "embedding_coverage": embedding_state,
+        "hmm_chart_auditability": hmm_chart_state,
+        "overall_state": _diagnostic_worst_state(
+            diagnostic_states["topic_review"],
+            diagnostic_states["relevance_informativeness"],
+            diagnostic_states["embedding_coverage"],
+            diagnostic_states["hmm_chart_auditability"],
+        ),
+        "reviewable": diagnostics_reviewable,
+        "blocker_reasons": [reason for reason in diagnostic_blocker_reasons if reason],
+    }
     run_readiness = {
         "run_id": payload.get("run_id") or _json_mapping(payload.get("controls")).get("run_id"),
         "ticker": payload.get("ticker") or _json_mapping(payload.get("controls")).get("ticker"),
@@ -450,7 +568,14 @@ def build_layer1_semantic_review_readiness_summary(
         "flagged_article_count": int(summary.get("flagged_article_count") or 0),
         "blocked_gate_count": len(blocked_gates),
         "missing_pipeline_section_count": len(missing_pipeline_sections),
-        "status_reason": _readiness_status_reason(ready_for_final_acceptance),
+        "diagnostic_states": diagnostic_states,
+        "diagnostic_summary": diagnostic_summary,
+        "topic_relevance_review_status": topic_relevance_summary.get("review_status") or "unknown",
+        "topic_review_state": topic_review_state,
+        "relevance_informativeness_state": relevance_state,
+        "embedding_coverage_state": embedding_state,
+        "hmm_chart_auditability_state": hmm_chart_state,
+        "status_reason": _readiness_status_reason(ready_for_final_acceptance, diagnostic_blocker_reasons),
     }
     return {
         "run_readiness": run_readiness,
@@ -458,6 +583,8 @@ def build_layer1_semantic_review_readiness_summary(
         "gate_cards": gate_cards,
         "missing_pipeline_sections": missing_pipeline_sections,
     }
+
+
 
 
 def _smoke_sample_rows(value: object, *, limit: int) -> list[Mapping[str, object]]:
@@ -785,38 +912,259 @@ def _relevance_score_interpretation(
     return "computed"
 
 
+_DIAGNOSTIC_STATE_PRIORITY = {"PASS": 0, "WARN": 1, "NOT_RUN": 2, "NO_DATA": 2, "FAIL": 3}
+
+
+def _diagnostic_worst_state(*states: object) -> str:
+    worst_state = "PASS"
+    worst_priority = _DIAGNOSTIC_STATE_PRIORITY[worst_state]
+    for state in states:
+        normalized = _diagnostic_record(str(state or "NOT_RUN"), "", reviewable=False)["state"]
+        priority = _DIAGNOSTIC_STATE_PRIORITY.get(str(normalized), _DIAGNOSTIC_STATE_PRIORITY["NOT_RUN"])
+        if priority > worst_priority:
+            worst_state = str(normalized)
+            worst_priority = priority
+    return worst_state
+
+
+def _topic_review_diagnostic_state(
+    *,
+    topic_review_rows: Sequence[Mapping[str, object]],
+    topic_review_topics: Sequence[object],
+    topic_review_warning: str | None,
+) -> dict[str, object]:
+    row_count = len(topic_review_rows)
+    topic_count = len(topic_review_topics)
+    labels = [_optional_str(row.get("topic_label")) for row in topic_review_rows]
+    keyword_rows = sum(1 for row in topic_review_rows if _json_string_list(row.get("topic_keywords")))
+    example_rows = sum(
+        1
+        for row in topic_review_rows
+        if _optional_str(row.get("topic_example_text")) or _json_string_list(row.get("topic_example_texts"))
+    )
+    human_labels = sum(1 for label in labels if _has_human_readable_topic_label(label))
+    metadata_labels = sum(1 for label in labels if _topic_label_looks_like_model_metadata(label))
+    topic_ids = {
+        int(topic_id)
+        for row in topic_review_rows
+        for topic_id in [_maybe_float(row.get("topic_id"))]
+        if topic_id is not None
+    }
+    collapsed = topic_count <= 1 or len(topic_ids) <= 1
+    readable = bool(topic_review_rows) and human_labels > 0 and keyword_rows > 0 and example_rows > 0
+    if row_count == 0 or topic_count == 0:
+        return {
+            **_diagnostic_record("NO_DATA", "No topic review rows were produced.", reviewable=False),
+            "topic_count": topic_count,
+            "row_count": row_count,
+            "topic_ids": sorted(topic_ids),
+            "readable_topic_count": human_labels,
+            "keyword_row_count": keyword_rows,
+            "example_row_count": example_rows,
+            "metadata_label_count": metadata_labels,
+        }
+    if collapsed or not readable or metadata_labels == row_count:
+        reason = topic_review_warning or (
+            "BERTopic output is collapsed or unreviewable: it needs multiple readable topics, "
+            "human-friendly labels, keywords, and examples."
+        )
+        return {
+            **_diagnostic_record("WARN", reason, reviewable=False),
+            "topic_count": topic_count,
+            "row_count": row_count,
+            "topic_ids": sorted(topic_ids),
+            "readable_topic_count": human_labels,
+            "keyword_row_count": keyword_rows,
+            "example_row_count": example_rows,
+            "metadata_label_count": metadata_labels,
+        }
+    return {
+        **_diagnostic_record("PASS", "Topic review has readable, varied topic evidence.", reviewable=True),
+        "topic_count": topic_count,
+        "row_count": row_count,
+        "topic_ids": sorted(topic_ids),
+        "readable_topic_count": human_labels,
+        "keyword_row_count": keyword_rows,
+        "example_row_count": example_rows,
+        "metadata_label_count": metadata_labels,
+    }
+
+
+def _relevance_informativeness_diagnostic_state(
+    *,
+    article_count: int,
+    relevance_gate_row_count: int,
+    relevance_rows: Sequence[Mapping[str, object]],
+) -> dict[str, object]:
+    scores = [
+        _maybe_float(row.get("relevance_score"))
+        for row in relevance_rows
+        if _maybe_float(row.get("relevance_score")) is not None
+    ]
+    accepted_count = sum(1 for row in relevance_rows if str(row.get("relevance_decision") or "").lower() == "accepted")
+    borderline_count = sum(
+        1 for row in relevance_rows if str(row.get("relevance_decision") or "").lower() in {"borderline", "review", "needs_review"}
+    )
+    rejected_count = sum(1 for row in relevance_rows if str(row.get("relevance_decision") or "").lower() in {"rejected", "reject"})
+    default_scores = bool(scores) and all(score is not None and score >= 0.99 for score in scores)
+    diverse_decisions = sum(1 for count in (accepted_count, borderline_count, rejected_count) if count > 0)
+    if article_count == 0 or relevance_gate_row_count == 0:
+        return {
+            **_diagnostic_record("NO_DATA", "No pre-FinBERT relevance rows were provided.", reviewable=False),
+            "coverage": "absent",
+            "article_count": article_count,
+            "relevance_gate_row_count": relevance_gate_row_count,
+            "accepted_count": accepted_count,
+            "borderline_count": borderline_count,
+            "rejected_count": rejected_count,
+            "default_score_count": sum(1 for score in scores if score is not None and score >= 0.99),
+        }
+    if relevance_gate_row_count < article_count:
+        return {
+            **_diagnostic_record(
+                "WARN",
+                "Relevance-gate rows are missing for part of the selected ticker/date slice.",
+                reviewable=False,
+            ),
+            "coverage": "partial",
+            "article_count": article_count,
+            "relevance_gate_row_count": relevance_gate_row_count,
+            "accepted_count": accepted_count,
+            "borderline_count": borderline_count,
+            "rejected_count": rejected_count,
+            "default_score_count": sum(1 for score in scores if score is not None and score >= 0.99),
+        }
+    if default_scores or diverse_decisions <= 1:
+        return {
+            **_diagnostic_record(
+                "WARN",
+                "Relevance scores are all default-like or do not show accepted/borderline/rejected diversity.",
+                reviewable=False,
+            ),
+            "coverage": "complete",
+            "article_count": article_count,
+            "relevance_gate_row_count": relevance_gate_row_count,
+            "accepted_count": accepted_count,
+            "borderline_count": borderline_count,
+            "rejected_count": rejected_count,
+            "default_score_count": sum(1 for score in scores if score is not None and score >= 0.99),
+        }
+    return {
+        **_diagnostic_record("PASS", "Relevance rows show informative, non-default evidence.", reviewable=True),
+        "coverage": "complete",
+        "article_count": article_count,
+        "relevance_gate_row_count": relevance_gate_row_count,
+        "accepted_count": accepted_count,
+        "borderline_count": borderline_count,
+        "rejected_count": rejected_count,
+        "default_score_count": sum(1 for score in scores if score >= 0.99),
+    }
+
+
+def _embedding_coverage_diagnostic_state(*, article_count: int, embedding_row_count: int) -> dict[str, object]:
+    if article_count == 0 or embedding_row_count == 0:
+        return {
+            **_diagnostic_record("NO_DATA", "No embedding rows were provided for the selected slice.", reviewable=False),
+            "scope": "no_data",
+            "article_count": article_count,
+            "embedding_row_count": embedding_row_count,
+        }
+    if embedding_row_count == article_count:
+        return {
+            **_diagnostic_record(
+                "PASS",
+                "Embedding rows match the selected ticker/day slice.",
+                reviewable=True,
+            ),
+            "scope": "selected_ticker_day",
+            "article_count": article_count,
+            "embedding_row_count": embedding_row_count,
+        }
+    scope = "packet_or_full_corpus" if embedding_row_count > article_count else "partial_selected_ticker_day"
+    return {
+        **_diagnostic_record(
+            "WARN",
+            "Embedding coverage scope is unclear: row counts do not match the selected slice.",
+            reviewable=False,
+        ),
+        "scope": scope,
+        "article_count": article_count,
+        "embedding_row_count": embedding_row_count,
+    }
+
+
 def _topic_relevance_reviewability_summary(
     *,
     article_count: int,
     relevance_gate_row_count: int,
     embedding_row_count: int,
     topic_label_row_count: int,
+    topic_review_rows: Sequence[Mapping[str, object]],
+    topic_review_topics: Sequence[object],
+    topic_review_warning: str | None,
+    relevance_rows: Sequence[Mapping[str, object]],
 ) -> dict[str, object]:
-    if article_count and relevance_gate_row_count == 0:
-        return {
-            "reviewable": False,
-            "review_status": "not_reviewable_missing_relevance_gate",
-            "review_explanation": (
-                "Pre-FinBERT relevance gate artifact is missing. Embeddings and BERTopic "
-                "topic rows are present, but the dashboard cannot prove accept/reject "
-                "relevance decisions or sub-scores for human acceptance."
-            ),
-        }
-    if article_count and (embedding_row_count == 0 or topic_label_row_count == 0):
-        return {
-            "reviewable": False,
-            "review_status": "not_reviewable_missing_topic_or_embedding_evidence",
-            "review_explanation": (
-                "Embedding or BERTopic evidence is missing, so topic relevance cannot be reviewed."
-            ),
-        }
+    topic_review_state = _topic_review_diagnostic_state(
+        topic_review_rows=topic_review_rows,
+        topic_review_topics=topic_review_topics,
+        topic_review_warning=topic_review_warning,
+    )
+    relevance_state = _relevance_informativeness_diagnostic_state(
+        article_count=article_count,
+        relevance_gate_row_count=relevance_gate_row_count,
+        relevance_rows=relevance_rows,
+    )
+    embedding_state = _embedding_coverage_diagnostic_state(
+        article_count=article_count,
+        embedding_row_count=embedding_row_count,
+    )
+    topic_label_scope = "complete" if topic_label_row_count else "absent"
+    reviewable = bool(
+        topic_review_state["reviewable"]
+        and relevance_state["reviewable"]
+        and embedding_state["reviewable"]
+        and article_count > 0
+    )
+    overall_state = _diagnostic_worst_state(
+        topic_review_state["state"],
+        relevance_state["state"],
+        embedding_state["state"],
+    )
+    if article_count == 0:
+        overall_state = "NO_DATA"
+    if reviewable:
+        review_status = "reviewable"
+        review_explanation = (
+            "Topic labels are readable, relevance scores are informative, and embedding coverage "
+            "matches the selected ticker/date slice."
+        )
+    elif topic_review_state["state"] == "NO_DATA":
+        review_status = "not_run_topic_review"
+        review_explanation = str(topic_review_state["reason"])
+    elif relevance_state["state"] == "NO_DATA":
+        review_status = "not_run_relevance_gate"
+        review_explanation = str(relevance_state["reason"])
+    elif embedding_state["state"] == "NO_DATA":
+        review_status = "not_run_embedding_coverage"
+        review_explanation = str(embedding_state["reason"])
+    elif topic_review_state["state"] == "WARN":
+        review_status = "not_reviewable_collapsed_topic_output"
+        review_explanation = str(topic_review_state["reason"])
+    elif relevance_state["state"] == "WARN":
+        review_status = "not_reviewable_uninformative_relevance"
+        review_explanation = str(relevance_state["reason"])
+    else:
+        review_status = "not_reviewable_unclear_embedding_scope"
+        review_explanation = str(embedding_state["reason"])
     return {
-        "reviewable": bool(article_count),
-        "review_status": "reviewable" if article_count else "no_topic_relevance_rows",
-        "review_explanation": (
-            "Review ticker/entity evidence, topic assignment, and pre-FinBERT relevance "
-            "gate decisions before trusting FinBERT sentiment."
-        ),
+        "reviewable": reviewable,
+        "review_status": review_status,
+        "review_explanation": review_explanation,
+        "diagnostic_state": overall_state,
+        "topic_review_state": topic_review_state,
+        "relevance_informativeness_state": relevance_state,
+        "embedding_coverage_state": embedding_state,
+        "topic_label_scope": topic_label_scope,
     }
 
 
@@ -1070,9 +1418,12 @@ def _gate_message(
     return f"{label} is blocked because required rows are missing."
 
 
-def _readiness_status_reason(ready_for_final_acceptance: bool) -> str:
+def _readiness_status_reason(ready_for_final_acceptance: bool, blocker_reasons: Sequence[str] | None = None) -> str:
     if ready_for_final_acceptance:
         return "Required Layer 1 NLP, HMM, and price evidence is present for review."
+    reasons = [str(reason) for reason in blocker_reasons or [] if str(reason)]
+    if reasons:
+        return "Readiness is blocked: " + "; ".join(reasons)
     return (
         "Required Layer 1 NLP, HMM, or price evidence is missing, so human semantic "
         "review remains blocked."

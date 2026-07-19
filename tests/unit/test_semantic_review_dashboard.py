@@ -284,6 +284,106 @@ def test_semantic_review_payload_separates_tabs_and_reports_missing_sentence_tex
     assert any(row["missing_text_warning"] for row in sentence_rows)
 
 
+def test_semantic_review_payload_warns_on_collapsed_single_topic_output(
+    tmp_path: Path,
+) -> None:
+    """Collapsed BERTopic output should stay a warning, not a green pass."""
+    fixture = seed_semantic_review_fixture(local_root=tmp_path / "r2")
+    report = build_layer1_aapl_evidence_report(
+        run_id=str(fixture["run_id"]),
+        from_date="2026-05-21",
+        to_date="2026-05-22",
+        ticker="AAPL",
+        writer=fixture["writer"],
+    )
+    report_dict = cast(dict[str, Any], report.to_dict())
+    topic_review = cast(dict[str, Any], report_dict["topic_review"])
+    topic_rows = cast(list[dict[str, Any]], topic_review["rows"])
+    topic_topics = cast(list[dict[str, Any]], topic_review["topics"])
+
+    collapsed_row = copy.deepcopy(topic_rows[0])
+    collapsed_row["topic_label"] = "BERTopic · bertopic-0.16.x"
+    collapsed_row["topic_keywords"] = []
+    collapsed_row["topic_example_text"] = None
+    collapsed_row["topic_example_texts"] = []
+    topic_review["rows"] = [collapsed_row]
+    topic_review["topics"] = topic_topics[:1]
+    topic_review["diversity_status"] = "insufficient_diversity"
+    topic_review["diversity_reason"] = "Only one topic was detected across the review rows."
+
+    payload = cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report_dict))
+    review = cast(dict[str, Any], payload["topic_relevance_review"])
+    summary = cast(dict[str, Any], review["summary"])
+
+    assert summary["topic_review_state"]["state"] == "WARN"
+    assert summary["topic_review_state"]["reviewable"] is False
+    assert summary["reviewable"] is False
+    assert summary["review_status"] == "not_reviewable_collapsed_topic_output"
+    assert "Only one topic" in summary["review_explanation"]
+    assert payload["run_readiness"]["ready_for_final_human_acceptance"] is False
+
+
+def test_semantic_review_payload_warns_on_default_relevance_only(
+    tmp_path: Path,
+) -> None:
+    """A universal default relevance score should not be treated as informative evidence."""
+    fixture = seed_semantic_review_fixture(local_root=tmp_path / "r2")
+    report = build_layer1_aapl_evidence_report(
+        run_id=str(fixture["run_id"]),
+        from_date="2026-05-21",
+        to_date="2026-05-22",
+        ticker="AAPL",
+        writer=fixture["writer"],
+    )
+    report_dict = cast(dict[str, Any], report.to_dict())
+    for row in cast(list[dict[str, Any]], report_dict["relevance_gate_rows"]):
+        row["relevance_score"] = 1.0
+        row["relevance_decision"] = "accepted"
+
+    payload = cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report_dict))
+    review = cast(dict[str, Any], payload["topic_relevance_review"])
+    summary = cast(dict[str, Any], review["summary"])
+
+    assert summary["relevance_informativeness_state"]["state"] == "WARN"
+    assert summary["relevance_informativeness_state"]["reviewable"] is False
+    assert summary["relevance_informativeness_state"]["coverage"] == "complete"
+    assert summary["reviewable"] is False
+    assert summary["review_status"] == "not_reviewable_uninformative_relevance"
+    assert "default-like" in summary["review_explanation"]
+    assert payload["run_readiness"]["ready_for_final_human_acceptance"] is False
+
+
+def test_semantic_review_payload_warns_on_one_point_hmm_chart(
+    tmp_path: Path,
+) -> None:
+    """A one-point HMM chart should be limited and fail readiness."""
+    fixture = seed_semantic_review_fixture(local_root=tmp_path / "r2")
+    report = build_layer1_aapl_evidence_report(
+        run_id=str(fixture["run_id"]),
+        from_date="2026-05-21",
+        to_date="2026-05-22",
+        ticker="AAPL",
+        writer=fixture["writer"],
+    )
+    report_dict = cast(dict[str, Any], report.to_dict())
+    report_dict["benchmark_price_rows"] = cast(list[dict[str, Any]], report_dict["benchmark_price_rows"])[:1]
+    report_dict["benchmark_market_regime_rows"] = cast(list[dict[str, Any]], report_dict["benchmark_market_regime_rows"])[:1]
+
+    payload = cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report_dict))
+    readiness = cast(dict[str, Any], payload["run_readiness"])
+    smoke = cast(dict[str, Any], payload["smoke"])
+
+    assert smoke["status"] == "fail"
+    assert any(
+        item["reason"] == "insufficient_hmm_chart_points"
+        for item in cast(list[dict[str, Any]], smoke["failures"])
+    )
+    assert readiness["hmm_chart_auditability_state"]["state"] == "WARN"
+    assert readiness["hmm_chart_auditability_state"]["reviewable"] is False
+    assert readiness["ready_for_final_human_acceptance"] is False
+    assert readiness["human_review_status"] == "blocked_by_missing_pipeline_evidence"
+
+
 def test_semantic_review_payload_explains_unreviewable_missing_relevance_gate(
     tmp_path: Path,
 ) -> None:
@@ -307,9 +407,14 @@ def test_semantic_review_payload_explains_unreviewable_missing_relevance_gate(
     assert summary["embedding_row_count"] > 0
     assert summary["topic_label_row_count"] > 0
     assert summary["reviewable"] is False
-    assert summary["review_status"] == "not_reviewable_missing_relevance_gate"
-    assert "Pre-FinBERT relevance gate artifact is missing" in summary["review_explanation"]
+    assert summary["review_status"] == "not_run_relevance_gate"
+    assert summary["diagnostic_state"] == "NO_DATA"
+    assert summary["relevance_informativeness_state"]["state"] == "NO_DATA"
+    assert summary["topic_review_state"]["state"] == "PASS"
+    assert summary["embedding_coverage_state"]["state"] == "PASS"
+    assert "No pre-FinBERT relevance rows were provided." in summary["review_explanation"]
     assert review["missing_evidence_blockers"]
+    assert payload["run_readiness"]["ready_for_final_human_acceptance"] is False
 
 
 def test_semantic_review_payload_adds_human_focused_aggregate_review(
@@ -464,6 +569,11 @@ def test_semantic_review_summary_gate_status_allows_complete_evidence(tmp_path: 
     assert readiness["ready_for_final_human_acceptance"] is True
     assert readiness["recommendation"] == "ready for final human acceptance"
     assert readiness["human_review_status"] == "can_start"
+    assert readiness["diagnostic_states"]["topic_review"] == "PASS"
+    assert readiness["diagnostic_states"]["relevance_informativeness"] == "PASS"
+    assert readiness["diagnostic_states"]["embedding_coverage"] == "PASS"
+    assert readiness["diagnostic_states"]["hmm_chart_auditability"] == "PASS"
+    assert readiness["hmm_chart_auditability_state"]["state"] == "PASS"
     assert readiness["article_count"] == 4
     assert readiness["sentence_row_count"] == 8
     assert payload["missing_pipeline_sections"] == []
@@ -601,6 +711,10 @@ def test_semantic_review_summary_gate_status_handles_no_row_runs(tmp_path: Path)
     assert readiness["article_count"] == 0
     assert readiness["date_count"] == 0
     assert readiness["ready_for_final_human_acceptance"] is False
+    assert readiness["diagnostic_states"]["topic_review"] == "NO_DATA"
+    assert readiness["diagnostic_states"]["relevance_informativeness"] == "NO_DATA"
+    assert readiness["diagnostic_states"]["embedding_coverage"] == "NO_DATA"
+    assert readiness["diagnostic_summary"]["overall_state"] == "NO_DATA"
     assert "news_sentiment_scored" in gate_keys
     assert "hmm_regime" in gate_keys
     assert "stock_price_context" in gate_keys
