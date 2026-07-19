@@ -74,6 +74,21 @@ RELEVANCE_EVIDENCE_COLUMNS: frozenset[str] = frozenset(
     }
 )
 
+RELEVANCE_EVIDENCE_OPTIONAL_COLUMNS: tuple[str, ...] = (
+    "relevance_category",
+    "target_context_score",
+    "document_sentiment",
+    "target_company_impact_direction",
+    "target_company_impact_magnitude",
+    "impact_horizon",
+    "causal_channel",
+    "target_impact_confidence",
+    "article_contamination_ratio",
+    "article_contamination_count",
+    "article_signal_count",
+    "article_contribution_weight",
+)
+
 SENTIMENT_FEATURE_COLUMNS: tuple[str, ...] = (
     "nlp_sentiment_positive",
     "nlp_sentiment_negative",
@@ -102,6 +117,17 @@ SENTIMENT_FEATURE_COLUMNS: tuple[str, ...] = (
     "nlp_source_weight_summary",
     "nlp_relevance_reason_codes",
     "nlp_semantic_warning_codes",
+    "nlp_relevance_category",
+    "nlp_target_impact_direction",
+    "nlp_target_impact_magnitude",
+    "nlp_target_impact_horizon",
+    "nlp_target_impact_confidence",
+    "nlp_causal_channel",
+    "nlp_document_sentiment",
+    "nlp_article_contamination_ratio",
+    "nlp_article_contamination_count",
+    "nlp_article_signal_count",
+    "nlp_article_contribution_weight",
 )
 
 DIRECT_RELEVANCE_SCORE = 1.0
@@ -426,6 +452,29 @@ def sentiment_feature_records_from_scored_news(
                         sort_keys=True,
                         separators=(",", ":"),
                     ),
+                    "nlp_relevance_category": _first_non_null(group["_relevance_category"]),
+                    "nlp_target_impact_direction": _first_non_null(
+                        group["_target_company_impact_direction"]
+                    ),
+                    "nlp_target_impact_magnitude": _first_non_null(
+                        group["_target_company_impact_magnitude"]
+                    ),
+                    "nlp_target_impact_horizon": _first_non_null(group["_impact_horizon"]),
+                    "nlp_target_impact_confidence": _first_non_null(
+                        group["_target_impact_confidence"]
+                    ),
+                    "nlp_causal_channel": _first_non_null(group["_causal_channel"]),
+                    "nlp_document_sentiment": _first_non_null(group["_document_sentiment"]),
+                    "nlp_article_contamination_ratio": _first_non_null(
+                        group["_article_contamination_ratio"]
+                    ),
+                    "nlp_article_contamination_count": _first_non_null(
+                        group["_article_contamination_count"]
+                    ),
+                    "nlp_article_signal_count": _first_non_null(group["_article_signal_count"]),
+                    "nlp_article_contribution_weight": _first_non_null(
+                        group["_article_contribution_weight"]
+                    ),
                 },
             )
         )
@@ -615,6 +664,18 @@ def _attach_relevance_evidence(
         "_ticker_relevance_score",
         "_financial_relevance_score",
         "_topic_relevance_score",
+        "_relevance_category",
+        "_target_context_score",
+        "_document_sentiment",
+        "_target_company_impact_direction",
+        "_target_company_impact_magnitude",
+        "_impact_horizon",
+        "_causal_channel",
+        "_target_impact_confidence",
+        "_article_contamination_ratio",
+        "_article_contamination_count",
+        "_article_signal_count",
+        "_article_contribution_weight",
         "_relevance_reason_codes",
     ):
         frame[column] = None
@@ -644,21 +705,32 @@ def _attach_relevance_evidence(
     )
     if len(gate_frame) == 0:
         return frame
-    gate_frame = gate_frame.loc[
-        :,
-        [
-            "_artifact_date",
-            "_join_ticker",
-            "_join_article_id",
-            "_join_sentence_index",
-            "_join_chunk_index",
-            "relevance_decision",
-            "ticker_relevance_score",
-            "financial_relevance_score",
-            "topic_relevance_score",
-            "reason_codes",
-        ],
-    ].drop_duplicates(
+
+    for column in RELEVANCE_EVIDENCE_OPTIONAL_COLUMNS:
+        if column not in gate_frame.columns:
+            gate_frame[column] = None
+    reason_codes_series = gate_frame.get("reason_codes")
+    if reason_codes_series is None:
+        gate_frame["reason_codes"] = "[]"
+    else:
+        gate_frame["reason_codes"] = reason_codes_series.map(
+            lambda value: json.dumps(_json_string_list(value), sort_keys=True, separators=(",", ":"))
+        )
+
+    selected_columns = [
+        "_artifact_date",
+        "_join_ticker",
+        "_join_article_id",
+        "_join_sentence_index",
+        "_join_chunk_index",
+        "relevance_decision",
+        "ticker_relevance_score",
+        "financial_relevance_score",
+        "topic_relevance_score",
+        "reason_codes",
+        *RELEVANCE_EVIDENCE_OPTIONAL_COLUMNS,
+    ]
+    gate_frame = gate_frame.loc[:, selected_columns].drop_duplicates(
         subset=[
             "_artifact_date",
             "_join_ticker",
@@ -674,6 +746,18 @@ def _attach_relevance_evidence(
             "ticker_relevance_score": "_ticker_relevance_score",
             "financial_relevance_score": "_financial_relevance_score",
             "topic_relevance_score": "_topic_relevance_score",
+            "relevance_category": "_relevance_category",
+            "target_context_score": "_target_context_score",
+            "document_sentiment": "_document_sentiment",
+            "target_company_impact_direction": "_target_company_impact_direction",
+            "target_company_impact_magnitude": "_target_company_impact_magnitude",
+            "impact_horizon": "_impact_horizon",
+            "causal_channel": "_causal_channel",
+            "target_impact_confidence": "_target_impact_confidence",
+            "article_contamination_ratio": "_article_contamination_ratio",
+            "article_contamination_count": "_article_contamination_count",
+            "article_signal_count": "_article_signal_count",
+            "article_contribution_weight": "_article_contribution_weight",
             "reason_codes": "_relevance_reason_codes",
         }
     )
@@ -695,6 +779,18 @@ def _attach_relevance_evidence(
             "_ticker_relevance_score",
             "_financial_relevance_score",
             "_topic_relevance_score",
+            "_relevance_category",
+            "_target_context_score",
+            "_document_sentiment",
+            "_target_company_impact_direction",
+            "_target_company_impact_magnitude",
+            "_impact_horizon",
+            "_causal_channel",
+            "_target_impact_confidence",
+            "_article_contamination_ratio",
+            "_article_contamination_count",
+            "_article_signal_count",
+            "_article_contribution_weight",
             "_relevance_reason_codes",
         ],
         errors="ignore",
@@ -1208,6 +1304,21 @@ def _normalize_optional_string(value: Any) -> str | None:
         pass
     text = str(value).strip()
     return text or None
+
+
+def _first_non_null(values: pd.Series) -> Any:
+    """Return the first non-missing value from a series."""
+    pd = _require_pandas()
+    for value in values.tolist():
+        if value is None:
+            continue
+        try:
+            if pd.isna(value):
+                continue
+        except (TypeError, ValueError):
+            pass
+        return value
+    return None
 
 
 def _empty_frame(pd: Any) -> pd.DataFrame:
