@@ -102,6 +102,11 @@ SENTIMENT_FEATURE_COLUMNS: tuple[str, ...] = (
     "nlp_source_weight_mean",
     "nlp_source_weight_sum",
     "nlp_effective_weight_sum",
+    "nlp_source_count",
+    "nlp_dominant_source",
+    "nlp_dominant_source_article_count",
+    "nlp_dominant_source_weight_share",
+    "nlp_effective_source_count",
     "nlp_missing_source_count",
     "nlp_sentiment_topic_score",
     "nlp_sentiment_topic_count",
@@ -128,6 +133,8 @@ SENTIMENT_FEATURE_COLUMNS: tuple[str, ...] = (
     "nlp_article_contamination_count",
     "nlp_article_signal_count",
     "nlp_article_contribution_weight",
+    "nlp_article_contribution_weight_mean",
+    "nlp_article_contribution_weight_min",
 )
 
 DIRECT_RELEVANCE_SCORE = 1.0
@@ -382,6 +389,7 @@ def sentiment_feature_records_from_scored_news(
         sentiment_std = group["sentiment_score"].astype(float).std(ddof=0)
         topic_summary = _topic_sentiment_summary(group)
         dominant_topic = topic_summary[0] if topic_summary else {}
+        source_concentration = _source_concentration(group)
         records.append(
             FeatureRecord(
                 date=str(date_value),
@@ -411,6 +419,17 @@ def sentiment_feature_records_from_scored_news(
                     "nlp_source_weight_mean": _mean(group["_source_weight"]),
                     "nlp_source_weight_sum": _sum_positive(group["_source_weight"]),
                     "nlp_effective_weight_sum": _sum_positive(group["_effective_weight"]),
+                    "nlp_source_count": source_concentration["source_count"],
+                    "nlp_dominant_source": source_concentration["dominant_source"],
+                    "nlp_dominant_source_article_count": source_concentration[
+                        "dominant_source_article_count"
+                    ],
+                    "nlp_dominant_source_weight_share": source_concentration[
+                        "dominant_source_weight_share"
+                    ],
+                    "nlp_effective_source_count": source_concentration[
+                        "effective_source_count"
+                    ],
                     "nlp_missing_source_count": _missing_source_count(group),
                     "nlp_sentiment_topic_score": _weighted_average(
                         group["sentiment_score"], group["_topic_effective_weight"]
@@ -473,6 +492,12 @@ def sentiment_feature_records_from_scored_news(
                     ),
                     "nlp_article_signal_count": _first_non_null(group["_article_signal_count"]),
                     "nlp_article_contribution_weight": _first_non_null(
+                        group["_article_contribution_weight"]
+                    ),
+                    "nlp_article_contribution_weight_mean": _mean(
+                        group["_article_contribution_weight"]
+                    ),
+                    "nlp_article_contribution_weight_min": _min_finite(
                         group["_article_contribution_weight"]
                     ),
                 },
@@ -576,6 +601,19 @@ def _prepare_scored_news_frame(
     frame["_effective_weight"] = frame["_source_weight"] * frame["_relevance_weight"]
     frame = _attach_topic_evidence(pd, frame, topic_labels)
     frame = _attach_relevance_evidence(pd, frame, relevance_gate)
+    frame["_article_cap_weight"] = frame["_article_contribution_weight"].map(
+        _article_cap_weight
+    )
+    frame["_event_relevance_weight"] = [
+        min(float(relevance_weight), float(article_cap_weight))
+        for relevance_weight, article_cap_weight in zip(
+            frame["_relevance_weight"].tolist(),
+            frame["_article_cap_weight"].tolist(),
+            strict=True,
+        )
+    ]
+    frame["_effective_weight"] = frame["_source_weight"] * frame["_event_relevance_weight"]
+    frame["_effective_weight"] = _apply_article_event_caps(frame)
     frame["_topic_effective_weight"] = [
         _topic_effective_weight(row)
         for row in frame.to_dict(orient="records")
@@ -913,6 +951,37 @@ def _relevance_weight(value: Any) -> float:
     return min(max(numeric, 0.0), 1.0)
 
 
+def _article_cap_weight(value: Any) -> float:
+    """Return the bounded article/event contribution cap multiplier."""
+    numeric = _to_float_or_none(value)
+    if numeric is None:
+        return 1.0
+    return min(max(numeric, 0.0), 1.0)
+
+
+def _apply_article_event_caps(frame: pd.DataFrame) -> pd.Series:
+    """Return weights normalized so one multi-chunk article counts once.
+
+    The relevance gate may emit multiple scored chunks for the same article.
+    This cap keeps article length from becoming signal strength by dividing
+    each row's effective weight by the number of scored rows for its
+    date/ticker/article bucket. Rows without article ids are left as their own
+    single-row events.
+    """
+    if len(frame) == 0 or "article_id" not in frame.columns:
+        return frame["_effective_weight"]
+
+    working = frame.copy()
+    working["_article_event_key"] = [
+        _article_event_key(index, row)
+        for index, row in zip(working.index.tolist(), working.to_dict(orient="records"), strict=True)
+    ]
+    bucket_counts = working.groupby("_article_event_key", dropna=False)[
+        "_article_event_key"
+    ].transform("count")
+    return working["_effective_weight"] / bucket_counts
+
+
 def _resolve_relevance_score(
     record: NewsSentimentRecord,
     *,
@@ -1062,6 +1131,14 @@ def _sum_positive(values: pd.Series) -> float:
     )
 
 
+def _min_finite(values: pd.Series) -> float | None:
+    """Return the minimum finite value, or None when no values are usable."""
+    finite = [value for value in values.map(_to_float_or_none).tolist() if value is not None]
+    if not finite:
+        return None
+    return min(finite)
+
+
 def _topic_count(group: pd.DataFrame) -> int:
     """Return the count of valid topic ids contributing to sentiment."""
     topic_ids = [
@@ -1145,16 +1222,58 @@ def _topic_sentiment_summary(group: pd.DataFrame) -> list[dict[str, Any]]:
 def _source_weight_summary(group: pd.DataFrame) -> list[dict[str, Any]]:
     """Return per-source counts and configured weights used by aggregation."""
     summary_rows: list[dict[str, Any]] = []
+    total_effective_weight = _sum_positive(group["_effective_weight"])
     for source, source_group in group.groupby("source", sort=True, dropna=False):
+        source_effective_weight = _sum_positive(source_group["_effective_weight"])
         summary_rows.append(
             {
                 "source": _normalize_optional_string(source),
                 "source_weight": _mean(source_group["_source_weight"]),
                 "sentence_count": int(len(source_group)),
                 "article_count": _article_count(source_group),
+                "effective_weight": source_effective_weight,
+                "weight_share": (
+                    source_effective_weight / total_effective_weight
+                    if total_effective_weight > 0.0
+                    else None
+                ),
             }
         )
     return summary_rows
+
+
+def _source_concentration(group: pd.DataFrame) -> dict[str, Any]:
+    """Return source diversification diagnostics for one ticker-day group."""
+    source_rows = _source_weight_summary(group)
+    populated_sources = [
+        row for row in source_rows if row["source"] is not None and row["effective_weight"] > 0.0
+    ]
+    if not populated_sources:
+        return {
+            "source_count": 0,
+            "dominant_source": None,
+            "dominant_source_article_count": 0,
+            "dominant_source_weight_share": None,
+            "effective_source_count": None,
+        }
+
+    dominant = max(
+        populated_sources,
+        key=lambda row: (row["weight_share"] or 0.0, row["article_count"], str(row["source"])),
+    )
+    weight_shares = [
+        float(row["weight_share"])
+        for row in populated_sources
+        if _to_float_or_none(row["weight_share"]) is not None and row["weight_share"] > 0.0
+    ]
+    herfindahl = sum(share * share for share in weight_shares)
+    return {
+        "source_count": len({str(row["source"]) for row in populated_sources}),
+        "dominant_source": dominant["source"],
+        "dominant_source_article_count": dominant["article_count"],
+        "dominant_source_weight_share": dominant["weight_share"],
+        "effective_source_count": 1.0 / herfindahl if herfindahl > 0.0 else None,
+    }
 
 
 def _semantic_warning_codes(group: pd.DataFrame) -> list[str]:
@@ -1168,6 +1287,13 @@ def _semantic_warning_codes(group: pd.DataFrame) -> list[str]:
         warnings.add("missing_topic_evidence")
     if _missing_relevance_count(group) > 0:
         warnings.add("missing_relevance_evidence")
+    source_concentration = _source_concentration(group)
+    article_count = _article_count(group)
+    dominant_share = _to_float_or_none(source_concentration["dominant_source_weight_share"])
+    if article_count >= 2 and source_concentration["source_count"] == 1:
+        warnings.add("single_source_concentration")
+    elif article_count >= 3 and dominant_share is not None and dominant_share >= 0.80:
+        warnings.add("source_concentration_high")
     return sorted(warnings)
 
 
@@ -1248,6 +1374,20 @@ def _article_count(group: pd.DataFrame) -> int:
     if not article_ids:
         return int(len(group))
     return len(set(article_ids))
+
+
+def _article_event_key(index: Any, row: Mapping[str, Any]) -> str:
+    """Return the bucket key used to cap repeated chunks from one article."""
+    article_id = _normalize_optional_string(row.get("article_id"))
+    if article_id is None:
+        return f"row:{index}"
+    return "|".join(
+        [
+            _normalize_optional_string(row.get("date")) or "",
+            _normalize_optional_string(row.get("ticker")) or "",
+            article_id,
+        ]
+    )
 
 
 def _to_float_or_none(value: Any) -> float | None:

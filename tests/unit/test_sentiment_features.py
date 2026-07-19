@@ -674,10 +674,12 @@ def test_sentiment_feature_records_from_scored_news_matches_contract() -> None:
     assert records[0].ticker == "AAPL"
     assert records[0].features["nlp_article_count"] == 2
     assert records[0].features["nlp_sentence_count"] == 3
-    assert records[0].features["nlp_sentiment_score"] == pytest.approx(1.0 / 3.0)
+    assert records[0].features["nlp_sentiment_score"] == pytest.approx(0.2)
+    assert records[0].features["nlp_effective_weight_sum"] == pytest.approx(2.0)
     assert json.loads(records[0].features["nlp_semantic_warning_codes"]) == [
         "missing_relevance_evidence",
         "missing_topic_artifact",
+        "single_source_concentration",
     ]
 
 
@@ -742,6 +744,11 @@ def test_sentiment_feature_records_combine_topics_relevance_and_source_weights()
     assert features["nlp_relevance_accepted_count"] == 1
     assert features["nlp_relevance_borderline_count"] == 1
     assert features["nlp_effective_weight_sum"] == pytest.approx(2.0)
+    assert features["nlp_source_count"] == 2
+    assert features["nlp_dominant_source"] == "Reuters"
+    assert features["nlp_dominant_source_article_count"] == 1
+    assert features["nlp_dominant_source_weight_share"] == pytest.approx(0.9)
+    assert features["nlp_effective_source_count"] == pytest.approx(1.2195121951219512)
     assert json.loads(features["nlp_contributing_article_ids"]) == [
         "aapl-specific",
         "broad-market",
@@ -752,17 +759,112 @@ def test_sentiment_feature_records_combine_topics_relevance_and_source_weights()
     assert source_summary == [
         {
             "article_count": 1,
+            "effective_weight": 0.2,
             "sentence_count": 1,
             "source": "Personal Blog",
             "source_weight": 0.5,
+            "weight_share": 0.1,
         },
         {
             "article_count": 1,
+            "effective_weight": 1.8,
             "sentence_count": 1,
             "source": "Reuters",
             "source_weight": 2.0,
+            "weight_share": 0.9,
         },
     ]
+
+
+@pytest.mark.parametrize("ticker", ["AAPL", "AMD", "NVDA", "MSFT"])
+def test_sentiment_feature_records_cap_article_chunks_and_warn_on_source_concentration(
+    ticker: str,
+) -> None:
+    """AAPL/AMD/NVDA/MSFT ticker-day sentiment is capped by article, not chunk count."""
+    long_article_rows = [
+        _row(
+            ticker=ticker,
+            article_id="same-source-listicle",
+            sentence_index=index,
+            chunk_index=index,
+            source="Benzinga",
+            sentiment_positive=0.0,
+            sentiment_negative=1.0,
+            sentiment_neutral=0.0,
+            sentiment_score=-1.0,
+            relevance_score=1.0,
+        )
+        for index in range(3)
+    ]
+    target_article_row = _row(
+        ticker=ticker,
+        article_id="same-source-target-event",
+        sentence_index=0,
+        chunk_index=0,
+        source="Benzinga",
+        sentiment_positive=1.0,
+        sentiment_negative=0.0,
+        sentiment_neutral=0.0,
+        sentiment_score=1.0,
+        relevance_score=1.0,
+    )
+    relevance_gate = pd.DataFrame(
+        [
+            _relevance_gate_row(
+                ticker=ticker,
+                article_id="same-source-listicle",
+                sentence_index=index,
+                chunk_index=index,
+                article_contribution_weight=0.35,
+                article_contamination_ratio=0.9,
+                article_contamination_count=9,
+                article_signal_count=1,
+                reason_codes=json.dumps(["article_contribution_capped"], sort_keys=True),
+            )
+            for index in range(3)
+        ]
+        + [
+            _relevance_gate_row(
+                ticker=ticker,
+                article_id="same-source-target-event",
+                article_contribution_weight=1.0,
+                article_contamination_ratio=0.0,
+                article_contamination_count=0,
+                article_signal_count=2,
+                relevance_category="direct_target_event",
+                target_company_impact_direction="positive",
+                causal_channel="target_business_event",
+            )
+        ]
+    )
+
+    records = sentiment_feature_records_from_scored_news(
+        pd.DataFrame([*long_article_rows, target_article_row]),
+        relevance_gate=relevance_gate,
+        credibility_config=SourceCredibilityConfig(
+            default_source_weight=1.0,
+            source_weights={"benzinga": 1.0},
+        ),
+    )
+
+    assert len(records) == 1
+    features = records[0].features
+    assert records[0].ticker == ticker
+    assert features["nlp_article_count"] == 2
+    assert features["nlp_sentence_count"] == 4
+    assert features["nlp_sentiment_score"] == pytest.approx(0.48148148148148145)
+    assert features["nlp_effective_weight_sum"] == pytest.approx(1.35)
+    assert features["nlp_source_count"] == 1
+    assert features["nlp_dominant_source"] == "Benzinga"
+    assert features["nlp_dominant_source_weight_share"] == pytest.approx(1.0)
+    assert features["nlp_effective_source_count"] == pytest.approx(1.0)
+    assert features["nlp_article_contribution_weight_mean"] == pytest.approx(0.5125)
+    assert features["nlp_article_contribution_weight_min"] == pytest.approx(0.35)
+    warnings = json.loads(features["nlp_semantic_warning_codes"])
+    assert "single_source_concentration" in warnings
+    assert "article_contribution_capped" in json.loads(
+        str(features["nlp_relevance_reason_codes"])
+    )
 
 
 def test_sentiment_feature_records_warn_on_missing_optional_topic_evidence() -> None:
