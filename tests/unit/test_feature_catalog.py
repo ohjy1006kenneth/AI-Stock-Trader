@@ -71,6 +71,13 @@ def test_feature_catalog_registers_sentiment_semantic_features() -> None:
     assert catalog["nlp_article_contamination_count"].kind == "number"
     assert catalog["nlp_article_signal_count"].kind == "number"
     assert catalog["nlp_article_contribution_weight"].kind == "number"
+    assert catalog["nlp_article_contribution_weight_mean"].kind == "number"
+    assert catalog["nlp_article_contribution_weight_min"].kind == "number"
+    assert catalog["nlp_source_count"].kind == "number"
+    assert catalog["nlp_dominant_source"].kind == "string"
+    assert catalog["nlp_dominant_source_article_count"].kind == "number"
+    assert catalog["nlp_dominant_source_weight_share"].kind == "number"
+    assert catalog["nlp_effective_source_count"].kind == "number"
 
     assert (
         validate_feature_value(
@@ -87,4 +94,12 @@ def test_feature_catalog_registers_sentiment_semantic_features() -> None:
             catalog["nlp_topic_sentiment_summary"],
         )
         is None
+    )
+    assert (
+        validate_feature_value(
+            "nlp_dominant_source_weight_share",
+            1.1,
+            catalog["nlp_dominant_source_weight_share"],
+        )
+        is not None
     )

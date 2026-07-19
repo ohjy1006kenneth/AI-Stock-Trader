@@ -588,7 +588,24 @@ def _posterior_probabilities(
         np,
     )
     log_beta = _backward_log(log_emissions, model.transition_matrix, np)
-    return np.exp(log_alpha + log_beta - log_likelihood)
+    return _normalize_probability_matrix(
+        np.exp(log_alpha + log_beta - log_likelihood),
+        np,
+    )
+
+
+def _normalize_probability_matrix(probabilities: np.ndarray, np: Any) -> np.ndarray:
+    """Return finite row-normalized probabilities bounded to [0, 1]."""
+    safe = np.where(np.isfinite(probabilities) & (probabilities > 0.0), probabilities, 0.0)
+    row_sums = safe.sum(axis=1, keepdims=True)
+    zero_rows = row_sums[:, 0] <= 0.0
+    if zero_rows.any():
+        safe[zero_rows, :] = 1.0 / safe.shape[1]
+        row_sums = safe.sum(axis=1, keepdims=True)
+    normalized = safe / row_sums
+    clipped = np.clip(normalized, 0.0, 1.0)
+    clipped_sums = clipped.sum(axis=1, keepdims=True)
+    return clipped / clipped_sums
 
 
 def _probabilities_by_label(probabilities: np.ndarray, model: HMMRegimeModel) -> dict[str, float]:
