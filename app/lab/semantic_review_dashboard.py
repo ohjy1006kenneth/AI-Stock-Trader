@@ -1059,10 +1059,10 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       const missingReasons = [];
       if (!prices.length) missingReasons.push(`No ${{benchmarkTicker}} price rows were available for the chart.`);
       if (!rows.length) missingReasons.push('No HMM regime rows were available for the benchmark dates.');
+      if (prices.length && prices.length < 2) missingReasons.push('Only one benchmark price point is available, so the chart is limited for auditability.');
+      if (rows.length && rows.length < 2) missingReasons.push('Only one HMM regime point is available, so the chart is limited for auditability.');
       if (rows.length && !hasRenderablePrice) missingReasons.push(`The ${{benchmarkTicker}} rows did not contain numeric close or adjusted-close values.`);
       if (rows.length && !hasRenderableProbability) missingReasons.push('The HMM rows did not contain numeric regime probabilities.');
-      if (rowWarnings.includes('missing_price')) missingReasons.push('At least one benchmark chart date is missing benchmark price context.');
-      if (rowWarnings.includes('all_null_hmm_regime')) missingReasons.push('At least one HMM row has all label/probability fields null.');
       if (!hasManifest) missingReasons.push('The HMM manifest summary is missing, so we cannot verify the training window.');
       if (!hasTrainingWindow) missingReasons.push('The HMM training-window metadata is missing, so the model readiness check is incomplete.');
       if (missingReasons.length) {{
@@ -1614,7 +1614,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
           ${{metricCard('Missing/default', summary.missing_or_default_count ?? 0, 'topic_relevance_review.summary.missing_or_default_count', 'Rows missing required topic, embedding, or relevance support.')}}
         </div>
         ${{topicReviewWarning ? `<div class="chart-blocker"><h3>Topic review diversity warning</h3><p>${{escapeHtml(topicReviewWarning)}}</p><p class="section-note">Layer 1 topic review should surface readable labels, keywords, and examples. This warning means the corpus is too concentrated or collapsed into a single catch-all topic, so the review evidence is not yet diverse.</p><p class="muted">Review rows: ${{Number(topicReviewRows.length || 0)}} · Topics: ${{Number(topicReviewCards.length || 0)}}</p></div>` : ''}}
-        ${{reviewable ? '' : `<div class="chart-blocker"><h3>Topic / relevance is not reviewable yet</h3><p>${{escapeHtml(summary.review_explanation || 'Missing topic, embedding, or relevance-gate evidence.')}}</p><p class="section-note">Missing embedding, topic, or relevance-gate evidence still blocks human acceptance.</p>${{blockerPreview.length ? `<div class="row-list">${{blockerPreview.map((blocker) => `
+        ${{reviewable ? '' : `<div class="chart-blocker"><h3>Topic / relevance is not reviewable yet</h3><p>${{escapeHtml(summary.review_explanation || 'Missing topic, embedding, or relevance-gate evidence.')}}</p><p class="section-note">Missing embedding, topic, or relevance-gate evidence still blocks human acceptance. If a diagnostic is absent, that means unknown or not run — not clean.</p>${{blockerPreview.length ? `<div class="row-list">${{blockerPreview.map((blocker) => `
           <div class="compact-grid" style="margin-bottom: 12px;">
             <div class="compact"><div class="k">Article</div><div class="v">${{escapeHtml(blocker.article_id || 'n/a')}}</div><div class="k">raw: article_id</div></div>
             <div class="compact"><div class="k">Status</div><div class="v">${{escapeHtml(blocker.evidence_status || 'n/a')}}</div><div class="k">raw: evidence_status</div></div>
