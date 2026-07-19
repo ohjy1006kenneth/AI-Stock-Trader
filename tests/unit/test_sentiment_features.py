@@ -27,6 +27,8 @@ def _row(
     date: str = "2024-04-10",
     ticker: str = "AAPL",
     article_id: str = "article-1",
+    sentence_index: int = 0,
+    chunk_index: int = 0,
     source: str | None = "Reuters",
     published_at: str | None = None,
     sentiment_positive: float = 0.8,
@@ -40,6 +42,8 @@ def _row(
         "date": date,
         "ticker": ticker,
         "article_id": article_id,
+        "sentence_index": sentence_index,
+        "chunk_index": chunk_index,
         "source": source,
         "published_at": published_at or f"{date}T14:30:00Z",
         "sentiment_positive": sentiment_positive,
@@ -48,6 +52,38 @@ def _row(
         "sentiment_score": sentiment_score,
         "relevance_score": relevance_score,
     }
+
+
+def _relevance_gate_row(
+    *,
+    date: str = "2024-04-10",
+    ticker: str = "AAPL",
+    article_id: str = "article-1",
+    sentence_index: int = 0,
+    chunk_index: int = 0,
+    relevance_decision: str = "accepted",
+    relevance_score: float = 1.0,
+    ticker_relevance_score: float = 1.0,
+    financial_relevance_score: float = 1.0,
+    topic_relevance_score: float = 1.0,
+    **extra: object,
+) -> dict[str, object]:
+    """Build one relevance-gate audit row."""
+    row = {
+        "date": date,
+        "ticker": ticker,
+        "article_id": article_id,
+        "sentence_index": sentence_index,
+        "chunk_index": chunk_index,
+        "relevance_decision": relevance_decision,
+        "relevance_score": relevance_score,
+        "ticker_relevance_score": ticker_relevance_score,
+        "financial_relevance_score": financial_relevance_score,
+        "topic_relevance_score": topic_relevance_score,
+        "reason_codes": json.dumps(["legacy_relevance_evidence"], sort_keys=True),
+    }
+    row.update(extra)
+    return row
 
 
 class _FakeScorer:
@@ -180,6 +216,108 @@ def test_score_news_sentiment_requires_explicit_relevance_evidence() -> None:
     assert relevance_by_article["context-aapl"] == pytest.approx(0.25)
     assert relevance_by_article["context-msft"] == pytest.approx(0.25)
     assert relevance_by_article["noise-nvda"] is None
+
+
+def test_sentiment_feature_records_accept_legacy_relevance_gate_without_optional_target_fields() -> None:
+    """Legacy relevance-gate rows should still attach and leave optional target fields empty."""
+    scored_news = pd.DataFrame([
+        _row(article_id="legacy-aapl", sentence_index=0, relevance_score=0.75),
+    ])
+    relevance_gate = pd.DataFrame(
+        [
+            _relevance_gate_row(
+                article_id="legacy-aapl",
+                relevance_decision="accepted",
+                relevance_score=0.75,
+                ticker_relevance_score=1.0,
+                financial_relevance_score=0.8,
+                topic_relevance_score=0.6,
+                reason_codes=json.dumps(["legacy_relevance_evidence"], sort_keys=True),
+            )
+        ]
+    )
+
+    records = sentiment_feature_records_from_scored_news(
+        scored_news,
+        relevance_gate=relevance_gate,
+        credibility_config=SourceCredibilityConfig(
+            default_source_weight=1.0,
+            source_weights={},
+        ),
+    )
+
+    assert len(records) == 1
+    features = records[0].features
+    assert features["nlp_relevance_category"] is None
+    assert features["nlp_target_impact_direction"] is None
+    assert features["nlp_target_impact_magnitude"] is None
+    assert features["nlp_target_impact_horizon"] is None
+    assert features["nlp_target_impact_confidence"] is None
+    assert features["nlp_causal_channel"] is None
+    assert features["nlp_document_sentiment"] is None
+    assert features["nlp_article_contamination_ratio"] is None
+    assert features["nlp_article_contamination_count"] is None
+    assert features["nlp_article_signal_count"] is None
+    assert features["nlp_article_contribution_weight"] is None
+
+
+def test_sentiment_feature_records_propagate_optional_target_impact_fields() -> None:
+    """Optional relevance-gate target-impact fields should flow into sentiment features."""
+    scored_news = pd.DataFrame([
+        _row(article_id="target-aapl", sentence_index=0, relevance_score=0.9),
+    ])
+    relevance_gate = pd.DataFrame(
+        [
+            _relevance_gate_row(
+                article_id="target-aapl",
+                relevance_decision="accepted",
+                relevance_score=0.9,
+                ticker_relevance_score=1.0,
+                financial_relevance_score=0.85,
+                topic_relevance_score=0.7,
+                relevance_category="direct_target_event",
+                target_context_score=0.88,
+                document_sentiment="bullish",
+                target_company_impact_direction="positive",
+                target_company_impact_magnitude="high",
+                impact_horizon="short_term",
+                causal_channel="product_device",
+                target_impact_confidence=0.93,
+                article_contamination_ratio=0.12,
+                article_contamination_count=1,
+                article_signal_count=3,
+                article_contribution_weight=0.6,
+                reason_codes=json.dumps(
+                    ["legacy_relevance_evidence", "article_contribution_capped"],
+                    sort_keys=True,
+                ),
+            )
+        ]
+    )
+
+    records = sentiment_feature_records_from_scored_news(
+        scored_news,
+        relevance_gate=relevance_gate,
+        credibility_config=SourceCredibilityConfig(
+            default_source_weight=1.0,
+            source_weights={},
+        ),
+    )
+
+    assert len(records) == 1
+    features = records[0].features
+    assert features["nlp_relevance_category"] == "direct_target_event"
+    assert features["nlp_target_impact_direction"] == "positive"
+    assert features["nlp_target_impact_magnitude"] == "high"
+    assert features["nlp_target_impact_horizon"] == "short_term"
+    assert features["nlp_target_impact_confidence"] == 0.93
+    assert features["nlp_causal_channel"] == "product_device"
+    assert features["nlp_document_sentiment"] == "bullish"
+    assert features["nlp_article_contamination_ratio"] == 0.12
+    assert features["nlp_article_contamination_count"] == 1
+    assert features["nlp_article_signal_count"] == 3
+    assert features["nlp_article_contribution_weight"] == 0.6
+    assert "article_contribution_capped" in json.loads(str(features["nlp_relevance_reason_codes"]))
 
 
 def test_score_news_sentiment_skips_rows_without_text_or_headline() -> None:
