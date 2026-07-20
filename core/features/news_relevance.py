@@ -30,7 +30,9 @@ RELEVANCE_GATE_COLUMNS: tuple[str, ...] = (
     "ticker_relevance_score",
     "financial_relevance_score",
     "topic_relevance_score",
+    "target_context_score",
     "relevance_category",
+    "document_sentiment",
     "target_company_impact_direction",
     "target_company_impact_magnitude",
     "impact_horizon",
@@ -176,7 +178,11 @@ _INDUSTRY_MACRO_TERMS: tuple[str, ...] = (
 _INCIDENTAL_COMPARISON_TERMS: tuple[str, ...] = (
     "best stocks",
     "compare",
+    "compares",
+    "compared with",
+    "compared to",
     "comparison",
+    "price comparison",
     "mag 7",
     "listicle",
     "roundup",
@@ -375,6 +381,8 @@ def _build_record_analysis(
         "financial_relevance_score": financial_score,
         "topic_relevance_score": topic_score,
         "relevance_category": relevance_category,
+        "target_context_score": _target_context_score(relevance_category),
+        "document_sentiment": _document_sentiment_label(impact_direction),
         "target_company_impact_direction": impact_direction,
         "target_company_impact_magnitude": impact_magnitude,
         "impact_horizon": impact_horizon,
@@ -456,16 +464,10 @@ def _finalize_record_analysis(
             decision = "rejected"
             reasons.add("rejected_by_relevance_gate")
     elif category == "incidental_comparison":
-        if (
-            relevance_score >= config.borderline_threshold
-            and ticker_score >= 0.75
-            and not article_contamination_dominates
-        ):
-            decision = "borderline"
-            reasons.add("borderline_ticker_or_topic_evidence")
-        else:
-            decision = "rejected"
-            reasons.add("rejected_by_relevance_gate")
+        relevance_score = min(relevance_score, float(analysis.get("target_context_score") or 0.15))
+        decision = "rejected"
+        reasons.add("incidental_comparison_excluded_from_signal")
+        reasons.add("rejected_by_relevance_gate")
     else:
         decision = "rejected"
         reasons.add("rejected_by_relevance_gate")
@@ -493,7 +495,9 @@ def _finalize_record_analysis(
         "ticker_relevance_score": analysis["ticker_relevance_score"],
         "financial_relevance_score": analysis["financial_relevance_score"],
         "topic_relevance_score": analysis["topic_relevance_score"],
+        "target_context_score": analysis["target_context_score"],
         "relevance_category": category,
+        "document_sentiment": analysis["document_sentiment"],
         "target_company_impact_direction": analysis["target_company_impact_direction"],
         "target_company_impact_magnitude": analysis["target_company_impact_magnitude"],
         "impact_horizon": analysis["impact_horizon"],
@@ -582,6 +586,20 @@ def _target_conditioned_metadata(
         _contains_phrase(lower_text, term) for term in _INCIDENTAL_COMPARISON_TERMS
     )
     business_channel, business_terms = _target_business_channel(lower_text)
+
+    if has_comparison_context:
+        category = "incidental_comparison"
+        reasons.append("target_conditioned_category:incidental_comparison")
+        reasons.append("causal_channel:comparison_context")
+        return (
+            category,
+            "none",
+            "low",
+            "same_day",
+            "comparison_context",
+            0.15,
+            reasons,
+        )
 
     if direct_evidence and (has_direct_business_context or business_channel in {
         "legal_regulatory",
@@ -679,31 +697,17 @@ def _target_conditioned_metadata(
             reasons,
         )
 
-    if assignment_classification == "contamination" and (has_comparison_context or competitor_reasons):
+    if assignment_classification == "contamination" and competitor_reasons:
         category = "incidental_comparison"
         reasons.append("target_conditioned_category:incidental_comparison")
         reasons.append("causal_channel:comparison_context")
         return (
             category,
-            "unclear",
+            "none",
             "low",
-            "short_term",
+            "same_day",
             "comparison_context",
-            0.30,
-            reasons,
-        )
-
-    if has_comparison_context:
-        category = "incidental_comparison"
-        reasons.append("target_conditioned_category:incidental_comparison")
-        reasons.append("causal_channel:comparison_context")
-        return (
-            category,
-            "unclear",
-            "low",
-            "short_term",
-            "comparison_context",
-            0.30,
+            0.15,
             reasons,
         )
 
@@ -725,6 +729,27 @@ def _target_conditioned_metadata(
     reasons.append("target_conditioned_category:irrelevant")
     reasons.append("causal_channel:none")
     return ("irrelevant", "unclear", "low", "unknown", "none", 0.10, reasons)
+
+
+def _target_context_score(relevance_category: str) -> float:
+    """Return direct target-context evidence strength for audit display."""
+    return {
+        "direct_target_event": 0.96,
+        "supplier_or_input_cost_exposure": 0.80,
+        "competitor_read_through": 0.65,
+        "industry_or_macro_exposure": 0.45,
+        "incidental_comparison": 0.08,
+        "irrelevant": 0.0,
+    }.get(relevance_category, 0.0)
+
+
+def _document_sentiment_label(impact_direction: str) -> str:
+    """Map deterministic lexical impact direction to document sentiment label."""
+    if impact_direction in {"positive", "negative"}:
+        return impact_direction
+    if impact_direction == "none":
+        return "neutral"
+    return "unclear"
 
 
 def _target_business_channel(normalized_text: str) -> tuple[str, tuple[str, ...]]:
