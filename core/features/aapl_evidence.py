@@ -2954,7 +2954,24 @@ class HumanReviewRow:
     finbert_score: float | None
     relevance_score: float | None
     regime: str | None
-    notes: str | None
+    relationship_to_target: str | None = None
+    target_context_score: float | None = None
+    document_sentiment: str | None = None
+    target_company_impact_direction: str | None = None
+    target_company_impact_magnitude: str | None = None
+    impact_horizon: str | None = None
+    causal_channel: str | None = None
+    target_impact_confidence: float | None = None
+    included_in_signal: bool | None = None
+    final_contribution: float | None = None
+    final_signal_contribution: float | None = None
+    target_impact_missing_flags: list[str] = field(default_factory=list)
+    article_signal_count: int | None = None
+    article_contamination_ratio: float | None = None
+    semantic_warning_codes: list[str] = field(default_factory=list)
+    source_count: int | None = None
+    dominant_source_weight_share: float | None = None
+    notes: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         """Return a JSON-serializable row payload."""
@@ -3094,6 +3111,7 @@ def build_aapl_pilot_evidence_bundle(
         else ("do_not_proceed" if not machine_passed else "needs_human_review")
     )
     human_rows = _build_human_review_rows(
+        report,
         active_writer,
         active_ticker,
         expected_trading_dates,
@@ -3172,6 +3190,23 @@ def render_aapl_pilot_human_review_csv(bundle: AAPLPilotEvidenceBundle) -> str:
         "finbert_score",
         "relevance_score",
         "regime",
+        "relationship_to_target",
+        "target_context_score",
+        "document_sentiment",
+        "target_company_impact_direction",
+        "target_company_impact_magnitude",
+        "impact_horizon",
+        "causal_channel",
+        "target_impact_confidence",
+        "included_in_signal",
+        "final_contribution",
+        "final_signal_contribution",
+        "target_impact_missing_flags",
+        "article_signal_count",
+        "article_contamination_ratio",
+        "semantic_warning_codes",
+        "source_count",
+        "dominant_source_weight_share",
         "notes",
     ]
     writer = csv.DictWriter(buffer, fieldnames=fieldnames)
@@ -3199,6 +3234,7 @@ def write_aapl_pilot_evidence_outputs(
 
 
 def _build_human_review_rows(
+    report: Layer1SemanticReviewReport,
     writer: R2Writer,
     ticker: str,
     trading_date_list: Sequence[str],
@@ -3206,6 +3242,17 @@ def _build_human_review_rows(
 ) -> list[HumanReviewRow]:
     """Build one human-review row per trading date from scored-news artifacts."""
     rows: list[HumanReviewRow] = []
+    articles_by_date: dict[str, list[dict[str, object]]] = defaultdict(list)
+    for article in report.article_groups:
+        date_text = _optional_str(article.get("date"))
+        if date_text:
+            articles_by_date[date_text].append(dict(article))
+    semantic_by_date: dict[str, list[dict[str, object]]] = defaultdict(list)
+    for row in report.semantic_aggregate_rows:
+        date_text = _optional_str(row.get("date"))
+        if date_text:
+            semantic_by_date[date_text].append(dict(row))
+
     for date_text in trading_date_list:
         stage_run_id = f"{run_id}-{date_text}"
         score_key = layer1_sentiment_score_path(date_text, stage_run_id)
@@ -3215,6 +3262,61 @@ def _build_human_review_rows(
             frame = pd.DataFrame()
         first_row = frame.iloc[0] if not frame.empty else {}
         row_source = first_row.to_dict() if hasattr(first_row, "to_dict") else {}
+
+        target_rows = [
+            dict(row)
+            for article in articles_by_date.get(date_text, [])
+            for row in _json_list(article.get("relevance_gate_rows"))
+            if isinstance(row, Mapping)
+        ]
+        target_rows = sorted(
+            target_rows,
+            key=lambda row: (
+                not _target_row_included_in_signal(row),
+                -(_maybe_float(row.get("target_context_score")) or -1.0),
+                -(_maybe_float(row.get("article_contribution_weight")) or -1.0),
+                str(row.get("article_id") or ""),
+                str(row.get("sentence_index") or ""),
+            ),
+        )
+        target_summary = _target_impact_summary(target_rows)
+
+        semantic_rows = semantic_by_date.get(date_text, [])
+        semantic_row = semantic_rows[0] if semantic_rows else {}
+        semantic_features = _json_mapping(semantic_row.get("features"))
+        semantic_warning_codes = _json_string_list(semantic_row.get("semantic_warning_codes"))
+        if not semantic_warning_codes:
+            semantic_warning_codes = _json_string_list(semantic_features.get("nlp_semantic_warning_codes"))
+        source_weight_summary = _json_list(semantic_row.get("source_weight_summary"))
+        source_count = _maybe_int(semantic_features.get("nlp_source_count"))
+        dominant_source_weight_share = _maybe_float(semantic_features.get("nlp_dominant_source_weight_share"))
+        if source_weight_summary:
+            source_entries = [entry for entry in source_weight_summary if isinstance(entry, Mapping)]
+            if source_entries:
+                source_count = source_count or len(
+                    {
+                        str(entry.get("source") or "").strip()
+                        for entry in source_entries
+                        if str(entry.get("source") or "").strip()
+                    }
+                )
+                dominant_source_weight_share = dominant_source_weight_share or max(
+                    (
+                        _maybe_float(entry.get("weight_share"))
+                        for entry in source_entries
+                    ),
+                    default=None,
+                )
+        if source_count == 1 and "single_source_concentration" not in semantic_warning_codes:
+            semantic_warning_codes.append("single_source_concentration")
+        if not _optional_str(target_summary.get("target_company_impact_direction")):
+            semantic_warning_codes.append("unclear_target_company_impact_direction")
+        if not target_rows:
+            semantic_warning_codes.append("missing_target_impact_evidence")
+
+        notes_parts = ["FinBERT, topic-model, and HMM semantic correctness is a human decision."]
+        if semantic_warning_codes:
+            notes_parts.append(f"Warnings: {', '.join(sorted(set(semantic_warning_codes)))}.")
         rows.append(
             HumanReviewRow(
                 date=date_text,
@@ -3234,7 +3336,30 @@ def _build_human_review_rows(
                 finbert_score=_maybe_float(row_source.get("sentiment_score")),
                 relevance_score=_maybe_float(row_source.get("relevance_score")),
                 regime=None,
-                notes="FinBERT, topic-model, and HMM semantic correctness is a human decision.",
+                relationship_to_target=_optional_str(target_summary.get("relationship_to_target")),
+                target_context_score=_maybe_float(target_summary.get("target_context_score")),
+                document_sentiment=_optional_str(target_summary.get("document_sentiment")),
+                target_company_impact_direction=_optional_str(
+                    target_summary.get("target_company_impact_direction")
+                ),
+                target_company_impact_magnitude=_optional_str(
+                    target_summary.get("target_company_impact_magnitude")
+                ),
+                impact_horizon=_optional_str(target_summary.get("impact_horizon")),
+                causal_channel=_optional_str(target_summary.get("causal_channel")),
+                target_impact_confidence=_maybe_float(target_summary.get("target_impact_confidence")),
+                included_in_signal=bool(target_summary.get("included_in_signal")),
+                final_contribution=_maybe_float(target_summary.get("final_contribution")),
+                final_signal_contribution=_maybe_float(target_summary.get("final_signal_contribution")),
+                target_impact_missing_flags=list(target_summary.get("target_impact_missing_flags", [])),
+                article_signal_count=_maybe_int(target_summary.get("article_signal_count")),
+                article_contamination_ratio=_maybe_float(
+                    target_summary.get("article_contamination_ratio")
+                ),
+                semantic_warning_codes=sorted(set(semantic_warning_codes)),
+                source_count=source_count,
+                dominant_source_weight_share=dominant_source_weight_share,
+                notes=" ".join(notes_parts),
             )
         )
     return rows

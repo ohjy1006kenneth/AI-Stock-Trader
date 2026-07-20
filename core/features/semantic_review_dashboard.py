@@ -465,15 +465,71 @@ def build_layer1_semantic_aggregate_review(
         for row in _json_list(sections.get("semantic_aggregate_rows"))
         if isinstance(row, Mapping)
     ]
-    return {
-        "summary": {
-            "row_count": len(rows),
-            "date_count": len({str(row.get("date")) for row in rows if row.get("date") is not None}),
-            "reviewable": bool(rows),
-            "review_focus": "ticker-date NLP summary consumed by later model layers",
-        },
-        "rows": rows,
+    direction_counts: dict[str, int] = {}
+    warning_codes: list[str] = []
+    single_source_concentration_count = 0
+    dominant_source_weight_share = None
+    for row in rows:
+        direction = _optional_str(row.get("target_company_impact_direction"))
+        if direction:
+            direction_counts[direction] = direction_counts.get(direction, 0) + 1
+        warning_codes.extend(_json_string_list(row.get("semantic_warning_codes")))
+        if bool(row.get("single_source_concentration")):
+            single_source_concentration_count += 1
+        share = _maybe_float(row.get("dominant_source_weight_share"))
+        if share is not None:
+            dominant_source_weight_share = (
+                share
+                if dominant_source_weight_share is None
+                else max(dominant_source_weight_share, share)
+            )
+    summary = {
+        "row_count": len(rows),
+        "date_count": len({str(row.get("date")) for row in rows if row.get("date") is not None}),
+        "reviewable": bool(rows),
+        "review_focus": "ticker-date NLP summary consumed by later model layers",
+        "target_impact_direction": _first_text(
+            row.get("target_company_impact_direction") for row in rows
+        ),
+        "target_impact_magnitude": _first_text(
+            row.get("target_company_impact_magnitude") for row in rows
+        ),
+        "target_impact_confidence": _first_float(
+            row.get("target_impact_confidence") for row in rows
+        ),
+        "causal_channel": _first_text(row.get("causal_channel") for row in rows),
+        "impact_horizon": _first_text(row.get("impact_horizon") for row in rows),
+        "single_source_concentration": single_source_concentration_count > 0,
+        "single_source_concentration_count": single_source_concentration_count,
+        "dominant_source_weight_share": dominant_source_weight_share,
+        "semantic_warning_codes": _dedupe_preserve_order(warning_codes),
+        "target_impact_review_status": (
+            "derived"
+            if any(
+                _optional_str(row.get("target_company_impact_direction"))
+                or _optional_str(row.get("target_company_impact_magnitude"))
+                or _optional_str(row.get("causal_channel"))
+                or _optional_str(row.get("impact_horizon"))
+                or _maybe_float(row.get("target_impact_confidence")) is not None
+                for row in rows
+            )
+            else "unclear"
+        ),
+        "target_impact_warning": (
+            None
+            if any(
+                _optional_str(row.get("target_company_impact_direction"))
+                or _optional_str(row.get("target_company_impact_magnitude"))
+                or _optional_str(row.get("causal_channel"))
+                or _optional_str(row.get("impact_horizon"))
+                or _maybe_float(row.get("target_impact_confidence")) is not None
+                for row in rows
+            )
+            else "No row-level target-impact evidence was available, so the aggregate review remains unclear."
+        ),
+        "target_impact_direction_counts": direction_counts,
     }
+    return {"summary": summary, "rows": rows}
 
 
 def build_layer1_semantic_review_readiness_summary(
@@ -482,12 +538,15 @@ def build_layer1_semantic_review_readiness_summary(
     """Return stable run-readiness and gate-card fields for dashboard consumers."""
     summary = _json_mapping(payload.get("summary"))
     smoke = _json_mapping(payload.get("smoke"))
+    semantic_aggregate_review = _json_mapping(payload.get("semantic_aggregate_review"))
+    semantic_aggregate_summary = _json_mapping(semantic_aggregate_review.get("summary"))
     topic_relevance_review = _json_mapping(payload.get("topic_relevance_review"))
     topic_relevance_summary = _json_mapping(topic_relevance_review.get("summary"))
     topic_review_state = _json_mapping(topic_relevance_summary.get("topic_review_state"))
     relevance_state = _json_mapping(topic_relevance_summary.get("relevance_informativeness_state"))
     embedding_state = _json_mapping(topic_relevance_summary.get("embedding_coverage_state"))
     hmm_chart_state = _hmm_chart_auditability_state(payload)
+    hmm_feature_state = _hmm_feature_set_summary(payload)
     failures = [dict(item) for item in _json_list(smoke.get("failures")) if isinstance(item, Mapping)]
     failure_map = _failures_by_stage(failures)
     gate_cards = [
@@ -546,6 +605,7 @@ def build_layer1_semantic_review_readiness_summary(
         "relevance_informativeness": relevance_state,
         "embedding_coverage": embedding_state,
         "hmm_chart_auditability": hmm_chart_state,
+        "hmm_feature_set": hmm_feature_state,
         "overall_state": _diagnostic_worst_state(
             diagnostic_states["topic_review"],
             diagnostic_states["relevance_informativeness"],
@@ -565,6 +625,21 @@ def build_layer1_semantic_review_readiness_summary(
         "human_review_status": human_review_status,
         "human_review_can_start": ready_for_final_acceptance,
         "ready_for_final_human_acceptance": ready_for_final_acceptance,
+        "single_source_concentration": bool(semantic_aggregate_summary.get("single_source_concentration")),
+        "single_source_concentration_count": _first_int(
+            [semantic_aggregate_summary.get("single_source_concentration_count")]
+        )
+        or 0,
+        "target_impact_review_status": semantic_aggregate_summary.get("target_impact_review_status") or "unclear",
+        "target_impact_warning": semantic_aggregate_summary.get("target_impact_warning"),
+        "target_impact_direction": semantic_aggregate_summary.get("target_impact_direction"),
+        "target_impact_magnitude": semantic_aggregate_summary.get("target_impact_magnitude"),
+        "target_impact_confidence": semantic_aggregate_summary.get("target_impact_confidence"),
+        "causal_channel": semantic_aggregate_summary.get("causal_channel"),
+        "impact_horizon": semantic_aggregate_summary.get("impact_horizon"),
+        "hmm_feature_set_state": hmm_feature_state["state"],
+        "hmm_feature_set_warning": hmm_feature_state["reason"],
+        "hmm_feature_set_reviewable": hmm_feature_state["reviewable"],
         "smoke_status": smoke.get("status") or "unknown",
         "sentence_row_count": int(summary.get("row_count") or 0),
         "article_count": int(summary.get("article_count") or 0),
@@ -582,6 +657,11 @@ def build_layer1_semantic_review_readiness_summary(
         "hmm_chart_auditability_state": hmm_chart_state,
         "status_reason": _readiness_status_reason(ready_for_final_acceptance, diagnostic_blocker_reasons),
     }
+    if hmm_feature_state.get("state") == "WARN":
+        run_readiness["status_reason"] = (
+            f"{run_readiness['status_reason']} HMM feature set is degraded but non-blocking: "
+            f"{hmm_feature_state.get('reason')}"
+        )
     return {
         "run_readiness": run_readiness,
         "summary_cards": _summary_cards(run_readiness),
@@ -1315,11 +1395,13 @@ def _topic_relevance_reviewability_summary(
 
 def _semantic_aggregate_review_row(row: Mapping[str, object]) -> dict[str, object]:
     features = _json_mapping(row.get("features"))
+    target_summary = _semantic_aggregate_target_impact_summary(features)
     sentiment_score = _maybe_float(features.get("nlp_sentiment_score"))
     sentiment_label = _sentiment_label_from_score(sentiment_score)
     cards = _semantic_aggregate_review_cards(features)
     return {
         **dict(row),
+        **target_summary,
         "sentiment_label": sentiment_label,
         "human_review_summary": _semantic_aggregate_human_summary(
             sentiment_label=sentiment_label,
@@ -1328,6 +1410,124 @@ def _semantic_aggregate_review_row(row: Mapping[str, object]) -> dict[str, objec
             sentence_count=_maybe_float(features.get("nlp_sentence_count")),
         ),
         "review_value_cards": cards,
+    }
+
+
+def _semantic_aggregate_target_impact_summary(features: Mapping[str, object]) -> dict[str, object]:
+    """Return target-impact fields and warnings for one semantic aggregate row."""
+    relationship_to_target = _first_text(
+        [
+            features.get("nlp_relevance_category"),
+            features.get("relevance_category"),
+        ]
+    )
+    target_context_score = _first_float(
+        [features.get("nlp_target_context_score"), features.get("target_context_score")]
+    )
+    document_sentiment = _first_text(
+        [features.get("nlp_document_sentiment"), features.get("document_sentiment")]
+    )
+    target_company_impact_direction = _first_text(
+        [features.get("nlp_target_impact_direction"), features.get("target_company_impact_direction")]
+    )
+    target_company_impact_magnitude = _first_text(
+        [features.get("nlp_target_impact_magnitude"), features.get("target_company_impact_magnitude")]
+    )
+    impact_horizon = _first_text([features.get("nlp_target_impact_horizon"), features.get("impact_horizon")])
+    causal_channel = _first_text([features.get("nlp_causal_channel"), features.get("causal_channel")])
+    target_impact_confidence = _first_float(
+        [features.get("nlp_target_impact_confidence"), features.get("target_impact_confidence")]
+    )
+    included_in_signal = _maybe_bool(features.get("included_in_signal"))
+    final_contribution = _first_float([features.get("final_contribution"), features.get("final_signal_contribution")])
+    final_signal_contribution = _first_float([features.get("final_signal_contribution"), features.get("final_contribution")])
+    target_impact_missing_flags: list[str] = []
+    for field_name, value in (
+        ("relationship_to_target", relationship_to_target),
+        ("target_context_score", target_context_score),
+        ("document_sentiment", document_sentiment),
+        ("target_company_impact_direction", target_company_impact_direction),
+        ("target_company_impact_magnitude", target_company_impact_magnitude),
+        ("impact_horizon", impact_horizon),
+        ("causal_channel", causal_channel),
+        ("target_impact_confidence", target_impact_confidence),
+    ):
+        if value is None:
+            target_impact_missing_flags.append(f"missing_{field_name}")
+    source_count = _first_int([features.get("nlp_source_count"), features.get("source_count")])
+    dominant_source_weight_share = _first_float(
+        [features.get("nlp_dominant_source_weight_share"), features.get("dominant_source_weight_share")]
+    )
+    single_source_concentration = bool(
+        source_count == 1 or (dominant_source_weight_share is not None and dominant_source_weight_share >= 0.99)
+    )
+    semantic_warning_codes = _dedupe_preserve_order(
+        _json_string_list(features.get("nlp_semantic_warning_codes"))
+    )
+    if single_source_concentration and "single_source_concentration" not in semantic_warning_codes:
+        semantic_warning_codes.append("single_source_concentration")
+    target_impact_status = "derived" if target_company_impact_direction or target_context_score is not None else "unclear"
+    target_impact_warning = (
+        None
+        if target_impact_status == "derived"
+        else "All row-level target-impact evidence is unclear or missing for this aggregate row."
+    )
+    if target_impact_warning and "unclear_target_company_impact_direction" not in semantic_warning_codes:
+        semantic_warning_codes.append("unclear_target_company_impact_direction")
+    if target_impact_confidence is None and "missing_target_impact_confidence" not in semantic_warning_codes:
+        semantic_warning_codes.append("missing_target_impact_confidence")
+    return {
+        "relationship_to_target": relationship_to_target,
+        "target_context_score": target_context_score,
+        "document_sentiment": document_sentiment,
+        "target_company_impact_direction": target_company_impact_direction,
+        "target_company_impact_magnitude": target_company_impact_magnitude,
+        "impact_horizon": impact_horizon,
+        "causal_channel": causal_channel,
+        "target_impact_confidence": target_impact_confidence,
+        "included_in_signal": included_in_signal,
+        "final_contribution": final_contribution,
+        "final_signal_contribution": final_signal_contribution,
+        "target_impact_missing_flags": target_impact_missing_flags,
+        "source_count": source_count,
+        "dominant_source_weight_share": dominant_source_weight_share,
+        "single_source_concentration": single_source_concentration,
+        "semantic_warning_codes": semantic_warning_codes,
+        "target_impact_status": target_impact_status,
+        "target_impact_warning": target_impact_warning,
+    }
+
+
+def _hmm_feature_set_summary(payload: Mapping[str, object]) -> dict[str, object]:
+    """Return a human-readable HMM feature-set degradation summary."""
+    context = _json_mapping(payload.get("hmm_evaluation_context"))
+    warning_codes = _dedupe_preserve_order(_json_string_list(context.get("warnings")))
+    feature_set_blocking = _maybe_bool(context.get("feature_set_blocking"))
+    if feature_set_blocking is None:
+        feature_set_blocking = "incomplete_hmm_feature_set" in warning_codes
+    degraded = bool(warning_codes)
+    if not degraded:
+        return {
+            "state": "PASS",
+            "reason": "HMM feature set is ready.",
+            "reviewable": True,
+            "warning_codes": [],
+            "blocking": bool(feature_set_blocking),
+        }
+    if feature_set_blocking:
+        return {
+            "state": "WARN",
+            "reason": "HMM feature set is degraded and blocks readiness.",
+            "reviewable": False,
+            "warning_codes": warning_codes,
+            "blocking": True,
+        }
+    return {
+        "state": "WARN",
+        "reason": "HMM feature set is degraded but non-blocking.",
+        "reviewable": True,
+        "warning_codes": warning_codes,
+        "blocking": False,
     }
 
 
@@ -1358,6 +1558,55 @@ def _semantic_aggregate_human_summary(
 
 def _semantic_aggregate_review_cards(features: Mapping[str, object]) -> list[dict[str, object]]:
     cards: list[dict[str, object]] = []
+    target_direction = _first_text(
+        [features.get("nlp_target_impact_direction"), features.get("target_company_impact_direction")]
+    )
+    if target_direction is not None:
+        cards.append(
+            {
+                "label": "Target impact direction",
+                "value": target_direction,
+                "field": "features.nlp_target_impact_direction",
+            }
+        )
+    target_magnitude = _first_text(
+        [features.get("nlp_target_impact_magnitude"), features.get("target_company_impact_magnitude")]
+    )
+    if target_magnitude is not None:
+        cards.append(
+            {
+                "label": "Target impact magnitude",
+                "value": target_magnitude,
+                "field": "features.nlp_target_impact_magnitude",
+            }
+        )
+    target_confidence = _first_float([features.get("nlp_target_impact_confidence"), features.get("target_impact_confidence")])
+    if target_confidence is not None:
+        cards.append(
+            {
+                "label": "Target impact confidence",
+                "value": _display_number(target_confidence, 3),
+                "field": "features.nlp_target_impact_confidence",
+            }
+        )
+    target_channel = _first_text([features.get("nlp_causal_channel"), features.get("causal_channel")])
+    if target_channel is not None:
+        cards.append(
+            {
+                "label": "Causal channel",
+                "value": target_channel,
+                "field": "features.nlp_causal_channel",
+            }
+        )
+    target_horizon = _first_text([features.get("nlp_target_impact_horizon"), features.get("impact_horizon")])
+    if target_horizon is not None:
+        cards.append(
+            {
+                "label": "Impact horizon",
+                "value": target_horizon,
+                "field": "features.nlp_target_impact_horizon",
+            }
+        )
     sentiment_score = _maybe_float(features.get("nlp_sentiment_score"))
     if sentiment_score is not None:
         cards.append(
@@ -1400,6 +1649,21 @@ def _semantic_aggregate_review_cards(features: Mapping[str, object]) -> list[dic
                 "label": "Relevance score",
                 "value": _display_number(relevance_score, 3),
                 "field": "features.nlp_relevance_score",
+            }
+        )
+    source_count = _first_int([features.get("nlp_source_count"), features.get("source_count")])
+    dominant_share = _first_float(
+        [features.get("nlp_dominant_source_weight_share"), features.get("dominant_source_weight_share")]
+    )
+    if source_count is not None or dominant_share is not None:
+        cards.append(
+            {
+                "label": "Source concentration",
+                "value": (
+                    f"{source_count if source_count is not None else 'n/a'} source(s) / "
+                    f"{_display_number(dominant_share, 3)} share"
+                ),
+                "field": "features.nlp_source_count / features.nlp_dominant_source_weight_share",
             }
         )
     return cards
@@ -1629,6 +1893,23 @@ def _optional_str(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _maybe_bool(value: Any) -> bool | None:
+    """Return a bool when the input is clearly boolean-like."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    text = _optional_str(value)
+    if text is None:
+        return None
+    lowered = text.lower()
+    if lowered in {"true", "1", "yes"}:
+        return True
+    if lowered in {"false", "0", "no"}:
+        return False
+    return None
 
 
 def _dedupe_preserve_order(items: Sequence[str]) -> list[str]:
