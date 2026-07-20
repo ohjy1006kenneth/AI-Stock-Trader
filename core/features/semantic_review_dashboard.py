@@ -1,7 +1,7 @@
 """UI payload helpers for the Layer 1 semantic-review dashboard."""
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -381,6 +381,11 @@ def build_layer1_topic_relevance_review(
                 if "default_relevance_without_supporting_evidence"
                 in _json_string_list(row.get("missing_evidence_flags"))
             ),
+            "target_impact_included_count": sum(1 for row in rows if row.get("included_in_signal") is True),
+            "target_impact_excluded_count": sum(1 for row in rows if row.get("included_in_signal") is False),
+            "target_impact_missing_count": sum(
+                1 for row in rows if _json_string_list(row.get("target_impact_missing_flags"))
+            ),
             **reviewability,
         },
         "date_groups": date_groups,
@@ -741,6 +746,7 @@ def _topic_relevance_article_row(
     )
     topic_score = _first_float([row.get("topic_relevance_score") for row in relevance_rows])
     assignment_fields = _first_assignment_provenance_fields(preprocessing_rows)
+    target_impact = _target_impact_review_summary(article, relevance_rows)
     has_embedding = bool(embedding_rows)
     has_topic = bool(topic_rows)
     has_relevance_gate = bool(relevance_rows)
@@ -784,6 +790,7 @@ def _topic_relevance_article_row(
         "ticker_relevance_score": ticker_score,
         "financial_relevance_score": financial_score,
         "topic_relevance_score": topic_score,
+        **target_impact,
         "reason_codes": reason_codes,
         "assignment_classification": assignment_fields["assignment_classification"],
         "assignment_reason": assignment_fields["assignment_reason"],
@@ -830,9 +837,147 @@ def _topic_relevance_article_row(
             }
             for row in topic_rows
         ],
-        "relevance_gate_rows": [dict(row) for row in relevance_rows],
+        "relevance_gate_rows": _compact_topic_relevance_gate_rows(relevance_rows),
         "preprocessing_rows": [dict(row) for row in preprocessing_rows],
     }
+
+
+def _compact_topic_relevance_gate_rows(rows: Sequence[Mapping[str, object]]) -> list[dict[str, object]]:
+    """Return compact row evidence for the article tab; full rows remain in pipeline_sections."""
+    compact_rows: list[dict[str, object]] = []
+    for row in rows:
+        compact_rows.append(
+            {
+                "date": row.get("date"),
+                "ticker": row.get("ticker"),
+                "article_id": row.get("article_id"),
+                "sentence_index": row.get("sentence_index"),
+                "relevance_decision": row.get("relevance_decision"),
+                "relevance_score": row.get("relevance_score"),
+                "target_context_score": row.get("target_context_score"),
+                "relevance_category": row.get("relevance_category"),
+                "target_company_impact_direction": row.get("target_company_impact_direction"),
+                "article_contribution_weight": row.get("article_contribution_weight"),
+                "included_in_signal": _target_row_included_in_signal(row),
+                "final_contribution": row.get("final_contribution"),
+                "reason_codes": _json_string_list(row.get("reason_codes")),
+            }
+        )
+    return compact_rows
+
+
+_TARGET_SIGNAL_CATEGORIES = frozenset(
+    {
+        "direct_target_event",
+        "supplier_or_input_cost_exposure",
+        "competitor_read_through",
+        "industry_or_macro_exposure",
+    }
+)
+
+
+def _target_impact_review_summary(
+    article: Mapping[str, object],
+    relevance_rows: Sequence[Mapping[str, object]],
+) -> dict[str, object]:
+    """Return article-level target-impact and final contribution review fields."""
+    category = _first_text([row.get("relevance_category") for row in relevance_rows] + [article.get("relationship_to_target")])
+    target_context_score = _first_float([row.get("target_context_score") for row in relevance_rows] + [article.get("target_context_score")])
+    contribution_weight = _first_float([row.get("article_contribution_weight") for row in relevance_rows] + [article.get("article_contribution_weight")])
+    included = any(_target_row_included_in_signal(row) for row in relevance_rows)
+    final_contribution = contribution_weight if included else (0.0 if relevance_rows else None)
+    missing_flags = sorted({flag for row in relevance_rows for flag in _target_row_missing_flags(row)})
+    status = "missing" if not relevance_rows else ("included" if included else "excluded")
+    return {
+        "relationship_to_target": category,
+        "target_relationship": category,
+        "relevance_category": category,
+        "target_context_score": target_context_score,
+        "direct_target_relevance": target_context_score,
+        "document_sentiment": _first_text(row.get("document_sentiment") for row in relevance_rows),
+        "target_company_impact_direction": _first_text(row.get("target_company_impact_direction") for row in relevance_rows),
+        "target_company_impact_magnitude": _first_text(row.get("target_company_impact_magnitude") for row in relevance_rows),
+        "impact_horizon": _first_text(row.get("impact_horizon") for row in relevance_rows),
+        "causal_channel": _first_text(row.get("causal_channel") for row in relevance_rows),
+        "target_impact_confidence": _first_float(row.get("target_impact_confidence") for row in relevance_rows),
+        "article_contamination_ratio": _first_float(row.get("article_contamination_ratio") for row in relevance_rows),
+        "article_contamination_count": _first_int(row.get("article_contamination_count") for row in relevance_rows),
+        "article_signal_count": _first_int(row.get("article_signal_count") for row in relevance_rows),
+        "article_contribution_weight": contribution_weight,
+        "included_in_signal": included,
+        "final_contribution": final_contribution,
+        "final_signal_contribution": final_contribution,
+        "target_impact_evidence_status": status,
+        "target_impact_missing_flags": missing_flags,
+    }
+
+
+def _target_row_included_in_signal(row: Mapping[str, object]) -> bool:
+    """Return True only when a relevance-gate row contributes target-conditioned signal."""
+    category = _optional_str(row.get("relevance_category"))
+    decision = (_optional_str(row.get("relevance_decision")) or "").lower()
+    signal_count = _coerce_int(row.get("article_signal_count"))
+    contribution_weight = _maybe_float(row.get("article_contribution_weight"))
+    return bool(
+        category in _TARGET_SIGNAL_CATEGORIES
+        and decision in {"accepted", "borderline"}
+        and (signal_count is None or signal_count > 0)
+        and (contribution_weight is None or contribution_weight > 0.0)
+    )
+
+
+def _target_row_missing_flags(row: Mapping[str, object]) -> list[str]:
+    """Return missing target-impact fields for dashboard blockers."""
+    flags: list[str] = []
+    for field_name in (
+        "relevance_category",
+        "target_context_score",
+        "target_company_impact_direction",
+        "target_company_impact_magnitude",
+        "impact_horizon",
+        "causal_channel",
+        "target_impact_confidence",
+        "article_contribution_weight",
+    ):
+        if _optional_str(row.get(field_name)) is None:
+            flags.append(f"missing_{field_name}")
+    return flags
+
+
+def _first_text(values: object) -> str | None:
+    """Return first non-empty text in an iterable."""
+    iterable: Iterable[object]
+    if isinstance(values, Iterable) and not isinstance(values, (str, bytes, Mapping)):
+        iterable = values
+    else:
+        iterable = [values]
+    for value in iterable:
+        text = _optional_str(value)
+        if text is not None:
+            return text
+    return None
+
+
+def _first_int(values: object) -> int | None:
+    """Return first integer in an iterable."""
+    iterable: Iterable[object]
+    if isinstance(values, Iterable) and not isinstance(values, (str, bytes, Mapping)):
+        iterable = values
+    else:
+        iterable = [values]
+    for value in iterable:
+        number = _maybe_float(value)
+        if number is not None:
+            return int(number)
+    return None
+
+
+def _coerce_int(value: object) -> int | None:
+    """Return an int when a single value is numeric."""
+    number = _maybe_float(value)
+    if number is None:
+        return None
+    return int(number)
 
 
 def _topic_relevance_missing_flags(
@@ -1328,7 +1473,12 @@ def _first_assignment_provenance_fields(
 
 
 def _first_float(values: object) -> float | None:
-    for value in _json_list(values):
+    iterable: Iterable[object]
+    if isinstance(values, Iterable) and not isinstance(values, (str, bytes, Mapping)):
+        iterable = values
+    else:
+        iterable = [values]
+    for value in iterable:
         number = _maybe_float(value)
         if number is not None:
             return number

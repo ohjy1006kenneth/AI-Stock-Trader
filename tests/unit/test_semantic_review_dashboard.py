@@ -1031,6 +1031,48 @@ def test_semantic_review_dashboard_html_names_human_review_outputs() -> None:
     assert "Only AI/ML/NLP evidence belongs here" in html
 
 
+def test_semantic_review_payload_exposes_target_impact_signal_inclusion(tmp_path: Path) -> None:
+    """Article review rows should show relationship, target impact, and final inclusion status."""
+    fixture = seed_semantic_review_fixture(local_root=tmp_path / "r2")
+    report = build_layer1_aapl_evidence_report(
+        run_id=str(fixture["run_id"]),
+        from_date="2026-05-21",
+        to_date="2026-05-22",
+        ticker="AAPL",
+        writer=fixture["writer"],
+    )
+    report_dict = cast(dict[str, Any], report.to_dict())
+    for row in cast(list[dict[str, Any]], report_dict["relevance_gate_rows"]):
+        if row["article_id"] == "aapl-001":
+            row.update(
+                {
+                    "relevance_category": "incidental_comparison",
+                    "relationship_to_target": "incidental_comparison",
+                    "target_context_score": 0.08,
+                    "target_company_impact_direction": "none",
+                    "target_company_impact_magnitude": "low",
+                    "impact_horizon": "same_day",
+                    "causal_channel": "comparison_context",
+                    "target_impact_confidence": 0.15,
+                    "article_signal_count": 0,
+                    "article_contribution_weight": 0.35,
+                    "relevance_decision": "rejected",
+                }
+            )
+
+    payload = cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report_dict))
+    articles = cast(list[dict[str, Any]], payload["topic_relevance_review"]["articles"])
+    article = next(row for row in articles if row["article_id"] == "aapl-001")
+
+    assert article["relationship_to_target"] == "incidental_comparison"
+    assert article["target_context_score"] == 0.08
+    assert article["target_company_impact_direction"] == "none"
+    assert article["included_in_signal"] is False
+    assert article["final_contribution"] == 0.0
+    assert article["target_impact_evidence_status"] == "excluded"
+    assert article["target_impact_missing_flags"] == []
+
+
 def test_semantic_review_dashboard_payload_is_bounded_and_valid(tmp_path: Path) -> None:
     """The normal dashboard payload should stay bounded and still validate."""
     fixture = seed_semantic_review_fixture(local_root=tmp_path / "r2")

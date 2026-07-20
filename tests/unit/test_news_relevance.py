@@ -225,6 +225,49 @@ def test_news_relevance_gate_filters_aapl_contamination_pattern() -> None:
     assert audit.loc[audit["article_id"] == "broad-market", "ticker_relevance_score"].iloc[0] == 0.0
 
 
+def test_news_relevance_gate_excludes_snap_vision_pro_comparison_from_aapl_signal() -> None:
+    """Snap story with only a Vision Pro comparison must not become AAPL signal."""
+    articles = [
+        {
+            "id": "snap-vision-pro-comparison",
+            "headline": "'Sad' That No One Will Tell Snap CEO The Truth About Horrendous Product Design",
+            "summary": (
+                "The story is about Snap and says its product price compares with Apple's "
+                "Vision Pro as a price comparison only."
+            ),
+            "content": (
+                "Snap shares are down and the article criticizes Snap's wearable product. "
+                "Apple appears only as a Vision Pro price comparison, with no direct Apple "
+                "business claim."
+            ),
+            "created_at": "2024-01-02T12:00:00+00:00",
+            "source": "benzinga",
+            "symbols": ["SNAP", "AAPL"],
+        }
+    ]
+    records = preprocess_news_articles(
+        articles,
+        as_of_date="2024-01-02",
+        point_in_time_tickers=("AAPL",),
+    )
+
+    result = apply_news_relevance_gate(
+        records,
+        embeddings=_embedding_frame(article["id"] for article in articles),
+        topic_labels=_topic_label_frame(article["id"] for article in articles),
+    )
+
+    aapl_rows = _rows_for_article(result.audit_frame, "snap-vision-pro-comparison")
+    incidental_rows = [row for row in aapl_rows if row["relevance_category"] == "incidental_comparison"]
+    assert incidental_rows
+    assert all(row["relevance_decision"] == "rejected" for row in aapl_rows)
+    assert all(row["target_context_score"] <= 0.08 for row in incidental_rows)
+    assert all(row["target_company_impact_direction"] == "none" for row in incidental_rows)
+    assert all(row["article_signal_count"] == 0 for row in aapl_rows)
+    assert all(record.article_id != "snap-vision-pro-comparison" for record in result.finbert_records)
+    assert any("incidental_comparison_excluded_from_signal" in _reason_codes(row) for row in incidental_rows)
+
+
 def _topic_label_frame(article_ids) -> pd.DataFrame:
     """Return topic-label rows for relevance-gate tests."""
     return pd.DataFrame(

@@ -728,6 +728,7 @@ def _build_article_groups(
                 ]
             )
         )
+        article_relevance_rows = relevance_by_article.get((str(date_text), str(article_id)), [])
         article_groups.append(
             SemanticReviewArticleGroup(
                 article_id=str(article_id),
@@ -754,7 +755,7 @@ def _build_article_groups(
                 evidence_snippets=evidence_snippets,
                 preprocessing_rows=preprocessing_by_article.get((str(date_text), str(article_id)), []),
                 topic_evidence=topic_by_article.get((str(date_text), str(article_id)), []),
-                relevance_gate_rows=relevance_by_article.get((str(date_text), str(article_id)), []),
+                relevance_gate_rows=_compact_article_relevance_rows(article_relevance_rows),
                 sentence_rows=sentence_rows,
             )
         )
@@ -1747,6 +1748,26 @@ def _relevance_gate_rows(
                 "ticker_relevance_score": _maybe_float(row.get("ticker_relevance_score")),
                 "financial_relevance_score": _maybe_float(row.get("financial_relevance_score")),
                 "topic_relevance_score": _maybe_float(row.get("topic_relevance_score")),
+                "target_context_score": _maybe_float(row.get("target_context_score")),
+                "direct_target_relevance": _maybe_float(row.get("target_context_score")),
+                "relevance_category": _optional_str(row.get("relevance_category")),
+                "relationship_to_target": _optional_str(row.get("relevance_category")),
+                "target_relationship": _optional_str(row.get("relevance_category")),
+                "document_sentiment": _optional_str(row.get("document_sentiment")),
+                "target_company_impact_direction": _optional_str(row.get("target_company_impact_direction")),
+                "target_company_impact_magnitude": _optional_str(row.get("target_company_impact_magnitude")),
+                "impact_horizon": _optional_str(row.get("impact_horizon")),
+                "causal_channel": _optional_str(row.get("causal_channel")),
+                "target_impact_confidence": _maybe_float(row.get("target_impact_confidence")),
+                "article_contamination_ratio": _maybe_float(row.get("article_contamination_ratio")),
+                "article_contamination_count": _maybe_int(row.get("article_contamination_count")),
+                "article_signal_count": _maybe_int(row.get("article_signal_count")),
+                "article_contribution_weight": _maybe_float(row.get("article_contribution_weight")),
+                "included_in_signal": _target_row_included_in_signal(row),
+                "final_contribution": _target_row_final_contribution(row),
+                "final_signal_contribution": _target_row_final_contribution(row),
+                "target_impact_evidence_status": _target_row_evidence_status(row),
+                "target_impact_missing_flags": _target_row_missing_flags(row),
                 "reason_codes": _json_string_list(row.get("reason_codes")),
                 "ticker_evidence": _json_mapping(row.get("ticker_evidence")),
                 "entity_evidence": _json_string_list(row.get("entity_evidence")),
@@ -1803,6 +1824,150 @@ def _semantic_aggregate_rows(
             }
         )
     return _sort_evidence_rows(rows)
+
+
+def _compact_article_relevance_rows(rows: Sequence[Mapping[str, object]]) -> list[dict[str, object]]:
+    """Return a compact per-article relevance copy; canonical full rows stay in pipeline_sections."""
+    compact_rows: list[dict[str, object]] = []
+    for row in rows:
+        compact_rows.append(
+            {
+                "date": _optional_str(row.get("date")),
+                "ticker": _optional_str(row.get("ticker")),
+                "article_id": _optional_str(row.get("article_id")),
+                "sentence_index": _maybe_int(row.get("sentence_index")),
+                "relevance_decision": _optional_str(row.get("relevance_decision")),
+                "relevance_score": _maybe_float(row.get("relevance_score")),
+                "target_context_score": _maybe_float(row.get("target_context_score")),
+                "relevance_category": _optional_str(row.get("relevance_category")),
+                "target_company_impact_direction": _optional_str(row.get("target_company_impact_direction")),
+                "article_contribution_weight": _maybe_float(row.get("article_contribution_weight")),
+                "included_in_signal": _target_row_included_in_signal(row),
+                "final_contribution": _target_row_final_contribution(row),
+                "reason_codes": _json_string_list(row.get("reason_codes")),
+            }
+        )
+    return compact_rows
+
+
+_TARGET_SIGNAL_CATEGORIES = frozenset(
+    {
+        "direct_target_event",
+        "supplier_or_input_cost_exposure",
+        "competitor_read_through",
+        "industry_or_macro_exposure",
+    }
+)
+
+
+def _target_impact_summary(rows: Sequence[Mapping[str, object]]) -> dict[str, object]:
+    """Return article-level target-impact inclusion evidence for review payloads."""
+    category = _first_row_text(rows, "relevance_category")
+    target_context_score = _first_row_float(rows, "target_context_score")
+    contribution_weight = _first_row_float(rows, "article_contribution_weight")
+    included = any(_target_row_included_in_signal(row) for row in rows)
+    final_contribution = contribution_weight if included else (0.0 if rows else None)
+    missing_flags = sorted({flag for row in rows for flag in _target_row_missing_flags(row)})
+    status = "missing" if not rows else ("included" if included else "excluded")
+    return {
+        "relationship_to_target": category,
+        "target_relationship": category,
+        "target_context_score": target_context_score,
+        "direct_target_relevance": target_context_score,
+        "document_sentiment": _first_row_text(rows, "document_sentiment"),
+        "target_company_impact_direction": _first_row_text(rows, "target_company_impact_direction"),
+        "target_company_impact_magnitude": _first_row_text(rows, "target_company_impact_magnitude"),
+        "impact_horizon": _first_row_text(rows, "impact_horizon"),
+        "causal_channel": _first_row_text(rows, "causal_channel"),
+        "target_impact_confidence": _first_row_float(rows, "target_impact_confidence"),
+        "article_contamination_ratio": _first_row_float(rows, "article_contamination_ratio"),
+        "article_contamination_count": _first_row_int(rows, "article_contamination_count"),
+        "article_signal_count": _first_row_int(rows, "article_signal_count"),
+        "article_contribution_weight": contribution_weight,
+        "included_in_signal": included,
+        "final_contribution": final_contribution,
+        "final_signal_contribution": final_contribution,
+        "target_impact_evidence_status": status,
+        "target_impact_missing_flags": missing_flags,
+    }
+
+
+def _target_row_included_in_signal(row: Mapping[str, object]) -> bool:
+    """Return True only for target-impact rows that can contribute to ticker signal."""
+    category = _optional_str(row.get("relevance_category"))
+    decision = (_optional_str(row.get("relevance_decision")) or "").lower()
+    signal_count = _maybe_int(row.get("article_signal_count"))
+    contribution_weight = _maybe_float(row.get("article_contribution_weight"))
+    return bool(
+        category in _TARGET_SIGNAL_CATEGORIES
+        and decision in {"accepted", "borderline"}
+        and (signal_count is None or signal_count > 0)
+        and (contribution_weight is None or contribution_weight > 0.0)
+    )
+
+
+def _target_row_final_contribution(row: Mapping[str, object]) -> float | None:
+    """Return deterministic final article contribution for review displays."""
+    if row is None:
+        return None
+    if not _target_row_included_in_signal(row):
+        return 0.0
+    weight = _maybe_float(row.get("article_contribution_weight"))
+    return 1.0 if weight is None else weight
+
+
+def _target_row_evidence_status(row: Mapping[str, object]) -> str:
+    """Return included/excluded/missing target-impact evidence status."""
+    if row is None:
+        return "missing"
+    if _target_row_missing_flags(row):
+        return "missing" if not _target_row_included_in_signal(row) else "included_with_missing_fields"
+    return "included" if _target_row_included_in_signal(row) else "excluded"
+
+
+def _target_row_missing_flags(row: Mapping[str, object]) -> list[str]:
+    """Return missing target-impact fields that block final semantic acceptance."""
+    flags: list[str] = []
+    for field_name in (
+        "relevance_category",
+        "target_context_score",
+        "target_company_impact_direction",
+        "target_company_impact_magnitude",
+        "impact_horizon",
+        "causal_channel",
+        "target_impact_confidence",
+        "article_contribution_weight",
+    ):
+        if _optional_str(row.get(field_name)) is None:
+            flags.append(f"missing_{field_name}")
+    return flags
+
+
+def _first_row_text(rows: Sequence[Mapping[str, object]], field_name: str) -> str | None:
+    """Return first non-empty text value for an article-level field."""
+    for row in rows:
+        value = _optional_str(row.get(field_name))
+        if value is not None:
+            return value
+    return None
+
+
+def _first_row_float(rows: Sequence[Mapping[str, object]], field_name: str) -> float | None:
+    """Return first finite float value for an article-level field."""
+    for row in rows:
+        value = _maybe_float(row.get(field_name))
+        if value is not None:
+            return value
+    return None
+
+
+def _first_row_int(rows: Sequence[Mapping[str, object]], field_name: str) -> int | None:
+    """Return first integer value for an article-level field."""
+    for row in rows:
+        value = _maybe_int(row.get(field_name))
+        if value is not None:
+            return value
+    return None
 
 
 def _rows_by_article(
