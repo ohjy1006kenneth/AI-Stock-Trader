@@ -258,6 +258,7 @@ def build_layer1_topic_relevance_review(
 ) -> dict[str, object]:
     """Return article-level topic, embedding, and relevance-gate review evidence."""
     sections = _json_mapping(payload.get("pipeline_sections"))
+    summary = _json_mapping(payload.get("summary"))
     articles = [
         dict(item)
         for item in _json_list(payload.get("article_groups"))
@@ -332,10 +333,19 @@ def build_layer1_topic_relevance_review(
         if _json_string_list(row.get("missing_evidence_flags"))
     ]
     reviewability = _topic_relevance_reviewability_summary(
-        article_count=len(rows),
-        relevance_gate_row_count=len(relevance_rows),
-        embedding_row_count=len(embedding_rows),
-        topic_label_row_count=len(topic_rows),
+        article_count=_effective_row_count(len(rows), summary.get("article_count")),
+        relevance_gate_row_count=_effective_row_count(
+            len(relevance_rows),
+            summary.get("relevance_gate_row_count"),
+        ),
+        embedding_row_count=_effective_row_count(
+            len(embedding_rows),
+            summary.get("embedding_row_count"),
+        ),
+        topic_label_row_count=_effective_row_count(
+            len(topic_rows),
+            summary.get("topic_label_row_count"),
+        ),
         topic_review_rows=topic_review_rows,
         topic_review_topics=topic_review_topics,
         topic_review_warning=topic_review_warning,
@@ -344,10 +354,22 @@ def build_layer1_topic_relevance_review(
     return {
         "summary": {
             "article_count": len(rows),
-            "preprocessing_row_count": len(preprocessing_rows),
-            "embedding_row_count": len(embedding_rows),
-            "topic_label_row_count": len(topic_rows),
-            "relevance_gate_row_count": len(relevance_rows),
+            "preprocessing_row_count": _effective_row_count(
+                len(preprocessing_rows),
+                summary.get("preprocessing_row_count"),
+            ),
+            "embedding_row_count": _effective_row_count(
+                len(embedding_rows),
+                summary.get("embedding_row_count"),
+            ),
+            "topic_label_row_count": _effective_row_count(
+                len(topic_rows),
+                summary.get("topic_label_row_count"),
+            ),
+            "relevance_gate_row_count": _effective_row_count(
+                len(relevance_rows),
+                summary.get("relevance_gate_row_count"),
+            ),
             "relevance_gate_available": bool(relevance_rows),
             "topic_review_row_count": len(topic_review_rows),
             "topic_review_topic_count": len(topic_review_topics),
@@ -658,10 +680,14 @@ def build_layer1_semantic_review_readiness_summary(
         "status_reason": _readiness_status_reason(ready_for_final_acceptance, diagnostic_blocker_reasons),
     }
     if hmm_feature_state.get("state") == "WARN":
-        run_readiness["status_reason"] = (
-            f"{run_readiness['status_reason']} HMM feature set is degraded but non-blocking: "
-            f"{hmm_feature_state.get('reason')}"
-        )
+        hmm_reason = str(hmm_feature_state.get("reason") or "HMM feature set is degraded but non-blocking.")
+        base_reason = str(run_readiness["status_reason"])
+        if hmm_reason not in base_reason:
+            run_readiness["status_reason"] = _normalize_reason_text(
+                f"{base_reason} {hmm_reason}"
+            )
+        else:
+            run_readiness["status_reason"] = _normalize_reason_text(base_reason)
     return {
         "run_readiness": run_readiness,
         "summary_cards": _summary_cards(run_readiness),
@@ -1188,13 +1214,28 @@ def _topic_review_diagnostic_state(
             "example_row_count": example_rows,
             "metadata_label_count": metadata_labels,
         }
-    if collapsed or not readable or metadata_labels == row_count:
+    if not readable:
         reason = topic_review_warning or (
             "BERTopic output is collapsed or unreviewable: it needs multiple readable topics, "
             "human-friendly labels, keywords, and examples."
         )
         return {
             **_diagnostic_record("WARN", reason, reviewable=False),
+            "topic_count": topic_count,
+            "row_count": row_count,
+            "topic_ids": sorted(topic_ids),
+            "readable_topic_count": human_labels,
+            "keyword_row_count": keyword_rows,
+            "example_row_count": example_rows,
+            "metadata_label_count": metadata_labels,
+        }
+    if collapsed or metadata_labels == row_count:
+        reason = topic_review_warning or (
+            "BERTopic output is collapsed but still readable: it needs multiple readable topics, "
+            "human-friendly labels, keywords, and examples."
+        )
+        return {
+            **_diagnostic_record("WARN", reason, reviewable=True),
             "topic_count": topic_count,
             "row_count": row_count,
             "topic_ids": sorted(topic_ids),
@@ -1213,8 +1254,6 @@ def _topic_review_diagnostic_state(
         "example_row_count": example_rows,
         "metadata_label_count": metadata_labels,
     }
-
-
 def _relevance_informativeness_diagnostic_state(
     *,
     article_count: int,
@@ -1306,10 +1345,21 @@ def _embedding_coverage_diagnostic_state(*, article_count: int, embedding_row_co
             "embedding_row_count": embedding_row_count,
         }
     scope = "packet_or_full_corpus" if embedding_row_count > article_count else "partial_selected_ticker_day"
+    if embedding_row_count > article_count:
+        return {
+            **_diagnostic_record(
+                "WARN",
+                "Embedding rows cover a broader packet/full corpus than the selected article slice.",
+                reviewable=True,
+            ),
+            "scope": scope,
+            "article_count": article_count,
+            "embedding_row_count": embedding_row_count,
+        }
     return {
         **_diagnostic_record(
             "WARN",
-            "Embedding coverage scope is unclear: row counts do not match the selected slice.",
+            "Embedding rows are missing for part of the selected ticker/date slice.",
             reviewable=False,
         ),
         "scope": scope,
@@ -1895,6 +1945,19 @@ def _optional_str(value: Any) -> str | None:
     return text or None
 
 
+def _effective_row_count(sample_count: int, full_count: object) -> int:
+    """Return the best available row count, preferring explicit full-count metadata."""
+    if sample_count <= 0:
+        return 0
+    try:
+        parsed_full_count = int(full_count)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        parsed_full_count = None
+    if parsed_full_count is None:
+        return sample_count
+    return max(sample_count, parsed_full_count)
+
+
 def _maybe_bool(value: Any) -> bool | None:
     """Return a bool when the input is clearly boolean-like."""
     if value is None:
@@ -1921,6 +1984,16 @@ def _dedupe_preserve_order(items: Sequence[str]) -> list[str]:
         seen.add(item)
         values.append(item)
     return values
+
+
+def _normalize_reason_text(value: str) -> str:
+    """Collapse duplicated reason text that may appear after formatting."""
+    text = " ".join(value.split())
+    if ": " in text:
+        left, right = text.split(": ", 1)
+        if left.rstrip(" .") == right.rstrip(" ."):
+            return f"{left.rstrip(' .')}."
+    return text
 
 
 _PIPELINE_SECTION_SAMPLE_LIMITS: dict[str, int] = {
