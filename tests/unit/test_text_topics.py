@@ -134,6 +134,8 @@ def test_compute_text_topics_builds_human_readable_topic_review() -> None:
     assert review["dominant_topic_share"] == 1.0
     assert review["topics"][0]["topic_keywords"] == ["earnings", "guidance", "revenue"]
     assert review["topics"][0]["topic_example_text"]
+    assert review["topics"][0]["topic_label_source"] == "topic_model_name"
+    assert review["topics"][0]["topic_fallback_used"] is False
     assert review["rows"][0]["topic_row_count"] == 1
     assert review["rows"][0]["topic_row_share"] == 1.0
 
@@ -174,6 +176,10 @@ def test_compute_text_topics_falls_back_for_tiny_corpora(document_count: int) ->
     assert "spectral initialization" in str(result.topic_review["generation_reason"])
     assert result.topic_review["dominant_topic_id"] == 0
     assert result.topic_review["dominant_topic_share"] == 1.0
+    assert result.topic_review["rows"][0]["topic_label"]
+    assert result.topic_review["rows"][0]["topic_keywords"]
+    assert result.topic_review["rows"][0]["topic_label_source"] == "fallback_text_evidence"
+    assert result.topic_review["rows"][0]["topic_fallback_used"] is True
 
 
 def test_bertopic_labeler_uses_bertopic_path_for_sufficient_corpora(monkeypatch) -> None:

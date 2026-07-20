@@ -68,6 +68,27 @@ def test_build_aapl_pilot_evidence_bundle_separates_machine_and_human_review(
     assert bundle.human_semantic_review_status == "pending"
     assert bundle.recommendation_for_issue_202 == "needs_human_review"
     assert len(bundle.human_review_rows) == 3
+    row_dict = bundle.human_review_rows[0].to_dict()
+    assert {
+        "relationship_to_target",
+        "target_context_score",
+        "document_sentiment",
+        "target_company_impact_direction",
+        "target_company_impact_magnitude",
+        "impact_horizon",
+        "causal_channel",
+        "target_impact_confidence",
+        "included_in_signal",
+        "final_contribution",
+        "final_signal_contribution",
+        "target_impact_missing_flags",
+        "article_signal_count",
+        "article_contamination_ratio",
+        "semantic_warning_codes",
+        "source_count",
+        "dominant_source_weight_share",
+    }.issubset(row_dict)
+    assert any("semantic_warning_codes" in row.to_dict() for row in bundle.human_review_rows)
     assert "FinBERT, topic-model, and HMM semantic correctness is a human decision" in markdown
     assert "Market update." in csv_text
     assert bundle.artifact_keys["raw_price"] == "raw/prices/AAPL.parquet"

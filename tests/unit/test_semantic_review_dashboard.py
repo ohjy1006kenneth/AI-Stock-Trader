@@ -430,16 +430,78 @@ def test_semantic_review_payload_adds_human_focused_aggregate_review(
         writer=fixture["writer"],
     )
 
-    payload = cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report))
+    report_dict = cast(dict[str, Any], report.to_dict())
+    semantic_rows = cast(list[dict[str, Any]], report_dict["semantic_aggregate_rows"])
+    first_row = semantic_rows[0]
+    first_features = cast(dict[str, Any], first_row["features"])
+    first_features["nlp_target_impact_direction"] = "positive"
+    first_features["nlp_target_impact_magnitude"] = "high"
+    first_features["nlp_target_impact_confidence"] = 0.91
+    first_features["nlp_causal_channel"] = "product_device"
+    first_features["nlp_target_impact_horizon"] = "short_term"
+    first_features["nlp_source_count"] = 1
+    first_features["nlp_dominant_source_weight_share"] = 1.0
+    first_row["source_weight_summary"] = [{"source": "Benzinga", "weight_share": 1.0}]
+
+    payload = cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report_dict))
     review = cast(dict[str, Any], payload["semantic_aggregate_review"])
     rows = cast(list[dict[str, Any]], review["rows"])
 
     assert review["summary"]["row_count"] == 2
+    assert rows[0]["target_company_impact_direction"] == "positive"
+    assert rows[0]["target_company_impact_magnitude"] == "high"
+    assert rows[0]["target_impact_confidence"] == 0.91
+    assert rows[0]["causal_channel"] == "product_device"
+    assert rows[0]["impact_horizon"] == "short_term"
+    assert rows[0]["single_source_concentration"] is True
+    assert rows[0]["source_count"] == 1
+    assert rows[0]["dominant_source_weight_share"] == 1.0
+    assert "single_source_concentration" in rows[0]["semantic_warning_codes"]
     assert rows[0]["sentiment_label"] in {"positive", "negative", "neutral"}
     assert rows[0]["human_review_summary"].startswith("Overall NLP sentiment is")
     card_labels = {str(card["label"]) for card in cast(list[dict[str, Any]], rows[0]["review_value_cards"])}
-    assert {"Overall sentiment", "Positive / negative / neutral mix", "Articles / sentences", "Relevance score"}.issubset(card_labels)
-    assert "Source weight mean / sum" not in card_labels
+    assert {
+        "Target impact direction",
+        "Target impact magnitude",
+        "Target impact confidence",
+        "Causal channel",
+        "Impact horizon",
+        "Source concentration",
+        "Overall sentiment",
+        "Positive / negative / neutral mix",
+        "Articles / sentences",
+        "Relevance score",
+    }.issubset(card_labels)
+    assert review["summary"]["target_impact_direction"] == "positive"
+    assert review["summary"]["single_source_concentration"] is True
+    assert payload["run_readiness"]["single_source_concentration"] is True
+    assert payload["run_readiness"]["target_impact_direction"] == "positive"
+
+
+def test_semantic_review_payload_marks_degraded_hmm_feature_set_without_blocking(
+    tmp_path: Path,
+) -> None:
+    """A degraded HMM feature set should be explained even if it does not block readiness."""
+    fixture = seed_semantic_review_fixture(local_root=tmp_path / "r2")
+    report = build_layer1_aapl_evidence_report(
+        run_id=str(fixture["run_id"]),
+        from_date="2026-05-21",
+        to_date="2026-05-22",
+        ticker="AAPL",
+        writer=fixture["writer"],
+    )
+    report_dict = cast(dict[str, Any], report.to_dict())
+    hmm_context = cast(dict[str, Any], report_dict["hmm_evaluation_context"])
+    hmm_context["warnings"] = ["incomplete_hmm_feature_set"]
+    hmm_context["feature_set_blocking"] = False
+
+    payload = cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report_dict))
+    readiness = cast(dict[str, Any], payload["run_readiness"])
+
+    assert readiness["hmm_feature_set_state"] == "WARN"
+    assert readiness["hmm_feature_set_reviewable"] is True
+    assert "degraded but non-blocking" in readiness["hmm_feature_set_warning"]
+    assert "degraded but non-blocking" in readiness["status_reason"]
 
 
 def test_semantic_review_topic_relevance_tab_flags_default_relevance(

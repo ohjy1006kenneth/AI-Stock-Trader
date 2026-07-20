@@ -308,8 +308,9 @@ def build_topic_review_payload(
             topic_labeler=topic_labeler,
             total_rows=len(frame),
         )
-        invalid_summary["topic_label"] = "Outlier / Unassigned"
-        invalid_summary["topic_keywords"] = []
+        invalid_summary["topic_label_source"] = "fallback_text_evidence"
+        invalid_summary["topic_fallback_used"] = True
+        invalid_summary["topic_diversity_status"] = "insufficient_diversity"
         row_payloads.extend(_topic_rows_with_summary(invalid_rows, invalid_summary))
 
     dominant_topic_id: int | None = None
@@ -346,6 +347,7 @@ def build_topic_review_payload(
         "dominant_topic_share": dominant_topic_share,
         "topics": topic_summaries,
         "rows": row_payloads,
+        "topic_fallback_used": diversity_status != "diverse",
     }
     if generation_mode is not None:
         payload["generation_mode"] = generation_mode
@@ -583,12 +585,26 @@ def _summarize_topic_group(
 ) -> dict[str, object]:
     """Summarize one topic group for review output."""
     texts = [str(text or "") for text in group["text"].tolist() if str(text or "").strip()]
+    headlines = [
+        str(text or "")
+        for text in group["normalized_headline"].tolist()
+        if str(text or "").strip()
+    ] if "normalized_headline" in group.columns else []
+    evidence_texts = texts + [headline for headline in headlines if headline not in texts]
     first_row = group.iloc[0] if len(group) else None
-    explicit_label = _optional_str(first_row["topic_label"]) if first_row is not None and "topic_label" in group.columns else None
-    explicit_keywords = _coerce_string_list(first_row["topic_keywords"]) if first_row is not None and "topic_keywords" in group.columns else []
+    explicit_label = (
+        _optional_str(first_row["topic_label"])
+        if first_row is not None and "topic_label" in group.columns
+        else None
+    )
+    explicit_keywords = (
+        _coerce_string_list(first_row["topic_keywords"])
+        if first_row is not None and "topic_keywords" in group.columns
+        else []
+    )
     keywords = explicit_keywords or _topic_keywords_for_group(
         topic_id=topic_id,
-        texts=texts,
+        texts=evidence_texts,
         topic_labeler=topic_labeler,
         topic_name=topic_info.get(topic_id),
     )
@@ -604,13 +620,17 @@ def _summarize_topic_group(
     primary_text = str(representative_row.iloc[0]["text"] or "") if len(representative_row) else ""
     example_texts = _representative_texts(group)
     row_count = int(len(group))
+    label_source = "explicit_topic_label" if explicit_label else (
+        "topic_model_name" if topic_info.get(topic_id) else "fallback_text_evidence"
+    )
+    label = explicit_label or _format_topic_label(
+        topic_id=topic_id,
+        keywords=keywords,
+        topic_name=topic_info.get(topic_id),
+    )
     return {
         "topic_id": topic_id,
-        "topic_label": explicit_label or _format_topic_label(
-            topic_id=topic_id,
-            keywords=keywords,
-            topic_name=topic_info.get(topic_id),
-        ),
+        "topic_label": label,
         "topic_keywords": keywords,
         "topic_keyword_text": ", ".join(keywords),
         "topic_example_text": primary_text,
@@ -619,6 +639,8 @@ def _summarize_topic_group(
         "topic_row_share": row_count / max(1, total_rows),
         "topic_probability_mean": float(group["topic_probability"].mean()),
         "topic_probability_max": float(group["topic_probability"].max()),
+        "topic_label_source": label_source,
+        "topic_fallback_used": label_source == "fallback_text_evidence" or topic_id < 0,
     }
 
 
@@ -648,6 +670,8 @@ def _topic_rows_with_summary(
                 "topic_example_texts": list(summary.get("topic_example_texts", [])),
                 "topic_row_count": _optional_int(summary.get("topic_row_count")),
                 "topic_row_share": _optional_float(summary.get("topic_row_share")),
+                "topic_label_source": str(summary.get("topic_label_source", "fallback_text_evidence")),
+                "topic_fallback_used": bool(summary.get("topic_fallback_used", False)),
             }
         )
     return rows
