@@ -6,8 +6,14 @@ labels: backlog, owner:codex
 assignees: ''
 ---
 
-## Task
+## Durable outcome
 <!-- One clear sentence: what should exist after this is done that does not exist now? -->
+
+## HQ Kanban execution link
+- Root Kanban task ID:
+- Kanban tenant:
+- Root graph URL:
+<!-- One GitHub outcome issue maps to one root graph. Child execution/review cards may remain Kanban-only. -->
 
 ## Layer(s) affected
 - [ ] Layer 0 — Data & universe
@@ -24,6 +30,7 @@ assignees: ''
 <!-- Facts, commands, logs, R2 keys, manifests, reports, linked issues/PRs. Do not paste secrets. -->
 - Related:
 - See: `docs/architecture.md`
+- Human decisions / approved scope:
 
 ## Files to read first
 <!-- Codex must read these before writing any code. Be explicit. -->
@@ -64,6 +71,10 @@ assignees: ''
 - [ ] No `print()` statements — use logger from `services/observability/logging.py`
 - [ ] No hardcoded secrets, credentials, or local-only paths
 - [ ] Docs are updated if behavior, commands, or artifact locations change
+- [ ] Root graph links this issue; implementation/review cards link the issue and root task ID
+- [ ] Independent review card/profile and evidence are recorded in HQ Kanban
+- [ ] Trading acceptance is recorded for semantic/backend scope
+- [ ] Stock-tab human semantic-evidence gate is recorded when designated
 
 ## Verification artifacts to include in PR/issue comment
 - Commands run:
@@ -72,6 +83,10 @@ assignees: ''
 - Report path(s):
 - R2 output prefix(es):
 - Known skipped/missing data:
+- Root HQ Kanban task ID:
+- Independent review task ID and verdict:
+- Trading acceptance evidence:
+- Human evidence-gate decision, if applicable:
 
 ## Test fixtures / sample data
 <!-- Point to existing fixtures or say “create minimal fixtures under tests/fixtures/...” -->
@@ -84,6 +99,6 @@ assignees: ''
 - [ ] Destructive cleanup requires explicit justification in the PR
 
 ---
-<!-- Codex: update labels and project board as work progresses (see AGENTS.md). -->
-<!-- Codex: backlog → in-progress when starting, in-progress → review when PR opens. -->
-<!-- Codex: if you need a human decision, post BLOCKED comment format and stop. -->
+<!-- HQ Kanban owns execution/review orchestration for this outcome. -->
+<!-- The root owner synchronizes only milestone state to GitHub; child transitions stay Kanban-only. -->
+<!-- GitHub remains the durable outcome, PR, CI, human-review, and merge record. -->

@@ -65,29 +65,50 @@ Rules:
 
 ---
 
-## GitHub issue/board ownership — worker-managed
+## Governance: GitHub outcomes, HQ Kanban execution, PR integration
 
-Implementation workers (Codex/Claude Code) own issue labels and project board
-transitions. There is no separate project manager.
+The source-of-truth hierarchy is deliberately split by concern:
 
-### Worker responsibilities
+- Repository docs, contracts, and schemas are the technical truth.
+- A GitHub Issue is the durable outcome record: approved scope, acceptance criteria,
+  human decisions, and audit trail.
+- Hermes HQ Kanban is the execution control plane: one root graph per outcome issue,
+  named-profile assignment, dependencies, retries, review cycles, and evidence handoffs.
+- A GitHub PR, its CI, human approval, and merge history are the proposed-diff and
+  integration gate. Kanban review cannot replace them.
+- The Stock tab is the final human semantic-evidence gate when the issue designates one.
 
-- Read required files and implement the code/tests
-- Update the issue label and project board as work progresses (see transitions below)
-- Follow BLOCKED protocol comment format when blocked
-- Open PRs when ready
-- Do not merge your own PRs — wait for human approval
+One outcome issue maps to one root Kanban graph, not one GitHub issue per child card.
+Investigations, implementations, independent reviews, bounded revisions, retries,
+artifact/backend verification, semantic validation, and deployment checks may be Kanban-only
+child cards. Review failure normally creates a bounded revision/re-review card under the
+same root graph, not a duplicate issue.
 
-### Required label/board transitions
+GitHub Issues remain mandatory for durable features and bugs, schema migrations,
+architecture changes, production-readiness work, consequential backfills, persistent
+technical debt, incidents, and human-authorized external work. Consequential backfills
+must retain explicit human authorization and an execution/evidence graph, even when no code
+PR is required.
 
-Update the issue label and project board as work progresses:
+Every root card must link its GitHub Issue and every relevant child card must link the issue
+and root task ID. Every PR must reference both `#<issue>` and the root Kanban task ID.
+Use `Refs/Advances #<issue>` when a PR is partial; use `Closes #<issue>` only when the
+merge completes the whole outcome issue.
 
-| Situation | Label/Board action |
-|---|---|
-| Starting work on an issue | `backlog` → `in-progress`, board → In Progress |
-| PR is open and ready | `in-progress` → `review`, board → Review |
-| Work is truly blocked | `in-progress` → `blocked`, board → Blocked |
-| Issue merged/closed | mark done/closed and board → Done |
+Only milestone synchronization belongs in GitHub: accepted/backlog, implementation in
+progress, PR review, genuine human blocked, and merged/completed. Heartbeats, retries,
+child-card transitions, and agent-fixable failures remain Kanban-only. The root
+orchestrator/owner synchronizes those milestones; implementation workers do not manually
+operate both detailed Kanban and GitHub Project state. Existing GitHub Project data is
+preserved and its future role is a high-level human roadmap, with no destructive archival
+in this change.
+
+Named team boundaries remain mandatory: Trading specifies and accepts semantics;
+`code-monkey-trading` implements; `trading-code-reviewer` independently reviews;
+DashCraft owns dashboard execution after contract handoff; and humans approve/merge PRs
+and perform designated evidence review. `blocked` is reserved for genuine human
+decisions/actions. Runtime, tooling, and agent failures use Kanban recovery and must not
+create false GitHub blocked states.
 
 ### Board/status references
 
@@ -128,11 +149,11 @@ Reasons to block:
 - Runtime assumptions in code/docs/issues conflict (for example Docker/OpenClaw/cron mismatch)
 
 When blocking:
-1. Apply the `blocked` label to the issue
+1. Record the human decision/action need in HQ Kanban; the root orchestrator/owner synchronizes the GitHub `blocked` label and milestone only for genuine human blocks.
 2. Post a comment on the issue using this format:
 Blocked — human decision needed
 Reason: [explanation of the reason]
-Decision: (If there is any decisiosn to make)
+Decision: (If there is any decision to make)
 A) [option A and its tradeoff]
 B) [option B and its tradeoff]
 My recommendation: [A or B and why]
@@ -148,23 +169,19 @@ Waiting for: human to comment with decision
 
 ## Task execution workflow
 
-For every issue you work on, follow this sequence exactly:
+For every root issue/graph, follow this sequence exactly; the root orchestrator/owner
+performs the milestone GitHub synchronization:
 1. Read AGENTS.md, TODO.md, docs/architecture.md,
 2. docs/data_contracts.md, core/contracts/schemas.py
 3. Read the issue fully
 4. Read every file listed under "Files to read first" in the issue
-5. Update label: backlog → in-progress
-6. gh issue edit <number> --remove-label "backlog" --add-label "in-progress"
-7. Write the code
-8. Write or update tests in tests/unit/ or tests/integration/
-9. Run: ./.venv/bin/pytest tests/unit/ -v --tb=short
-10. Fix all failures — never open a PR with failing tests
-11. Open PR using .github/pull_request_template.md
-12. Write "Closes #<number>" in the PR body
-13. Update label: in-progress → review
-14. gh issue edit <number> --remove-label "in-progress" --add-label "review"
-15. Update TODO.md if this task resolves or reveals anything worth noting
-16. Do not merge — wait for human approval
+5. Root orchestrator/owner synchronizes accepted/backlog → implementation in progress.
+6. Implement the bounded child-card scope and write/update tests where logic changes.
+7. Run the exact required tests and checks; fix failures before requesting review.
+8. Open a PR using `.github/pull_request_template.md`, referencing the issue and root task.
+9. Root orchestrator/owner synchronizes implementation in progress → PR review.
+10. Update TODO.md if this task resolves or reveals anything worth noting.
+11. Do not merge — wait for human approval and any designated Stock-tab evidence review.
 
 ## Required docs to read first
 
