@@ -73,8 +73,8 @@ assignees: ''
 - [ ] Docs are updated if behavior, commands, or artifact locations change
 - [ ] Root graph links this issue; implementation/review cards link the issue and root task ID
 - [ ] Independent review card/profile and evidence are recorded in HQ Kanban
-- [ ] Trading acceptance is recorded for semantic/backend scope
-- [ ] Stock-tab human semantic-evidence gate is recorded when designated
+- [ ] Domain acceptance is recorded for semantic/backend scope
+- [ ] Trading acceptance and/or Stock-tab human semantic-evidence gate is recorded when applicable
 
 ## Verification artifacts to include in PR/issue comment
 - Commands run:
@@ -85,8 +85,8 @@ assignees: ''
 - Known skipped/missing data:
 - Root HQ Kanban task ID:
 - Independent review task ID and verdict:
-- Trading acceptance evidence:
-- Human evidence-gate decision, if applicable:
+- Domain acceptance evidence:
+- Trading acceptance / Stock-tab human evidence-gate decision, if applicable:
 
 ## Test fixtures / sample data
 <!-- Point to existing fixtures or say “create minimal fixtures under tests/fixtures/...” -->
@@ -100,5 +100,6 @@ assignees: ''
 
 ---
 <!-- HQ Kanban owns execution/review orchestration for this outcome. -->
-<!-- The root owner synchronizes only milestone state to GitHub; child transitions stay Kanban-only. -->
-<!-- GitHub remains the durable outcome, PR, CI, human-review, and merge record. -->
+<!-- The responsible domain owner owns the GitHub Issue/PR lifecycle and records milestone state; child transitions stay Kanban-only. -->
+<!-- The Portfolio Steward is read-only for registered repositories and routes reconciliation to the domain owner. -->
+<!-- GitHub remains the durable outcome, PR, CI, independent-review, acceptance, and merge record. -->

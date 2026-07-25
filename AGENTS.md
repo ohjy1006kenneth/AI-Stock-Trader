@@ -11,7 +11,9 @@ Pi runtime assumption:
 - OpenClaw is the runtime engine inside that container.
 - Cron on the Pi host triggers the containerized daily run.
 
-Most development is driven by Codex. A human reviewer approves all PRs before merge.
+Most development is driven by Codex. The responsible domain owner owns the GitHub
+issue, PR, review, and merge lifecycle; exceptional human gates remain mandatory
+where this document or the outcome issue requires them.
 Do not wait for human input mid-task unless you are genuinely blocked. If blocked,
 follow the BLOCKED protocol below.
 
@@ -47,7 +49,8 @@ the BLOCKED protocol. Do not attempt the change. Do not work around it.
 ### Never do these things
 - Hardcode API keys, credentials, secrets, or file paths
 - Change output schemas in `core/contracts/` without a schema migration issue
-- Merge your own PRs
+- Implementation workers and independent reviewers must not self-approve or self-merge;
+  the responsible domain owner may merge only after the current-head gates below pass.
 - Install packages not already in the appropriate `requirements/*.txt` without noting it in the PR
 - Silence exceptions with bare `except:` or `except Exception: pass`
 - Use `print()` — use the logger from `services/observability/logging.py`
@@ -74,8 +77,8 @@ The source-of-truth hierarchy is deliberately split by concern:
   human decisions, and audit trail.
 - Hermes HQ Kanban is the execution control plane: one root graph per outcome issue,
   named-profile assignment, dependencies, retries, review cycles, and evidence handoffs.
-- A GitHub PR, its CI, human approval, and merge history are the proposed-diff and
-  integration gate. Kanban review cannot replace them.
+- A GitHub PR, its CI, independent review, domain acceptance, and merge history are
+  the proposed-diff and integration gate. Kanban review cannot replace them.
 - The Stock tab is the final human semantic-evidence gate when the issue designates one.
 
 One outcome issue maps to one root Kanban graph, not one GitHub issue per child card.
@@ -95,20 +98,45 @@ and root task ID. Every PR must reference both `#<issue>` and the root Kanban ta
 Use `Refs/Advances #<issue>` when a PR is partial; use `Closes #<issue>` only when the
 merge completes the whole outcome issue.
 
-Only milestone synchronization belongs in GitHub: accepted/backlog, implementation in
-progress, PR review, genuine human blocked, and merged/completed. Heartbeats, retries,
-child-card transitions, and agent-fixable failures remain Kanban-only. The root
-orchestrator/owner synchronizes those milestones; implementation workers do not manually
-operate both detailed Kanban and GitHub Project state. Existing GitHub Project data is
-preserved and its future role is a high-level human roadmap, with no destructive archival
-in this change.
+The responsible domain owner decides and maintains durable GitHub Issues and milestone
+state, directs implementation and PR creation, evaluates CI, independent review,
+artifacts, and domain acceptance, and reconciles closure after integration. The domain
+owner is the GitHub lifecycle authority; implementation workers must not operate both
+detailed Kanban and GitHub lifecycle state. Heartbeats, retries, child-card transitions,
+and agent-fixable failures remain Kanban-only. Existing GitHub Project data is preserved
+and its future role is a high-level human roadmap, with no destructive archival in this
+change.
+
+While acting as the HQ Portfolio Steward, the Steward may inspect registered GitHub
+repositories read-only to detect external or human changes, prevent duplicates, and route
+reconciliation to the correct domain owner. The Steward must not create or close domain
+Issues, mutate labels, comments, or project status, open, close, or merge domain PRs, or
+perform centralized outbound milestone synchronization. Cross-project repository and
+project identity must come from explicit task links or an external project registry; this
+repository does not implement that registry and the global Steward is not hardcoded to
+this repository.
+
+For routine merges, the responsible domain owner may approve and merge only when all of
+these gates are true against the current head:
+- required CI/checks pass;
+- a fresh independent reviewer returns PASS with zero Blocking findings;
+- the current head is mergeable and CLEAN;
+- repository-specific migration, release, deployment, security, and rollback gates pass
+  where applicable;
+- domain acceptance is recorded.
+
+Implementation workers and independent reviewers may not self-approve or self-merge.
+Delegated routine merge authority does not bypass exceptional human gates: human approval
+is required before schema migration implementation, designated Stock-tab semantic-evidence
+review must be completed, and consequential broad backfills require explicit human
+authorization.
 
 Named team boundaries remain mandatory: Trading specifies and accepts semantics;
 `code-monkey-trading` implements; `trading-code-reviewer` independently reviews;
-DashCraft owns dashboard execution after contract handoff; and humans approve/merge PRs
-and perform designated evidence review. `blocked` is reserved for genuine human
-decisions/actions. Runtime, tooling, and agent failures use Kanban recovery and must not
-create false GitHub blocked states.
+DashCraft owns dashboard execution after contract handoff; and the responsible domain
+owner performs the GitHub lifecycle while humans perform designated exceptional evidence
+review. `blocked` is reserved for genuine human decisions/actions. Runtime, tooling, and
+agent failures use Kanban recovery and must not create false GitHub blocked states.
 
 ### Board/status references
 
@@ -149,7 +177,8 @@ Reasons to block:
 - Runtime assumptions in code/docs/issues conflict (for example Docker/OpenClaw/cron mismatch)
 
 When blocking:
-1. Record the human decision/action need in HQ Kanban; the root orchestrator/owner synchronizes the GitHub `blocked` label and milestone only for genuine human blocks.
+1. Record the human decision/action need in HQ Kanban; the responsible domain owner
+   updates GitHub blocked state only for genuine human blocks.
 2. Post a comment on the issue using this format:
 Blocked — human decision needed
 Reason: [explanation of the reason]
@@ -169,19 +198,23 @@ Waiting for: human to comment with decision
 
 ## Task execution workflow
 
-For every root issue/graph, follow this sequence exactly; the root orchestrator/owner
-performs the milestone GitHub synchronization:
+For every root issue/graph, follow this sequence exactly; the responsible domain owner
+owns the GitHub lifecycle and implementation workers keep child execution in Kanban:
 1. Read AGENTS.md, TODO.md, docs/architecture.md,
 2. docs/data_contracts.md, core/contracts/schemas.py
 3. Read the issue fully
 4. Read every file listed under "Files to read first" in the issue
-5. Root orchestrator/owner synchronizes accepted/backlog → implementation in progress.
+5. The responsible domain owner records accepted/backlog → implementation in progress
+   in GitHub when that milestone changes.
 6. Implement the bounded child-card scope and write/update tests where logic changes.
 7. Run the exact required tests and checks; fix failures before requesting review.
 8. Open a PR using `.github/pull_request_template.md`, referencing the issue and root task.
-9. Root orchestrator/owner synchronizes implementation in progress → PR review.
+9. The responsible domain owner records implementation in progress → PR review in GitHub
+   after the PR and required evidence are available.
 10. Update TODO.md if this task resolves or reveals anything worth noting.
-11. Do not merge — wait for human approval and any designated Stock-tab evidence review.
+11. Implementation workers and independent reviewers do not merge. The responsible domain
+    owner may perform a routine merge only after the current-head gates above pass, while
+    waiting for any designated Stock-tab evidence review or other exceptional human gate.
 
 ## Required docs to read first
 
