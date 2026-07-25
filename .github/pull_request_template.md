@@ -29,9 +29,9 @@ Refs/Advances #
 
 ## Governance evidence
 - Independent review task/profile and verdict:
-- Trading acceptance (semantic/backend scope):
-- Stock-tab human semantic-evidence gate, if designated:
-- Human PR approval required before merge: yes
+- Domain acceptance (semantic/backend scope):
+- Exceptional human gate decision, if applicable (schema migration, Stock-tab semantic evidence, consequential broad backfill, or other outcome-specific gate):
+- Current-head merge gates: required CI/checks; fresh independent PASS with zero Blocking findings; mergeable/CLEAN head; applicable repository-specific migration/release/deployment/security/rollback gates:
 
 ---
 
@@ -60,9 +60,9 @@ Refs/Advances #
 - [ ] No unused imports
 
 ### Project hygiene
-*The implementation worker verifies scope; the root orchestrator/owner synchronizes GitHub milestones.*
+*The implementation worker verifies scope; the responsible domain owner owns GitHub lifecycle state.*
 - [ ] Branch named `code-monkey/<issue-number>-<slug>` or `feature/<slug>`
-- [ ] Root owner has synchronized the issue to `review` after this PR opened
+- [ ] Domain owner has recorded the issue's current GitHub milestone after this PR opened
 - [ ] PR references both the GitHub issue and root HQ Kanban task ID
 - [ ] No unrelated files modified
 - [ ] `requirements.txt` updated if new packages added (noted below)
