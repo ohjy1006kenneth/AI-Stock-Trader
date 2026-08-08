@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from typing import get_type_hints
 
 import pytest
 
@@ -701,3 +702,36 @@ def test_daily_layer1_modal_range_main_dispatches_batched_remote_call(
     assert logged_messages == [
         ("artifacts/manifests/layer1/smoke-range.json", True)
     ]
+
+
+@pytest.mark.parametrize(
+    "module",
+    [run_daily_layer1, run_news_preprocessing, run_text_topics, run_finbert_sentiment],
+)
+def test_registered_local_entrypoints_use_modal_parseable_scalar_annotations(module) -> None:
+    """Registered local entrypoints expose only scalar CLI parameter annotations."""
+    assert get_type_hints(module.modal_main)["tickers"] is str
+
+
+@pytest.mark.parametrize(
+    ("module", "args", "function_name"),
+    [
+        (run_news_preprocessing, ("run", "2024-01-02", 2, " aapl,MSFT, aapl , "), "modal_run_news_preprocessing"),
+        (run_text_topics, ("run", "2024-01-02", "input", " aapl,MSFT, aapl , "), "modal_run_text_topics"),
+        (run_finbert_sentiment, ("run", "2024-01-02", "input", " aapl,MSFT, aapl , "), "modal_run_finbert_sentiment"),
+    ],
+)
+def test_sibling_modal_entrypoints_normalize_comma_separated_tickers(
+    monkeypatch: pytest.MonkeyPatch, module, args, function_name: str
+) -> None:
+    """Sibling local entrypoints pass a deterministic ticker list to Modal."""
+    _install_fake_modal(monkeypatch)
+    app = module._define_modal_app()
+    module.modal_main(*args)
+    registered = next(iter(app.functions.values()))
+    assert registered.remote_calls[-1]["tickers"] == ["AAPL", "MSFT"]
+
+
+def test_daily_ticker_scope_normalizes_comma_separated_input() -> None:
+    """Daily orchestration normalizes scalar ticker scope before dispatch."""
+    assert run_daily_layer1._normalize_ticker_scope(" aapl,MSFT, aapl , ") == ("AAPL", "MSFT")

@@ -1771,7 +1771,7 @@ def modal_main(
     hmm_train_start_date: str | None = None,
     hmm_max_iterations: int = 100,
     hmm_min_training_rows: int = 30,
-    tickers: Sequence[str] = (),
+    tickers: str = "",
 ) -> dict[str, object]:
     """Submit the single-date Layer 1 flow using stage-specific Modal runners."""
     if _modal_run_daily_layer1 is None:
@@ -2205,13 +2205,14 @@ def _load_completed_stage_output(
     return manifest.output_path
 
 
-def _normalize_ticker_scope(tickers: Sequence[object]) -> tuple[str, ...]:
+def _normalize_ticker_scope(tickers: str | Sequence[object]) -> tuple[str, ...]:
     """Return sorted uppercase ticker symbols for optional scoped stage runs."""
+    values: Sequence[object] = tickers.split(",") if isinstance(tickers, str) else tickers
     return tuple(
         sorted(
             {
                 str(ticker).strip().upper()
-                for ticker in tickers
+                for ticker in values
                 if str(ticker).strip()
             }
         )

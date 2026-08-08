@@ -375,7 +375,7 @@ def modal_main(
     run_id: str,
     as_of_date: str,
     min_sentence_chars: int = 2,
-    tickers: Sequence[str] | None = None,
+    tickers: str = "",
 ) -> None:
     """Submit a news preprocessing run to Modal from the local CLI."""
     remote_kwargs: dict[str, object] = {
@@ -383,8 +383,7 @@ def modal_main(
         "as_of_date": as_of_date,
         "min_sentence_chars": min_sentence_chars,
     }
-    normalized_tickers = [str(ticker).strip().upper() for ticker in (tickers or ())]
-    normalized_tickers = [ticker for ticker in normalized_tickers if ticker]
+    normalized_tickers = sorted({ticker.strip().upper() for ticker in tickers.split(",") if ticker.strip()})
     if normalized_tickers:
         remote_kwargs["tickers"] = normalized_tickers
     globals()["modal_run_news_preprocessing"].remote(**remote_kwargs)
