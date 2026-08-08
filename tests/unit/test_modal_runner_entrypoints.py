@@ -741,7 +741,7 @@ def test_daily_ticker_scope_normalizes_comma_separated_input() -> None:
 def test_modal_and_pi_requirements_pin_compatible_typer_range() -> None:
     """Modal and Pi dependency surfaces use the same Modal-compatible Typer range."""
     repo_root = Path(__file__).resolve().parents[2]
-    expected_constraint = "typer>=0.9,<0.26"
+    expected_constraint = "typer>=0.9,<0.16"
 
     constraints = []
     for requirements_name in ("requirements/modal.txt", "requirements/pi.txt"):
