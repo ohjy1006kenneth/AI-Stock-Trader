@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import get_type_hints
 
 import pytest
@@ -735,3 +736,18 @@ def test_sibling_modal_entrypoints_normalize_comma_separated_tickers(
 def test_daily_ticker_scope_normalizes_comma_separated_input() -> None:
     """Daily orchestration normalizes scalar ticker scope before dispatch."""
     assert run_daily_layer1._normalize_ticker_scope(" aapl,MSFT, aapl , ") == ("AAPL", "MSFT")
+
+
+def test_modal_and_pi_requirements_pin_compatible_typer_range() -> None:
+    """Modal and Pi dependency surfaces use the same Modal-compatible Typer range."""
+    repo_root = Path(__file__).resolve().parents[2]
+    expected_constraint = "typer>=0.9,<0.26"
+
+    constraints = []
+    for requirements_name in ("requirements/modal.txt", "requirements/pi.txt"):
+        requirements = (repo_root / requirements_name).read_text(encoding="utf-8").splitlines()
+        constraints.append(
+            [line.split("#", 1)[0].strip() for line in requirements if line.strip().startswith("typer")]
+        )
+
+    assert constraints == [[expected_constraint], [expected_constraint]]
