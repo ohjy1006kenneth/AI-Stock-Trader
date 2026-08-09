@@ -13,8 +13,7 @@ polygon-api-client>=1.14,<2
 
 # Object storage — Cloudflare R2 (S3-compatible)
 boto3>=1.35,<2
-modal>=0.64,<1         # lightweight client/CLI used to submit Layer 1 jobs to Modal
-typer>=0.9,<0.16       # Modal 0.77 uses Click 8.1; Typer 0.16+ is outside the verified ceiling, and 0.26+ vendors a distinct Click hierarchy
+modal>=1.5,<2          # lightweight client/CLI used to submit Layer 1 jobs to Modal
 
 # Data handling
 pandas>=2.2,<3

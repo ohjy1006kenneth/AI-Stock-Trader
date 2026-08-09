@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import importlib.metadata
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -738,16 +739,79 @@ def test_daily_ticker_scope_normalizes_comma_separated_input() -> None:
     assert run_daily_layer1._normalize_ticker_scope(" aapl,MSFT, aapl , ") == ("AAPL", "MSFT")
 
 
-def test_modal_and_pi_requirements_pin_compatible_typer_range() -> None:
-    """Modal and Pi dependency surfaces use the same Modal-compatible Typer range."""
+def test_modal_and_pi_requirements_use_supported_modal_sdk_without_direct_typer() -> None:
+    """Modal and Pi dependency surfaces share the supported SDK contract."""
     repo_root = Path(__file__).resolve().parents[2]
-    expected_constraint = "typer>=0.9,<0.16"
-
-    constraints = []
     for requirements_name in ("requirements/modal.txt", "requirements/pi.txt"):
         requirements = (repo_root / requirements_name).read_text(encoding="utf-8").splitlines()
-        constraints.append(
-            [line.split("#", 1)[0].strip() for line in requirements if line.strip().startswith("typer")]
-        )
+        active_requirements = [line.split("#", 1)[0].strip() for line in requirements]
+        assert "modal>=1.5,<2" in active_requirements
+        assert not any(line.lower().startswith("typer") for line in active_requirements)
 
-    assert constraints == [[expected_constraint], [expected_constraint]]
+
+@pytest.mark.parametrize(
+    ("module", "args", "remote_name"),
+    [
+        (run_news_preprocessing, ("real-news", "2024-01-02", 2, " aapl,MSFT, aapl , "), "modal_run_news_preprocessing"),
+        (run_text_topics, ("real-topics", "2024-01-02", "input", " aapl,MSFT, aapl , "), "modal_run_text_topics"),
+        (run_finbert_sentiment, ("real-finbert", "2024-01-02", "input", " aapl,MSFT, aapl , "), "modal_run_finbert_sentiment"),
+        (run_hmm_regime_detection, ("real-hmm", "2024-01-31", "2024-02-01", None, " aapl ", 10, 5), "modal_run_hmm_regime_detection"),
+    ],
+)
+def test_real_modal_sdk_registers_layer1_entrypoints_without_remote_side_effects(
+    monkeypatch: pytest.MonkeyPatch, module, args: tuple[object, ...], remote_name: str
+) -> None:
+    """The resolved Modal SDK registers each stage and scopes its local CLI safely."""
+    pytest.importorskip("modal")
+    app = module._define_modal_app()
+    assert app is not None
+    assert "modal_main" in getattr(app, "registered_entrypoints")
+
+    calls: list[dict[str, object]] = []
+
+    class _NoRemote:
+        def remote(self, **kwargs: object) -> None:
+            calls.append(kwargs)
+
+    monkeypatch.setattr(module, remote_name, _NoRemote())
+    module.modal_main(*args)
+    assert calls
+    if module is run_hmm_regime_detection:
+        assert calls[-1]["benchmark_ticker"] == "AAPL"
+    else:
+        assert calls[-1]["tickers"] == ["AAPL", "MSFT"]
+
+
+def test_real_modal_sdk_registers_daily_layer1_entrypoint_without_remote_side_effects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The resolved Modal SDK registers the daily CLI and accepts a ticker scope."""
+    pytest.importorskip("modal")
+    app = run_daily_layer1._define_modal_app()
+    assert app is not None
+    assert "modal_main" in getattr(app, "registered_entrypoints")
+
+    calls: list[dict[str, object]] = []
+
+    class _NoRemote:
+        def remote(self, **kwargs: object) -> None:
+            calls.append(kwargs)
+
+    monkeypatch.setattr(run_daily_layer1, "_modal_run_batched_layer1", _NoRemote())
+    run_daily_layer1.modal_range_main(
+        "real-daily",
+        "2024-01-02",
+        "2024-01-03",
+        "layer0",
+        tickers=(" aapl ", "MSFT", " aapl "),
+    )
+    assert calls[-1]["tickers"] == ["AAPL", "MSFT"]
+
+
+def test_real_modal_dependency_versions_are_supported() -> None:
+    """The compatibility test runs against Modal 1.5.x and its Click dependency."""
+    pytest.importorskip("modal")
+    modal_version = importlib.metadata.version("modal")
+    click_version = importlib.metadata.version("click")
+    assert modal_version.startswith("1.5.")
+    assert click_version
