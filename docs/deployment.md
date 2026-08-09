@@ -45,6 +45,20 @@ Expected execution chain:
 6. Pi runtime waits on the Layer 1 manifest in R2 before continuing to inference
 7. Runtime emits deterministic manifests and reports
 
+### Nightly data-only refresh command
+
+After integration, the Pi wrapper should execute from the repository root:
+
+```bash
+./.venv/bin/python app/pi/run_layer0_layer1_refresh.py
+```
+
+`--target-date`, `--from-date`, `--max-days`, and `--dry-run` are supported for bounded
+operations. The command loads the four repository env files without logging values,
+holds a stale-aware lock, and uses 7200s, 21600s, and 1800s watchdog defaults for Layer
+0, Modal Layer 1, and validation respectively. It must be dry-run tested before any
+production catch-up; it does not invoke Layer 2+, broker execution, or dashboard stages.
+
 ## Baseline rollout order
 
 1. Build and validate the complete Layer 0 historical backfill in R2:

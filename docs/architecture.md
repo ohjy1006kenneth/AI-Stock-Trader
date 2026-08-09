@@ -70,6 +70,14 @@ The design principle is:
 - long-only execution first, with contracts and risk policy kept compatible with later
   hedge overlays and long-short expansion
 
+### Pi data-only refresh entrypoint
+
+The version-controlled `app/pi/run_layer0_layer1_refresh.py` is the bounded Pi cron
+orchestrator for catching up Layer 0 and Layer 1 archives without entering Layer 2 or
+later trading stages. It selects only regular US equity sessions using
+`core.common.trading_calendar`, applies the New York 18:00 readiness cutoff, and fails
+closed unless each date has its durable `ready_for_layer2=true` validation report.
+
 ---
 
 ## Portfolio posture and expansion roadmap
