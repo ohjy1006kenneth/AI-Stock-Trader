@@ -793,18 +793,49 @@ def test_real_modal_sdk_registers_daily_layer1_entrypoint_without_remote_side_ef
 
     calls: list[dict[str, object]] = []
 
-    class _NoRemote:
-        def remote(self, **kwargs: object) -> None:
-            calls.append(kwargs)
+    class _NoExternalR2Writer:
+        """Fail if the real daily CLI reaches an R2 operation."""
 
-    monkeypatch.setattr(run_daily_layer1, "_modal_run_batched_layer1", _NoRemote())
-    run_daily_layer1.modal_range_main(
+        def __init__(self) -> None:
+            self.operations: list[str] = []
+
+        def exists(self, key: str) -> bool:
+            self.operations.append(f"exists:{key}")
+            raise AssertionError("real Modal daily compatibility test touched R2")
+
+        def get_object(self, key: str) -> bytes:
+            self.operations.append(f"get_object:{key}")
+            raise AssertionError("real Modal daily compatibility test touched R2")
+
+    class _NoRemote:
+        """Record final dispatch without contacting Modal or running the pipeline."""
+
+        def remote(self, **kwargs: object) -> dict[str, object]:
+            calls.append(kwargs)
+            return {}
+
+    writer = _NoExternalR2Writer()
+
+    monkeypatch.setattr(run_daily_layer1, "R2Writer", lambda: writer)
+    monkeypatch.setattr(
+        run_daily_layer1,
+        "_load_completed_stage_output",
+        lambda **kwargs: {
+            run_daily_layer1.NLP_PREPROCESSING_STAGE: "news.parquet",
+            run_daily_layer1.TEXT_TOPICS_STAGE: "topics.parquet",
+            run_daily_layer1.FINBERT_SENTIMENT_STAGE: "sentiment.parquet",
+            run_daily_layer1.REGIME_STAGE: "regime.parquet",
+        }[kwargs["stage"]],
+    )
+    monkeypatch.setattr(run_daily_layer1, "_modal_run_daily_layer1", _NoRemote())
+
+    run_daily_layer1.modal_main(
         "real-daily",
         "2024-01-02",
-        "2024-01-03",
         "layer0",
-        tickers=(" aapl ", "MSFT", " aapl "),
+        tickers=" aapl,MSFT, aapl , ",
     )
+    assert writer.operations == []
     assert calls[-1]["tickers"] == ["AAPL", "MSFT"]
 
 
