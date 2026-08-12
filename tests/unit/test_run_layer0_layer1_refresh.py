@@ -248,6 +248,35 @@ def test_run_command_redacts_normal_output_and_command_display(tmp_path: Path) -
     assert "monkey=banana" in content and "<redacted>" in content
 
 
+def test_run_command_redacts_s3_userinfo_and_query_credentials_in_log_and_tail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    secret = "FAKE-r2-secret-12345"
+    uri = f"s3://user:password@bucket/path?token={secret}&monkey=banana"
+    command = ["fake-refresh", uri]
+    monkeypatch.setattr(
+        "app.pi.run_layer0_layer1_refresh.subprocess.run",
+        lambda *args, **kwargs: type("Result", (), {"stdout": uri, "returncode": 0})(),
+    )
+
+    result = run_command(
+        command,
+        {"R2_TOKEN": secret},
+        RefreshConfig(repo_root=tmp_path, home=tmp_path),
+        tmp_path / "run.log",
+        10,
+    )
+
+    content = (tmp_path / "run.log").read_text()
+    expected = "s3://<redacted>@bucket/path?token=<redacted>&monkey=banana"
+    assert result.command == command
+    assert result.returncode == 0
+    assert expected in content and expected in result.output_tail
+    assert "user:password" not in content and "user:password" not in result.output_tail
+    assert secret not in content and secret not in result.output_tail
+    assert "monkey=banana" in content and "monkey=banana" in result.output_tail
+
+
 @pytest.mark.parametrize("payload", ["timeout-secret", b"timeout-secret"])
 def test_run_command_redacts_timeout_output_str_and_bytes(tmp_path: Path, payload: str | bytes, monkeypatch: pytest.MonkeyPatch) -> None:
     secret = "timeout-secret"
