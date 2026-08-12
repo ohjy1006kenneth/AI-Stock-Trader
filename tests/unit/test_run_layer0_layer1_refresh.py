@@ -12,6 +12,7 @@ from app.pi.run_layer0_layer1_refresh import (
     PipelineError,
     RefreshConfig,
     _commands,
+    _sanitize_output,
     acquire_lock,
     build_plan,
     latest_target,
@@ -72,6 +73,35 @@ def test_load_env_is_injected_and_does_not_log_values(tmp_path: Path) -> None:
     config = RefreshConfig(repo_root=tmp_path, home=tmp_path, env_files=(env_file,))
     assert load_env(config)["SECRET_TOKEN"] == "not-logged"
     assert load_env(config)["HOME"] == str(tmp_path)
+
+
+def test_sanitizer_redacts_arbitrary_uri_userinfo_and_token_aware_env_values() -> None:
+    env = {
+        "R2_TOKEN": "FAKE-r2-secret-12345",
+        "AWS_SECRET_ACCESS_KEY": "FAKE-aws-access-12345",
+        "API_KEY": "FAKE-api-key-12345",
+        "X-AMZ-SIGNATURE": "FAKE-signature-12345",
+        "MONKEY": "banana",
+    }
+    value = (
+        "s3://user:password@bucket/path?token=FAKE-r2-secret-12345&monkey=banana "
+        "AWS_SECRET_ACCESS_KEY=FAKE-aws-access-12345 API_KEY=FAKE-api-key-12345 "
+        "X-AMZ-SIGNATURE=FAKE-signature-12345 monkey=banana"
+    )
+
+    sanitized = _sanitize_output(value, env)
+
+    assert sanitized == (
+        "s3://<redacted>@bucket/path?token=<redacted>&monkey=banana "
+        "AWS_SECRET_ACCESS_KEY=<redacted> API_KEY=<redacted> "
+        "X-AMZ-SIGNATURE=<redacted> monkey=banana"
+    )
+
+
+def test_sanitizer_retains_http_uri_structure() -> None:
+    value = "https://user:password@host:443/path?x=1#fragment"
+
+    assert _sanitize_output(value, {}) == "https://<redacted>@host:443/path?x=1#fragment"
 
 
 def test_lock_live_and_stale_behavior(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

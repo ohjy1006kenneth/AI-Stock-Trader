@@ -40,8 +40,10 @@ _CREDENTIAL_QUERY_RE = re.compile(
     r"password|passwd|credential|signature|x-amz-credential|x-amz-signature|"
     r"x-amz-security-token)=)[^&#\s]+"
 )
-_URL_USERINFO_RE = re.compile(r"(?i)(https?://)([^/@\s]+)@")
-_SENSITIVE_ENV_RE = re.compile(r"(?i)(?:TOKEN|KEY|SECRET|PASSWORD|PASSWD|CREDENTIAL|SIGNATURE)")
+_URL_USERINFO_RE = re.compile(r"(?i)([a-z][a-z0-9+.-]*://)([^/@\s?#]+)@")
+_SENSITIVE_ENV_RE = re.compile(
+    r"(?i)(?:^|[_-])(?:TOKEN|KEY|SECRET|PASSWORD|PASSWD|CREDENTIAL|SIGNATURE)(?:$|[_-])"
+)
 
 
 class PipelineError(RuntimeError):
