@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from app.pi.run_layer0_layer1_refresh import (
+    CommandResult,
     PipelineError,
     RefreshConfig,
     _commands,
@@ -14,6 +15,7 @@ from app.pi.run_layer0_layer1_refresh import (
     build_plan,
     latest_target,
     load_env,
+    main,
     ready_reports,
     refresh,
     release_lock,
@@ -56,7 +58,7 @@ def test_build_plan_skips_holiday_weekend_filters_ready_and_caps() -> None:
 
 def test_ready_reports_requires_boolean_true_and_uses_latest() -> None:
     key = "artifacts/reports/integration/layer1_archive_validation_x_2026-06-18_to_2026-06-18.json"
-    client = FakeR2({key: json.dumps({"to_date": "2026-06-18", "ready_for_layer2": True}).encode()})
+    client = FakeR2({key: json.dumps({"run_id": "x", "from_date": "2026-06-18", "to_date": "2026-06-18", "ready_for_layer2": True}).encode()})
     assert set(ready_reports(client)) == {"2026-06-18"}
     false = FakeR2({key: b'{"ready_for_layer2": false}'})
     assert ready_reports(false) == {}
@@ -109,3 +111,48 @@ def test_verify_ready_missing_or_false_fails() -> None:
     client.objects[key] = b'{"ready_for_layer2": false}'
     with pytest.raises(PipelineError, match="not ready"):
         verify_ready(client, "2026-06-18")
+
+
+def test_verify_ready_requires_exact_identity() -> None:
+    key = "artifacts/reports/integration/layer1_archive_validation_layer1-daily-2026-06-18_2026-06-18_to_2026-06-18.json"
+    client = FakeR2({key: json.dumps({"ready_for_layer2": True}).encode()})
+    with pytest.raises(PipelineError, match="not ready"):
+        verify_ready(client, "2026-06-18")
+    client.objects[key] = json.dumps({"run_id": "layer1-daily-2026-06-18", "from_date": "2026-06-18", "to_date": "2026-06-18", "ready_for_layer2": True}).encode()
+    assert verify_ready(client, "2026-06-18")["ready_for_layer2"] is True
+
+
+def test_timeout_overrides_require_positive_integers(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.pi.run_layer0_layer1_refresh import _timeouts
+    config = RefreshConfig()
+    assert _timeouts(config) == (7200, 21600, 1800)
+    monkeypatch.setenv("AI_STOCK_TRADER_LAYER0_COMMAND_TIMEOUT_SECONDS", "11")
+    monkeypatch.setenv("AI_STOCK_TRADER_LAYER1_COMMAND_TIMEOUT_SECONDS", "22")
+    monkeypatch.setenv("AI_STOCK_TRADER_VALIDATE_COMMAND_TIMEOUT_SECONDS", "33")
+    assert _timeouts(config) == (11, 22, 33)
+    monkeypatch.setenv("AI_STOCK_TRADER_LAYER0_COMMAND_TIMEOUT_SECONDS", "0")
+    with pytest.raises(PipelineError, match="timeout"):
+        _timeouts(config)
+
+
+def test_refresh_stops_after_first_failed_stage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    client = FakeR2()
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str], *args: object, **kwargs: object) -> CommandResult:
+        calls.append(command)
+        return CommandResult(command, 9)
+
+    monkeypatch.setattr("app.pi.run_layer0_layer1_refresh.run_command", fake_run)
+    args = type("Args", (), {"target_date": "2026-06-18", "from_date": "2026-06-18", "max_days": 1, "dry_run": False})()
+    with pytest.raises(PipelineError, match="failed"):
+        refresh(args, RefreshConfig(repo_root=tmp_path, home=tmp_path), lambda _env: client)
+    assert len(calls) == 1
+
+
+def test_main_dry_run_does_not_create_lock_or_construct_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("app.pi.run_layer0_layer1_refresh.RefreshConfig", lambda **kwargs: RefreshConfig(repo_root=tmp_path, home=tmp_path, **kwargs))
+    monkeypatch.setattr("app.pi.run_layer0_layer1_refresh.install_signal_handlers", lambda _config: None)
+    assert main(["--from-date", "2026-06-18", "--target-date", "2026-06-18", "--dry-run"]) == 0
+    assert not (tmp_path / ".hermes").exists()

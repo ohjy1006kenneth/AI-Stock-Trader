@@ -8,11 +8,11 @@ import re
 import shutil
 import signal
 import subprocess
-import sys
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Callable, Protocol, Sequence
+from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
 from loguru import logger
@@ -30,6 +30,11 @@ REPORT_RE = re.compile(
 )
 LOCK_STALE_AFTER = timedelta(hours=6)
 ENV_NAMES = ("r2.env", "alpaca.env", "fred.env", "simfin.env")
+TIMEOUT_ENV_NAMES = (
+    "AI_STOCK_TRADER_LAYER0_COMMAND_TIMEOUT_SECONDS",
+    "AI_STOCK_TRADER_LAYER1_COMMAND_TIMEOUT_SECONDS",
+    "AI_STOCK_TRADER_VALIDATE_COMMAND_TIMEOUT_SECONDS",
+)
 
 
 class PipelineError(RuntimeError):
@@ -149,6 +154,25 @@ def _lock_pid(detail: str) -> int | None:
     return None
 
 
+def _timeouts(config: RefreshConfig) -> tuple[int, int, int]:
+    """Resolve positive command timeout overrides without exposing values."""
+    defaults = (config.layer0_timeout, config.layer1_timeout, config.validator_timeout)
+    resolved: list[int] = []
+    for name, default in zip(TIMEOUT_ENV_NAMES, defaults):
+        raw = os.getenv(name)
+        if raw is None:
+            resolved.append(default)
+            continue
+        try:
+            value = int(raw)
+        except ValueError as exc:
+            raise PipelineError(f"invalid timeout configuration for {name}") from exc
+        if value <= 0:
+            raise PipelineError(f"invalid timeout configuration for {name}")
+        resolved.append(value)
+    return (resolved[0], resolved[1], resolved[2])
+
+
 def acquire_lock(config: RefreshConfig) -> None:
     """Acquire the stale-aware single-run lock."""
     lock_dir = config.effective_lock_dir
@@ -164,15 +188,16 @@ def acquire_lock(config: RefreshConfig) -> None:
         except FileExistsError as exc:
             detail = _lock_detail(lock_dir)
             pid = _lock_pid(detail)
-            if pid is not None:
-                stale = not _pid_is_active(pid)
-                reason = f"recorded pid {pid} is not active" if stale else f"recorded pid {pid} is still active"
-            else:
+            if pid is None:
                 try:
-                    stale = datetime.now() - datetime.fromtimestamp(lock_dir.stat().st_mtime) > LOCK_STALE_AFTER
-                except OSError:
-                    stale = True
-                reason = "lock has no recorded pid and is stale" if stale else "lock has no recorded pid but is recent"
+                    age = datetime.now() - datetime.fromtimestamp(lock_dir.stat().st_mtime)
+                except OSError as stat_exc:
+                    raise PipelineError("refresh lock metadata is malformed or unsafe") from stat_exc
+                if age <= LOCK_STALE_AFTER:
+                    raise PipelineError("another refresh is already running (lock metadata is incomplete)") from exc
+                raise PipelineError("refresh lock metadata is malformed or unsafe") from exc
+            stale = not _pid_is_active(pid)
+            reason = f"recorded pid {pid} is not active" if stale else f"recorded pid {pid} is still active"
             if not stale:
                 raise PipelineError(f"another refresh is already running ({reason})") from exc
             try:
@@ -184,7 +209,7 @@ def acquire_lock(config: RefreshConfig) -> None:
 
 
 def release_lock(config: RefreshConfig) -> None:
-    """Release the run lock and log cleanup failures."""
+    """Release the run lock, failing when cleanup cannot be confirmed."""
     lock_dir = config.effective_lock_dir
     try:
         shutil.rmtree(lock_dir)
@@ -192,6 +217,7 @@ def release_lock(config: RefreshConfig) -> None:
         return
     except OSError as exc:
         logger.error("refresh lock cleanup failed: {}", type(exc).__name__)
+        raise PipelineError("refresh lock cleanup failed") from exc
 
 
 def install_signal_handlers(config: RefreshConfig) -> None:
@@ -223,9 +249,15 @@ def ready_reports(client: R2Client) -> dict[str, dict[str, Any]]:
             payload = json.loads(client.get_object(key).decode("utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError):
             continue
-        if payload.get("ready_for_layer2") is not True:
+        if (
+            not isinstance(payload, dict)
+            or payload.get("ready_for_layer2") is not True
+            or payload.get("run_id") != match.group("run_id")
+            or payload.get("from_date") != match.group("from")
+            or payload.get("to_date") != match.group("to")
+        ):
             continue
-        target = str(payload.get("to_date") or match.group("to"))
+        target = match.group("to")
         if target not in reports or str(payload.get("manifest_finished_at", "")) > str(reports[target].get("manifest_finished_at", "")):
             payload["report_key"] = key
             reports[target] = payload
@@ -291,14 +323,28 @@ def verify_ready(client: R2Client, day: str) -> dict[str, Any]:
         payload = json.loads(client.get_object(key).decode("utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError) as exc:
         raise PipelineError("final Layer 1 validation report is unreadable") from exc
-    if payload.get("ready_for_layer2") is not True:
+    if (
+        not isinstance(payload, dict)
+        or payload.get("ready_for_layer2") is not True
+        or payload.get("run_id") != run_id
+        or payload.get("from_date") != day
+        or payload.get("to_date") != day
+    ):
         raise PipelineError("final Layer 1 validation report is not ready")
     return payload
 
 
 def refresh(args: argparse.Namespace, config: RefreshConfig, client_factory: Callable[[dict[str, str]], R2Client], now: datetime | None = None) -> int:
     """Execute or dry-run a bounded, fail-closed refresh plan."""
+    timeouts = _timeouts(config)
     env = load_env(config)
+    if args.dry_run:
+        if args.from_date is None:
+            raise PipelineError("dry-run requires explicit --from-date to avoid durable R2 discovery")
+        target = args.target_date or latest_target(now)
+        selected, skipped, remaining = build_plan(args.from_date, target, set(), args.max_days)
+        logger.info("Layer 0->1 dry-run target={} skipped={} sessions={} remaining={}", target, skipped, selected, remaining)
+        return 0
     client = client_factory(env)
     ready = ready_reports(client)
     target = args.target_date or latest_target(now)
@@ -307,11 +353,11 @@ def refresh(args: argparse.Namespace, config: RefreshConfig, client_factory: Cal
         start = (date.fromisoformat(start) + timedelta(days=1)).isoformat()
     selected, skipped, remaining = build_plan(start, target, set(ready), args.max_days)
     logger.info("Layer 0->1 refresh target={} skipped={} sessions={} remaining={}", target, skipped, selected, remaining)
-    if args.dry_run or not selected:
+    if not selected:
         return 0
     log_path = config.effective_log_dir / f"refresh-{datetime.now().strftime('%Y%m%d-%H%M%S')}.log"
     for day in selected:
-        for command, timeout in zip(_commands(config, day), (config.layer0_timeout, config.layer1_timeout, config.validator_timeout)):
+        for command, timeout in zip(_commands(config, day), timeouts):
             result = run_command(command, env, config, log_path, timeout)
             if result.returncode != 0:
                 raise PipelineError(f"refresh command failed for {day} with exit code {result.returncode}")
@@ -325,12 +371,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     config = RefreshConfig(max_days=args.max_days)
     install_signal_handlers(config)
+    if args.dry_run:
+        return refresh(args, config, lambda _env: (_ for _ in ()).throw(PipelineError("dry-run R2 access")))
     acquire_lock(config)
+    primary: BaseException | None = None
     try:
         from services.r2.client import CloudflareR2Client
         return refresh(args, config, lambda _env: CloudflareR2Client.from_env())
+    except BaseException as exc:
+        primary = exc
+        raise
     finally:
-        release_lock(config)
+        try:
+            release_lock(config)
+        except PipelineError:
+            if primary is None:
+                raise
+            logger.error("refresh lock cleanup failed after primary failure")
 
 
 if __name__ == "__main__":
