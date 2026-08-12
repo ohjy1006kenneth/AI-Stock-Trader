@@ -489,7 +489,7 @@ def modal_main(
     run_id: str,
     as_of_date: str,
     preprocessed_news_key: str,
-    tickers: Sequence[str] | None = None,
+    tickers: str = "",
     embedding_key: str | None = None,
     topic_label_key: str | None = None,
 ) -> None:
@@ -503,8 +503,7 @@ def modal_main(
         remote_kwargs["embedding_key"] = embedding_key
     if topic_label_key is not None:
         remote_kwargs["topic_label_key"] = topic_label_key
-    normalized_tickers = [str(ticker).strip().upper() for ticker in (tickers or ())]
-    normalized_tickers = [ticker for ticker in normalized_tickers if ticker]
+    normalized_tickers = sorted({ticker.strip().upper() for ticker in tickers.split(",") if ticker.strip()})
     if normalized_tickers:
         remote_kwargs["tickers"] = normalized_tickers
     globals()["modal_run_finbert_sentiment"].remote(**remote_kwargs)

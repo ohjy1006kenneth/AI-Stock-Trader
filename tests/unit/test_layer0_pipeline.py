@@ -8,6 +8,8 @@ from datetime import date, datetime
 from typing import Any
 
 import pytest
+from loguru import logger
+from requests import HTTPError
 
 from core.contracts.schemas import OHLCVRecord, RunStatus
 from core.data.layer0_pipeline import (
@@ -225,6 +227,15 @@ class _EmptyFundamentalsFetcher:
             }
         )
         return []
+
+
+class _FailingMacroFetcher:
+    """Macro fetcher that raises a provider-style URL error."""
+
+    def fetch_all_macro_observations(self, **kwargs: object) -> list[dict[str, object]]:
+        raise HTTPError(
+            "GET https://fred.test/series?api_key=" + "synthetic-" + "secret" + "&series_id=DGS10"
+        )
 
 
 class _MacroFetcher:
@@ -1545,3 +1556,44 @@ def test_layer0_config_rejects_empty_inputs() -> None:
             to_date=date(2024, 1, 3),
             fred_series_ids=(),
         )
+
+
+def test_historical_backfill_redacts_provider_key_in_log_and_manifest() -> None:
+    """Historical provider failures preserve traceback while redacting URL secrets."""
+    writer = _Writer()
+    messages: list[str] = []
+    handler_id = logger.add(lambda message: messages.append(str(message)))
+    try:
+        with pytest.raises(HTTPError, match="synthetic-secret"):
+            run_historical_layer0_backfill(
+                config=HistoricalLayer0Config(
+                    from_date=date(2024, 1, 2),
+                    to_date=date(2024, 1, 2),
+                    fred_series_ids=("DGS10",),
+                    run_id="redaction-test",
+                    quality_config=QualityFilterConfig(rolling_window_days=1),
+                ),
+                universe_provider=_UniverseProvider(),
+                price_fetcher=_HistoricalPriceFetcher(),
+                security_master=_SecurityMaster(),
+                news_fetcher=_NewsFetcher(),
+                fundamentals_fetcher=_FundamentalsFetcher(),
+                macro_fetcher=_FailingMacroFetcher(),
+                writer=writer,
+                price_serializer=_bytes_serializer,
+                price_deserializer=_bytes_deserializer,
+                news_serializer=_bytes_serializer,
+                fundamentals_serializer=_bytes_serializer,
+                macro_serializer=_bytes_serializer,
+            )
+    finally:
+        logger.remove(handler_id)
+    logged = "".join(messages)
+    assert "synthetic-secret" not in logged
+    assert "<redacted>" in logged
+    manifest = json.loads(writer.get_object(pipeline_manifest_path("layer0", "redaction-test")))
+    assert manifest["status"] == RunStatus.FAILED
+    assert manifest["metadata"]["error"] == {
+        "type": "HTTPError",
+        "message": "GET https://fred.test/series?api_key=<redacted>&series_id=DGS10",
+    }

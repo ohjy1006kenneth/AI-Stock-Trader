@@ -63,6 +63,15 @@ consume their R2 outputs.
 
 ## Phase 1 - Daily loop (automated, Pi cron)
 
+For the data-only nightly refresh or bounded catch-up, Pi cron invokes
+`./.venv/bin/python app/pi/run_layer0_layer1_refresh.py`. The entrypoint ignores weekends
+and full-day US equity holidays (including Juneteenth), uses the prior regular session
+before 18:00 America/New_York, and logs skipped dates, selected sessions, and any
+max-days remainder. It runs Layer 0, the Modal Layer 1 app, and archive validation in
+that order for one session at a time. A nonzero/timeout command or missing, unreadable,
+false, or wrong-date durable validation report stops the refresh and leaves that date
+incomplete; it never silently advances to another date.
+
 Execution chain:
 1. Cron starts the Pi runtime container on the host.
 2. OpenClaw/Hermes runs the Pi daily entrypoint inside that container.

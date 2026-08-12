@@ -6,7 +6,7 @@
 -r base.txt
 
 # Modal SDK — for defining and running cloud jobs
-modal>=0.64,<1
+modal>=1.5,<2
 
 # Data handling
 pandas>=2.2,<3

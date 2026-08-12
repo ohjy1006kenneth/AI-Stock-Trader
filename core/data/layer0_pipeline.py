@@ -515,7 +515,14 @@ def run_historical_layer0_backfill(
             metadata=metadata,
         )
     except Exception as exc:
-        logger.exception("Layer 0 historical backfill failed: {}", exc)
+        sanitized_message = _sanitize_error_message(str(exc))
+        try:
+            sanitized_exc = type(exc)(sanitized_message)
+        except Exception:
+            sanitized_exc = Exception(sanitized_message)
+        logger.opt(exception=(type(sanitized_exc), sanitized_exc, exc.__traceback__)).error(
+            "Layer 0 historical backfill failed: {}", sanitized_message
+        )
         manifest_key = _write_failure_manifest(
             writer=cached_writer,
             run_id=run_id,

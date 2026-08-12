@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import importlib
+import importlib.metadata
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
+from typing import get_type_hints
 
 import pytest
 
@@ -701,3 +704,145 @@ def test_daily_layer1_modal_range_main_dispatches_batched_remote_call(
     assert logged_messages == [
         ("artifacts/manifests/layer1/smoke-range.json", True)
     ]
+
+
+@pytest.mark.parametrize(
+    "module",
+    [run_daily_layer1, run_news_preprocessing, run_text_topics, run_finbert_sentiment],
+)
+def test_registered_local_entrypoints_use_modal_parseable_scalar_annotations(module) -> None:
+    """Registered local entrypoints expose only scalar CLI parameter annotations."""
+    assert get_type_hints(module.modal_main)["tickers"] is str
+
+
+@pytest.mark.parametrize(
+    ("module", "args", "function_name"),
+    [
+        (run_news_preprocessing, ("run", "2024-01-02", 2, " aapl,MSFT, aapl , "), "modal_run_news_preprocessing"),
+        (run_text_topics, ("run", "2024-01-02", "input", " aapl,MSFT, aapl , "), "modal_run_text_topics"),
+        (run_finbert_sentiment, ("run", "2024-01-02", "input", " aapl,MSFT, aapl , "), "modal_run_finbert_sentiment"),
+    ],
+)
+def test_sibling_modal_entrypoints_normalize_comma_separated_tickers(
+    monkeypatch: pytest.MonkeyPatch, module, args, function_name: str
+) -> None:
+    """Sibling local entrypoints pass a deterministic ticker list to Modal."""
+    _install_fake_modal(monkeypatch)
+    app = module._define_modal_app()
+    module.modal_main(*args)
+    registered = next(iter(app.functions.values()))
+    assert registered.remote_calls[-1]["tickers"] == ["AAPL", "MSFT"]
+
+
+def test_daily_ticker_scope_normalizes_comma_separated_input() -> None:
+    """Daily orchestration normalizes scalar ticker scope before dispatch."""
+    assert run_daily_layer1._normalize_ticker_scope(" aapl,MSFT, aapl , ") == ("AAPL", "MSFT")
+
+
+def test_modal_and_pi_requirements_use_supported_modal_sdk_without_direct_typer() -> None:
+    """Modal and Pi dependency surfaces share the supported SDK contract."""
+    repo_root = Path(__file__).resolve().parents[2]
+    for requirements_name in ("requirements/modal.txt", "requirements/pi.txt"):
+        requirements = (repo_root / requirements_name).read_text(encoding="utf-8").splitlines()
+        active_requirements = [line.split("#", 1)[0].strip() for line in requirements]
+        assert "modal>=1.5,<2" in active_requirements
+        assert not any(line.lower().startswith("typer") for line in active_requirements)
+
+
+@pytest.mark.parametrize(
+    ("module", "args", "remote_name"),
+    [
+        (run_news_preprocessing, ("real-news", "2024-01-02", 2, " aapl,MSFT, aapl , "), "modal_run_news_preprocessing"),
+        (run_text_topics, ("real-topics", "2024-01-02", "input", " aapl,MSFT, aapl , "), "modal_run_text_topics"),
+        (run_finbert_sentiment, ("real-finbert", "2024-01-02", "input", " aapl,MSFT, aapl , "), "modal_run_finbert_sentiment"),
+        (run_hmm_regime_detection, ("real-hmm", "2024-01-31", "2024-02-01", None, " aapl ", 10, 5), "modal_run_hmm_regime_detection"),
+    ],
+)
+def test_real_modal_sdk_registers_layer1_entrypoints_without_remote_side_effects(
+    monkeypatch: pytest.MonkeyPatch, module, args: tuple[object, ...], remote_name: str
+) -> None:
+    """The resolved Modal SDK registers each stage and scopes its local CLI safely."""
+    pytest.importorskip("modal")
+    app = module._define_modal_app()
+    assert app is not None
+    assert "modal_main" in getattr(app, "registered_entrypoints")
+
+    calls: list[dict[str, object]] = []
+
+    class _NoRemote:
+        def remote(self, **kwargs: object) -> None:
+            calls.append(kwargs)
+
+    monkeypatch.setattr(module, remote_name, _NoRemote())
+    module.modal_main(*args)
+    assert calls
+    if module is run_hmm_regime_detection:
+        assert calls[-1]["benchmark_ticker"] == "AAPL"
+    else:
+        assert calls[-1]["tickers"] == ["AAPL", "MSFT"]
+
+
+def test_real_modal_sdk_registers_daily_layer1_entrypoint_without_remote_side_effects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The resolved Modal SDK registers the daily CLI and accepts a ticker scope."""
+    pytest.importorskip("modal")
+    app = run_daily_layer1._define_modal_app()
+    assert app is not None
+    assert "modal_main" in getattr(app, "registered_entrypoints")
+
+    calls: list[dict[str, object]] = []
+
+    class _NoExternalR2Writer:
+        """Fail if the real daily CLI reaches an R2 operation."""
+
+        def __init__(self) -> None:
+            self.operations: list[str] = []
+
+        def exists(self, key: str) -> bool:
+            self.operations.append(f"exists:{key}")
+            raise AssertionError("real Modal daily compatibility test touched R2")
+
+        def get_object(self, key: str) -> bytes:
+            self.operations.append(f"get_object:{key}")
+            raise AssertionError("real Modal daily compatibility test touched R2")
+
+    class _NoRemote:
+        """Record final dispatch without contacting Modal or running the pipeline."""
+
+        def remote(self, **kwargs: object) -> dict[str, object]:
+            calls.append(kwargs)
+            return {}
+
+    writer = _NoExternalR2Writer()
+
+    monkeypatch.setattr(run_daily_layer1, "R2Writer", lambda: writer)
+    monkeypatch.setattr(
+        run_daily_layer1,
+        "_load_completed_stage_output",
+        lambda **kwargs: {
+            run_daily_layer1.NLP_PREPROCESSING_STAGE: "news.parquet",
+            run_daily_layer1.TEXT_TOPICS_STAGE: "topics.parquet",
+            run_daily_layer1.FINBERT_SENTIMENT_STAGE: "sentiment.parquet",
+            run_daily_layer1.REGIME_STAGE: "regime.parquet",
+        }[kwargs["stage"]],
+    )
+    monkeypatch.setattr(run_daily_layer1, "_modal_run_daily_layer1", _NoRemote())
+
+    run_daily_layer1.modal_main(
+        "real-daily",
+        "2024-01-02",
+        "layer0",
+        tickers=" aapl,MSFT, aapl , ",
+    )
+    assert writer.operations == []
+    assert calls[-1]["tickers"] == ["AAPL", "MSFT"]
+
+
+def test_real_modal_dependency_versions_are_supported() -> None:
+    """The compatibility test runs against Modal 1.5.x and its Click dependency."""
+    pytest.importorskip("modal")
+    modal_version = importlib.metadata.version("modal")
+    click_version = importlib.metadata.version("click")
+    assert modal_version.startswith("1.5.")
+    assert click_version
