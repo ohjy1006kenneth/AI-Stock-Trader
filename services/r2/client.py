@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Iterable
 from io import BytesIO
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, TypedDict
 
 from dotenv import load_dotenv
 
@@ -28,10 +29,48 @@ class ReadableBody(Protocol):
         """Read the full object body."""
 
 
+class ObjectStorePage(TypedDict, total=False):
+    """Subset of a list-objects page consumed by this wrapper."""
+
+    Contents: list[dict[str, object]]
+
+
+class ObjectStorePaginator(Protocol):
+    """Protocol for the boto paginator used to enumerate object keys."""
+
+    def paginate(self, **kwargs: str) -> Iterable[ObjectStorePage]:
+        """Return pages for a bucket/prefix listing."""
+        ...
+
+
+class ObjectStoreClient(Protocol):
+    """Minimal boto-style client surface used by the R2 wrapper."""
+
+    def put_object(self, **kwargs: object) -> object:
+        """Store an object."""
+        ...
+
+    def get_object(self, **kwargs: str) -> dict[str, ReadableBody]:
+        """Retrieve an object response."""
+        ...
+
+    def delete_object(self, **kwargs: str) -> object:
+        """Delete an object."""
+        ...
+
+    def head_object(self, **kwargs: str) -> object:
+        """Read object metadata."""
+        ...
+
+    def get_paginator(self, operation_name: str) -> ObjectStorePaginator:
+        """Return an object listing paginator."""
+        ...
+
+
 class CloudflareR2Client:
     """Thin Cloudflare R2 client wrapper over boto3."""
 
-    def __init__(self, bucket_name: str, s3_client: object) -> None:
+    def __init__(self, bucket_name: str, s3_client: ObjectStoreClient) -> None:
         """Store the configured bucket and boto-compatible client."""
         self.bucket_name = bucket_name
         self._client = s3_client
@@ -132,7 +171,7 @@ def _build_s3_client(
     endpoint_url: str,
     access_key_id: str,
     secret_access_key: str,
-) -> object:
+) -> ObjectStoreClient:
     """Build the boto3 S3 client used for Cloudflare R2 access."""
     try:
         import boto3
