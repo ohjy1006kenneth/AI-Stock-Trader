@@ -147,7 +147,7 @@ def _validate_combined_html(html: str) -> None:
     events = parse_change_log(html)
     if not current or not events:
         raise ValueError("Wikipedia source contains an empty current or historical set")
-    if len(current) > 1000 or len(events) > 10000:
+    if not 400 <= len(current) <= 600 or len(events) > 10000:
         raise ValueError("Wikipedia source contains implausibly large sets")
     ticker_pattern = re.compile(r"^[A-Z]{1,5}(?:-[A-Z])?$")
     if any(not ticker_pattern.fullmatch(ticker) for ticker in current):
@@ -270,8 +270,7 @@ def parse_change_log(html: str) -> list[ChangeEvent]:
         # Normalize date to YYYY-MM-DD
         date = _normalize_date(raw_date)
         if date is None:
-            logger.warning("Skipping unparseable date: {!r}", raw_date)
-            continue
+            raise ValueError(f"Wikipedia historical event has an unparseable date: {raw_date!r}")
 
         if date not in raw_events:
             raw_events[date] = {"added": {}, "removed": {}}
