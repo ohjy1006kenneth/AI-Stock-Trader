@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from datetime import datetime
 from pathlib import Path
 
@@ -19,6 +20,7 @@ from app.pi.run_layer0_layer1_refresh import (
     ready_reports,
     refresh,
     release_lock,
+    run_command,
     verify_ready,
 )
 
@@ -148,6 +150,86 @@ def test_refresh_stops_after_first_failed_stage(tmp_path: Path, monkeypatch: pyt
     with pytest.raises(PipelineError, match="failed"):
         refresh(args, RefreshConfig(repo_root=tmp_path, home=tmp_path), lambda _env: client)
     assert len(calls) == 1
+
+
+def _ready_objects(days: list[str]) -> dict[str, bytes]:
+    return {
+        f"artifacts/reports/integration/layer1_archive_validation_x_{day}_to_{day}.json": json.dumps(
+            {"run_id": "x", "from_date": day, "to_date": day, "ready_for_layer2": True}
+        ).encode()
+        for day in days
+    }
+
+
+def test_refresh_default_history_crosses_holiday_and_weekend(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    client = FakeR2(_ready_objects(["2026-06-18", "2026-06-22", "2026-06-23"]))
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "app.pi.run_layer0_layer1_refresh.run_command",
+        lambda command, *args, **kwargs: (calls.append(command) or CommandResult(command, 0)),
+    )
+    monkeypatch.setattr("app.pi.run_layer0_layer1_refresh.verify_ready", lambda *_args: {})
+    args = type("Args", (), {"target_date": "2026-06-24", "from_date": None, "max_days": 0, "dry_run": False})()
+    assert refresh(args, RefreshConfig(repo_root=tmp_path, home=tmp_path), lambda _env: client) == 0
+    assert [command[5] for command in calls[::3]] == ["2026-06-24"]
+
+
+def test_refresh_default_history_gap_fails_before_log_or_subprocess(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    client = FakeR2(_ready_objects(["2026-06-18", "2026-06-23"]))
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "app.pi.run_layer0_layer1_refresh.run_command",
+        lambda command, *args, **kwargs: (calls.append(command) or CommandResult(command, 0)),
+    )
+    args = type("Args", (), {"target_date": "2026-06-24", "from_date": None, "max_days": 0, "dry_run": False})()
+    with pytest.raises(PipelineError, match="2026-06-22"):
+        refresh(args, RefreshConfig(repo_root=tmp_path, home=tmp_path), lambda _env: client)
+    assert calls == []
+    assert not (tmp_path / ".hermes").exists()
+
+
+def test_refresh_explicit_from_date_selects_gap_oldest_first(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    client = FakeR2(_ready_objects(["2026-06-18", "2026-06-23"]))
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "app.pi.run_layer0_layer1_refresh.run_command",
+        lambda command, *args, **kwargs: (calls.append(command) or CommandResult(command, 0)),
+    )
+    monkeypatch.setattr("app.pi.run_layer0_layer1_refresh.verify_ready", lambda *_args: {})
+    args = type("Args", (), {"target_date": "2026-06-24", "from_date": "2026-06-18", "max_days": 1, "dry_run": False})()
+    assert refresh(args, RefreshConfig(repo_root=tmp_path, home=tmp_path), lambda _env: client) == 0
+    assert calls[0][3] == "2026-06-22"
+
+
+def test_run_command_redacts_normal_output_and_command_display(tmp_path: Path) -> None:
+    secret = "provider-secret-value"
+    env = {"R2_TOKEN": secret}
+    command = ["https://user:password@host/path?token=" + secret + "&monkey=banana"]
+    output = "https://user:password@host/path?api_key=" + secret + "&monkey=banana env=" + secret
+    original = subprocess.run
+    try:
+        subprocess.run = lambda *args, **kwargs: type("Result", (), {"stdout": output, "returncode": 0})()  # type: ignore[method-assign]
+        result = run_command(command, env, RefreshConfig(repo_root=tmp_path, home=tmp_path), tmp_path / "run.log", 10)
+    finally:
+        subprocess.run = original
+    content = (tmp_path / "run.log").read_text()
+    assert result.command == command
+    assert secret not in content and secret not in result.output_tail
+    assert "monkey=banana" in content and "<redacted>" in content
+
+
+@pytest.mark.parametrize("payload", ["timeout-secret", b"timeout-secret"])
+def test_run_command_redacts_timeout_output_str_and_bytes(tmp_path: Path, payload: str | bytes, monkeypatch: pytest.MonkeyPatch) -> None:
+    secret = "timeout-secret"
+    monkeypatch.setattr(
+        "app.pi.run_layer0_layer1_refresh.subprocess.run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(subprocess.TimeoutExpired(["cmd"], 10, output=payload)),
+    )
+    result = run_command(["cmd"], {"TOKEN": secret}, RefreshConfig(repo_root=tmp_path, home=tmp_path), tmp_path / "run.log", 10)
+    content = (tmp_path / "run.log").read_text()
+    assert result.returncode == 124
+    assert secret not in content and secret not in result.output_tail
+    assert "command timed out" in result.output_tail
 
 
 def test_main_dry_run_does_not_create_lock_or_construct_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

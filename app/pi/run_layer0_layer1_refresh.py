@@ -35,6 +35,13 @@ TIMEOUT_ENV_NAMES = (
     "AI_STOCK_TRADER_LAYER1_COMMAND_TIMEOUT_SECONDS",
     "AI_STOCK_TRADER_VALIDATE_COMMAND_TIMEOUT_SECONDS",
 )
+_CREDENTIAL_QUERY_RE = re.compile(
+    r"(?i)([?&](?:token|api[-_]key|apikey|access[-_]key(?:[-_]id)?|secret(?:[-_]access[-_]key)?|"
+    r"password|passwd|credential|signature|x-amz-credential|x-amz-signature|"
+    r"x-amz-security-token)=)[^&#\s]+"
+)
+_URL_USERINFO_RE = re.compile(r"(?i)(https?://)([^/@\s]+)@")
+_SENSITIVE_ENV_RE = re.compile(r"(?i)(?:TOKEN|KEY|SECRET|PASSWORD|PASSWD|CREDENTIAL|SIGNATURE)")
 
 
 class PipelineError(RuntimeError):
@@ -281,11 +288,21 @@ def build_plan(start: str, target: str, ready: set[str], max_days: int) -> tuple
     return selected, skipped, missing[len(selected):]
 
 
+def _sanitize_output(value: str, env: dict[str, str]) -> str:
+    """Redact URL credentials and inherited credential values from child output."""
+    sanitized = _URL_USERINFO_RE.sub(r"\1<redacted>@", value)
+    sanitized = _CREDENTIAL_QUERY_RE.sub(r"\1<redacted>", sanitized)
+    secrets = {raw for name, raw in env.items() if _SENSITIVE_ENV_RE.search(name) and len(raw) >= 4}
+    for secret in sorted(secrets, key=len, reverse=True):
+        sanitized = sanitized.replace(secret, "<redacted>")
+    return sanitized
+
+
 def run_command(command: list[str], env: dict[str, str], config: RefreshConfig, log_path: Path, timeout: int) -> CommandResult:
     """Run one command with a watchdog and append output to the run log."""
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("a", encoding="utf-8") as log:
-        log.write("\n$ " + " ".join(command) + f"\n[timeout_seconds={timeout}]\n")
+        log.write("\n$ " + _sanitize_output(" ".join(command), env) + f"\n[timeout_seconds={timeout}]\n")
         try:
             proc = subprocess.run(command, cwd=config.repo_root, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout)
             output = proc.stdout or ""
@@ -295,6 +312,7 @@ def run_command(command: list[str], env: dict[str, str], config: RefreshConfig, 
             output = raw_output.decode(errors="replace") if isinstance(raw_output, bytes) else raw_output
             output += f"\ncommand timed out after {timeout} seconds\n"
             code = 124
+        output = _sanitize_output(output, env)
         log.write(output)
         log.write(f"\n[exit_code={code}]\n")
     return CommandResult(command, code, "\n".join(output.splitlines()[-40:]))
@@ -348,8 +366,19 @@ def refresh(args: argparse.Namespace, config: RefreshConfig, client_factory: Cal
     client = client_factory(env)
     ready = ready_reports(client)
     target = args.target_date or latest_target(now)
-    start = args.from_date or (max(ready) if ready else target)
-    if not args.from_date and ready:
+    if args.from_date:
+        start = args.from_date
+    elif not ready:
+        start = target
+    else:
+        ready_dates = sorted(ready)
+        missing_frontier = sorted(set(trading_dates(ready_dates[0], ready_dates[-1])) - set(ready_dates))
+        if missing_frontier:
+            raise PipelineError(
+                "default ready history is non-contiguous; missing regular sessions: "
+                + ", ".join(missing_frontier)
+            )
+        start = ready_dates[-1]
         start = (date.fromisoformat(start) + timedelta(days=1)).isoformat()
     selected, skipped, remaining = build_plan(start, target, set(ready), args.max_days)
     logger.info("Layer 0->1 refresh target={} skipped={} sessions={} remaining={}", target, skipped, selected, remaining)
