@@ -7,6 +7,8 @@ Never use the current constituent table alone — it causes survivorship bias.
 """
 from __future__ import annotations
 
+import re
+import tempfile
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -16,7 +18,10 @@ import requests
 from bs4 import BeautifulSoup
 from loguru import logger
 
-WIKIPEDIA_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+WIKIPEDIA_CURRENT_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+WIKIPEDIA_HISTORICAL_URL = "https://en.wikipedia.org/wiki/Historical_components_of_the_S%26P_500"
+# Backward-compatible name for callers that only need the canonical current page.
+WIKIPEDIA_URL = WIKIPEDIA_CURRENT_URL
 DEFAULT_CACHE_PATH = Path("data/cache/sp500_wikipedia.html")
 CACHE_MAX_AGE_HOURS = 24
 
@@ -78,7 +83,8 @@ def _canonicalize_ticker(ticker: str) -> str:
 
 def _normalize_ticker(ticker: str) -> str:
     """Normalize ticker formatting without applying identity-alias logic."""
-    return ticker.strip().upper().replace(".", "-")
+    normalized = re.sub(r"\s*\|\s*$", "", ticker.strip())
+    return normalized.upper().replace(".", "-")
 
 
 def _resolve_change_event_ticker(
@@ -126,23 +132,95 @@ def _resolve_current_table_ticker(ticker: str) -> str:
     return _canonicalize_ticker(normalized)
 
 
+def _extract_table(html: str, table_id: str) -> str:
+    """Extract one required table from a provider response."""
+    soup = BeautifulSoup(html, "lxml")
+    table = soup.find("table", {"id": table_id})
+    if table is None:
+        raise ValueError(f"Wikipedia response is missing table#{table_id}")
+    return str(table)
+
+
+def _validate_combined_html(html: str) -> None:
+    """Validate required tables and parsed content before cache use/publication."""
+    current = parse_current_tickers(html)
+    events = parse_change_log(html)
+    if not current or not events:
+        raise ValueError("Wikipedia source contains an empty current or historical set")
+    if len(current) > 1000 or len(events) > 10000:
+        raise ValueError("Wikipedia source contains implausibly large sets")
+    ticker_pattern = re.compile(r"^[A-Z]{1,5}(?:-[A-Z])?$")
+    if any(not ticker_pattern.fullmatch(ticker) for ticker in current):
+        raise ValueError("Wikipedia source contains an invalid current ticker identity")
+    dates = [event.date for event in events]
+    if dates != sorted(set(dates)):
+        raise ValueError("Wikipedia historical events are not unique and chronological")
+    for event in events:
+        if not event.added and not event.removed:
+            raise ValueError("Wikipedia historical event has no ticker identities")
+        if any(not ticker_pattern.fullmatch(ticker) for ticker in event.added | event.removed):
+            raise ValueError("Wikipedia source contains an invalid historical ticker identity")
+
+
+def _combine_source_pages(current_html: str, historical_html: str) -> str:
+    """Build the deterministic cache representation from one remote generation."""
+    combined = "<html><body>{}{}</body></html>".format(
+        _extract_table(current_html, "constituents"),
+        _extract_table(historical_html, "changes"),
+    )
+    _validate_combined_html(combined)
+    return combined
+
+
+def _fetch_page(url: str) -> str:
+    """Fetch one Wikipedia page for a source generation."""
+    response = requests.get(url, timeout=30, headers={"User-Agent": "sp500-universe-builder/1.0"})
+    response.raise_for_status()
+    return response.text
+
+
 def fetch_html(cache_path: Path = DEFAULT_CACHE_PATH) -> str:
-    """Return Wikipedia HTML from cache if fresh, otherwise fetch and cache it."""
+    """Return a validated split-page generation, retaining valid stale cache on failure."""
+    stale_html: str | None = None
+    stale_state = "no cache"
     if cache_path.exists():
-        age_hours = (time.time() - cache_path.stat().st_mtime) / 3600
-        if age_hours < CACHE_MAX_AGE_HOURS:
-            logger.debug("Using cached Wikipedia HTML (age={:.1f}h)", age_hours)
-            return cache_path.read_text(encoding="utf-8")
+        try:
+            candidate = cache_path.read_text(encoding="utf-8")
+            _validate_combined_html(candidate)
+            age_hours = (time.time() - cache_path.stat().st_mtime) / 3600
+            if age_hours < CACHE_MAX_AGE_HOURS:
+                logger.debug("Using validated cached Wikipedia HTML (age={:.1f}h)", age_hours)
+                return candidate
+            stale_html = candidate
+            stale_state = "valid stale cache"
+        except (OSError, ValueError) as exc:
+            stale_state = f"invalid cache ({type(exc).__name__})"
 
-    logger.info("Fetching Wikipedia S&P 500 page from {}", WIKIPEDIA_URL)
-    resp = requests.get(WIKIPEDIA_URL, timeout=30, headers={"User-Agent": "sp500-universe-builder/1.0"})
-    resp.raise_for_status()
-    html = resp.text
-
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    cache_path.write_text(html, encoding="utf-8")
-    logger.debug("Cached Wikipedia HTML to {}", cache_path)
-    return html
+    try:
+        logger.info("Fetching Wikipedia S&P 500 source generation")
+        combined = _combine_source_pages(
+            _fetch_page(WIKIPEDIA_CURRENT_URL),
+            _fetch_page(WIKIPEDIA_HISTORICAL_URL),
+        )
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=cache_path.parent, prefix=f".{cache_path.name}.", delete=False
+        ) as temporary:
+            temporary.write(combined)
+            temporary_path = Path(temporary.name)
+        temporary_path.replace(cache_path)
+        logger.debug("Atomically cached validated Wikipedia generation to {}", cache_path)
+        return combined
+    except (OSError, ValueError, requests.RequestException) as exc:
+        if stale_html is not None:
+            logger.warning(
+                "Wikipedia refresh failed; using {} ({})", stale_state, type(exc).__name__
+            )
+            return stale_html
+        logger.error("Wikipedia refresh failed with no valid cache ({})", type(exc).__name__)
+        if isinstance(exc, requests.RequestException):
+            raise
+        raise RuntimeError("No valid Wikipedia universe source generation is available") from exc
 
 
 def parse_current_tickers(html: str) -> set[str]:

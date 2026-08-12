@@ -159,8 +159,14 @@ Current baseline omission:
   existing-stack provider is adopted and documented end-to-end
 
 ### Universe construction note
-Wikipedia's S&P 500 page revision history provides historical constituent changes at no cost.
-The revision history — not the current page — must be scraped to obtain point-in-time membership.
+Wikipedia publishes current constituents and historical S&P 500 components on separate pages.
+Layer 0 fetches both pages as one source generation: the current page supplies the
+`table#constituents` table and the historical-components page supplies `table#changes`.
+The combined payload is parsed and structurally validated before atomic cache publication.
+The last-known-good combined cache may be used stale when a complete refresh fails; if no
+validated generation exists, Layer 0 fails closed rather than substituting today's
+constituents for point-in-time history.
+The historical page — not the current page alone — must be used to obtain point-in-time membership.
 This approach is accurate enough for personal-system backtesting but may have gaps around
 spinoffs and rapid constituent changes. Alpaca's delayed SIP archive provides consolidated
 historical OHLCV for the active ticker symbols in the backfill universe from 2017 onward.

@@ -178,6 +178,21 @@ class TestParseCurrentTickers:
 # ---------------------------------------------------------------------------
 
 class TestParseChangeLog:
+    def test_trailing_pipe_in_ticker_cell_is_removed(self) -> None:
+        html = _build_html(
+            {
+                "current_tickers": ["AAPL", "MSFT"],
+                "changes": [
+                    {"date": "2020-01-01", "added": ["ALLE |"], "removed": ["JCP |"]},
+                ],
+            }
+        )
+
+        event = parse_change_log(html)[0]
+
+        assert event.added == {"ALLE"}
+        assert event.removed == {"JCP"}
+
     def test_returns_correct_event_count(self, html: str, fixture: dict) -> None:
         events = parse_change_log(html)
         # One ChangeEvent per unique date in the fixture
