@@ -90,7 +90,7 @@ def _build_valid_source_html() -> str:
         f"{left}{right}A" for left in "ABCDEFGHIJKLMNOPQRST" for right in "ABCDEFGHIJKLMNOPQRST"
     ][:500]
     event_dates = [
-        (date(1979, 1, 1) + timedelta(days=145 * index)).isoformat() for index in range(100)
+        (date(1979, 1, 1) + timedelta(days=170 * index)).isoformat() for index in range(100)
     ]
     return _build_html(
         {
@@ -100,6 +100,29 @@ def _build_valid_source_html() -> str:
                     "date": event_date,
                     "added": ["ALLE |" if index == 0 else current_tickers[index]],
                     "removed": ["JCP |" if index == 0 else current_tickers[index + 1]],
+                }
+                for index, event_date in enumerate(event_dates)
+            ],
+        }
+    )
+
+
+def _build_historically_truncated_source_html() -> str:
+    """Build a syntactically valid source whose history ends before the recency floor."""
+    current_tickers = [
+        f"{left}{right}A" for left in "ABCDEFGHIJKLMNOPQRST" for right in "ABCDEFGHIJKLMNOPQRST"
+    ][:500]
+    event_dates = [
+        (date(1979, 1, 1) + timedelta(days=145 * index)).isoformat() for index in range(100)
+    ]
+    return _build_html(
+        {
+            "current_tickers": current_tickers,
+            "changes": [
+                {
+                    "date": event_date,
+                    "added": [current_tickers[index]],
+                    "removed": [current_tickers[index + 1]],
                 }
                 for index, event_date in enumerate(event_dates)
             ],
@@ -154,6 +177,99 @@ def test_fetch_html_combines_split_pages_and_atomically_publishes(monkeypatch: p
     assert parse_current_tickers(result)
     assert parse_change_log(result)[0].added == {"ALLE"}
     assert cache_path.read_text() == result
+    assert not list(tmp_path.glob(f".{cache_path.name}.*"))
+
+
+def test_fetch_html_flushes_and_fsyncs_before_replace(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Publication orders write/flush/fsync before same-directory replacement."""
+    current, historical = _split_pages(_build_valid_source_html())
+    responses = iter([_Response(current), _Response(historical)])
+    monkeypatch.setattr(wikipedia.requests, "get", lambda *args, **kwargs: next(responses))
+    events: list[str] = []
+    original_factory = wikipedia.tempfile.NamedTemporaryFile
+    original_replace = Path.replace
+
+    class _InstrumentedTemporary:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            self._context = original_factory(*args, **kwargs)
+            self._file: object | None = None
+
+        def __enter__(self) -> _InstrumentedTemporary:
+            self._file = self._context.__enter__()
+            return self
+
+        @property
+        def name(self) -> str:
+            return self._file.name  # type: ignore[union-attr]
+
+        def __exit__(self, *args: object) -> object:
+            return self._context.__exit__(*args)
+
+        def write(self, value: str) -> int:
+            events.append("write")
+            return self._file.write(value)  # type: ignore[union-attr]
+
+        def flush(self) -> None:
+            events.append("flush")
+            self._file.flush()  # type: ignore[union-attr]
+
+        def fileno(self) -> int:
+            return self._file.fileno()  # type: ignore[union-attr]
+
+    monkeypatch.setattr(wikipedia.tempfile, "NamedTemporaryFile", _InstrumentedTemporary)
+    monkeypatch.setattr(wikipedia.os, "fsync", lambda fd: events.append("fsync"))
+    monkeypatch.setattr(
+        Path,
+        "replace",
+        lambda self, target: (events.append("replace"), original_replace(self, target))[1],
+    )
+
+    fetch_html(tmp_path / "sp500.html")
+
+    assert events == ["write", "flush", "fsync", "replace"]
+
+
+def test_fetch_html_preserves_stale_cache_when_fsync_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An fsync failure falls back to unchanged valid stale bytes and cleans the temp file."""
+    cache_path = tmp_path / "sp500.html"
+    expected = _build_valid_source_html()
+    cache_path.write_text(expected)
+    old_time = cache_path.stat().st_mtime - 48 * 3600
+    os.utime(cache_path, (old_time, old_time))
+    current, historical = _split_pages(expected)
+    responses = iter([_Response(current), _Response(historical)])
+    monkeypatch.setattr(wikipedia.requests, "get", lambda *args, **kwargs: next(responses))
+    monkeypatch.setattr(wikipedia.os, "fsync", Mock(side_effect=OSError("fsync failed")))
+    replace = Mock(wraps=Path.replace)
+    monkeypatch.setattr(Path, "replace", replace)
+
+    assert fetch_html(cache_path) == expected
+    assert cache_path.read_text() == expected
+    replace.assert_not_called()
+    assert not list(tmp_path.glob(f".{cache_path.name}.*"))
+
+
+def test_fetch_html_fails_closed_without_cache_when_fsync_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An fsync failure without stale bytes publishes nothing and cleans the temp file."""
+    current, historical = _split_pages(_build_valid_source_html())
+    responses = iter([_Response(current), _Response(historical)])
+    monkeypatch.setattr(wikipedia.requests, "get", lambda *args, **kwargs: next(responses))
+    monkeypatch.setattr(wikipedia.os, "fsync", Mock(side_effect=OSError("fsync failed")))
+    replace = Mock(wraps=Path.replace)
+    monkeypatch.setattr(Path, "replace", replace)
+    cache_path = tmp_path / "sp500.html"
+
+    with pytest.raises(RuntimeError, match="No valid Wikipedia"):
+        fetch_html(cache_path)
+
+    assert not cache_path.exists()
+    replace.assert_not_called()
     assert not list(tmp_path.glob(f".{cache_path.name}.*"))
 
 
@@ -224,6 +340,58 @@ def test_fetch_html_fails_closed_for_truncated_remote_source_without_cache(
 ) -> None:
     """A truncated HTTP-200 generation creates neither cache nor temporary sibling."""
     current, historical = _split_pages(_build_truncated_source_html())
+    responses = iter([_Response(current), _Response(historical)])
+    monkeypatch.setattr(wikipedia.requests, "get", lambda *args, **kwargs: next(responses))
+    cache_path = tmp_path / "sp500.html"
+
+    with pytest.raises(RuntimeError, match="No valid Wikipedia") as caught:
+        fetch_html(cache_path)
+
+    assert "historical coverage" in str(caught.value.__cause__)
+    assert not cache_path.exists()
+    assert not list(tmp_path.glob(f".{cache_path.name}.*"))
+
+
+def test_fetch_html_rejects_historically_truncated_remote_source_with_stale_cache(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A 100-event source ending in 2018 cannot replace a valid stale generation."""
+    cache_path = tmp_path / "sp500.html"
+    expected = _build_valid_source_html()
+    cache_path.write_text(expected)
+    old_time = cache_path.stat().st_mtime - 48 * 3600
+    os.utime(cache_path, (old_time, old_time))
+    current, historical = _split_pages(_build_historically_truncated_source_html())
+    responses = iter([_Response(current), _Response(historical)])
+    monkeypatch.setattr(wikipedia.requests, "get", lambda *args, **kwargs: next(responses))
+
+    assert fetch_html(cache_path) == expected
+    assert cache_path.read_text() == expected
+    assert not list(tmp_path.glob(f".{cache_path.name}.*"))
+
+
+def test_fetch_html_replaces_historically_truncated_fresh_cache(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A fresh 100-event source ending in 2018 is replaced by a complete refresh."""
+    cache_path = tmp_path / "sp500.html"
+    cache_path.write_text(_build_historically_truncated_source_html())
+    current, historical = _split_pages(_build_valid_source_html())
+    responses = iter([_Response(current), _Response(historical)])
+    monkeypatch.setattr(wikipedia.requests, "get", lambda *args, **kwargs: next(responses))
+
+    result = fetch_html(cache_path)
+
+    assert len(parse_change_log(result)) == 100
+    assert max(event.date for event in parse_change_log(result)) >= "2025-01-01"
+    assert cache_path.read_text() == result
+
+
+def test_fetch_html_fails_closed_for_historically_truncated_remote_source_without_cache(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A 100-event source ending in 2018 is rejected without publishing or temp leaks."""
+    current, historical = _split_pages(_build_historically_truncated_source_html())
     responses = iter([_Response(current), _Response(historical)])
     monkeypatch.setattr(wikipedia.requests, "get", lambda *args, **kwargs: next(responses))
     cache_path = tmp_path / "sp500.html"

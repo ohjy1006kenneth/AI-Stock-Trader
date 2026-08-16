@@ -7,6 +7,7 @@ Never use the current constituent table alone — it causes survivorship bias.
 """
 from __future__ import annotations
 
+import os
 import re
 import tempfile
 import time
@@ -30,7 +31,7 @@ CACHE_MAX_AGE_HOURS = 24
 # coverage floors, not assertions about the current live event count or latest date.
 MIN_HISTORICAL_EVENT_COUNT = 100
 MIN_HISTORICAL_EVENT_DATE = "1980-01-01"
-MAX_HISTORICAL_EVENT_DATE = "2017-01-01"
+MIN_LATEST_HISTORICAL_EVENT_DATE = "2025-01-01"
 
 # Conflict-free historical/current symbol aliases. Ambiguous symbols that map to
 # different securities across time are handled separately with date-bounded
@@ -160,7 +161,7 @@ def _validate_combined_html(html: str) -> None:
     if (
         len(event_dates) < MIN_HISTORICAL_EVENT_COUNT
         or min(event_dates) > MIN_HISTORICAL_EVENT_DATE
-        or max(event_dates) < MAX_HISTORICAL_EVENT_DATE
+        or max(event_dates) < MIN_LATEST_HISTORICAL_EVENT_DATE
     ):
         raise ValueError("Wikipedia source fails historical coverage plausibility floors")
     ticker_pattern = re.compile(r"^[A-Z]{1,5}(?:-[A-Z])?$")
@@ -223,6 +224,8 @@ def fetch_html(cache_path: Path = DEFAULT_CACHE_PATH) -> str:
         ) as temporary:
             temporary_path = Path(temporary.name)
             temporary.write(combined)
+            temporary.flush()
+            os.fsync(temporary.fileno())
         temporary_path.replace(cache_path)
         logger.debug("Atomically cached validated Wikipedia generation to {}", cache_path)
         return combined
