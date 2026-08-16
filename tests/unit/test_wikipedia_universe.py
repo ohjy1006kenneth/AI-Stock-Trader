@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import date, timedelta
 from itertools import zip_longest
 from pathlib import Path
 from unittest.mock import Mock
@@ -85,10 +86,37 @@ def _build_html(fixture: dict) -> str:
 
 def _build_valid_source_html() -> str:
     """Build a conservatively sized source generation for cache-policy tests."""
+    current_tickers = [
+        f"{left}{right}A" for left in "ABCDEFGHIJKLMNOPQRST" for right in "ABCDEFGHIJKLMNOPQRST"
+    ][:500]
+    event_dates = [
+        (date(1979, 1, 1) + timedelta(days=145 * index)).isoformat() for index in range(100)
+    ]
     return _build_html(
         {
-            "current_tickers": [f"{left}{right}A" for left in "ABCDEFGHIJKLMNOPQRST" for right in "ABCDEFGHIJKLMNOPQRST"][:500],
-            "changes": [{"date": "2020-01-01", "added": ["ALLE |"], "removed": ["JCP |"]}],
+            "current_tickers": current_tickers,
+            "changes": [
+                {
+                    "date": event_date,
+                    "added": ["ALLE |" if index == 0 else current_tickers[index]],
+                    "removed": ["JCP |" if index == 0 else current_tickers[index + 1]],
+                }
+                for index, event_date in enumerate(event_dates)
+            ],
+        }
+    )
+
+
+def _build_truncated_source_html() -> str:
+    """Build a source with valid current syntax but implausibly short history."""
+    return _build_html(
+        {
+            "current_tickers": [
+                f"{left}{right}A"
+                for left in "ABCDEFGHIJKLMNOPQRST"
+                for right in "ABCDEFGHIJKLMNOPQRST"
+            ][:500],
+            "changes": [{"date": "2020-01-01", "added": ["ALLE"], "removed": ["JCP"]}],
         }
     )
 
@@ -126,7 +154,7 @@ def test_fetch_html_combines_split_pages_and_atomically_publishes(monkeypatch: p
     assert parse_current_tickers(result)
     assert parse_change_log(result)[0].added == {"ALLE"}
     assert cache_path.read_text() == result
-    assert not list(tmp_path.glob(".*.tmp"))
+    assert not list(tmp_path.glob(f".{cache_path.name}.*"))
 
 
 def test_fetch_html_uses_valid_fresh_cache_without_network(
@@ -153,6 +181,78 @@ def test_fetch_html_replaces_malformed_fresh_cache(monkeypatch: pytest.MonkeyPat
 
     assert result == cache_path.read_text()
     assert "table id=\"changes\"" in result
+
+
+def test_fetch_html_replaces_invalid_truncated_cache_with_complete_refresh(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A fresh one-event cache is rejected and replaced by complete history."""
+    current, historical = _split_pages(_build_valid_source_html())
+    responses = iter([_Response(current), _Response(historical)])
+    monkeypatch.setattr(wikipedia.requests, "get", lambda *args, **kwargs: next(responses))
+    cache_path = tmp_path / "sp500.html"
+    cache_path.write_text(_build_truncated_source_html())
+
+    result = fetch_html(cache_path)
+
+    assert len(parse_change_log(result)) == 100
+    assert cache_path.read_text() == result
+
+
+def test_fetch_html_uses_valid_stale_cache_when_remote_history_is_truncated(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A truncated HTTP-200 refresh falls back to and preserves valid stale bytes."""
+    cache_path = tmp_path / "sp500.html"
+    expected = _build_valid_source_html()
+    cache_path.write_text(expected)
+    old_time = cache_path.stat().st_mtime - 48 * 3600
+    os.utime(cache_path, (old_time, old_time))
+    current, historical = _split_pages(_build_truncated_source_html())
+    responses = iter([_Response(current), _Response(historical)])
+    monkeypatch.setattr(wikipedia.requests, "get", lambda *args, **kwargs: next(responses))
+    warning = Mock()
+    monkeypatch.setattr(wikipedia.logger, "warning", warning)
+
+    assert fetch_html(cache_path) == expected
+    assert cache_path.read_text() == expected
+    assert warning.call_args.args[-1] == "ValueError"
+
+
+def test_fetch_html_fails_closed_for_truncated_remote_source_without_cache(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A truncated HTTP-200 generation creates neither cache nor temporary sibling."""
+    current, historical = _split_pages(_build_truncated_source_html())
+    responses = iter([_Response(current), _Response(historical)])
+    monkeypatch.setattr(wikipedia.requests, "get", lambda *args, **kwargs: next(responses))
+    cache_path = tmp_path / "sp500.html"
+
+    with pytest.raises(RuntimeError, match="No valid Wikipedia") as caught:
+        fetch_html(cache_path)
+
+    assert "historical coverage" in str(caught.value.__cause__)
+    assert not cache_path.exists()
+    assert not list(tmp_path.glob(f".{cache_path.name}.*"))
+
+
+def test_fetch_html_removes_temp_sibling_after_replace_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A failed atomic replacement preserves stale bytes and removes its temp sibling."""
+    cache_path = tmp_path / "sp500.html"
+    expected = _build_valid_source_html()
+    cache_path.write_text(expected)
+    old_time = cache_path.stat().st_mtime - 48 * 3600
+    os.utime(cache_path, (old_time, old_time))
+    current, historical = _split_pages(expected)
+    responses = iter([_Response(current), _Response(historical)])
+    monkeypatch.setattr(wikipedia.requests, "get", lambda *args, **kwargs: next(responses))
+    monkeypatch.setattr(Path, "replace", Mock(side_effect=OSError("replace failed")))
+
+    assert fetch_html(cache_path) == expected
+    assert cache_path.read_text() == expected
+    assert not list(tmp_path.glob(f".{cache_path.name}.*"))
 
 
 def test_fetch_html_falls_back_to_valid_stale_cache_on_refresh_failure(

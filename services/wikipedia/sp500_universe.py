@@ -25,6 +25,13 @@ WIKIPEDIA_URL = WIKIPEDIA_CURRENT_URL
 DEFAULT_CACHE_PATH = Path("data/cache/sp500_wikipedia.html")
 CACHE_MAX_AGE_HOURS = 24
 
+# Conservative source-contract floors protect the cache boundary from publishing a
+# syntactically valid but historically truncated Wikipedia generation. These are
+# coverage floors, not assertions about the current live event count or latest date.
+MIN_HISTORICAL_EVENT_COUNT = 100
+MIN_HISTORICAL_EVENT_DATE = "1980-01-01"
+MAX_HISTORICAL_EVENT_DATE = "2017-01-01"
+
 # Conflict-free historical/current symbol aliases. Ambiguous symbols that map to
 # different securities across time are handled separately with date-bounded
 # resolution rules.
@@ -149,6 +156,13 @@ def _validate_combined_html(html: str) -> None:
         raise ValueError("Wikipedia source contains an empty current or historical set")
     if not 400 <= len(current) <= 600 or len(events) > 10000:
         raise ValueError("Wikipedia source contains implausibly large sets")
+    event_dates = {event.date for event in events}
+    if (
+        len(event_dates) < MIN_HISTORICAL_EVENT_COUNT
+        or min(event_dates) > MIN_HISTORICAL_EVENT_DATE
+        or max(event_dates) < MAX_HISTORICAL_EVENT_DATE
+    ):
+        raise ValueError("Wikipedia source fails historical coverage plausibility floors")
     ticker_pattern = re.compile(r"^[A-Z]{1,5}(?:-[A-Z])?$")
     if any(not ticker_pattern.fullmatch(ticker) for ticker in current):
         raise ValueError("Wikipedia source contains an invalid current ticker identity")
@@ -196,6 +210,7 @@ def fetch_html(cache_path: Path = DEFAULT_CACHE_PATH) -> str:
         except (OSError, ValueError) as exc:
             stale_state = f"invalid cache ({type(exc).__name__})"
 
+    temporary_path: Path | None = None
     try:
         logger.info("Fetching Wikipedia S&P 500 source generation")
         combined = _combine_source_pages(
@@ -206,8 +221,8 @@ def fetch_html(cache_path: Path = DEFAULT_CACHE_PATH) -> str:
         with tempfile.NamedTemporaryFile(
             mode="w", encoding="utf-8", dir=cache_path.parent, prefix=f".{cache_path.name}.", delete=False
         ) as temporary:
-            temporary.write(combined)
             temporary_path = Path(temporary.name)
+            temporary.write(combined)
         temporary_path.replace(cache_path)
         logger.debug("Atomically cached validated Wikipedia generation to {}", cache_path)
         return combined
@@ -221,6 +236,16 @@ def fetch_html(cache_path: Path = DEFAULT_CACHE_PATH) -> str:
         if isinstance(exc, requests.RequestException):
             raise
         raise RuntimeError("No valid Wikipedia universe source generation is available") from exc
+    finally:
+        if temporary_path is not None and temporary_path.exists():
+            try:
+                temporary_path.unlink()
+            except OSError as cleanup_exc:
+                logger.warning(
+                    "Wikipedia temporary cache cleanup failed ({}; exists={})",
+                    type(cleanup_exc).__name__,
+                    temporary_path.exists(),
+                )
 
 
 def parse_current_tickers(html: str) -> set[str]:
