@@ -10,7 +10,10 @@ This document describes deployment surfaces and responsibilities.
 
 ## External dependency roles
 
-- Wikipedia revision history: point-in-time S&P 500 membership source
+- Wikipedia current constituents plus the separate historical-components page: point-in-time
+  S&P 500 membership source. Layer 0 validates both responses as one generation and atomically
+  publishes a combined cache; it uses a validated stale cache with a warning when refresh fails,
+  and fails closed when no validated cache exists.
 - Alpaca delayed SIP market data:
   canonical historical adjusted OHLCV archives from 2017-01-01 onward
 - Alpaca News: Layer 0 raw Benzinga-sourced news archive used by Layer 1 text features
