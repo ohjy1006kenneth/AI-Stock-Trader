@@ -63,6 +63,41 @@ def test_exact_ticker_filter_is_fail_closed_and_normalizes_request() -> None:
     assert warning["excluded_ticker_count"] == 1
 
 
+def test_exact_ticker_filter_warns_for_empty_input_and_trims_request() -> None:
+    """Empty evidence is explicitly fail-closed and whitespace is ignored in the request."""
+    filtered, warning = _filter_exact_ticker_frame(
+        pd.DataFrame(columns=["ticker", "article_id"]),
+        requested_ticker=" aapl ",
+        scope="test",
+    )
+    assert filtered.empty
+    assert warning is not None
+    assert warning["state"] == "WARN"
+    assert warning["requested_ticker"] == "AAPL"
+    assert warning["input_count"] == 0
+
+
+def test_article_groups_do_not_attach_foreign_auxiliary_gate_rows() -> None:
+    """Auxiliary rows are isolated even when callers invoke the grouping helper directly."""
+    scored = pd.DataFrame([{
+        "date": "2026-05-21", "ticker": "AAPL", "article_id": "a1", "sentence_index": 0,
+        "chunk_index": 0, "headline": "Apple update", "text": "AAPL update", "relevance_score": 1.0,
+    }])
+    foreign_gate = [{
+        "date": "2026-05-21", "ticker": "AMD", "article_id": "a1", "sentence_index": 0,
+        "chunk_index": 0, "relevance_score": 0.01, "relevance_decision": "rejected",
+    }]
+    groups, _ = _build_article_groups(
+        scored,
+        requested_ticker=" aapl ",
+        relevance_threshold=0.6,
+        relevance_gate_rows=foreign_gate,
+    )
+    assert groups[0].ticker == "AAPL"
+    assert groups[0].relevance_score == pytest.approx(1.0)
+    assert groups[0].relevance_gate_rows == []
+
+
 def test_gate_provenance_overrides_stale_scored_relevance() -> None:
     """Exact gate provenance supplies the displayed score and decision."""
     scored = pd.DataFrame([{

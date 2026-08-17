@@ -2010,6 +2010,8 @@ _PIPELINE_SECTION_SAMPLE_LIMITS: dict[str, int] = {
 _ARTICLE_DETAIL_SAMPLE_LIMIT = 1
 _FINBERT_SENTENCE_SAMPLE_LIMIT = 3
 _FULL_TEXT_PREVIEW_LIMIT = 280
+_TOP_LEVEL_ARTICLE_SAMPLE_LIMIT = 25
+_TOP_LEVEL_DATE_SAMPLE_LIMIT = 50
 
 
 def _compact_layer1_semantic_review_dashboard_payload(payload: Mapping[str, object]) -> dict[str, object]:
@@ -2030,21 +2032,54 @@ def _compact_layer1_semantic_review_dashboard_payload(payload: Mapping[str, obje
         }
 
     article_groups = [dict(item) for item in _json_list(compact.get("article_groups")) if isinstance(item, Mapping)]
-    compact["article_groups"] = [_compact_article_summary_row(article) for article in article_groups]
+    accepted_articles = [
+        dict(item) for item in _json_list(compact.get("accepted_articles")) if isinstance(item, Mapping)
+    ]
+    flagged_articles = [
+        dict(item) for item in _json_list(compact.get("flagged_articles")) if isinstance(item, Mapping)
+    ]
+    compact["article_group_counts"] = {
+        "full_count": len(article_groups),
+        "sample_count": min(len(article_groups), _TOP_LEVEL_ARTICLE_SAMPLE_LIMIT),
+        "omitted_count": max(0, len(article_groups) - _TOP_LEVEL_ARTICLE_SAMPLE_LIMIT),
+        "truncated": len(article_groups) > _TOP_LEVEL_ARTICLE_SAMPLE_LIMIT,
+    }
+    compact["article_groups"] = [
+        _compact_article_summary_row(article)
+        for article in article_groups[:_TOP_LEVEL_ARTICLE_SAMPLE_LIMIT]
+    ]
+    compact["accepted_article_counts"] = {
+        "full_count": len(accepted_articles),
+        "sample_count": min(len(accepted_articles), _TOP_LEVEL_ARTICLE_SAMPLE_LIMIT),
+        "omitted_count": max(0, len(accepted_articles) - _TOP_LEVEL_ARTICLE_SAMPLE_LIMIT),
+        "truncated": len(accepted_articles) > _TOP_LEVEL_ARTICLE_SAMPLE_LIMIT,
+    }
     compact["accepted_articles"] = [
         _compact_article_summary_row(article)
-        for article in _json_list(compact.get("accepted_articles"))
-        if isinstance(article, Mapping)
+        for article in accepted_articles[:_TOP_LEVEL_ARTICLE_SAMPLE_LIMIT]
     ]
+    compact["flagged_article_counts"] = {
+        "full_count": len(flagged_articles),
+        "sample_count": min(len(flagged_articles), _TOP_LEVEL_ARTICLE_SAMPLE_LIMIT),
+        "omitted_count": max(0, len(flagged_articles) - _TOP_LEVEL_ARTICLE_SAMPLE_LIMIT),
+        "truncated": len(flagged_articles) > _TOP_LEVEL_ARTICLE_SAMPLE_LIMIT,
+    }
     compact["flagged_articles"] = [
         _compact_article_summary_row(article)
-        for article in _json_list(compact.get("flagged_articles"))
-        if isinstance(article, Mapping)
+        for article in flagged_articles[:_TOP_LEVEL_ARTICLE_SAMPLE_LIMIT]
     ]
+    date_groups = [
+        dict(item) for item in _json_list(compact.get("date_groups")) if isinstance(item, Mapping)
+    ]
+    compact["date_group_counts"] = {
+        "full_count": len(date_groups),
+        "sample_count": min(len(date_groups), _TOP_LEVEL_DATE_SAMPLE_LIMIT),
+        "omitted_count": max(0, len(date_groups) - _TOP_LEVEL_DATE_SAMPLE_LIMIT),
+        "truncated": len(date_groups) > _TOP_LEVEL_DATE_SAMPLE_LIMIT,
+    }
     compact["date_groups"] = [
         _compact_date_summary_row(dict(item))
-        for item in _json_list(compact.get("date_groups"))
-        if isinstance(item, Mapping)
+        for item in date_groups[:_TOP_LEVEL_DATE_SAMPLE_LIMIT]
     ]
 
     article_review = _json_mapping(compact.get("article_review"))
@@ -2195,14 +2230,20 @@ def _compact_article_review(review: Mapping[str, object]) -> dict[str, object]:
     ]
     compact["accepted_articles"] = [
         _compact_article_group_row(article)
-        for article in _json_list(compact.get("accepted_articles"))
+        for article in _json_list(compact.get("accepted_articles"))[:_TOP_LEVEL_ARTICLE_SAMPLE_LIMIT]
         if isinstance(article, Mapping)
     ]
     compact["contamination_articles"] = [
         _compact_article_group_row(article)
-        for article in _json_list(compact.get("contamination_articles"))
+        for article in _json_list(compact.get("contamination_articles"))[:_TOP_LEVEL_ARTICLE_SAMPLE_LIMIT]
         if isinstance(article, Mapping)
     ]
+    compact["accepted_articles_truncated"] = len(_json_list(review.get("accepted_articles"))) > len(
+        compact["accepted_articles"]
+    )
+    compact["contamination_articles_truncated"] = len(_json_list(review.get("contamination_articles"))) > len(
+        compact["contamination_articles"]
+    )
     return compact
 
 
@@ -2211,9 +2252,13 @@ def _compact_finbert_sentence_review(review: Mapping[str, object]) -> dict[str, 
     compact = dict(review)
     compact["articles"] = [
         _compact_finbert_article(article)
-        for article in _json_list(compact.get("articles"))
+        for article in _json_list(compact.get("articles"))[:_TOP_LEVEL_ARTICLE_SAMPLE_LIMIT]
         if isinstance(article, Mapping)
     ]
+    compact["article_full_count"] = len(_json_list(review.get("articles")))
+    compact["article_sample_count"] = len(compact["articles"])
+    compact["article_omitted_count"] = compact["article_full_count"] - compact["article_sample_count"]
+    compact["articles_truncated"] = compact["article_omitted_count"] > 0
     compact["missing_text_warnings"] = [
         dict(item)
         for item in _json_list(compact.get("missing_text_warnings"))[:25]
@@ -2273,9 +2318,13 @@ def _compact_topic_relevance_review(review: Mapping[str, object]) -> dict[str, o
     ]
     compact["articles"] = [
         _compact_topic_relevance_article_row(article)
-        for article in _json_list(compact.get("articles"))
+        for article in _json_list(compact.get("articles"))[:_TOP_LEVEL_ARTICLE_SAMPLE_LIMIT]
         if isinstance(article, Mapping)
     ]
+    compact["article_full_count"] = len(_json_list(review.get("articles")))
+    compact["article_sample_count"] = len(compact["articles"])
+    compact["article_omitted_count"] = compact["article_full_count"] - compact["article_sample_count"]
+    compact["articles_truncated"] = compact["article_omitted_count"] > 0
     compact["missing_evidence_blockers"] = [
         dict(item)
         for item in _json_list(compact.get("missing_evidence_blockers"))[:25]

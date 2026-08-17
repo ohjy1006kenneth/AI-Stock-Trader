@@ -458,7 +458,7 @@ def build_layer1_aapl_evidence_report(
     scored_frame, isolation_warning = _filter_exact_ticker_frame(
         scored_frame, requested_ticker=requested_ticker, scope="news_sentiment_scored"
     )
-    if isolation_warning is not None:
+    if isolation_warning is not None and isolation_warning.get("state") != "PASS":
         load_warnings.append(isolation_warning)
 
     filtered_auxiliary_frames: list[tuple[str, pd.DataFrame]] = []
@@ -471,13 +471,19 @@ def build_layer1_aapl_evidence_report(
         filtered_frame, auxiliary_warning = _filter_exact_ticker_frame(
             auxiliary_frame, requested_ticker=requested_ticker, scope=scope
         )
-        if auxiliary_warning is not None:
+        if auxiliary_warning is not None and auxiliary_warning.get("state") != "PASS":
             load_warnings.append(auxiliary_warning)
         filtered_auxiliary_frames.append((scope, filtered_frame))
     preprocessing_frame = filtered_auxiliary_frames[0][1]
     topic_label_frame = filtered_auxiliary_frames[1][1]
     relevance_gate_frame = filtered_auxiliary_frames[2][1]
     semantic_aggregate_frame = filtered_auxiliary_frames[3][1]
+    if "ticker" in embedding_frame.columns:
+        embedding_frame, embedding_warning = _filter_exact_ticker_frame(
+            embedding_frame, requested_ticker=requested_ticker, scope="text_embeddings"
+        )
+        if embedding_warning is not None and embedding_warning.get("state") != "PASS":
+            load_warnings.append(embedding_warning)
     preprocessing_rows = _preprocessing_rows(preprocessing_frame, requested_ticker=requested_ticker)
     target_article_ids = set(scored_frame.get("article_id", pd.Series(dtype=object)).dropna().astype(str))
     embedding_rows = _embedding_rows(embedding_frame, article_ids=target_article_ids)
@@ -492,6 +498,7 @@ def build_layer1_aapl_evidence_report(
         semantic_aggregate_frame,
         requested_ticker=requested_ticker,
     )
+
     article_groups, article_summary = _build_article_groups(
         scored_frame,
         requested_ticker=requested_ticker,
@@ -600,6 +607,7 @@ def _build_article_groups(
     topic_label_rows: Sequence[Mapping[str, object]] = (),
     relevance_gate_rows: Sequence[Mapping[str, object]] = (),
 ) -> tuple[list[SemanticReviewArticleGroup], dict[str, int]]:
+    requested_ticker = requested_ticker.strip().upper()
     if frame.empty:
         return [], {
             "row_count": 0,
@@ -628,8 +636,19 @@ def _build_article_groups(
             "sentence_count": 0,
         }
     preprocessing_by_article = _rows_by_article(preprocessing_rows)
-    topic_by_article = _rows_by_article(topic_label_rows)
-    relevance_by_article = _rows_by_article(relevance_gate_rows)
+    filtered_auxiliary_rows: list[Sequence[Mapping[str, object]]] = []
+    for rows in (preprocessing_rows, topic_label_rows, relevance_gate_rows):
+        filtered_auxiliary_rows.append(
+            [
+                dict(row)
+                for row in rows
+                if (_optional_str(row.get("ticker")) or "").strip().upper()
+                == requested_ticker
+            ]
+        )
+    preprocessing_by_article = _rows_by_article(filtered_auxiliary_rows[0])
+    topic_by_article = _rows_by_article(filtered_auxiliary_rows[1])
+    relevance_by_article = _rows_by_article(filtered_auxiliary_rows[2])
     normalized["normalized_headline"] = normalized["headline"].map(_normalize_headline)
     normalized["sentence_index_key"] = normalized["sentence_index"].where(
         normalized["sentence_index"].notna(),
@@ -812,7 +831,11 @@ def _build_article_groups(
                 duplicate_sentence_count=duplicate_sentence_count,
                 headline_duplicate_count=headline_duplicate_count,
                 relevance_score=relevance_score,
-                relevance_state=_relevance_state(relevance_score, threshold=relevance_threshold),
+                relevance_state=_relevance_state_from_gate(
+                    matched_gate_rows,
+                    relevance_score,
+                    threshold=relevance_threshold,
+                ),
                 article_status=article_status,
                 contamination_flags=tuple(contamination_flags),
                 assignment_classifications=assignment_classifications,
@@ -1013,9 +1036,21 @@ def _filter_exact_ticker_frame(
     scope: str,
 ) -> tuple[pd.DataFrame, dict[str, object] | None]:
     """Fail closed to rows whose own ticker exactly matches the requested ticker."""
+    requested_ticker = requested_ticker.strip().upper()
     input_count = int(len(frame))
     if frame.empty:
-        return frame.copy(), None
+        return frame.copy(), {
+            "scope": "ticker_isolation",
+            "stage": scope,
+            "state": "WARN",
+            "message": "No ticker-bearing evidence rows were available for exact ticker isolation.",
+            "input_count": 0,
+            "kept_count": 0,
+            "filtered_count": 0,
+            "missing_ticker_count": 0,
+            "excluded_ticker_count": 0,
+            "requested_ticker": requested_ticker,
+        }
     normalized = frame.copy()
     normalized.columns = [str(column) for column in normalized.columns]
     if "ticker" not in normalized.columns:
@@ -1037,6 +1072,7 @@ def _filter_exact_ticker_frame(
     normalized_ticker = ticker_values.fillna("").str.strip().str.upper()
     keep_mask = normalized_ticker.eq(requested_ticker)
     kept = normalized.loc[keep_mask].copy()
+    kept["ticker"] = requested_ticker
     missing_count = int(missing_mask.sum())
     excluded_count = int((~missing_mask & ~keep_mask).sum())
     warning = {
@@ -2946,6 +2982,25 @@ def _relevance_state(value: float | None, *, threshold: float) -> str:
     if value < threshold:
         return "weak"
     return "strong"
+
+
+def _relevance_state_from_gate(
+    gate_rows: Sequence[Mapping[str, object]],
+    value: float | None,
+    *,
+    threshold: float,
+) -> str:
+    """Prefer the source gate decision while retaining score-based legacy fallback."""
+    decisions = sorted(
+        {
+            decision
+            for decision in (_optional_str(row.get("relevance_decision")) for row in gate_rows)
+            if decision
+        }
+    )
+    if decisions:
+        return decisions[0]
+    return _relevance_state(value, threshold=threshold)
 
 
 def _first_existing_column(frame: pd.DataFrame, candidates: Sequence[str]) -> str | None:

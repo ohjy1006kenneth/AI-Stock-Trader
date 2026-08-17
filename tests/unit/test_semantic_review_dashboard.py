@@ -32,6 +32,26 @@ from services.r2.writer import R2Writer
 from tests.fixtures.semantic_review_support import seed_semantic_review_fixture
 
 
+def test_semantic_review_payload_bounds_high_cardinality_article_indexes() -> None:
+    """High-cardinality article detail is sampled while authoritative counts remain explicit."""
+    report_dict: dict[str, object] = {
+        "ticker": "AAPL",
+        "article_groups": [
+            {"article_id": f"aapl-{index:04d}", "article_status": "accepted"}
+            for index in range(500)
+        ],
+    }
+    payload = cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report_dict))
+    assert len(json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")) < 200_000
+    assert payload["article_group_counts"] == {
+        "full_count": 500,
+        "sample_count": 25,
+        "omitted_count": 475,
+        "truncated": True,
+    }
+    assert payload["accepted_article_counts"]["full_count"] == 500
+
+
 def test_semantic_review_report_includes_benchmark_rows(tmp_path: Path) -> None:
     """The report should load the SPY benchmark alongside the selected ticker."""
     fixture = seed_semantic_review_fixture(local_root=tmp_path / "r2")
