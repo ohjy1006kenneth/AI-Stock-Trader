@@ -18,6 +18,8 @@ from core.features.aapl_accuracy import (
     build_aapl_feature_accuracy_report,
 )
 from core.features.aapl_evidence import (
+    _build_article_groups,
+    _filter_exact_ticker_frame,
     build_aapl_pilot_evidence_bundle,
     build_layer1_aapl_evidence_report,
     render_aapl_pilot_human_review_csv,
@@ -44,6 +46,40 @@ from tests.fixtures.layer1_support import (
     local_writer,
     seed_layer0_archives,
 )
+
+
+def test_exact_ticker_filter_is_fail_closed_and_normalizes_request() -> None:
+    """Foreign, blank, and missing tickers never enter target evidence."""
+    frame = pd.DataFrame(
+        [{"ticker": " aapl ", "date": "2026-05-21"}, {"ticker": "AMD", "date": "2026-05-21"},
+         {"ticker": "", "date": "2026-05-21"}, {"ticker": None, "date": "2026-05-21"}]
+    )
+    filtered, warning = _filter_exact_ticker_frame(frame, requested_ticker="AAPL", scope="test")
+    assert len(filtered) == 1
+    assert warning is not None
+    assert warning["input_count"] == 4
+    assert warning["kept_count"] == 1
+    assert warning["missing_ticker_count"] == 2
+    assert warning["excluded_ticker_count"] == 1
+
+
+def test_gate_provenance_overrides_stale_scored_relevance() -> None:
+    """Exact gate provenance supplies the displayed score and decision."""
+    scored = pd.DataFrame([{
+        "date": "2026-05-21", "ticker": "AAPL", "article_id": "a1", "sentence_index": 0,
+        "chunk_index": 0, "headline": "Apple update", "text": "AAPL update", "relevance_score": 1.0,
+    }])
+    gate = [{
+        "date": "2026-05-21", "ticker": "AAPL", "article_id": "a1", "sentence_index": 0,
+        "chunk_index": 0, "relevance_score": 0.293, "relevance_decision": "borderline",
+    }]
+    groups, summary = _build_article_groups(scored, requested_ticker="AAPL", relevance_threshold=0.6,
+                                             relevance_gate_rows=gate)
+    assert summary["row_count"] == 1
+    assert groups[0].relevance_score == pytest.approx(0.293)
+    assert groups[0].relevance_state == "borderline"
+    assert groups[0].sentence_rows[0]["relevance_score"] == pytest.approx(0.293)
+    assert groups[0].sentence_rows[0]["relevance_decision"] == "borderline"
 
 
 def test_build_aapl_pilot_evidence_bundle_separates_machine_and_human_review(

@@ -2063,7 +2063,9 @@ def _compact_layer1_semantic_review_dashboard_payload(payload: Mapping[str, obje
     compact["pipeline_section_counts"] = {
         str(key): {
             "row_count": len(rows),
+            "full_count": len(rows),
             "sample_count": min(len(rows), _PIPELINE_SECTION_SAMPLE_LIMITS.get(str(key), 1)),
+            "omitted_count": max(0, len(rows) - _PIPELINE_SECTION_SAMPLE_LIMITS.get(str(key), 1)),
             "truncated": len(rows) > _PIPELINE_SECTION_SAMPLE_LIMITS.get(str(key), 1),
         }
         for key, rows in ((str(key), _json_list(value)) for key, value in pipeline_sections.items())
@@ -2146,6 +2148,9 @@ def _compact_article_group_row(article: Mapping[str, object]) -> dict[str, objec
         compact.pop("full_scored_text", None)
     compact["preprocessing_rows"] = preprocessing_rows
     compact["preprocessing_row_count"] = len(_json_list(article.get("preprocessing_rows")))
+    compact["preprocessing_full_count"] = compact["preprocessing_row_count"]
+    compact["preprocessing_sample_count"] = len(preprocessing_rows)
+    compact["preprocessing_omitted_count"] = compact["preprocessing_row_count"] - len(preprocessing_rows)
     compact["preprocessing_rows_truncated"] = compact["preprocessing_row_count"] > len(preprocessing_rows)
     compact["topic_evidence"] = topic_evidence
     compact["topic_evidence_row_count"] = len(_json_list(article.get("topic_evidence")))
@@ -2242,6 +2247,9 @@ def _compact_finbert_article(article: Mapping[str, object]) -> dict[str, object]
         compact.pop("full_scored_text", None)
     compact["preprocessing_rows"] = preprocessing_rows
     compact["preprocessing_row_count"] = len(_json_list(article.get("preprocessing_rows")))
+    compact["preprocessing_full_count"] = compact["preprocessing_row_count"]
+    compact["preprocessing_sample_count"] = len(preprocessing_rows)
+    compact["preprocessing_omitted_count"] = compact["preprocessing_row_count"] - len(preprocessing_rows)
     compact["preprocessing_rows_truncated"] = compact["preprocessing_row_count"] > len(preprocessing_rows)
     compact["topic_evidence"] = topic_evidence
     compact["topic_evidence_row_count"] = len(_json_list(article.get("topic_evidence")))
@@ -2308,6 +2316,9 @@ def _compact_topic_relevance_article_row(article: Mapping[str, object]) -> dict[
     sentence_rows = _sample_mapping_rows(compact.get("sentence_rows"), limit=_FINBERT_SENTENCE_SAMPLE_LIMIT)
     compact["preprocessing_rows"] = preprocessing_rows
     compact["preprocessing_row_count"] = len(_json_list(article.get("preprocessing_rows")))
+    compact["preprocessing_full_count"] = compact["preprocessing_row_count"]
+    compact["preprocessing_sample_count"] = len(preprocessing_rows)
+    compact["preprocessing_omitted_count"] = compact["preprocessing_row_count"] - len(preprocessing_rows)
     compact["preprocessing_rows_truncated"] = compact["preprocessing_row_count"] > len(preprocessing_rows)
     compact["embedding_evidence"] = embedding_evidence
     compact["embedding_evidence_row_count"] = len(_json_list(article.get("embedding_evidence")))

@@ -455,8 +455,32 @@ def build_layer1_aapl_evidence_report(
     else:
         scored_frame = pd.DataFrame()
 
+    scored_frame, isolation_warning = _filter_exact_ticker_frame(
+        scored_frame, requested_ticker=requested_ticker, scope="news_sentiment_scored"
+    )
+    if isolation_warning is not None:
+        load_warnings.append(isolation_warning)
+
+    filtered_auxiliary_frames: list[tuple[str, pd.DataFrame]] = []
+    for scope, auxiliary_frame in (
+        ("news_preprocessing", preprocessing_frame),
+        ("topic_labels", topic_label_frame),
+        ("news_relevance_gate", relevance_gate_frame),
+        ("sentiment_features", semantic_aggregate_frame),
+    ):
+        filtered_frame, auxiliary_warning = _filter_exact_ticker_frame(
+            auxiliary_frame, requested_ticker=requested_ticker, scope=scope
+        )
+        if auxiliary_warning is not None:
+            load_warnings.append(auxiliary_warning)
+        filtered_auxiliary_frames.append((scope, filtered_frame))
+    preprocessing_frame = filtered_auxiliary_frames[0][1]
+    topic_label_frame = filtered_auxiliary_frames[1][1]
+    relevance_gate_frame = filtered_auxiliary_frames[2][1]
+    semantic_aggregate_frame = filtered_auxiliary_frames[3][1]
     preprocessing_rows = _preprocessing_rows(preprocessing_frame, requested_ticker=requested_ticker)
-    embedding_rows = _embedding_rows(embedding_frame)
+    target_article_ids = set(scored_frame.get("article_id", pd.Series(dtype=object)).dropna().astype(str))
+    embedding_rows = _embedding_rows(embedding_frame, article_ids=target_article_ids)
     topic_review = build_topic_review_payload(topic_label_frame)
     topic_label_rows = _topic_label_rows(
         topic_label_frame,
@@ -589,6 +613,20 @@ def _build_article_groups(
         }
 
     normalized = _normalize_scored_frame(frame)
+    normalized, _ = _filter_exact_ticker_frame(
+        normalized, requested_ticker=requested_ticker, scope="news_sentiment_scored"
+    )
+    if normalized.empty:
+        return [], {
+            "row_count": 0,
+            "article_count": 0,
+            "accepted_article_count": 0,
+            "flagged_article_count": 0,
+            "duplicate_article_count": 0,
+            "repeated_headline_count": 0,
+            "weak_article_count": 0,
+            "sentence_count": 0,
+        }
     preprocessing_by_article = _rows_by_article(preprocessing_rows)
     topic_by_article = _rows_by_article(topic_label_rows)
     relevance_by_article = _rows_by_article(relevance_gate_rows)
@@ -650,11 +688,25 @@ def _build_article_groups(
                 for snippet in snippets
             )
         )
-        relevance_scores = [
-            score for score in (_maybe_float(value) for value in article_frame["relevance_score"])
-            if score is not None
+        article_relevance_rows = relevance_by_article.get((str(date_text), str(article_id)), [])
+        matched_gate_rows = [
+            gate_row
+            for _, scored_row in article_frame.iterrows()
+            if (gate_row := _matching_gate_row(scored_row, article_relevance_rows)) is not None
         ]
-        relevance_score = min(relevance_scores) if relevance_scores else None
+        if matched_gate_rows:
+            relevance_scores = [
+                score
+                for score in (_maybe_float(row.get("relevance_score")) for row in matched_gate_rows)
+                if score is not None
+            ]
+            relevance_score = min(relevance_scores) if relevance_scores else None
+        else:
+            relevance_scores = [
+                score for score in (_maybe_float(value) for value in article_frame["relevance_score"])
+                if score is not None
+            ]
+            relevance_score = min(relevance_scores) if relevance_scores else None
         ticker_field = str(_first_non_null(article_frame["ticker"]))
         contamination_flags: list[str] = []
         if ticker_field and ticker_field != requested_ticker:
@@ -679,6 +731,8 @@ def _build_article_groups(
 
         sentence_rows: list[dict[str, object]] = []
         for _, row in article_frame.iterrows():
+            gate_row = _matching_gate_row(row, article_relevance_rows)
+            relevance_source = gate_row if gate_row is not None else row
             assignment_fields = _assignment_provenance_fields(
                 row,
                 fallback_rows=preprocessing_by_article.get((str(date_text), str(article_id)), []),
@@ -696,7 +750,7 @@ def _build_article_groups(
                     positive_probability=_maybe_float(row["positive_probability"]),
                     negative_probability=_maybe_float(row["negative_probability"]),
                     neutral_probability=_maybe_float(row["neutral_probability"]),
-                    relevance_score=_maybe_float(row["relevance_score"]),
+                    relevance_score=_maybe_float(relevance_source.get("relevance_score")),
                     assignment_classification=assignment_fields["assignment_classification"],
                     assignment_reason=assignment_fields["assignment_reason"],
                     assignment_weight=assignment_fields["assignment_weight"],
@@ -704,6 +758,20 @@ def _build_article_groups(
                     row_granularity="sentence-level",
                 ).to_dict()
             )
+            if gate_row is not None:
+                sentence_rows[-1].update(
+                    {
+                        field: gate_row.get(field)
+                        for field in (
+                            "relevance_decision", "relevance_category", "target_context_score",
+                            "direct_target_relevance", "target_company_impact_direction",
+                            "target_company_impact_magnitude", "impact_horizon", "causal_channel",
+                            "target_impact_confidence", "article_contamination_ratio",
+                            "article_contribution_weight", "reason_codes", "included_in_signal",
+                            "final_contribution", "final_signal_contribution", "source_text_provenance",
+                        )
+                    }
+                )
         assignment_classifications = tuple(
             _dedupe_preserve_order(
                 [
@@ -728,7 +796,6 @@ def _build_article_groups(
                 ]
             )
         )
-        article_relevance_rows = relevance_by_article.get((str(date_text), str(article_id)), [])
         article_groups.append(
             SemanticReviewArticleGroup(
                 article_id=str(article_id),
@@ -937,6 +1004,85 @@ def _normalize_scored_frame(frame: pd.DataFrame) -> pd.DataFrame:
         normalized[column] = normalized[column].map(_maybe_float)
     normalized = normalized[normalized["date"].astype(bool)]
     return normalized
+
+
+def _filter_exact_ticker_frame(
+    frame: pd.DataFrame,
+    *,
+    requested_ticker: str,
+    scope: str,
+) -> tuple[pd.DataFrame, dict[str, object] | None]:
+    """Fail closed to rows whose own ticker exactly matches the requested ticker."""
+    input_count = int(len(frame))
+    if frame.empty:
+        return frame.copy(), None
+    normalized = frame.copy()
+    normalized.columns = [str(column) for column in normalized.columns]
+    if "ticker" not in normalized.columns:
+        warning = {
+            "scope": "ticker_isolation",
+            "stage": scope,
+            "state": "WARN",
+            "message": "Ticker-bearing evidence has no ticker column; excluded fail-closed.",
+            "input_count": input_count,
+            "kept_count": 0,
+            "filtered_count": input_count,
+            "missing_ticker_count": input_count,
+            "excluded_ticker_count": 0,
+        }
+        return normalized.iloc[0:0].copy(), warning
+    raw_ticker = normalized["ticker"]
+    ticker_values = raw_ticker.map(_optional_str)
+    missing_mask = ticker_values.isna() | ticker_values.str.strip().eq("")
+    normalized_ticker = ticker_values.fillna("").str.strip().str.upper()
+    keep_mask = normalized_ticker.eq(requested_ticker)
+    kept = normalized.loc[keep_mask].copy()
+    missing_count = int(missing_mask.sum())
+    excluded_count = int((~missing_mask & ~keep_mask).sum())
+    warning = {
+        "scope": "ticker_isolation",
+        "stage": scope,
+        "state": "WARN" if not keep_mask.all() else "PASS",
+        "message": "Applied exact normalized ticker isolation before evidence assembly.",
+        "input_count": input_count,
+        "kept_count": int(keep_mask.sum()),
+        "filtered_count": int((~keep_mask).sum()),
+        "missing_ticker_count": missing_count,
+        "excluded_ticker_count": excluded_count,
+        "requested_ticker": requested_ticker,
+    }
+    return kept, warning
+
+
+def _matching_gate_row(
+    scored_row: Mapping[str, object],
+    gate_rows: Sequence[Mapping[str, object]],
+) -> dict[str, object] | None:
+    """Select a deterministic exact-granularity relevance-gate row."""
+    key = (
+        _optional_str(scored_row.get("date")) or "",
+        (_optional_str(scored_row.get("ticker")) or "").strip().upper(),
+        _optional_str(scored_row.get("article_id")) or "",
+        _maybe_int(scored_row.get("sentence_index")),
+        _maybe_int(scored_row.get("chunk_index")),
+    )
+    candidates = []
+    for row in gate_rows:
+        candidate_key = (
+            _optional_str(row.get("date")) or "",
+            (_optional_str(row.get("ticker")) or "").strip().upper(),
+            _optional_str(row.get("article_id")) or "",
+            _maybe_int(row.get("sentence_index")),
+            _maybe_int(row.get("chunk_index")),
+        )
+        if candidate_key == key and key[1]:
+            candidates.append(dict(row))
+    if not candidates:
+        return None
+    return sorted(
+        candidates,
+        key=lambda row: json.dumps(_json_safe(row), sort_keys=True, default=str),
+    )[0]
 
 
 def _read_parquet_frame(data: bytes) -> pd.DataFrame:
@@ -1583,6 +1729,9 @@ def _preprocessing_rows(
     normalized.columns = [str(column) for column in normalized.columns]
     rows: list[dict[str, object]] = []
     for _, row in normalized.iterrows():
+        row_ticker = _optional_str(row.get("ticker"))
+        if not row_ticker or row_ticker.strip().upper() != requested_ticker:
+            continue
         ticker_mentions = _json_string_list(row.get("ticker_mentions"))
         entity_mentions = _json_string_list(row.get("entity_mentions"))
         provenance = _json_mapping(row.get("source_text_provenance"))
@@ -1625,7 +1774,11 @@ def _preprocessing_rows(
     return _sort_evidence_rows(rows)
 
 
-def _embedding_rows(frame: pd.DataFrame) -> list[dict[str, object]]:
+def _embedding_rows(
+    frame: pd.DataFrame,
+    *,
+    article_ids: set[str] | None = None,
+) -> list[dict[str, object]]:
     """Return normalized article embedding cache rows for dashboard review."""
     if frame.empty:
         return []
@@ -1633,6 +1786,9 @@ def _embedding_rows(frame: pd.DataFrame) -> list[dict[str, object]]:
     normalized.columns = [str(column) for column in normalized.columns]
     rows: list[dict[str, object]] = []
     for _, row in normalized.iterrows():
+        article_id_value = _optional_str(row.get("article_id"))
+        if article_ids is not None and (not article_id_value or article_id_value not in article_ids):
+            continue
         embedding_vector = _json_list(row.get("embedding_json"))
         rows.append(
             {
@@ -1670,9 +1826,10 @@ def _topic_label_rows(
                 review_rows_by_article_id[article_id] = review_row
     rows: list[dict[str, object]] = []
     for _, row in normalized.iterrows():
-        ticker = (_optional_str(row.get("ticker")) or "").upper()
-        if ticker and ticker != requested_ticker:
+        ticker_value = _optional_str(row.get("ticker"))
+        if not ticker_value or ticker_value.strip().upper() != requested_ticker:
             continue
+        ticker = ticker_value.strip().upper()
         article_id = _optional_str(row.get("article_id"))
         review_row = review_rows_by_article_id.get(article_id or "")
         rows.append(
@@ -1729,9 +1886,10 @@ def _relevance_gate_rows(
     normalized.columns = [str(column) for column in normalized.columns]
     rows: list[dict[str, object]] = []
     for _, row in normalized.iterrows():
-        ticker = (_optional_str(row.get("ticker")) or "").upper()
-        if ticker and ticker != requested_ticker:
+        ticker_value = _optional_str(row.get("ticker"))
+        if not ticker_value or ticker_value.strip().upper() != requested_ticker:
             continue
+        ticker = ticker_value.strip().upper()
         rows.append(
             {
                 "date": _optional_str(row.get("date")),
@@ -1794,9 +1952,10 @@ def _semantic_aggregate_rows(
     normalized.columns = [str(column) for column in normalized.columns]
     rows: list[dict[str, object]] = []
     for _, row in normalized.iterrows():
-        ticker = (_optional_str(row.get("ticker")) or "").upper()
-        if ticker and ticker != requested_ticker:
+        ticker_value = _optional_str(row.get("ticker"))
+        if not ticker_value or ticker_value.strip().upper() != requested_ticker:
             continue
+        ticker = ticker_value.strip().upper()
         features = _json_mapping(row.get("features"))
         rows.append(
             {
