@@ -2012,6 +2012,8 @@ _FINBERT_SENTENCE_SAMPLE_LIMIT = 3
 _FULL_TEXT_PREVIEW_LIMIT = 280
 _TOP_LEVEL_ARTICLE_SAMPLE_LIMIT = 25
 _TOP_LEVEL_DATE_SAMPLE_LIMIT = 50
+_UNKNOWN_PIPELINE_SECTION_LIMIT = 4
+_MISSING = object()
 
 
 def _compact_layer1_semantic_review_dashboard_payload(payload: Mapping[str, object]) -> dict[str, object]:
@@ -2095,6 +2097,13 @@ def _compact_layer1_semantic_review_dashboard_payload(payload: Mapping[str, obje
         compact["finbert_sentence_review"] = _compact_finbert_sentence_review(finbert_sentence_review)
 
     pipeline_sections = _json_mapping(compact.get("pipeline_sections"))
+    known_sections = tuple(_PIPELINE_SECTION_SAMPLE_LIMITS)
+    section_items = {str(key): value for key, value in pipeline_sections.items()}
+    unknown_keys = sorted(set(section_items) - set(known_sections))
+    kept_unknown = unknown_keys[:4]
+    section_keys = set(known_sections) | set(kept_unknown)
+    for key in known_sections:
+        section_items.setdefault(key, _MISSING)
     compact["pipeline_section_counts"] = {
         str(key): {
             "row_count": len(rows),
@@ -2103,15 +2112,15 @@ def _compact_layer1_semantic_review_dashboard_payload(payload: Mapping[str, obje
             "omitted_count": max(0, len(rows) - _PIPELINE_SECTION_SAMPLE_LIMITS.get(str(key), 1)),
             "truncated": len(rows) > _PIPELINE_SECTION_SAMPLE_LIMITS.get(str(key), 1),
         }
-        for key, rows in ((str(key), _json_list(value)) for key, value in pipeline_sections.items())
+        for key, rows in ((str(key), _json_list(value)) for key, value in section_items.items() if key in section_keys)
     }
     compact["pipeline_sections"] = {
-        str(key): [
-            dict(item)
-            for item in _json_list(value)[: _PIPELINE_SECTION_SAMPLE_LIMITS.get(str(key), 1)]
-            if isinstance(item, Mapping)
-        ]
-        for key, value in pipeline_sections.items()
+        key: _compact_fixed_section_rows(
+            value,
+            _PIPELINE_SECTION_SAMPLE_LIMITS.get(key, 1) if key in known_sections else _UNKNOWN_PIPELINE_SECTION_LIMIT,
+        )
+        for key, value in section_items.items()
+        if key in section_keys
     }
     return compact
 
@@ -2395,6 +2404,54 @@ def _compact_topic_relevance_article_row(article: Mapping[str, object]) -> dict[
         ) else None
     )
     return compact
+
+
+_FIXED_ROW_SCALAR_KEYS = frozenset(
+    {
+        "date", "ticker", "article_id", "sentence_index", "chunk_index", "chunk_id", "topic_id",
+        "run_id", "stage", "status", "state", "label", "headline", "normalized_headline",
+        "article_status", "relevance_decision", "relevance_score", "relevance_category",
+        "target_context_score", "target_company_impact_direction", "target_company_impact_magnitude",
+        "article_contribution_weight", "final_contribution", "included_in_signal", "regime",
+        "close", "open", "high", "low", "volume", "adj_close", "price", "probability",
+        "positive", "negative", "neutral", "sentiment_score", "reason", "warning", "message",
+        "source_text_field", "source_text_order", "source_character_count", "missing_text_state",
+        "extraction_status", "selection_status", "artifact_key", "model", "model_version",
+    }
+)
+
+
+_FIXED_ROW_LIST_KEYS = frozenset(
+    {
+        "article_ids", "ticker_mentions", "entity_mentions", "source_tickers", "topic_keywords",
+        "reason_codes", "warning_codes", "assignment_evidence_kinds", "requested_ticker_terms",
+        "requested_ticker_term_hits", "missing_evidence_flags", "resolved_artifact_keys",
+    }
+)
+
+
+def _compact_fixed_section_rows(value: object, limit: int) -> list[dict[str, object]]:
+    """Project known and unknown pipeline rows to bounded approved fields."""
+    rows, _ = _bounded_mappings(value, limit)
+    projected: list[dict[str, object]] = []
+    for row in rows:
+        item: dict[str, object] = {}
+        for key, raw_value in row.items():
+            name = str(key)
+            if name == "source_text_provenance":
+                continue
+            if name not in _FIXED_ROW_SCALAR_KEYS and name not in _FIXED_ROW_LIST_KEYS:
+                continue
+            if isinstance(raw_value, Mapping):
+                continue
+            if isinstance(raw_value, Sequence) and not isinstance(raw_value, (str, bytes, bytearray)):
+                if name not in _FIXED_ROW_LIST_KEYS:
+                    continue
+                item[name] = [_bound_json_value(member, key=name) for member in list(raw_value)[:8] if not isinstance(member, Mapping)]
+                continue
+            item[name] = _bound_json_value(raw_value, key=name)
+        projected.append(item)
+    return projected
 
 
 def _sample_mapping_rows(value: object, *, limit: int) -> list[dict[str, object]]:
