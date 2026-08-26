@@ -248,7 +248,7 @@ def latest_target(now: datetime | None = None) -> str:
 
 
 def ready_reports(client: R2Client) -> dict[str, dict[str, Any]]:
-    """Return only durable validation reports explicitly ready for Layer 2."""
+    """Return proven full-universe validation coverage keyed by session date."""
     reports: dict[str, dict[str, Any]] = {}
     for key in client.list_keys("artifacts/reports/integration/"):
         match = REPORT_RE.search(Path(key).name)
@@ -266,10 +266,40 @@ def ready_reports(client: R2Client) -> dict[str, dict[str, Any]]:
             or payload.get("to_date") != match.group("to")
         ):
             continue
-        target = match.group("to")
-        if target not in reports or str(payload.get("manifest_finished_at", "")) > str(reports[target].get("manifest_finished_at", "")):
-            payload["report_key"] = key
-            reports[target] = payload
+        try:
+            if match.group("from") > match.group("to"):
+                continue
+            expected_dates = list(trading_dates(match.group("from"), match.group("to")))
+            manifest_key = payload.get("manifest_key")
+            if not isinstance(manifest_key, str) or not manifest_key:
+                continue
+            manifest = json.loads(client.get_object(manifest_key).decode("utf-8"))
+            metadata = manifest.get("metadata") if isinstance(manifest, dict) else None
+            processed_dates = metadata.get("processed_dates") if isinstance(metadata, dict) else None
+            requested_tickers = metadata.get("requested_tickers") if isinstance(metadata, dict) else None
+            if (
+                not isinstance(manifest, dict)
+                or manifest.get("run_id") != payload["run_id"]
+                or manifest.get("stage") != "layer1"
+                or manifest.get("status") != "completed"
+                or requested_tickers != []
+                or not isinstance(processed_dates, list)
+                or len(processed_dates) != len(set(processed_dates))
+                or set(processed_dates) != set(expected_dates)
+            ):
+                continue
+        except (KeyError, OSError, TypeError, UnicodeDecodeError, ValueError, json.JSONDecodeError):
+            continue
+        payload["report_key"] = key
+        payload["processed_dates"] = expected_dates
+        for target in expected_dates:
+            current = reports.get(target)
+            if current is None or (
+                str(payload.get("manifest_finished_at", "")), key
+            ) > (
+                str(current.get("manifest_finished_at", "")), str(current.get("report_key", ""))
+            ):
+                reports[target] = payload
     return reports
 
 

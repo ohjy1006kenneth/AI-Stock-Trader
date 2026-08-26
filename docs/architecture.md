@@ -76,7 +76,11 @@ The version-controlled `app/pi/run_layer0_layer1_refresh.py` is the bounded Pi c
 orchestrator for catching up Layer 0 and Layer 1 archives without entering Layer 2 or
 later trading stages. It selects only regular US equity sessions using
 `core.common.trading_calendar`, applies the New York 18:00 readiness cutoff, and fails
-closed unless each date has its durable `ready_for_layer2=true` validation report.
+closed unless each date has its durable `ready_for_layer2=true` validation report. For
+default history discovery, a report contributes coverage only when its referenced completed
+Layer 1 manifest has the same run ID, an empty `requested_tickers` list, and an exact
+regular-session `processed_dates` set for the report range; ticker-scoped or malformed
+publications cannot establish full-universe readiness.
 
 ---
 
