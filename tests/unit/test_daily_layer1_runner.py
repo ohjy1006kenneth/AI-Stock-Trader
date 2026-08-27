@@ -31,8 +31,17 @@ from app.lab.data_pipelines.run_hmm_regime_detection import REGIME_STAGE
 from app.lab.data_pipelines.run_news_preprocessing import NLP_PREPROCESSING_STAGE
 from app.lab.data_pipelines.run_text_topics import TEXT_TOPICS_STAGE
 from app.lab.data_pipelines.validate_layer1_archive import Layer1ValidationReport
-from core.contracts.schemas import NewsSentimentRecord, PipelineManifestRecord, RunStatus
-from core.features.io import feature_records_to_parquet_bytes, read_feature_records
+from core.contracts.schemas import (
+    FeatureRecord,
+    NewsSentimentRecord,
+    PipelineManifestRecord,
+    RunStatus,
+)
+from core.features.io import (
+    feature_records_to_parquet_bytes,
+    read_feature_records,
+    write_feature_records,
+)
 from core.features.news_preprocessing import (
     news_sentiment_frame_to_records,
     records_to_news_sentiment_frame,
@@ -114,6 +123,18 @@ def test_run_daily_layer1_happy_path_writes_history_and_completed_manifest(
         tickers=["AAPL"],
         layer0_run_ids=("layer1-daily",),
     )
+    write_feature_records(
+        [FeatureRecord(date="2024-01-02", ticker="AAPL", features={"old": True})],
+        writer=writer,
+    )
+    put_keys: list[str] = []
+    original_put_object = writer.put_object
+
+    def recording_put_object(key: str, data: bytes | str) -> None:
+        put_keys.append(key)
+        original_put_object(key, data)
+
+    monkeypatch.setattr(writer, "put_object", recording_put_object)
 
     result = run_daily_layer1(
         Layer1DailyConfig(
@@ -136,15 +157,20 @@ def test_run_daily_layer1_happy_path_writes_history_and_completed_manifest(
     assert result.ready_for_layer2 is True
     assert result.history_files_written == 1
     assert result.feature_rows_written == 2
-    assert history[0].date == "2024-01-03"
-    assert history[1].date == "2024-01-04"
-    assert history[0].features["nlp_topic_count"] == 1
-    assert history[0].features["nlp_sentiment_score"] == pytest.approx(0.25)
-    assert history[0].features["regime_label"] == "bull"
-    assert "sector_etf_ret" in history[0].features
-    assert "l2_bid_ask_spread" not in history[0].features
-    assert history[0].features["sector_relative_strength"] is None
+    assert [record.date for record in history] == ["2024-01-02", "2024-01-03", "2024-01-04"]
+    assert history[0].features == {"old": True}
+    assert history[1].features["nlp_topic_count"] == 1
+    assert history[1].features["nlp_sentiment_score"] == pytest.approx(0.25)
+    assert history[1].features["regime_label"] == "bull"
+    assert "sector_etf_ret" in history[1].features
+    assert "l2_bid_ask_spread" not in history[1].features
+    assert history[1].features["sector_relative_strength"] is None
+    assert history[2].date == "2024-01-04"
     assert writer.exists("features/2024-01-03/AAPL.parquet") is True
+    assert put_keys.count("features/layer1/AAPL.parquet") == 1
+    assert put_keys.count("features/2024-01-02/AAPL.parquet") == 0
+    assert put_keys.count("features/2024-01-03/AAPL.parquet") == 1
+    assert put_keys.count("features/2024-01-04/AAPL.parquet") == 1
     assert writer.exists(
         layer1_validation_report_path("layer1-daily", "2024-01-03", "2024-01-04")
     ) is True
