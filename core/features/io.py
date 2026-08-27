@@ -101,6 +101,26 @@ def write_feature_records(
     return legacy_history_keys
 
 
+def write_feature_history(
+    records: Sequence[FeatureRecord | Mapping[str, object]],
+    writer: R2Writer | None = None,
+) -> str:
+    """Validate and persist one ticker's legacy Layer 1 feature history only."""
+    validated_records = _coerce_feature_records(records)
+    tickers = {record.ticker for record in validated_records}
+    if len(tickers) != 1:
+        raise ValueError("Layer 1 feature history must contain records for exactly one ticker")
+
+    ticker = next(iter(tickers))
+    sorted_records = sorted(validated_records, key=lambda record: record.date)
+    _validate_unique_dates(ticker, sorted_records)
+    payload = feature_records_to_parquet_bytes(sorted_records)
+    key = layer1_ticker_history_path(ticker)
+    active_writer = writer or R2Writer()
+    active_writer.put_object(key, payload)
+    return key
+
+
 def read_feature_record(
     as_of_date: str | Date | datetime,
     ticker: str,

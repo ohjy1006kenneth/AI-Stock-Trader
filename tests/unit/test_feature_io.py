@@ -56,6 +56,59 @@ def test_write_feature_records_round_trips_date_shards_and_legacy_history(
     assert loaded_records[0].features == {"returns_1d": 0.01}
 
 
+def test_write_feature_history_round_trips_without_date_shards(tmp_path: Path) -> None:
+    """History-only writes sort legacy rows without creating canonical date shards."""
+    writer = R2Writer(local_root=tmp_path)
+    records = [
+        FeatureRecord(date="2026-04-22", ticker="AAPL", features={"returns_1d": 0.02}),
+        FeatureRecord(date="2026-04-21", ticker="AAPL", features={"returns_1d": 0.01}),
+    ]
+
+    key = feature_io.write_feature_history(records, writer=writer)
+
+    assert key == "features/layer1/AAPL.parquet"
+    assert [record.date for record in feature_io.read_feature_records("AAPL", writer=writer)] == [
+        "2026-04-21",
+        "2026-04-22",
+    ]
+    assert writer.list_keys("features/2026-04-21/") == []
+    assert writer.list_keys("features/2026-04-22/") == []
+
+
+@pytest.mark.parametrize(
+    ("records", "message"),
+    [
+        ([], "At least one FeatureRecord"),
+        (
+            [
+                FeatureRecord(date="2026-04-21", ticker="AAPL", features={}),
+                FeatureRecord(date="2026-04-22", ticker="MSFT", features={}),
+            ],
+            "exactly one ticker",
+        ),
+        (
+            [
+                FeatureRecord(date="2026-04-21", ticker="AAPL", features={}),
+                FeatureRecord(date="2026-04-21", ticker="AAPL", features={}),
+            ],
+            "Duplicate Layer 1 feature dates",
+        ),
+    ],
+)
+def test_write_feature_history_rejects_invalid_input_without_writes(
+    tmp_path: Path,
+    records: list[FeatureRecord],
+    message: str,
+) -> None:
+    """Invalid history-only inputs fail before persisting any object."""
+    writer = R2Writer(local_root=tmp_path)
+
+    with pytest.raises(ValueError, match=message):
+        feature_io.write_feature_history(records, writer=writer)
+
+    assert writer.list_keys("features/") == []
+
+
 def test_read_feature_history_window_filters_to_inclusive_dates(tmp_path: Path) -> None:
     """Feature history windows should return only rows inside the requested bounds."""
     writer = R2Writer(local_root=tmp_path)
