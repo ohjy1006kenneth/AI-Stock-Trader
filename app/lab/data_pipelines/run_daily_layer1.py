@@ -94,8 +94,8 @@ from core.features.context_features import (  # noqa: E402
 from core.features.io import (  # noqa: E402
     parquet_bytes_to_feature_records,
     read_feature_records,
-    write_feature_record,
     write_feature_history,
+    write_feature_record,
 )
 from core.features.loaders import (  # noqa: E402
     available_macro_series_by_date,
