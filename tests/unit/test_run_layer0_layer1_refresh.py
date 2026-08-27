@@ -61,10 +61,44 @@ def test_build_plan_skips_holiday_weekend_filters_ready_and_caps() -> None:
 
 def test_ready_reports_requires_boolean_true_and_uses_latest() -> None:
     key = "artifacts/reports/integration/layer1_archive_validation_x_2026-06-18_to_2026-06-18.json"
-    client = FakeR2({key: json.dumps({"run_id": "x", "from_date": "2026-06-18", "to_date": "2026-06-18", "ready_for_layer2": True}).encode()})
+    manifest_key = "manifests/layer1/x.json"
+    objects = {
+        key: json.dumps({"run_id": "x", "from_date": "2026-06-18", "to_date": "2026-06-18", "ready_for_layer2": True, "manifest_key": manifest_key}).encode(),
+        manifest_key: json.dumps({"run_id": "x", "stage": "layer1", "status": "completed", "metadata": {"requested_tickers": [], "processed_dates": ["2026-06-18"]}}).encode(),
+    }
+    client = FakeR2(objects)
     assert set(ready_reports(client)) == {"2026-06-18"}
     false = FakeR2({key: b'{"ready_for_layer2": false}'})
     assert ready_reports(false) == {}
+
+
+def test_ready_reports_expands_only_exact_full_universe_manifest() -> None:
+    report_key = "artifacts/reports/integration/layer1_archive_validation_range_2026-05-07_to_2026-05-22.json"
+    manifest_key = "manifests/layer1/range.json"
+    dates = ["2026-05-07", "2026-05-08", "2026-05-11", "2026-05-12", "2026-05-13", "2026-05-14", "2026-05-15", "2026-05-18", "2026-05-19", "2026-05-20", "2026-05-21", "2026-05-22"]
+    client = FakeR2({
+        report_key: json.dumps({"run_id": "range", "from_date": "2026-05-07", "to_date": "2026-05-22", "ready_for_layer2": True, "manifest_key": manifest_key}).encode(),
+        manifest_key: json.dumps({"run_id": "range", "stage": "layer1", "status": "completed", "metadata": {"requested_tickers": [], "processed_dates": dates}}).encode(),
+    })
+    assert set(ready_reports(client)) == set(dates)
+
+    client.objects[manifest_key] = json.dumps({"run_id": "range", "stage": "layer1", "status": "completed", "metadata": {"requested_tickers": ["AAPL"], "processed_dates": dates}}).encode()
+    assert ready_reports(client) == {}
+
+
+@pytest.mark.parametrize("manifest", [
+    None,
+    {"run_id": "other", "stage": "layer1", "status": "completed", "metadata": {"requested_tickers": [], "processed_dates": ["2026-06-18"]}},
+    {"run_id": "x", "stage": "layer1", "status": "failed", "metadata": {"requested_tickers": [], "processed_dates": ["2026-06-18"]}},
+    {"run_id": "x", "stage": "layer1", "status": "completed", "metadata": {"requested_tickers": [], "processed_dates": ["2026-06-18", "2026-06-18"]}},
+])
+def test_ready_reports_rejects_unproven_manifest_without_raising(manifest: dict[str, object] | None) -> None:
+    report_key = "artifacts/reports/integration/layer1_archive_validation_x_2026-06-18_to_2026-06-18.json"
+    manifest_key = "manifests/layer1/x.json"
+    objects = {report_key: json.dumps({"run_id": "x", "from_date": "2026-06-18", "to_date": "2026-06-18", "ready_for_layer2": True, "manifest_key": manifest_key}).encode()}
+    if manifest is not None:
+        objects[manifest_key] = json.dumps(manifest).encode()
+    assert ready_reports(FakeR2(objects)) == {}
 
 
 def test_load_env_is_injected_and_does_not_log_values(tmp_path: Path) -> None:
@@ -183,12 +217,28 @@ def test_refresh_stops_after_first_failed_stage(tmp_path: Path, monkeypatch: pyt
 
 
 def _ready_objects(days: list[str]) -> dict[str, bytes]:
-    return {
-        f"artifacts/reports/integration/layer1_archive_validation_x_{day}_to_{day}.json": json.dumps(
-            {"run_id": "x", "from_date": day, "to_date": day, "ready_for_layer2": True}
+    objects: dict[str, bytes] = {}
+    for day in days:
+        report_key = f"artifacts/reports/integration/layer1_archive_validation_x_{day}_to_{day}.json"
+        manifest_key = f"manifests/layer1/x-{day}.json"
+        objects[report_key] = json.dumps(
+            {
+                "run_id": "x",
+                "from_date": day,
+                "to_date": day,
+                "ready_for_layer2": True,
+                "manifest_key": manifest_key,
+            }
         ).encode()
-        for day in days
-    }
+        objects[manifest_key] = json.dumps(
+            {
+                "run_id": "x",
+                "stage": "layer1",
+                "status": "completed",
+                "metadata": {"requested_tickers": [], "processed_dates": [day]},
+            }
+        ).encode()
+    return objects
 
 
 def test_refresh_default_history_crosses_holiday_and_weekend(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
