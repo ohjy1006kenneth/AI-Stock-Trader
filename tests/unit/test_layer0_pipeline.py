@@ -407,6 +407,7 @@ def test_build_universe_mask_records_applies_market_cap_filter() -> None:
 def test_historical_layer0_backfill_writes_all_raw_archives_and_manifest() -> None:
     writer = _Writer()
     run_id = "test-historical"
+    fundamentals_fetcher = _FundamentalsFetcher()
     config = HistoricalLayer0Config(
         from_date=date(2024, 1, 2),
         to_date=date(2024, 1, 3),
@@ -421,7 +422,7 @@ def test_historical_layer0_backfill_writes_all_raw_archives_and_manifest() -> No
         price_fetcher=_HistoricalPriceFetcher(),
         security_master=_SecurityMaster(),
         news_fetcher=_NewsFetcher(),
-        fundamentals_fetcher=_FundamentalsFetcher(),
+        fundamentals_fetcher=fundamentals_fetcher,
         macro_fetcher=_MacroFetcher(),
         writer=writer,
         price_serializer=_bytes_serializer,
@@ -470,6 +471,7 @@ def test_historical_layer0_backfill_writes_all_raw_archives_and_manifest() -> No
     provenance_report = json.loads(writer.objects[layer0_ohlcv_provenance_report_path(run_id)])
     assert provenance_report["price_adjustment_provenance"]["feed"] == "sip"
     assert provenance_report["archive_summary"]["close_diff_adj_close_rows"] == 0
+    assert fundamentals_fetcher.calls[0]["start_date"] == "2024-01-02"
 
     universe_rows = list(
         csv.DictReader(io.StringIO(writer.objects[raw_universe_path("2024-01-02")].decode()))
@@ -529,6 +531,67 @@ def test_historical_backfill_reads_existing_prices_from_store_for_quality_masks(
         "AAPL": "True",
         "MSFT": "True",
     }
+
+
+def test_historical_backfill_widens_only_fundamentals_fetch_window() -> None:
+    """An explicit fundamentals lower bound does not widen other historical phases."""
+    writer = _Writer()
+    fundamentals_fetcher = _FundamentalsFetcher()
+    price_fetcher = _HistoricalPriceFetcher()
+    news_fetcher = _NewsFetcher()
+    macro_fetcher = _MacroFetcher()
+
+    run_historical_layer0_backfill(
+        config=HistoricalLayer0Config(
+            from_date=date(2024, 1, 2),
+            to_date=date(2024, 1, 3),
+            fundamentals_from_date=date(2017, 1, 1),
+            fred_series_ids=("DGS10",),
+            quality_config=QualityFilterConfig(rolling_window_days=1),
+        ),
+        universe_provider=_UniverseProvider(),
+        price_fetcher=price_fetcher,
+        security_master=_SecurityMaster(),
+        news_fetcher=news_fetcher,
+        fundamentals_fetcher=fundamentals_fetcher,
+        macro_fetcher=macro_fetcher,
+        writer=writer,
+        price_serializer=_bytes_serializer,
+        price_deserializer=_bytes_deserializer,
+        news_serializer=_bytes_serializer,
+        fundamentals_serializer=_bytes_serializer,
+        macro_serializer=_bytes_serializer,
+    )
+
+    assert fundamentals_fetcher.calls[0]["start_date"] == "2017-01-01"
+    assert fundamentals_fetcher.calls[0]["end_date"] == "2024-01-03"
+    assert {call["from_date"] for call in price_fetcher.calls} == {"2024-01-02"}
+    assert {call["to_date"] for call in price_fetcher.calls} == {"2024-01-03"}
+    assert {call["as_of_date"] for call in news_fetcher.calls} == {"2024-01-02", "2024-01-03"}
+    assert macro_fetcher.calls[0]["start_date"] == "2024-01-02"
+    assert macro_fetcher.calls[0]["end_date"] == "2024-01-03"
+
+
+def test_historical_config_omitted_fundamentals_lower_bound_uses_from_date() -> None:
+    """Direct library callers retain the requested start date by default."""
+    config = HistoricalLayer0Config(
+        from_date=date(2024, 1, 2),
+        to_date=date(2024, 1, 3),
+        fred_series_ids=("DGS10",),
+    )
+
+    assert config.fundamentals_from_date is None
+
+
+def test_historical_config_rejects_fundamentals_lower_bound_after_to_date() -> None:
+    """A fundamentals window cannot start after the historical run ends."""
+    with pytest.raises(ValueError, match="fundamentals_from_date must be <= to_date"):
+        HistoricalLayer0Config(
+            from_date=date(2024, 1, 2),
+            to_date=date(2024, 1, 3),
+            fundamentals_from_date=date(2024, 1, 4),
+            fred_series_ids=("DGS10",),
+        )
 
 
 def test_daily_layer0_incremental_uses_alpaca_shape_and_canonical_paths() -> None:

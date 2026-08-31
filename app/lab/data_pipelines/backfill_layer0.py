@@ -104,6 +104,7 @@ def main() -> int:
     config = HistoricalLayer0Config(
         from_date=from_date,
         to_date=to_date,
+        fundamentals_from_date=date.fromisoformat(DEFAULT_LAYER0_BACKFILL_START_DATE),
         tickers=args.tickers,
         benchmark_ticker=args.benchmark_ticker,
         fred_series_ids=args.series_ids or archive_config.series_ids,
