@@ -583,6 +583,42 @@ def test_historical_config_omitted_fundamentals_lower_bound_uses_from_date() -> 
     assert config.fundamentals_from_date is None
 
 
+def test_historical_config_preserves_legacy_positional_arguments() -> None:
+    """Appending the fundamentals bound preserves the legacy positional constructor."""
+    quality_config = QualityFilterConfig(rolling_window_days=1)
+    quality_ohlcv_window = {"AAPL": ()}
+    config = HistoricalLayer0Config(
+        date(2024, 1, 2),
+        date(2024, 1, 3),
+        ("AAPL",),
+        "QQQ",
+        ("DGS10",),
+        ("pl",),
+        ("q1",),
+        True,
+        7,
+        8,
+        9,
+        quality_config,
+        quality_ohlcv_window,
+        "legacy-run",
+    )
+
+    assert config.tickers == ("AAPL",)
+    assert config.benchmark_ticker == "QQQ"
+    assert config.fred_series_ids == ("DGS10",)
+    assert config.simfin_statements == ("pl",)
+    assert config.simfin_periods == ("q1",)
+    assert config.overwrite is True
+    assert config.news_limit == 7
+    assert config.simfin_limit == 8
+    assert config.fred_limit == 9
+    assert config.quality_config is quality_config
+    assert config.quality_ohlcv_window is quality_ohlcv_window
+    assert config.run_id == "legacy-run"
+    assert config.fundamentals_from_date is None
+
+
 def test_historical_config_rejects_fundamentals_lower_bound_after_to_date() -> None:
     """A fundamentals window cannot start after the historical run ends."""
     with pytest.raises(ValueError, match="fundamentals_from_date must be <= to_date"):

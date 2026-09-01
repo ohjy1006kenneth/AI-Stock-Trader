@@ -235,7 +235,6 @@ class HistoricalLayer0Config:
 
     from_date: date
     to_date: date
-    fundamentals_from_date: date | None = None
     tickers: Sequence[str] | None = None
     benchmark_ticker: str = "SPY"
     fred_series_ids: Sequence[str] = ()
@@ -248,6 +247,7 @@ class HistoricalLayer0Config:
     quality_config: QualityFilterConfig = field(default_factory=QualityFilterConfig)
     quality_ohlcv_window: Mapping[str, Sequence[OHLCVRecord]] | None = None
     run_id: str | None = None
+    fundamentals_from_date: date | None = None
 
     def __post_init__(self) -> None:
         """Validate date windows, limits, and configured FRED series."""
