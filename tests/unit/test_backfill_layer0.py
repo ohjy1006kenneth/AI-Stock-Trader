@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from argparse import Namespace
+from datetime import date
+
 import pytest
 
 from app.lab.data_pipelines import backfill_layer0
@@ -53,3 +56,47 @@ def test_wikipedia_universe_provider_rejects_invalid_date() -> None:
 
     with pytest.raises(ValueError, match="as_of_date must be YYYY-MM-DD"):
         provider.get_constituents("20240102")
+
+
+def test_main_defaults_fundamentals_bootstrap_to_canonical_start_date(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A one-day CLI run passes the canonical historical start to Layer 0 fundamentals."""
+    captured: dict[str, object] = {}
+    args = Namespace(
+        config="fred.yaml",
+        from_date="2026-06-25",
+        to_date="2026-06-25",
+        tickers=("AAPL",),
+        benchmark_ticker="SPY",
+        series_ids=("DGS10",),
+        overwrite=False,
+        news_limit=50,
+        simfin_limit=1000,
+        fred_limit=1000,
+        run_id="layer0-daily-2026-06-25",
+    )
+    archive_config = Namespace(default_end_date="2026-06-25", series_ids=("DGS10",))
+
+    monkeypatch.setattr(backfill_layer0, "_parse_args", lambda: args)
+    monkeypatch.setattr(backfill_layer0, "load_fred_archive_config", lambda path: archive_config)
+    monkeypatch.setattr(backfill_layer0.AlpacaMarketDataConfig, "from_env", lambda: object())
+    monkeypatch.setattr(backfill_layer0.FredClientConfig, "from_env", lambda: object())
+    monkeypatch.setattr(backfill_layer0.SimFinClientConfig, "from_env", lambda: object())
+    monkeypatch.setattr(
+        backfill_layer0,
+        "run_historical_layer0_backfill",
+        lambda **kwargs: captured.update(kwargs) or Namespace(),
+    )
+    monkeypatch.setattr(backfill_layer0, "R2Writer", lambda: object())
+    monkeypatch.setattr(backfill_layer0, "AlpacaHistoricalOHLCVFetcher", lambda config: object())
+    monkeypatch.setattr(backfill_layer0, "AlpacaTickerSecurityMaster", lambda: object())
+    monkeypatch.setattr(backfill_layer0, "AlpacaNewsClient", lambda config: object())
+    monkeypatch.setattr(backfill_layer0, "SimFinFundamentalsFetcher", lambda config: object())
+    monkeypatch.setattr(backfill_layer0, "FredMacroFetcher", lambda config: object())
+
+    assert backfill_layer0.main() == 0
+    config = captured["config"]
+    assert config.from_date == date(2026, 6, 25)
+    assert config.to_date == date(2026, 6, 25)
+    assert config.fundamentals_from_date == date(2017, 1, 1)

@@ -247,10 +247,13 @@ class HistoricalLayer0Config:
     quality_config: QualityFilterConfig = field(default_factory=QualityFilterConfig)
     quality_ohlcv_window: Mapping[str, Sequence[OHLCVRecord]] | None = None
     run_id: str | None = None
+    fundamentals_from_date: date | None = None
 
     def __post_init__(self) -> None:
         """Validate date windows, limits, and configured FRED series."""
         _validate_date_window(self.from_date, self.to_date)
+        if self.fundamentals_from_date is not None and self.fundamentals_from_date > self.to_date:
+            raise ValueError("fundamentals_from_date must be <= to_date")
         _validate_positive_limit(self.news_limit, "news_limit")
         _validate_positive_limit(self.simfin_limit, "simfin_limit")
         _validate_positive_limit(self.fred_limit, "fred_limit")
@@ -412,7 +415,7 @@ def run_historical_layer0_backfill(
 
         logger.info("Phase: fundamentals (SimFin)")
         fundamentals_result = _write_fundamentals_archive(
-            from_date=config.from_date,
+            from_date=config.fundamentals_from_date or config.from_date,
             to_date=config.to_date,
             tickers=tickers,
             statements=config.simfin_statements,
