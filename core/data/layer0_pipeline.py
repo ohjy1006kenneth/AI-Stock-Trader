@@ -37,6 +37,19 @@ from services.r2.paths import (
 )
 from services.simfin.fundamentals_fetcher import canonical_fundamentals_source_ticker
 
+_FUNDAMENTALS_ARCHIVE_COLUMNS = (
+    "source",
+    "ticker",
+    "report_date",
+    "availability_date",
+    "retrieved_at",
+    "fiscal_year",
+    "fiscal_period",
+    "statement",
+    "earnings_date",
+    "raw_json",
+)
+
 
 class ObjectWriter(Protocol):
     """Object-store methods required by the Layer 0 pipeline."""
@@ -426,6 +439,7 @@ def run_historical_layer0_backfill(
             writer=cached_writer,
             serializer=fundamentals_serializer or _raw_rows_to_parquet_bytes,
             deserializer=fundamentals_deserializer or _parquet_bytes_to_raw_rows,
+            publish_empty_archive=True,
         )
         output_keys.extend(fundamentals_result.output_keys)
         metadata["fundamentals"] = fundamentals_result.metadata
@@ -624,6 +638,7 @@ def run_daily_layer0_incremental(
             writer=writer,
             serializer=fundamentals_serializer or _raw_rows_to_parquet_bytes,
             deserializer=fundamentals_deserializer or _parquet_bytes_to_raw_rows,
+            publish_empty_archive=False,
         )
         output_keys.extend(fundamentals_result.output_keys)
         metadata["fundamentals"] = fundamentals_result.metadata
@@ -1108,6 +1123,7 @@ def _write_fundamentals_archive(
     writer: ObjectWriter,
     serializer: RawRowSerializer,
     deserializer: RawRowsDeserializer,
+    publish_empty_archive: bool,
 ) -> _WriteResult:
     """Fetch and persist SimFin fundamentals per-ticker so partial progress survives failures."""
     normalized_tickers = [_canonicalize_ticker(ticker) for ticker in tickers]
@@ -1197,12 +1213,17 @@ def _write_fundamentals_archive(
             if not ticker_rows:
                 empty += 1
                 missing_tickers.append(ticker)
+                if publish_empty_archive:
+                    empty_key = raw_fundamentals_path(ticker)
+                    writer.put_object(empty_key, serializer([]))
+                    output_keys.append(empty_key)
                 logger.warning(
                     "SimFin returned no fundamentals rows for ticker {} in {}..{}; "
-                    "skipping archive write",
+                    "empty archive publication={}",
                     ticker,
                     from_date.isoformat(),
                     to_date.isoformat(),
+                    publish_empty_archive,
                 )
                 continue
             key = raw_fundamentals_path(ticker)
@@ -1219,6 +1240,7 @@ def _write_fundamentals_archive(
             "skipped": skipped,
             "empty": empty,
             "missing_tickers": missing_tickers,
+            "empty_output_keys": [raw_fundamentals_path(ticker) for ticker in missing_tickers],
             "total_rows": total_rows,
             "aliased_tickers": aliased_tickers,
             "output_keys": output_keys,
@@ -1628,7 +1650,10 @@ def _raw_rows_to_parquet_bytes(rows: list[dict[str, object]]) -> bytes:
             "pandas and pyarrow are required to serialize raw Layer 0 rows to Parquet."
         ) from exc
 
-    frame = pd.DataFrame([_parquet_ready_row(row) for row in rows])
+    frame = pd.DataFrame(
+        [_parquet_ready_row(row) for row in rows],
+        columns=_FUNDAMENTALS_ARCHIVE_COLUMNS if not rows else None,
+    )
     buffer = io.BytesIO()
     frame.to_parquet(buffer, index=False)
     return buffer.getvalue()
