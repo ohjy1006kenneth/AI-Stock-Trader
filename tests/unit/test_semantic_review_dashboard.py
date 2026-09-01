@@ -12,6 +12,7 @@ from app.lab.semantic_review_dashboard import _DashboardDefaults, _render_dashbo
 from core.features.aapl_evidence import build_layer1_aapl_evidence_report
 from core.features.regime_training import HMM_OPTIONAL_FEATURE_COLUMNS
 from core.features.semantic_review_dashboard import (
+    _stratified_bounded_mappings,
     build_layer1_semantic_review_dashboard_payload,
     build_layer1_semantic_review_dashboard_smoke_payload,
     build_layer1_semantic_review_readiness_summary,
@@ -30,6 +31,77 @@ from services.r2.paths import (
 )
 from services.r2.writer import R2Writer
 from tests.fixtures.semantic_review_support import seed_semantic_review_fixture
+
+
+def test_semantic_review_payload_bounds_retained_hmm_context_and_preserves_evidence() -> None:
+    """Retained HMM metadata stays useful and bounded even with adversarial mappings."""
+    context: dict[str, object] = {
+        "requested_inference_dates": ["2026-05-21"],
+        "observed_inference_dates": ["2026-05-21"],
+        "manifest_summaries": [
+            {
+                "date": f"2026-05-{(index % 28) + 1:02d}",
+                "artifact_key": f"regime-{index}",
+                "source_text_provenance": "must not leak",
+                "arbitrary_payload": "x" * 10_000,
+            }
+            for index in range(1_000)
+        ],
+        "training_windows": [
+            {
+                "train_end_date": "2026-05-20",
+                "inference_date": "2026-05-21",
+                "arbitrary_payload": "y" * 10_000,
+            }
+            for _ in range(1_000)
+        ],
+        "arbitrary_context": {str(index): "z" * 10_000 for index in range(100)},
+    }
+    report = {"ticker": "AAPL", "hmm_evaluation_context": context}
+    payload = cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report))
+    encoded = json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
+    bounded_context = cast(dict[str, Any], payload["hmm_evaluation_context"])
+
+    assert len(encoded) < 200_000
+    assert bounded_context["manifest_summaries"][0]["artifact_key"]
+    assert bounded_context["training_windows"][0]["train_end_date"] == "2026-05-20"
+    assert "arbitrary_context" not in bounded_context
+    assert "source_text_provenance" not in encoded.decode("utf-8")
+    assert bounded_context["manifest_summaries_counts"]["full_count"] == 1_000
+
+    reversed_payload = cast(
+        dict[str, Any],
+        build_layer1_semantic_review_dashboard_payload(
+            {"ticker": "AAPL", "hmm_evaluation_context": dict(reversed(list(context.items())))}
+        ),
+    )
+    assert encoded == json.dumps(reversed_payload, indent=2, sort_keys=True).encode("utf-8")
+
+
+def test_stratified_dashboard_sampling_preserves_relevance_strata_under_budget() -> None:
+    """Direct, indirect, broad-market, and contamination rows survive adverse IDs and truncation."""
+    rows = [
+        {"article_id": "z-direct", "relevance_category": "direct"},
+        {"article_id": "a-indirect", "relevance_category": "indirect"},
+        {"article_id": "b-broad", "relevance_category": "broad_market"},
+        {"article_id": "c-contamination", "relevance_category": "contamination"},
+        {"article_id": "d-accepted", "evidence_status": "accepted"},
+        {"article_id": "e-rejected", "evidence_status": "rejected"},
+    ]
+    sample, counts = _stratified_bounded_mappings(rows, 6)
+
+    assert [row["article_id"] for row in sample] == [
+        "z-direct", "a-indirect", "b-broad", "c-contamination", "d-accepted", "e-rejected"
+    ]
+    assert counts["full_count"] == 6
+    assert counts["omitted_count"] == 0
+
+    truncated, truncated_counts = _stratified_bounded_mappings(list(reversed(rows)), 4)
+    assert [row["article_id"] for row in truncated] == [
+        "z-direct", "a-indirect", "b-broad", "c-contamination"
+    ]
+    assert truncated_counts["full_count"] == 6
+    assert truncated_counts["omitted_count"] == 2
 
 
 def test_semantic_review_payload_bounds_high_cardinality_article_indexes() -> None:

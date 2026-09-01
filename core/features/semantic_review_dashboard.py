@@ -2014,6 +2014,58 @@ _TOP_LEVEL_ARTICLE_SAMPLE_LIMIT = 25
 _TOP_LEVEL_DATE_SAMPLE_LIMIT = 50
 _UNKNOWN_PIPELINE_SECTION_LIMIT = 4
 _MISSING = object()
+_PROSE_CHARACTER_LIMIT = 240
+_HMM_CONTEXT_LIST_LIMIT = 8
+_HMM_CONTEXT_SCALAR_KEYS = frozenset(
+    {
+        "requested_inference_dates", "observed_inference_dates", "missing_inference_dates",
+        "stale_manifest_dates", "warnings", "warning_codes", "degradation_state",
+        "feature_set_blocking", "feature_set_name", "source_manifest_keys",
+        "requested_from_date", "requested_to_date", "observed_from_date", "observed_to_date",
+    }
+)
+_HMM_CONTEXT_LIST_KEYS = frozenset(
+    {"manifest_summaries", "training_windows", "requested_inference_dates", "observed_inference_dates",
+     "missing_inference_dates", "stale_manifest_dates", "warnings", "warning_codes", "source_manifest_keys"}
+)
+_HMM_ROW_KEYS = frozenset(
+    {
+        "date", "from_date", "to_date", "train_start_date", "train_end_date", "inference_date",
+        "requested_date", "observed_date", "run_id", "stage", "status", "state", "warning",
+        "warnings", "warning_codes", "degradation_state", "feature_set_blocking", "feature_set_name",
+        "artifact_key", "manifest_key", "source_manifest_key", "model_version", "model", "ticker",
+    }
+)
+
+
+def _compact_hmm_evaluation_context(value: object) -> dict[str, object]:
+    """Keep auditable HMM dates, warnings, manifests, and windows within fixed bounds."""
+    context = _json_mapping(value)
+    compact: dict[str, object] = {}
+    for key in sorted(context):
+        if key not in _HMM_CONTEXT_SCALAR_KEYS and key not in _HMM_CONTEXT_LIST_KEYS:
+            continue
+        raw = context[key]
+        if key in {"manifest_summaries", "training_windows"}:
+            rows = [dict(item) for item in _json_list(raw) if isinstance(item, Mapping)]
+            rows.sort(key=_stable_mapping_key)
+            sample = [
+                {
+                    str(row_key): _bound_json_value(row_value, key=str(row_key), depth=1)
+                    for row_key, row_value in sorted(row.items(), key=lambda item: str(item[0]))
+                    if str(row_key) in _HMM_ROW_KEYS
+                }
+                for row in rows[:_HMM_CONTEXT_LIST_LIMIT]
+            ]
+            compact[key] = sample
+            compact[f"{key}_counts"] = _sampling_counts(len(rows), len(sample))
+        elif key in _HMM_CONTEXT_LIST_KEYS:
+            items = sorted(_json_string_list(raw))[:_HMM_CONTEXT_LIST_LIMIT]
+            compact[key] = items
+            compact[f"{key}_counts"] = _sampling_counts(len(_json_string_list(raw)), len(items))
+        else:
+            compact[key] = _bound_json_value(raw, key=key)
+    return compact
 
 
 def _compact_layer1_semantic_review_dashboard_payload(payload: Mapping[str, object]) -> dict[str, object]:
@@ -2032,6 +2084,12 @@ def _compact_layer1_semantic_review_dashboard_payload(payload: Mapping[str, obje
             "summary": _json_mapping(report.get("summary")),
             "artifact_keys": _json_mapping(report.get("artifact_keys")),
         }
+    if "artifact_keys" in compact:
+        compact["artifact_keys"] = _bounded_artifact_keys(compact.get("artifact_keys"))
+    if "hmm_evaluation_context" in compact:
+        compact["hmm_evaluation_context"] = _compact_hmm_evaluation_context(
+            compact.get("hmm_evaluation_context")
+        )
 
     article_groups = [dict(item) for item in _json_list(compact.get("article_groups")) if isinstance(item, Mapping)]
     accepted_articles = [
@@ -2456,4 +2514,243 @@ def _compact_fixed_section_rows(value: object, limit: int) -> list[dict[str, obj
 
 def _sample_mapping_rows(value: object, *, limit: int) -> list[dict[str, object]]:
     """Return a bounded list of JSON-mapping rows."""
-    return [dict(item) for item in _json_list(value)[: max(limit, 0)] if isinstance(item, Mapping)]
+    rows, _ = _bounded_mappings(value, limit)
+    return rows
+
+
+def _collection_counts(value: object, limit: int) -> dict[str, object]:
+    """Return complete metadata for a possibly malformed dynamic row list."""
+    if value is _MISSING:
+        return {
+            "row_count": 0, "sample_count": 0, "omitted_row_count": 0,
+            "invalid_row_count": 0, "truncated": False, "input_state": "missing",
+            "full_count": 0, "omitted_count": 0,
+        }
+    if value is None or not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return {
+            "row_count": 0, "sample_count": 0, "omitted_row_count": 0,
+            "invalid_row_count": 1, "truncated": False, "input_state": "invalid",
+            "full_count": 0, "omitted_count": 0,
+        }
+    invalid = sum(1 for item in value if not isinstance(item, Mapping))
+    # A valid sequence's authoritative count includes malformed members.
+    row_count = len(value)
+    sample_count = min(row_count - invalid, max(limit, 0))
+    omitted = row_count - sample_count
+    return {
+        "row_count": row_count, "sample_count": sample_count,
+        "omitted_row_count": omitted, "invalid_row_count": invalid,
+        "truncated": omitted > 0, "input_state": "present",
+        "full_count": row_count, "omitted_count": omitted,
+    }
+
+
+def _bounded_artifact_keys(value: object) -> dict[str, object]:
+    """Keep a deterministic stage/path artifact index without raw provenance."""
+    mapping = _json_mapping(value)
+    keys = sorted(mapping)[:16]
+    result: dict[str, object] = {}
+    counts: dict[str, object] = {}
+    for key in keys:
+        raw = mapping[key]
+        if isinstance(raw, Sequence) and not isinstance(raw, (str, bytes, bytearray)):
+            values = sorted((str(item) for item in raw), key=lambda item: item)[:8]
+            result[key] = values
+            counts[key] = {
+                "entry_count": len(raw), "sample_count": len(values),
+                "omitted_entry_count": max(0, len(raw) - len(values)),
+                "invalid_entry_count": 0, "truncated": len(raw) > len(values),
+                "input_state": "present", "full_count": len(raw),
+                "omitted_count": max(0, len(raw) - len(values)),
+            }
+        else:
+            result[key] = []
+            counts[key] = _collection_counts(raw, 8)
+    result["artifact_key_counts"] = counts
+    result["artifact_key_entry_count"] = len(mapping)
+    result["artifact_key_omitted_entry_count"] = max(0, len(mapping) - len(keys))
+    result["artifact_key_truncated"] = len(mapping) > len(keys)
+    return result
+
+
+def _bound_json_value(value: object, *, key: str = "", depth: int = 0) -> object:
+    """Project arbitrary report values into deterministic, shallow JSON-safe values."""
+    import json
+
+    if depth > 5 and isinstance(value, (Mapping, Sequence)) and not isinstance(value, (str, bytes, bytearray)):
+        return None
+    if isinstance(value, Mapping):
+        result: dict[str, object] = {}
+        raw_keys = sorted(value, key=str)
+        if depth >= 5 and key not in {"summary", "controls", "features"}:
+            raw_keys = raw_keys[:32]
+        if key == "features":
+            raw_keys = raw_keys[:32]
+        for raw_key in raw_keys:
+            name = str(raw_key)
+            if name == "source_text_provenance":
+                continue
+            item = value[raw_key]
+            result[name] = _bound_json_value(item, key=name, depth=depth + 1)
+            if isinstance(item, str) and name in {
+                "text", "full_scored_text", "headline", "message", "reason",
+                "summary", "topic_example_text", "snippet",
+            } and len(item) > _PROSE_CHARACTER_LIMIT:
+                result[f"{name}_character_count"] = len(item)
+                result[f"{name}_truncated"] = True
+        return result
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        items = list(value)
+        if key in {
+            "article_ids", "topic_keywords", "reason_codes", "warning_codes",
+            "entity_evidence", "ticker_evidence", "assignment_evidence_kinds",
+            "assignment_classifications", "assignment_reasons", "ticker_terms", "ticker_hits",
+        }:
+            limit = 8
+        elif key == "sentence_rows":
+            limit = 3
+        elif key in {"preprocessing_rows", "topic_evidence", "relevance_gate_rows", "embedding_evidence"}:
+            limit = 2
+        elif key in {"examples", "evidence_snippets", "snippets"}:
+            limit = 3
+        elif key in {"warnings", "summary_cards", "gate_cards", "failures"}:
+            limit = 12
+        else:
+            limit = 32
+        if all(isinstance(item, Mapping) for item in items):
+            items.sort(key=lambda item: _stable_mapping_key(item))  # type: ignore[arg-type]
+        else:
+            items.sort(key=lambda item: (type(item).__name__, json.dumps(item, sort_keys=True, default=str)))
+        return [_bound_json_value(item, key=key, depth=depth + 1) for item in items[:limit]]
+    if isinstance(value, str) and key in {
+        "text", "full_scored_text", "headline", "message", "reason", "summary",
+        "topic_example_text", "snippet",
+    }:
+        return value[:_PROSE_CHARACTER_LIMIT]
+    return value
+
+
+def _sampling_counts(full_count: int, sample_count: int) -> dict[str, object]:
+    """Return the canonical metadata for one bounded collection."""
+    omitted = max(0, full_count - sample_count)
+    return {
+        "row_count": full_count,
+        "sample_count": sample_count,
+        "omitted_row_count": omitted,
+        "invalid_row_count": 0,
+        "truncated": omitted > 0,
+        "input_state": "present",
+        "full_count": full_count,
+        "omitted_count": omitted,
+    }
+
+
+def _bounded_mappings(value: object, limit: int) -> tuple[list[dict[str, object]], dict[str, object]]:
+    """Sort JSON mapping rows by stable content and return a bounded sample plus counts."""
+    rows = [dict(item) for item in _json_list(value) if isinstance(item, Mapping)]
+    rows.sort(key=lambda item: _stable_mapping_key(item))
+    sample = rows[: max(limit, 0)]
+    counts = _collection_counts(value, limit)
+    counts["sample_count"] = len(sample)
+    counts["omitted_row_count"] = max(0, int(counts["row_count"]) - len(sample))
+    counts["omitted_count"] = counts["omitted_row_count"]
+    counts["truncated"] = bool(counts["omitted_row_count"] > 0)
+    return sample, counts
+
+
+def _stratified_bounded_mappings(value: object, limit: int) -> tuple[list[dict[str, object]], dict[str, object]]:
+    """Select deterministic representatives without discarding higher-priority strata."""
+    rows = [dict(item) for item in _json_list(value) if isinstance(item, Mapping)]
+    rows.sort(key=_stable_mapping_key)
+    selected: list[dict[str, object]] = []
+
+    def status(row: Mapping[str, object]) -> str:
+        return str(row.get("evidence_status", "")).lower()
+
+    def categories(row: Mapping[str, object]) -> set[str]:
+        values = [row.get("relevance_category"), row.get("assignment_classification")]
+        values.extend(_json_string_list(row.get("assignment_classifications")))
+        return {str(item).lower().replace("-", "_") for item in values if item is not None}
+
+    def has_category(row: Mapping[str, object], *names: str) -> bool:
+        row_categories = categories(row)
+        return bool(row_categories.intersection(names))
+
+    predicates = (
+        lambda row: has_category(row, "direct") or status(row) == "direct",
+        lambda row: has_category(row, "indirect") or status(row) == "indirect",
+        lambda row: has_category(row, "broad_market", "broad") or status(row) == "broad_market",
+        lambda row: has_category(row, "contamination", "competitor")
+        or status(row) in {"contamination", "flagged", "weak"}
+        or bool(_json_string_list(row.get("contamination_flags"))),
+        lambda row: status(row) == "accepted",
+        lambda row: status(row) == "rejected" or str(row.get("relevance_decision", "")).lower() == "reject",
+        lambda row: bool(_json_string_list(row.get("missing_evidence_flags")))
+        or status(row) in {"missing", "missing_text", "missing_or_default"},
+    )
+    for predicate in predicates:
+        candidates = [row for row in rows if predicate(row)]
+        candidates.sort(key=lambda row: (
+            _maybe_float(row.get("relevance_score")) is None,
+            _maybe_float(row.get("relevance_score")) or 0.0,
+            _stable_mapping_key(row),
+        ))
+        if candidates and candidates[0] not in selected:
+            selected.append(candidates[0])
+    for row in rows:
+        if row not in selected:
+            selected.append(row)
+        if len(selected) >= max(limit, 0):
+            break
+    # Priority order above is authoritative; stable keys only break ties within a stratum.
+    sample = selected[: max(limit, 0)]
+    counts = _collection_counts(value, limit)
+    counts["sample_count"] = len(sample)
+    counts["omitted_row_count"] = max(0, int(cast(int, counts["row_count"])) - len(sample))
+    counts["omitted_count"] = counts["omitted_row_count"]
+    counts["truncated"] = bool(counts["omitted_row_count"] > 0)
+    return sample, counts
+
+
+def _bounded_extremes(value: object, limit: int) -> tuple[list[dict[str, object]], dict[str, object]]:
+    """Return deterministic evenly spaced, endpoint-preserving date-series samples."""
+    rows, _ = _bounded_mappings(value, len(_json_list(value)))
+    rows.sort(key=lambda row: (_date_sort_key(row.get("date")), _stable_mapping_key(row)))
+    if len(rows) <= limit:
+        sample = rows
+    elif limit <= 1:
+        sample = rows[:1]
+    else:
+        indices = [round(index * (len(rows) - 1) / (limit - 1)) for index in range(limit)]
+        sample = [rows[index] for index in indices]
+    counts = _collection_counts(value, limit)
+    counts["sample_count"] = len(sample)
+    counts["omitted_row_count"] = max(0, int(cast(int, counts["row_count"])) - len(sample))
+    counts["omitted_count"] = counts["omitted_row_count"]
+    counts["truncated"] = bool(counts["omitted_row_count"] > 0)
+    return sample, counts
+
+
+def _date_sort_key(value: object) -> tuple[int, str]:
+    """Sort ISO dates chronologically while keeping malformed values deterministic."""
+    text = "" if value is None else str(value)
+    try:
+        from datetime import date
+        return (0, date.fromisoformat(text).isoformat())
+    except ValueError:
+        return (1, text)
+
+
+def _stable_mapping_key(value: Mapping[str, object]) -> tuple[str, ...]:
+    """Return the approved deterministic semantic ordering key for a JSON mapping."""
+    import json
+
+    def field(name: str) -> str:
+        item = value.get(name)
+        return "" if item is None else str(item)
+
+    return (
+        field("date"), field("ticker"), field("article_id"), field("sentence_index"),
+        field("chunk_index"), field("chunk_id"), field("topic_id"),
+        json.dumps(value, sort_keys=True, default=str, separators=(",", ":")),
+    )
