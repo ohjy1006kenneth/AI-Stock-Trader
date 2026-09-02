@@ -15,6 +15,7 @@ from core.contracts.schemas import OHLCVRecord, RunStatus
 from core.data.layer0_pipeline import (
     DailyLayer0Config,
     HistoricalLayer0Config,
+    _raw_rows_to_parquet_bytes,
     build_universe_mask_records,
     run_daily_layer0_incremental,
     run_historical_layer0_backfill,
@@ -1197,6 +1198,69 @@ def test_daily_layer0_incremental_skips_new_empty_fundamentals_archives() -> Non
     manifest = _manifest(writer, "test-empty-fundamentals")
     assert manifest["metadata"]["fundamentals"]["empty"] == 1
     assert manifest["metadata"]["fundamentals"]["missing_tickers"] == ["AAPL"]
+    assert manifest["metadata"]["fundamentals"]["output_keys"] == []
+    assert manifest["metadata"]["fundamentals"]["empty_output_keys"] == []
+
+
+def test_historical_layer0_backfill_publishes_empty_fundamentals_archive() -> None:
+    """Historical empty provider results publish readable zero-row fundamentals archives."""
+    writer = _Writer()
+    run_id = "test-historical-empty-fundamentals"
+
+    run_historical_layer0_backfill(
+        config=HistoricalLayer0Config(
+            from_date=date(2024, 5, 2),
+            to_date=date(2024, 5, 2),
+            tickers=("AAPL",),
+            fred_series_ids=("DGS10",),
+            run_id=run_id,
+        ),
+        universe_provider=_UniverseProvider(),
+        price_fetcher=_HistoricalPriceFetcher(),
+        security_master=_SecurityMaster(),
+        news_fetcher=_NewsFetcher(),
+        fundamentals_fetcher=_EmptyFundamentalsFetcher(),
+        macro_fetcher=_MacroFetcher(),
+        writer=writer,
+        price_serializer=_bytes_serializer,
+        price_deserializer=_bytes_deserializer,
+        news_serializer=_bytes_serializer,
+        fundamentals_serializer=_bytes_serializer,
+        macro_serializer=_bytes_serializer,
+    )
+
+    key = raw_fundamentals_path("AAPL")
+    assert key in writer.objects
+    assert json.loads(writer.objects[key]) == []
+    fundamentals = _manifest(writer, run_id)["metadata"]["fundamentals"]
+    assert fundamentals["written"] == 0
+    assert fundamentals["empty"] == 1
+    assert fundamentals["missing_tickers"] == ["AAPL"]
+    assert fundamentals["empty_output_keys"] == [key]
+    assert fundamentals["requested_tickers"] == 1
+    assert fundamentals["requested_tickers"] == (
+        fundamentals["written"] + fundamentals["skipped"] + fundamentals["empty"]
+    )
+
+
+def test_empty_fundamentals_parquet_has_canonical_archive_columns() -> None:
+    """The production empty archive serializer retains the Layer 0 fundamentals schema."""
+    pd = pytest.importorskip("pandas")
+    pytest.importorskip("pyarrow")
+    frame = pd.read_parquet(io.BytesIO(_raw_rows_to_parquet_bytes([])))
+    assert list(frame.columns) == [
+        "source",
+        "ticker",
+        "report_date",
+        "availability_date",
+        "retrieved_at",
+        "fiscal_year",
+        "fiscal_period",
+        "statement",
+        "earnings_date",
+        "raw_json",
+    ]
+    assert frame.empty
 
 
 def test_historical_layer0_backfill_seeds_missing_canonical_fundamentals_from_alias() -> None:
