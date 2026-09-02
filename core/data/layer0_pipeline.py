@@ -1128,6 +1128,7 @@ def _write_fundamentals_archive(
     """Fetch and persist SimFin fundamentals per-ticker so partial progress survives failures."""
     normalized_tickers = [_canonicalize_ticker(ticker) for ticker in tickers]
     output_keys: list[str] = []
+    empty_output_keys: list[str] = []
     written = 0
     skipped = 0
     empty = 0
@@ -1217,6 +1218,7 @@ def _write_fundamentals_archive(
                     empty_key = raw_fundamentals_path(ticker)
                     writer.put_object(empty_key, serializer([]))
                     output_keys.append(empty_key)
+                    empty_output_keys.append(empty_key)
                 logger.warning(
                     "SimFin returned no fundamentals rows for ticker {} in {}..{}; "
                     "empty archive publication={}",
@@ -1240,7 +1242,7 @@ def _write_fundamentals_archive(
             "skipped": skipped,
             "empty": empty,
             "missing_tickers": missing_tickers,
-            "empty_output_keys": [raw_fundamentals_path(ticker) for ticker in missing_tickers],
+            "empty_output_keys": empty_output_keys,
             "total_rows": total_rows,
             "aliased_tickers": aliased_tickers,
             "output_keys": output_keys,

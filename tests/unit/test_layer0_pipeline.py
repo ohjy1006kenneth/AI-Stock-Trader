@@ -1198,6 +1198,8 @@ def test_daily_layer0_incremental_skips_new_empty_fundamentals_archives() -> Non
     manifest = _manifest(writer, "test-empty-fundamentals")
     assert manifest["metadata"]["fundamentals"]["empty"] == 1
     assert manifest["metadata"]["fundamentals"]["missing_tickers"] == ["AAPL"]
+    assert manifest["metadata"]["fundamentals"]["output_keys"] == []
+    assert manifest["metadata"]["fundamentals"]["empty_output_keys"] == []
 
 
 def test_historical_layer0_backfill_publishes_empty_fundamentals_archive() -> None:
