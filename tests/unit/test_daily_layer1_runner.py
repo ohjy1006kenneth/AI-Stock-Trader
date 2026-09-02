@@ -905,6 +905,56 @@ def test_run_daily_layer1_fails_closed_when_raw_fundamentals_archive_is_missing(
     assert manifest.status is RunStatus.FAILED
 
 
+def test_run_daily_layer1_accepts_readable_empty_fundamentals_archive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A readable zero-row fundamentals archive clears the scheduled Layer 0 gate."""
+    writer = local_writer(tmp_path, monkeypatch)
+    seed_layer0_archives(
+        writer,
+        dates=["2024-01-03"],
+        tickers=["AAPL"],
+        layer0_run_ids=("layer1-empty-fundamentals",),
+    )
+    empty_fundamentals = pd.DataFrame(
+        columns=[
+            "source",
+            "ticker",
+            "report_date",
+            "availability_date",
+            "retrieved_at",
+            "fiscal_year",
+            "fiscal_period",
+            "statement",
+            "earnings_date",
+            "raw_json",
+        ]
+    )
+    buffer = io.BytesIO()
+    empty_fundamentals.to_parquet(buffer, index=False)
+    writer.put_object(raw_fundamentals_path("AAPL"), buffer.getvalue())
+
+    result = run_daily_layer1(
+        Layer1DailyConfig(
+            run_id="layer1-empty-fundamentals",
+            from_date="2024-01-03",
+            to_date="2024-01-03",
+        ),
+        writer=writer,
+        news_runner=fake_news_runner(writer, ["AAPL"]),
+        text_topic_runner=fake_topic_runner(writer, ["AAPL"]),
+        finbert_runner=fake_sentiment_runner(writer, ["AAPL"]),
+        regime_runner=fake_regime_runner(writer),
+        validation_output_dir=tmp_path / "reports",
+        now=datetime(2024, 1, 4, 12, 0, tzinfo=UTC),
+    )
+
+    manifest = PipelineManifestRecord.model_validate_json(writer.get_object(result.manifest_key))
+    assert result.ready_for_layer2 is True
+    assert manifest.status is RunStatus.COMPLETED
+
+
 def test_run_daily_layer1_fails_closed_when_raw_price_history_misses_target_date(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
