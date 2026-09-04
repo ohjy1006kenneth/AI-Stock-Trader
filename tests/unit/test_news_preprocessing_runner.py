@@ -181,7 +181,7 @@ def test_load_modal_runtime_config_reads_repo_config() -> None:
 
     assert config.app_name
     assert config.r2_secret_name
-    assert config.timeout_seconds > 0
+    assert config.timeout_seconds == 7200
 
 
 def _local_writer(tmp_path: Path, monkeypatch) -> R2Writer:
