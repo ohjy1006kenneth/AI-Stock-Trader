@@ -1,0 +1,30 @@
+{
+  "after_sha256": "83bebb0344461c91ba20bb7feac678dd404ef76fe506ff38d57d0df0e9f8ec14",
+  "avb_row_after": {
+    "data_quality_ok": "False",
+    "date": "2026-08-17",
+    "halted": "False",
+    "in_universe": "True",
+    "liquid": "True",
+    "reason": "missing_target_date_price",
+    "ticker": "AVB",
+    "tradable": "True"
+  },
+  "backup_path": "/home/juyoungoh/AI-Stock-Trader/.worktrees/t_e362d6e1/artifacts/reports/diagnostics/issue296_avb_universe_2026-08-17.before.csv",
+  "before_sha256": "72da72a8fab73377b0ba3c22f848be36b0c8fae53fce29e15a7c11a8dd5a6101",
+  "changed_rows": [
+    {
+      "fields": [
+        "data_quality_ok",
+        "reason"
+      ],
+      "row": 45,
+      "ticker": "AVB"
+    }
+  ],
+  "issue": 296,
+  "r2_key": "raw/universe/2026-08-17.csv",
+  "row_count_after": 502,
+  "row_count_before": 502,
+  "task": "t_e362d6e1"
+}

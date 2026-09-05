@@ -11,10 +11,11 @@ import pytest
 from loguru import logger
 from requests import HTTPError
 
-from core.contracts.schemas import OHLCVRecord, RunStatus
+from core.contracts.schemas import OHLCVRecord, RunStatus, UniverseRecord
 from core.data.layer0_pipeline import (
     DailyLayer0Config,
     HistoricalLayer0Config,
+    _apply_historical_target_date_price_gate,
     _raw_rows_to_parquet_bytes,
     build_universe_mask_records,
     run_daily_layer0_incremental,
@@ -374,6 +375,55 @@ def test_build_universe_mask_records_applies_quality_filters() -> None:
     assert by_ticker["MSFT"].reason == "missing_ohlcv_window"
 
 
+def test_historical_target_date_price_gate_marks_only_missing_eligible_rows() -> None:
+    records = [
+        UniverseRecord(date="2024-01-02", ticker="avb", in_universe=True),
+        UniverseRecord(date="2024-01-02", ticker="AAPL", in_universe=True),
+        UniverseRecord(
+            date="2024-01-02",
+            ticker="MSFT",
+            in_universe=True,
+            liquid=False,
+            reason="market_cap_unavailable",
+        ),
+    ]
+
+    updated, metadata = _apply_historical_target_date_price_gate(
+        records=records,
+        ohlcv_window={
+            "AVB": [_bar(date_value="2024-01-01", ticker="AVB")],
+            "aapl": [_bar(date_value="2024-01-02", ticker="AAPL")],
+        },
+    )
+
+    by_ticker = {record.ticker: record for record in updated}
+    assert by_ticker["avb"].data_quality_ok is False
+    assert by_ticker["avb"].reason == "missing_target_date_price"
+    assert by_ticker["AAPL"] == records[1]
+    assert by_ticker["MSFT"] == records[2]
+    assert metadata == {
+        "exact_target_date_price_exclusion_count": 1,
+        "exact_target_date_price_exclusion_samples": [
+            {"date": "2024-01-02", "ticker": "AVB"}
+        ],
+    }
+
+
+def test_historical_target_date_price_gate_caps_deterministic_samples() -> None:
+    records = [
+        UniverseRecord(date="2024-01-02", ticker=f"TICKER{index:02d}", in_universe=True)
+        for index in range(25)
+    ]
+
+    _, metadata = _apply_historical_target_date_price_gate(records=records, ohlcv_window={})
+
+    assert metadata["exact_target_date_price_exclusion_count"] == 25
+    samples = metadata["exact_target_date_price_exclusion_samples"]
+    assert len(samples) == 20
+    assert samples[0] == {"date": "2024-01-02", "ticker": "TICKER00"}
+    assert samples[-1] == {"date": "2024-01-02", "ticker": "TICKER19"}
+
+
 def test_build_universe_mask_records_applies_market_cap_filter() -> None:
     records = build_universe_mask_records(
         as_of_date=date(2024, 1, 2),
@@ -473,6 +523,11 @@ def test_historical_layer0_backfill_writes_all_raw_archives_and_manifest() -> No
     assert provenance_report["price_adjustment_provenance"]["feed"] == "sip"
     assert provenance_report["archive_summary"]["close_diff_adj_close_rows"] == 0
     assert fundamentals_fetcher.calls[0]["start_date"] == "2024-01-02"
+    assert manifest["metadata"]["universe"]["exact_target_date_price_exclusion_count"] == 2
+    assert manifest["metadata"]["universe"]["exact_target_date_price_exclusion_samples"] == [
+        {"date": "2024-01-03", "ticker": "AAPL"},
+        {"date": "2024-01-03", "ticker": "MSFT"},
+    ]
 
     universe_rows = list(
         csv.DictReader(io.StringIO(writer.objects[raw_universe_path("2024-01-02")].decode()))
@@ -1456,6 +1511,42 @@ def test_daily_layer0_incremental_repairs_missing_target_date_and_rewrites_unive
     assert writer.put_counts[universe_key] == 1
     universe_rows = list(csv.DictReader(io.StringIO(writer.objects[universe_key].decode("utf-8"))))
     assert universe_rows[0]["data_quality_ok"] == "True"
+
+
+def test_daily_layer0_incremental_fails_closed_without_eligible_target_date_coverage() -> None:
+    """Daily path must keep raising when an otherwise-eligible ticker lacks a target-date bar."""
+    writer = _Writer()
+    run_id = "test-daily-missing-coverage"
+
+    with pytest.raises(RuntimeError, match="cannot mark the universe ready"):
+        run_daily_layer0_incremental(
+            config=DailyLayer0Config(
+                as_of_date=date(2024, 1, 2),
+                tickers=("AAPL",),
+                fred_series_ids=("DGS10",),
+                run_id=run_id,
+                quality_config=QualityFilterConfig(rolling_window_days=1),
+            ),
+            live_price_fetcher=_LivePriceFetcher(
+                records=[
+                    _bar(date_value="2024-01-01", ticker="AAPL"),
+                    _bar(date_value="2024-01-02", ticker="SPY"),
+                ]
+            ),
+            news_fetcher=_NewsFetcher(),
+            fundamentals_fetcher=_FundamentalsFetcher(),
+            macro_fetcher=_MacroFetcher(),
+            writer=writer,
+            price_serializer=_bytes_serializer,
+            price_deserializer=_bytes_deserializer,
+            news_serializer=_bytes_serializer,
+            fundamentals_serializer=_bytes_serializer,
+            macro_serializer=_bytes_serializer,
+        )
+
+    manifest = _manifest(writer, run_id)
+    assert manifest["status"] == "failed"
+    assert raw_universe_path("2024-01-02") not in writer.objects
 
 
 def test_layer0_pipeline_writes_failure_manifest_before_reraising() -> None:
