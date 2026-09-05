@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import logging
 import os
+import time
 from collections.abc import Iterable
 from io import BytesIO
 from pathlib import Path
@@ -20,6 +22,12 @@ REQUIRED_R2_ENV_VARS = (
 )
 R2_ENV_FILE = Path(__file__).resolve().parents[2] / "config" / "r2.env"
 _MISSING_OBJECT_ERROR_CODES = frozenset({"404", "NoSuchKey", "NotFound"})
+_TRANSIENT_OBJECT_ERROR_CODES = frozenset(
+    {"InternalError", "ServiceUnavailable", "SlowDown", "RequestTimeout", "RequestTimeoutError"}
+)
+_PUT_MAX_ATTEMPTS = 7
+_PUT_RETRY_DELAYS = (2, 4, 8, 16, 32, 64)
+_LOGGER = logging.getLogger(__name__)
 
 
 class ReadableBody(Protocol):
@@ -94,7 +102,32 @@ class CloudflareR2Client:
 
     def put_object(self, key: str, data: bytes | str) -> None:
         """Write an object to the configured bucket."""
-        self._client.put_object(Bucket=self.bucket_name, Key=key, Body=_coerce_bytes(data))
+        body = _coerce_bytes(data)
+        for attempt in range(1, _PUT_MAX_ATTEMPTS + 1):
+            try:
+                self._client.put_object(Bucket=self.bucket_name, Key=key, Body=body)
+                return
+            except Exception as exc:
+                if not _is_transient_put_error(exc):
+                    raise
+                if attempt == _PUT_MAX_ATTEMPTS:
+                    _LOGGER.error(
+                        "R2 put failed after %d attempts for bucket=%s key=%s",
+                        _PUT_MAX_ATTEMPTS,
+                        self.bucket_name,
+                        key,
+                    )
+                    raise
+                delay = _PUT_RETRY_DELAYS[attempt - 1]
+                _LOGGER.warning(
+                    "Transient R2 put failure for bucket=%s key=%s; retry %d/%d in %ss",
+                    self.bucket_name,
+                    key,
+                    attempt,
+                    _PUT_MAX_ATTEMPTS - 1,
+                    delay,
+                )
+                time.sleep(delay)
 
     def get_object(self, key: str) -> bytes:
         """Read an object from the configured bucket."""
@@ -160,6 +193,48 @@ def _is_missing_object_error(exc: BaseException) -> bool:
         return False
     code = str(error_response.get("Error", {}).get("Code", "")).strip()
     return code in _MISSING_OBJECT_ERROR_CODES
+
+
+def _is_transient_put_error(exc: BaseException) -> bool:
+    """Return whether a put failure is safe to retry at the object boundary."""
+    error_response = getattr(exc, "response", None)
+    if isinstance(error_response, dict):
+        error = error_response.get("Error", {})
+        code = str(error.get("Code", "")).strip() if isinstance(error, dict) else ""
+        if code in _TRANSIENT_OBJECT_ERROR_CODES:
+            return True
+        metadata = error_response.get("ResponseMetadata", {})
+        if isinstance(metadata, dict):
+            status = metadata.get("HTTPStatusCode")
+            if isinstance(status, (int, str)):
+                try:
+                    if int(status) >= 500:
+                        return True
+                except ValueError:
+                    pass
+
+    try:
+        from botocore.exceptions import (
+            ConnectionClosedError,
+            ConnectionError,
+            ConnectTimeoutError,
+            EndpointConnectionError,
+            ProxyConnectionError,
+            ReadTimeoutError,
+        )
+    except ModuleNotFoundError:
+        return False
+    return isinstance(
+        exc,
+        (
+            ConnectTimeoutError,
+            ConnectionClosedError,
+            ConnectionError,
+            EndpointConnectionError,
+            ProxyConnectionError,
+            ReadTimeoutError,
+        ),
+    )
 
 
 def _load_local_r2_env_file() -> None:
