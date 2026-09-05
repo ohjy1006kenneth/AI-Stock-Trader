@@ -286,7 +286,11 @@ def test_cloudflare_r2_client_retries_http_5xx_put(monkeypatch) -> None:
 
 def test_cloudflare_r2_client_retries_transport_timeout_put(monkeypatch) -> None:
     """A botocore transport timeout should be retried once before success."""
-    from botocore.exceptions import ReadTimeoutError
+    try:
+        from botocore.exceptions import ReadTimeoutError
+    except ModuleNotFoundError:
+        class ReadTimeoutError(OSError):
+            pass
 
     fake_client = FakeS3Client(
         put_failures=[ReadTimeoutError(endpoint_url="https://example.test", error="timeout"), None]
