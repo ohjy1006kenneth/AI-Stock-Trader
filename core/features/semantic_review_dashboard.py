@@ -1,6 +1,7 @@
 """UI payload helpers for the Layer 1 semantic-review dashboard."""
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
@@ -1996,6 +1997,180 @@ def _normalize_reason_text(value: str) -> str:
     return text
 
 
+_MISSING = object()
+
+# B02-R2-001: the strict API contract is that the final pretty-encoded payload stays
+# under 200,000 UTF-8 bytes for arbitrary valid Mapping input. Generic per-node
+# bounds plus the final pretty-byte budget below make that contract hold on every
+# retained scalar/key route instead of only the expected fixture shapes.
+_PAYLOAD_PRETTY_BYTE_BUDGET = 200_000
+_PAYLOAD_BUDGET_METADATA_RESERVE = 1_024
+_PAYLOAD_TARGET_PRETTY_BYTES = _PAYLOAD_PRETTY_BYTE_BUDGET - _PAYLOAD_BUDGET_METADATA_RESERVE
+_PAYLOAD_STRING_CHARACTER_LIMIT = 256
+_PAYLOAD_MAPPING_KEY_LIMIT = 96
+_PAYLOAD_TOP_LEVEL_KEY_LIMIT = 256
+_PAYLOAD_KEY_NAME_LIMIT = 96
+_PAYLOAD_MAX_DEPTH = 5
+_PAYLOAD_SEQUENCE_ITEM_LIMIT = 32
+_PAYLOAD_NUMBER_REPR_LIMIT = 64
+_PAYLOAD_COMPACTION_PASSES = 12
+_PAYLOAD_SHRINK_FLOOR = 24
+_PAYLOAD_PRESERVED_STATUS_LIMIT = 256
+_PAYLOAD_NODE_FLOOR = 2
+_PAYLOAD_COMPACTABLE_ITEM_FLOOR = 2
+_PAYLOAD_SACRIFICED_SECTION_LIST_LIMIT = 8
+_HMM_CONTEXT_SCALAR_SAMPLE_LIMIT = 96
+_PAYLOAD_IMMUTABLE_TOP_LEVEL_KEYS = frozenset(
+    {
+        "ticker", "requested_ticker", "controls", "hmm_evaluation_context",
+        "smoke", "run_readiness", "pipeline_section_counts",
+        "article_group_counts", "accepted_article_counts", "flagged_article_counts",
+        "date_group_counts", "warnings_counts", "human_review_queue",
+    }
+)
+
+
+def _payload_compaction_marker(field: str, value: int) -> dict[str, object]:
+    """Return an explicit deterministic marker for bounded dropped content."""
+    return {field: value, "truncated": True, "payload_compaction_marker": True}
+
+
+def _pretty_payload_size(candidate: object) -> int:
+    """Return the strict contract metric: pretty sorted UTF-8 JSON byte length."""
+    return len(json.dumps(candidate, indent=2, sort_keys=True, default=str).encode("utf-8"))
+
+
+def _shrink_payload_node(node: object, depth: int = 0, key: str = "") -> tuple[object, int, int]:
+    """Halve oversized keys, items, and strings; return (node, dropped, truncated)."""
+    dropped = 0
+    truncated = 0
+    if isinstance(node, Mapping):
+        raw_keys = sorted(node, key=str)
+        total_keys = len(raw_keys)
+        if total_keys > _PAYLOAD_NODE_FLOOR and (depth or total_keys > _PAYLOAD_MAPPING_KEY_LIMIT):
+            keep = max(_PAYLOAD_NODE_FLOOR, -(-total_keys // 2))
+            # Preserve identity fields on diagnostic rows while compacting their
+            # lower-value detail.  In particular, ``key`` is the stable route
+            # used by the readiness UI and must not disappear from a row merely
+            # because the final byte-budget pass is active.
+            priority_keys = [
+                candidate
+                for candidate in (
+                    "key", "label", "scope", "status", "ready_for_final_human_acceptance",
+                    "recommendation", "human_review_status", "overall_state",
+                )
+                if candidate in node
+            ]
+            keep = max(keep, len(priority_keys))
+            kept_keys = list(dict.fromkeys(priority_keys + raw_keys[:keep]))[:keep]
+            dropped += total_keys - len(kept_keys)
+            raw_keys = kept_keys
+        result: dict[str, object] = {}
+        for raw_key in raw_keys:
+            name = str(raw_key)
+            if len(name) > _PAYLOAD_KEY_NAME_LIMIT:
+                result[f"{name[:_PAYLOAD_KEY_NAME_LIMIT]}..."] = None
+                result[f"key_truncated_{name[:_PAYLOAD_KEY_NAME_LIMIT]}"] = len(name)
+                truncated += 1
+                continue
+            child, child_dropped, child_truncated = _shrink_payload_node(
+                node[raw_key], depth + 1, name
+            )
+            result[name] = child
+            dropped += child_dropped
+            truncated += child_truncated
+        if dropped:
+            result["payload_compaction_omitted_node_count"] = dropped
+        return result, dropped, truncated
+    if isinstance(node, Sequence) and not isinstance(node, (str, bytes, bytearray)):
+        items = list(node)
+        # Readiness section identities are small but semantically complete; do
+        # not replace missing-section rows with an anonymous compaction marker.
+        preserve_rows = key == "missing_pipeline_sections"
+        if len(items) > _PAYLOAD_COMPACTABLE_ITEM_FLOOR and not preserve_rows:
+            keep = max(_PAYLOAD_COMPACTABLE_ITEM_FLOOR, -(-len(items) // 2))
+            dropped += len(items) - keep
+            items = items[:keep]
+        shrunk: list[object] = []
+        for item in items:
+            child, child_dropped, child_truncated = _shrink_payload_node(item, depth + 1, key)
+            shrunk.append(child)
+            dropped += child_dropped
+            truncated += child_truncated
+        if dropped and not preserve_rows:
+            shrunk.append(_payload_compaction_marker("payload_compaction_omitted_item_count", dropped))
+        return shrunk, dropped, truncated
+    if isinstance(node, str) and key in {
+        "recommendation", "human_review_status", "status", "state", "reason",
+    } and len(node) <= _PAYLOAD_PRESERVED_STATUS_LIMIT:
+        return node, 0, 0
+    if isinstance(node, str) and len(node) > _PAYLOAD_SHRINK_FLOOR:
+        keep = max(_PAYLOAD_SHRINK_FLOOR, len(node) // 2)
+        return f"{node[:keep]}...", 0, 1
+    return node, 0, 0
+
+
+def _enforce_payload_pretty_byte_budget(payload: Mapping[str, object]) -> dict[str, object]:
+    """Enforce the strict pretty-JSON byte budget at the final public-builder boundary.
+
+    The generic per-node bounds keep legitimate payloads inside the budget, so the
+    compaction loop below never fires for normal reports. For arbitrary Mapping
+    input it repeatedly halves oversized branches deterministically (sorted keys,
+    canonical list order) until the pretty payload fits; because every pass strictly
+    reduces encoded volume toward a constant skeleton, the loop converges. Dropped
+    content is reported through ``payload_budget`` metadata and inline
+    ``payload_compaction_*`` markers instead of being silently hidden.
+    """
+    import copy as _copy
+
+    result = _copy.deepcopy(dict(payload))
+    initial_size = _pretty_payload_size(result)
+    compacted = False
+    passes = 0
+    dropped_nodes = 0
+    truncated_scalars = 0
+    sacrificed_sections: list[str] = []
+    while _pretty_payload_size(result) >= _PAYLOAD_TARGET_PRETTY_BYTES and passes < _PAYLOAD_COMPACTION_PASSES:
+        compacted = True
+        passes += 1
+        if passes == _PAYLOAD_COMPACTION_PASSES // 2:
+            # Mid-loop accelerator: drop whole lowest-value sample sections first;
+            # authoritative *_counts metadata and readiness blocks remain.
+            section_keys = sorted(
+                key for key in result
+                if isinstance(result.get(key), list)
+                and key not in _PAYLOAD_IMMUTABLE_TOP_LEVEL_KEYS
+                and not str(key).endswith("_counts")
+            )
+            sacrificed_sections = []
+            for key in reversed(section_keys):
+                result.pop(key, None)
+                if len(sacrificed_sections) < _PAYLOAD_SACRIFICED_SECTION_LIST_LIMIT:
+                    sacrificed_sections.append(str(key))
+                elif sacrificed_sections[-1] != "payload_compaction_more_sections":
+                    sacrificed_sections.append("payload_compaction_more_sections")
+                if _pretty_payload_size(result) < _PAYLOAD_TARGET_PRETTY_BYTES:
+                    break
+            continue
+        shrunk, dropped, truncated = _shrink_payload_node(result)
+        result = cast(dict[str, object], shrunk)
+        dropped_nodes += dropped
+        truncated_scalars += truncated
+
+    final_size = _pretty_payload_size(result)
+    result["payload_budget"] = {
+        "pretty_utf8_byte_budget": _PAYLOAD_PRETTY_BYTE_BUDGET,
+        "initial_pretty_utf8_bytes": initial_size,
+        "final_pretty_utf8_bytes": final_size,
+        "within_budget": final_size < _PAYLOAD_PRETTY_BYTE_BUDGET,
+        "compacted": compacted,
+        "compaction_passes": passes,
+        "omitted_node_count": dropped_nodes,
+        "truncated_scalar_count": truncated_scalars,
+        "sacrificed_sections": sacrificed_sections,
+    }
+    return result
+
 _PIPELINE_SECTION_SAMPLE_LIMITS: dict[str, int] = {
     "raw_preprocessing_rows": 1,
     "article_embedding_rows": 1,
@@ -2007,6 +2182,8 @@ _PIPELINE_SECTION_SAMPLE_LIMITS: dict[str, int] = {
     "stock_price_rows": 2,
     "date_aligned_price_hmm_rows": 2,
 }
+_CHART_SAMPLE_LIMIT = 32
+_WARNING_SAMPLE_LIMIT = 12
 _ARTICLE_DETAIL_SAMPLE_LIMIT = 1
 _FINBERT_SENTENCE_SAMPLE_LIMIT = 3
 _FULL_TEXT_PREVIEW_LIMIT = 280
@@ -2060,9 +2237,16 @@ def _compact_hmm_evaluation_context(value: object) -> dict[str, object]:
             compact[key] = sample
             compact[f"{key}_counts"] = _sampling_counts(len(rows), len(sample))
         elif key in _HMM_CONTEXT_LIST_KEYS:
-            items = sorted(_json_string_list(raw))[:_HMM_CONTEXT_LIST_LIMIT]
-            compact[key] = items
-            compact[f"{key}_counts"] = _sampling_counts(len(_json_string_list(raw)), len(items))
+            raw_items = _json_string_list(raw)
+            items = sorted(raw_items)[:_HMM_CONTEXT_LIST_LIMIT]
+            compact[key] = [_bound_json_value(item, key=key) for item in items]
+            counts = _sampling_counts(len(raw_items), len(items))
+            truncated_item_count = sum(
+                1 for item in items if len(item) > _PAYLOAD_STRING_CHARACTER_LIMIT
+            )
+            counts["truncated_item_count"] = truncated_item_count
+            counts["item_truncated"] = truncated_item_count > 0
+            compact[f"{key}_counts"] = counts
         else:
             compact[key] = _bound_json_value(raw, key=key)
     return compact
@@ -2180,7 +2364,24 @@ def _compact_layer1_semantic_review_dashboard_payload(payload: Mapping[str, obje
         for key, value in section_items.items()
         if key in section_keys
     }
-    return compact
+    if len(unknown_keys) > len(kept_unknown):
+        compact.setdefault("warnings", []).append({
+            "code": "unknown_pipeline_sections_omitted",
+            "message": "Unknown pipeline section detail was omitted from the bounded review payload.",
+        })
+    for key in (
+        "price_series",
+        "benchmark_price_series",
+        "market_regime_series",
+        "benchmark_market_regime_series",
+        "warnings",
+    ):
+        limit = _WARNING_SAMPLE_LIMIT if key == "warnings" else _CHART_SAMPLE_LIMIT
+        rows, counts = _bounded_extremes(compact.get(key), limit)
+        compact[key] = rows
+        compact[f"{key}_counts"] = counts
+    bounded = cast(dict[str, object], _bound_json_value(compact))
+    return _enforce_payload_pretty_byte_budget(bounded)
 
 
 def _compact_article_summary_row(article: Mapping[str, object]) -> dict[str, object]:
@@ -2577,7 +2778,7 @@ def _bound_json_value(value: object, *, key: str = "", depth: int = 0) -> object
     """Project arbitrary report values into deterministic, shallow JSON-safe values."""
     import json
 
-    if depth > 5 and isinstance(value, (Mapping, Sequence)) and not isinstance(value, (str, bytes, bytearray)):
+    if depth > _PAYLOAD_MAX_DEPTH and isinstance(value, (Mapping, Sequence)) and not isinstance(value, (str, bytes, bytearray)):
         return None
     if isinstance(value, Mapping):
         result: dict[str, object] = {}
@@ -2586,9 +2787,19 @@ def _bound_json_value(value: object, *, key: str = "", depth: int = 0) -> object
             raw_keys = raw_keys[:32]
         if key == "features":
             raw_keys = raw_keys[:32]
+        key_limit = _PAYLOAD_TOP_LEVEL_KEY_LIMIT if depth == 0 else _PAYLOAD_MAPPING_KEY_LIMIT
+        if len(raw_keys) > key_limit:
+            result["key_count"] = len(raw_keys)
+            result["keys_truncated"] = True
+            raw_keys = raw_keys[:key_limit]
         for raw_key in raw_keys:
             name = str(raw_key)
             if name == "source_text_provenance":
+                continue
+            if len(name) > _PAYLOAD_KEY_NAME_LIMIT:
+                truncated_name = f"{name[:_PAYLOAD_KEY_NAME_LIMIT]}..."
+                result[f"key_character_count_{truncated_name}"] = len(name)
+                result[truncated_name] = _bound_json_value(value[raw_key], key=truncated_name, depth=depth + 1)
                 continue
             item = value[raw_key]
             result[name] = _bound_json_value(item, key=name, depth=depth + 1)
@@ -2596,6 +2807,9 @@ def _bound_json_value(value: object, *, key: str = "", depth: int = 0) -> object
                 "text", "full_scored_text", "headline", "message", "reason",
                 "summary", "topic_example_text", "snippet",
             } and len(item) > _PROSE_CHARACTER_LIMIT:
+                result[f"{name}_character_count"] = len(item)
+                result[f"{name}_truncated"] = True
+            elif isinstance(item, str) and len(item) > _PAYLOAD_STRING_CHARACTER_LIMIT:
                 result[f"{name}_character_count"] = len(item)
                 result[f"{name}_truncated"] = True
         return result
@@ -2616,17 +2830,25 @@ def _bound_json_value(value: object, *, key: str = "", depth: int = 0) -> object
         elif key in {"warnings", "summary_cards", "gate_cards", "failures"}:
             limit = 12
         else:
-            limit = 32
+            limit = _PAYLOAD_SEQUENCE_ITEM_LIMIT
         if all(isinstance(item, Mapping) for item in items):
             items.sort(key=lambda item: _stable_mapping_key(item))  # type: ignore[arg-type]
         else:
             items.sort(key=lambda item: (type(item).__name__, json.dumps(item, sort_keys=True, default=str)))
         return [_bound_json_value(item, key=key, depth=depth + 1) for item in items[:limit]]
-    if isinstance(value, str) and key in {
-        "text", "full_scored_text", "headline", "message", "reason", "summary",
-        "topic_example_text", "snippet",
-    }:
-        return value[:_PROSE_CHARACTER_LIMIT]
+    if isinstance(value, str):
+        if key in {
+            "text", "full_scored_text", "headline", "message", "reason", "summary",
+            "topic_example_text", "snippet",
+        }:
+            return value[:_PROSE_CHARACTER_LIMIT]
+        if len(value) > _PAYLOAD_STRING_CHARACTER_LIMIT:
+            return f"{value[:_PAYLOAD_STRING_CHARACTER_LIMIT]}..."
+        return value
+    if isinstance(value, int) and not isinstance(value, bool):
+        digits = str(value)
+        if len(digits) > _PAYLOAD_NUMBER_REPR_LIMIT:
+            return f"{digits[:_PAYLOAD_NUMBER_REPR_LIMIT]}..."
     return value
 
 

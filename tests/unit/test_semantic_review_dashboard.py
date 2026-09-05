@@ -78,6 +78,38 @@ def test_semantic_review_payload_bounds_retained_hmm_context_and_preserves_evide
     assert encoded == json.dumps(reversed_payload, indent=2, sort_keys=True).encode("utf-8")
 
 
+@pytest.mark.parametrize(
+    "report",
+    [
+        {"ticker": "AAPL", "summary": {"unbounded": "x" * 250_000}},
+        {"ticker": "AAPL", "warnings": [{"scope": "news", "detail": "w" * 250_000}]},
+        {
+            "ticker": "AAPL",
+            "hmm_evaluation_context": {
+                "requested_inference_dates": ["d" * 250_000],
+                "warnings": ["h" * 250_000],
+                "manifest_summaries": [{"artifact_key": "m" * 250_000}],
+                "training_windows": [{"train_end_date": "t" * 250_000}],
+            },
+        },
+    ],
+)
+def test_semantic_review_public_builder_bounds_arbitrary_scalar_routes(report: dict[str, object]) -> None:
+    """Arbitrary retained scalars obey the strict pretty-byte budget with audit metadata."""
+    payload = cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report))
+    encoded = json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
+    reversed_report = dict(reversed(list(report.items())))
+    reversed_payload = cast(
+        dict[str, Any], build_layer1_semantic_review_dashboard_payload(reversed_report)
+    )
+
+    assert len(encoded) < 200_000
+    assert payload["payload_budget"]["within_budget"] is True
+    assert "character_count" in encoded.decode("utf-8")
+    assert encoded == json.dumps(reversed_payload, indent=2, sort_keys=True).encode("utf-8")
+    assert "source_text_provenance" not in encoded.decode("utf-8")
+
+
 def test_stratified_dashboard_sampling_preserves_relevance_strata_under_budget() -> None:
     """Direct, indirect, broad-market, and contamination rows survive adverse IDs and truncation."""
     rows = [
