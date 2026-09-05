@@ -133,7 +133,31 @@ def build_layer1_semantic_review_dashboard_payload(
     report: Layer1SemanticReviewReport | Mapping[str, object],
 ) -> dict[str, object]:
     """Return the JSON payload rendered by the semantic-review dashboard UI."""
-    payload = _build_payload_from_report(report)
+    if isinstance(report, Layer1SemanticReviewReport):
+        payload = _build_payload_from_report(report)
+    else:
+        report_dict = dict(report)
+        raw_article_groups = report_dict.get("article_groups")
+        raw_pipeline_sections = report_dict.get("pipeline_sections")
+        if "price_series" in report_dict and "price_rows" not in report_dict:
+            report_dict["price_rows"] = report_dict["price_series"]
+        if "market_regime_series" in report_dict and "market_regime_rows" not in report_dict:
+            report_dict["market_regime_rows"] = report_dict["market_regime_series"]
+        if "warnings" in report_dict and "load_warnings" not in report_dict:
+            report_dict["load_warnings"] = report_dict["warnings"]
+        if isinstance(raw_article_groups, Sequence) and not isinstance(raw_article_groups, (str, bytes, bytearray)):
+            report_dict["article_groups"] = sorted(
+                (item for item in raw_article_groups if isinstance(item, Mapping)),
+                key=_stable_mapping_key,
+            )
+        payload = _build_payload_from_report(report_dict)
+        if isinstance(raw_article_groups, Sequence) and not isinstance(raw_article_groups, (str, bytes, bytearray)):
+            payload["article_groups"] = sorted(
+                raw_article_groups,
+                key=lambda item: (0, _stable_mapping_key(item)) if isinstance(item, Mapping) else (1, repr(item)),
+            )
+        if isinstance(raw_pipeline_sections, Mapping):
+            payload["pipeline_sections"] = dict(raw_pipeline_sections)
     payload["topic_relevance_review"] = build_layer1_topic_relevance_review(payload)
     payload["semantic_aggregate_review"] = build_layer1_semantic_aggregate_review(payload)
     payload.update(build_layer1_semantic_review_readiness_summary(payload))
@@ -2047,7 +2071,7 @@ def _shrink_payload_node(node: object, depth: int = 0, key: str = "") -> tuple[o
     if isinstance(node, Mapping):
         raw_keys = sorted(node, key=str)
         total_keys = len(raw_keys)
-        if total_keys > _PAYLOAD_NODE_FLOOR and (depth or total_keys > _PAYLOAD_MAPPING_KEY_LIMIT):
+        if total_keys > _PAYLOAD_NODE_FLOOR and (depth or total_keys > _PAYLOAD_MAPPING_KEY_LIMIT) and key != "pipeline_sections":
             keep = max(_PAYLOAD_NODE_FLOOR, -(-total_keys // 2))
             # Preserve identity fields on diagnostic rows while compacting their
             # lower-value detail.  In particular, ``key`` is the stable route
@@ -2275,19 +2299,32 @@ def _compact_layer1_semantic_review_dashboard_payload(payload: Mapping[str, obje
             compact.get("hmm_evaluation_context")
         )
 
-    article_groups = [dict(item) for item in _json_list(compact.get("article_groups")) if isinstance(item, Mapping)]
+    article_groups_raw = _json_list(compact.get("article_groups"))
+    article_groups = [dict(item) for item in article_groups_raw if isinstance(item, Mapping)]
+    article_groups.sort(key=_stable_mapping_key)
     accepted_articles = [
         dict(item) for item in _json_list(compact.get("accepted_articles")) if isinstance(item, Mapping)
     ]
+    accepted_articles.sort(key=_stable_mapping_key)
     flagged_articles = [
         dict(item) for item in _json_list(compact.get("flagged_articles")) if isinstance(item, Mapping)
     ]
-    compact["article_group_counts"] = {
-        "full_count": len(article_groups),
+    flagged_articles.sort(key=_stable_mapping_key)
+    article_group_counts: dict[str, object] = {
+        "full_count": len(article_groups_raw),
         "sample_count": min(len(article_groups), _TOP_LEVEL_ARTICLE_SAMPLE_LIMIT),
-        "omitted_count": max(0, len(article_groups) - _TOP_LEVEL_ARTICLE_SAMPLE_LIMIT),
-        "truncated": len(article_groups) > _TOP_LEVEL_ARTICLE_SAMPLE_LIMIT,
+        "omitted_count": max(0, len(article_groups_raw) - min(len(article_groups), _TOP_LEVEL_ARTICLE_SAMPLE_LIMIT)),
+        "truncated": len(article_groups_raw) > _TOP_LEVEL_ARTICLE_SAMPLE_LIMIT,
     }
+    if len(article_groups_raw) != len(article_groups):
+        article_group_counts.update(
+            {
+                "row_count": len(article_groups_raw),
+                "omitted_row_count": max(0, len(article_groups_raw) - len(article_groups)),
+                "invalid_row_count": len(article_groups_raw) - len(article_groups),
+            }
+        )
+    compact["article_group_counts"] = article_group_counts
     compact["article_groups"] = [
         _compact_article_summary_row(article)
         for article in article_groups[:_TOP_LEVEL_ARTICLE_SAMPLE_LIMIT]
@@ -2315,6 +2352,7 @@ def _compact_layer1_semantic_review_dashboard_payload(payload: Mapping[str, obje
     date_groups = [
         dict(item) for item in _json_list(compact.get("date_groups")) if isinstance(item, Mapping)
     ]
+    date_groups.sort(key=_stable_mapping_key)
     compact["date_group_counts"] = {
         "full_count": len(date_groups),
         "sample_count": min(len(date_groups), _TOP_LEVEL_DATE_SAMPLE_LIMIT),
@@ -2348,13 +2386,9 @@ def _compact_layer1_semantic_review_dashboard_payload(payload: Mapping[str, obje
         section_items.setdefault(key, _MISSING)
     compact["pipeline_section_counts"] = {
         str(key): {
-            "row_count": len(rows),
-            "full_count": len(rows),
-            "sample_count": min(len(rows), _PIPELINE_SECTION_SAMPLE_LIMITS.get(str(key), 1)),
-            "omitted_count": max(0, len(rows) - _PIPELINE_SECTION_SAMPLE_LIMITS.get(str(key), 1)),
-            "truncated": len(rows) > _PIPELINE_SECTION_SAMPLE_LIMITS.get(str(key), 1),
+            **_collection_counts(value, _PIPELINE_SECTION_SAMPLE_LIMITS.get(str(key), 1)),
         }
-        for key, rows in ((str(key), _json_list(value)) for key, value in section_items.items() if key in section_keys)
+        for key, value in ((str(key), value) for key, value in section_items.items() if key in section_keys)
     }
     compact["pipeline_sections"] = {
         key: _compact_fixed_section_rows(
@@ -2805,7 +2839,7 @@ def _bound_json_value(value: object, *, key: str = "", depth: int = 0) -> object
             result[name] = _bound_json_value(item, key=name, depth=depth + 1)
             if isinstance(item, str) and name in {
                 "text", "full_scored_text", "headline", "message", "reason",
-                "summary", "topic_example_text", "snippet",
+                "summary", "topic_example_text", "snippet", "detail",
             } and len(item) > _PROSE_CHARACTER_LIMIT:
                 result[f"{name}_character_count"] = len(item)
                 result[f"{name}_truncated"] = True
@@ -2815,7 +2849,9 @@ def _bound_json_value(value: object, *, key: str = "", depth: int = 0) -> object
         return result
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         items = list(value)
-        if key in {
+        if key in {"article_groups", "accepted_articles", "flagged_articles"}:
+            limit = 6
+        elif key in {
             "article_ids", "topic_keywords", "reason_codes", "warning_codes",
             "entity_evidence", "ticker_evidence", "assignment_evidence_kinds",
             "assignment_classifications", "assignment_reasons", "ticker_terms", "ticker_hits",
@@ -2839,7 +2875,7 @@ def _bound_json_value(value: object, *, key: str = "", depth: int = 0) -> object
     if isinstance(value, str):
         if key in {
             "text", "full_scored_text", "headline", "message", "reason", "summary",
-            "topic_example_text", "snippet",
+            "topic_example_text", "snippet", "detail",
         }:
             return value[:_PROSE_CHARACTER_LIMIT]
         if len(value) > _PAYLOAD_STRING_CHARACTER_LIMIT:
