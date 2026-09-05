@@ -292,6 +292,10 @@ def test_cloudflare_r2_client_retries_transport_timeout_put(monkeypatch) -> None
         class ReadTimeoutError(OSError):
             def __init__(self, **kwargs):
                 super().__init__(str(kwargs))
+                self.response = {
+                    "Error": {"Code": "InternalError"},
+                    "ResponseMetadata": {"HTTPStatusCode": 500},
+                }
 
     fake_client = FakeS3Client(
         put_failures=[ReadTimeoutError(endpoint_url="https://example.test", error="timeout"), None]
