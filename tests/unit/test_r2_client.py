@@ -290,7 +290,8 @@ def test_cloudflare_r2_client_retries_transport_timeout_put(monkeypatch) -> None
         from botocore.exceptions import ReadTimeoutError
     except ModuleNotFoundError:
         class ReadTimeoutError(OSError):
-            pass
+            def __init__(self, **kwargs):
+                super().__init__(str(kwargs))
 
     fake_client = FakeS3Client(
         put_failures=[ReadTimeoutError(endpoint_url="https://example.test", error="timeout"), None]
