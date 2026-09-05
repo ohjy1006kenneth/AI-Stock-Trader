@@ -38,9 +38,11 @@ class FakeS3Client:
         *,
         missing_get_keys: set[str] | None = None,
         get_error_code: str = "NoSuchKey",
+        put_failures: list[Exception | None] | None = None,
     ) -> None:
         """Initialize empty call tracking."""
         self.put_calls: list[dict[str, object]] = []
+        self.put_failures = list(put_failures or [])
         self.get_calls: list[dict[str, str]] = []
         self.delete_calls: list[dict[str, str]] = []
         self.head_calls: list[dict[str, str]] = []
@@ -56,6 +58,10 @@ class FakeS3Client:
     def put_object(self, **kwargs: object) -> None:
         """Record put_object calls."""
         self.put_calls.append(kwargs)
+        if self.put_failures:
+            failure = self.put_failures.pop(0)
+            if failure is not None:
+                raise failure
 
     def get_object(self, **kwargs: str) -> dict[str, BytesIO]:
         """Return a stub get_object response."""
@@ -215,6 +221,93 @@ def test_cloudflare_r2_client_delegates_object_operations() -> None:
     assert payload == b"payload"
     assert keys == ["raw/news/2026-04-08.jsonl", "raw/prices/AAPL.parquet"]
     assert fake_client.paginator.calls == [{"Bucket": "bucket-name", "Prefix": "raw/"}]
+
+
+def test_cloudflare_r2_client_retries_transient_put_and_reuses_bytes(monkeypatch) -> None:
+    """Transient puts should retry with identical UTF-8 bytes and bounded delays."""
+    fake_client = FakeS3Client(
+        put_failures=[_object_store_error("InternalError", "PutObject") for _ in range(2)]
+    )
+    client = CloudflareR2Client(bucket_name="bucket-name", s3_client=fake_client)
+    delays: list[float] = []
+    monkeypatch.setattr("services.r2.client.time.sleep", delays.append)
+
+    client.put_object("features/layer1/AAPL.parquet", "hello")
+
+    assert delays == [2, 4]
+    assert len(fake_client.put_calls) == 3
+    assert [call["Body"] for call in fake_client.put_calls] == [b"hello"] * 3
+
+
+def test_cloudflare_r2_client_exhausts_put_retries_with_schedule(monkeypatch) -> None:
+    """Persistent transient puts should make seven calls and re-raise the last error."""
+    failures = [_object_store_error("InternalError", "PutObject") for _ in range(7)]
+    fake_client = FakeS3Client(put_failures=failures)
+    client = CloudflareR2Client(bucket_name="bucket-name", s3_client=fake_client)
+    delays: list[float] = []
+    monkeypatch.setattr("services.r2.client.time.sleep", delays.append)
+
+    with pytest.raises(type(failures[-1]), match="InternalError"):
+        client.put_object("features/layer1/AAPL.parquet", b"payload")
+
+    assert len(fake_client.put_calls) == 7
+    assert delays == [2, 4, 8, 16, 32, 64]
+
+
+def test_cloudflare_r2_client_does_not_retry_non_transient_put(monkeypatch) -> None:
+    """Access failures should pass through without an outer retry."""
+    failure = _object_store_error("AccessDenied", "PutObject")
+    fake_client = FakeS3Client(put_failures=[failure])
+    client = CloudflareR2Client(bucket_name="bucket-name", s3_client=fake_client)
+    delays: list[float] = []
+    monkeypatch.setattr("services.r2.client.time.sleep", delays.append)
+
+    with pytest.raises(type(failure), match="AccessDenied"):
+        client.put_object("features/layer1/AAPL.parquet", b"payload")
+
+    assert len(fake_client.put_calls) == 1
+    assert delays == []
+
+
+def test_cloudflare_r2_client_retries_http_5xx_put(monkeypatch) -> None:
+    """An HTTP 5xx response should be treated as a transient put failure."""
+    failure = _object_store_error("Unexpected", "PutObject")
+    getattr(failure, "response")["ResponseMetadata"] = {"HTTPStatusCode": 503}
+    fake_client = FakeS3Client(put_failures=[failure, None])
+    client = CloudflareR2Client(bucket_name="bucket-name", s3_client=fake_client)
+    delays: list[float] = []
+    monkeypatch.setattr("services.r2.client.time.sleep", delays.append)
+
+    client.put_object("features/layer1/AAPL.parquet", b"payload")
+
+    assert delays == [2]
+    assert len(fake_client.put_calls) == 2
+
+
+def test_cloudflare_r2_client_retries_transport_timeout_put(monkeypatch) -> None:
+    """A botocore transport timeout should be retried once before success."""
+    try:
+        from botocore.exceptions import ReadTimeoutError
+    except ModuleNotFoundError:
+        class ReadTimeoutError(OSError):
+            def __init__(self, **kwargs):
+                super().__init__(str(kwargs))
+                self.response = {
+                    "Error": {"Code": "InternalError"},
+                    "ResponseMetadata": {"HTTPStatusCode": 500},
+                }
+
+    fake_client = FakeS3Client(
+        put_failures=[ReadTimeoutError(endpoint_url="https://example.test", error="timeout"), None]
+    )
+    client = CloudflareR2Client(bucket_name="bucket-name", s3_client=fake_client)
+    delays: list[float] = []
+    monkeypatch.setattr("services.r2.client.time.sleep", delays.append)
+
+    client.put_object("features/layer1/AAPL.parquet", b"payload")
+
+    assert delays == [2]
+    assert len(fake_client.put_calls) == 2
 
 
 def test_cloudflare_r2_client_exists_uses_head_object() -> None:
