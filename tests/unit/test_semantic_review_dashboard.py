@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import json
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, cast
 
@@ -12,6 +13,7 @@ from app.lab.semantic_review_dashboard import _DashboardDefaults, _render_dashbo
 from core.features.aapl_evidence import build_layer1_aapl_evidence_report
 from core.features.regime_training import HMM_OPTIONAL_FEATURE_COLUMNS
 from core.features.semantic_review_dashboard import (
+    _stratified_bounded_mappings,
     build_layer1_semantic_review_dashboard_payload,
     build_layer1_semantic_review_dashboard_smoke_payload,
     build_layer1_semantic_review_readiness_summary,
@@ -32,6 +34,109 @@ from services.r2.writer import R2Writer
 from tests.fixtures.semantic_review_support import seed_semantic_review_fixture
 
 
+def test_semantic_review_payload_bounds_retained_hmm_context_and_preserves_evidence() -> None:
+    """Retained HMM metadata stays useful and bounded even with adversarial mappings."""
+    context: dict[str, object] = {
+        "requested_inference_dates": ["2026-05-21"],
+        "observed_inference_dates": ["2026-05-21"],
+        "manifest_summaries": [
+            {
+                "date": f"2026-05-{(index % 28) + 1:02d}",
+                "artifact_key": f"regime-{index}",
+                "source_text_provenance": "must not leak",
+                "arbitrary_payload": "x" * 10_000,
+            }
+            for index in range(1_000)
+        ],
+        "training_windows": [
+            {
+                "train_end_date": "2026-05-20",
+                "inference_date": "2026-05-21",
+                "arbitrary_payload": "y" * 10_000,
+            }
+            for _ in range(1_000)
+        ],
+        "arbitrary_context": {str(index): "z" * 10_000 for index in range(100)},
+    }
+    report = {"ticker": "AAPL", "hmm_evaluation_context": context}
+    payload = cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report))
+    encoded = json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
+    bounded_context = cast(dict[str, Any], payload["hmm_evaluation_context"])
+
+    assert len(encoded) < 200_000
+    assert bounded_context["manifest_summaries"][0]["artifact_key"]
+    assert bounded_context["training_windows"][0]["train_end_date"] == "2026-05-20"
+    assert "arbitrary_context" not in bounded_context
+    assert "source_text_provenance" not in encoded.decode("utf-8")
+    assert bounded_context["manifest_summaries_counts"]["full_count"] == 1_000
+
+    reversed_payload = cast(
+        dict[str, Any],
+        build_layer1_semantic_review_dashboard_payload(
+            {"ticker": "AAPL", "hmm_evaluation_context": dict(reversed(list(context.items())))}
+        ),
+    )
+    assert encoded == json.dumps(reversed_payload, indent=2, sort_keys=True).encode("utf-8")
+
+
+@pytest.mark.parametrize(
+    "report",
+    [
+        {"ticker": "AAPL", "summary": {"unbounded": "x" * 250_000}},
+        {"ticker": "AAPL", "warnings": [{"scope": "news", "detail": "w" * 250_000}]},
+        {
+            "ticker": "AAPL",
+            "hmm_evaluation_context": {
+                "requested_inference_dates": ["d" * 250_000],
+                "warnings": ["h" * 250_000],
+                "manifest_summaries": [{"artifact_key": "m" * 250_000}],
+                "training_windows": [{"train_end_date": "t" * 250_000}],
+            },
+        },
+    ],
+)
+def test_semantic_review_public_builder_bounds_arbitrary_scalar_routes(report: dict[str, object]) -> None:
+    """Arbitrary retained scalars obey the strict pretty-byte budget with audit metadata."""
+    payload = cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report))
+    encoded = json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
+    reversed_report = dict(reversed(list(report.items())))
+    reversed_payload = cast(
+        dict[str, Any], build_layer1_semantic_review_dashboard_payload(reversed_report)
+    )
+
+    assert len(encoded) < 200_000
+    assert payload["payload_budget"]["within_budget"] is True
+    assert "character_count" in encoded.decode("utf-8")
+    assert encoded == json.dumps(reversed_payload, indent=2, sort_keys=True).encode("utf-8")
+    assert "source_text_provenance" not in encoded.decode("utf-8")
+
+
+def test_stratified_dashboard_sampling_preserves_relevance_strata_under_budget() -> None:
+    """Direct, indirect, broad-market, and contamination rows survive adverse IDs and truncation."""
+    rows = [
+        {"article_id": "z-direct", "relevance_category": "direct"},
+        {"article_id": "a-indirect", "relevance_category": "indirect"},
+        {"article_id": "b-broad", "relevance_category": "broad_market"},
+        {"article_id": "c-contamination", "relevance_category": "contamination"},
+        {"article_id": "d-accepted", "evidence_status": "accepted"},
+        {"article_id": "e-rejected", "evidence_status": "rejected"},
+    ]
+    sample, counts = _stratified_bounded_mappings(rows, 6)
+
+    assert [row["article_id"] for row in sample] == [
+        "z-direct", "a-indirect", "b-broad", "c-contamination", "d-accepted", "e-rejected"
+    ]
+    assert counts["full_count"] == 6
+    assert counts["omitted_count"] == 0
+
+    truncated, truncated_counts = _stratified_bounded_mappings(list(reversed(rows)), 4)
+    assert [row["article_id"] for row in truncated] == [
+        "z-direct", "a-indirect", "b-broad", "c-contamination"
+    ]
+    assert truncated_counts["full_count"] == 6
+    assert truncated_counts["omitted_count"] == 2
+
+
 def test_semantic_review_payload_bounds_high_cardinality_article_indexes() -> None:
     """High-cardinality article detail is sampled while authoritative counts remain explicit."""
     report_dict: dict[str, object] = {
@@ -50,6 +155,112 @@ def test_semantic_review_payload_bounds_high_cardinality_article_indexes() -> No
         "truncated": True,
     }
     assert payload["accepted_article_counts"]["full_count"] == 500
+
+
+def test_semantic_review_payload_projects_high_cardinality_pipeline_rows() -> None:
+    """Known and unknown pipeline rows use fixed projections under the strict API byte budget."""
+    rows = [
+        {
+            "article_id": f"article-{index:03d}",
+            "date": "2026-01-01",
+            "ticker": "AAPL",
+            "headline": "headline " + "x" * 3000,
+            "article_ids": [f"nested-{item}" for item in range(500)],
+            "sentence_rows": [{"sentence_index": item, "text": "z" * 1000} for item in range(20)],
+            "source_text_provenance": {"raw": "y" * 20_000},
+        }
+        for index in range(50)
+    ]
+    payload = cast(
+        dict[str, Any],
+        build_layer1_semantic_review_dashboard_payload(
+            {
+                "ticker": "AAPL",
+                "article_groups": rows,
+                "pipeline_sections": {
+                    "raw_preprocessing_rows": rows,
+                    "unknown_rows": rows,
+                },
+                "unknown": {"blob": "u" * 10_000, "nested": rows},
+            }
+        ),
+    )
+    encoded = json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
+
+    assert len(encoded) < 200_000
+    unknown_sample = cast(list[dict[str, Any]], payload["pipeline_sections"]["unknown_rows"])
+    assert len(cast(list[str], unknown_sample[0]["article_ids"])) <= 8
+    assert "sentence_rows" not in unknown_sample[0]
+    assert "source_text_provenance" not in encoded.decode("utf-8")
+
+
+def test_semantic_review_payload_compacts_nested_dynamic_branches_deterministically() -> None:
+    """Nested evidence, prose, and unknown sections stay bounded and order-independent."""
+    rows = [
+        {
+            "date": f"2026-05-{index + 1:02d}",
+            "ticker": "AAPL",
+            "article_id": f"article-{index:03d}",
+            "headline": "headline " + "x" * 2000,
+            "article_ids": [f"nested-{item}" for item in range(500)],
+            "source_text_provenance": {"raw": "y" * 20_000},
+            "sentence_rows": [{"sentence_index": item, "text": "z" * 1000} for item in range(500)],
+        }
+        for index in range(50)
+    ]
+    report = {
+        "ticker": "AAPL", "article_groups": rows,
+        "date_groups": [{"date": "2026-05-01", "articles": rows}],
+        "price_series": [{"date": f"2026-01-{index + 1:02d}", "close": index} for index in range(100)],
+        "pipeline_sections": {
+            "unknown-b": rows, "unknown-a": rows,
+            "raw_preprocessing_rows": rows,
+        },
+    }
+    first = cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report))
+    second = cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload({
+        **report, "article_groups": list(reversed(rows)),
+    }))
+    encoded = json.dumps(first, indent=2, sort_keys=True).encode("utf-8")
+    assert len(encoded) < 200_000
+    assert encoded == json.dumps(second, indent=2, sort_keys=True).encode("utf-8")
+    assert len(cast(list[Any], first["article_groups"])) <= 6
+    assert len(cast(list[Any], first["price_series"])) <= 32
+    assert len(cast(list[Any], first["date_groups"])[0]["article_ids"]) <= 8
+    assert "source_text_provenance" not in json.dumps(first)
+    assert len(cast(dict[str, Any], first["pipeline_sections"])) == 12
+
+
+def test_semantic_review_payload_preserves_collection_input_states_and_invalid_members() -> None:
+    """Dynamic list metadata distinguishes missing, invalid, empty, and malformed members."""
+    report = {
+        "article_groups": [{"article_id": "a"}, "bad-member", {"article_id": "b"}],
+        "pipeline_sections": {
+            "raw_preprocessing_rows": None,
+            "article_embedding_rows": [],
+        },
+    }
+    payload = cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report))
+    assert payload["article_group_counts"]["row_count"] == 3
+    assert payload["article_group_counts"]["sample_count"] == 2
+    assert payload["article_group_counts"]["invalid_row_count"] == 1
+    assert payload["article_group_counts"]["omitted_row_count"] == 1
+    counts = cast(dict[str, Any], payload["pipeline_section_counts"])
+    assert counts["raw_preprocessing_rows"]["input_state"] == "invalid"
+    assert counts["article_embedding_rows"]["input_state"] == "present"
+    assert counts["topic_label_rows"]["input_state"] == "missing"
+
+
+def test_semantic_review_payload_evenly_samples_sorted_time_series() -> None:
+    """Chart samples sort by date, preserve endpoints, and include spaced interior points."""
+    dates = [(date(2026, 1, 1) + timedelta(days=index)).isoformat() for index in range(100)]
+    report = {"price_series": [{"date": value, "close": index} for index, value in enumerate(reversed(dates), 1)]}
+    payload = cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report))
+    sampled = cast(list[dict[str, Any]], payload["price_series"])
+    assert len(sampled) == 32
+    assert sampled[0]["date"] == dates[0]
+    assert sampled[-1]["date"] == dates[-1]
+    assert sampled[1]["date"] != dates[1]
 
 
 def test_semantic_review_report_includes_benchmark_rows(tmp_path: Path) -> None:

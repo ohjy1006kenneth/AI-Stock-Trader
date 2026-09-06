@@ -1,6 +1,7 @@
 """UI payload helpers for the Layer 1 semantic-review dashboard."""
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
@@ -132,7 +133,31 @@ def build_layer1_semantic_review_dashboard_payload(
     report: Layer1SemanticReviewReport | Mapping[str, object],
 ) -> dict[str, object]:
     """Return the JSON payload rendered by the semantic-review dashboard UI."""
-    payload = _build_payload_from_report(report)
+    if isinstance(report, Layer1SemanticReviewReport):
+        payload = _build_payload_from_report(report)
+    else:
+        report_dict = dict(report)
+        raw_article_groups = report_dict.get("article_groups")
+        raw_pipeline_sections = report_dict.get("pipeline_sections")
+        if "price_series" in report_dict and "price_rows" not in report_dict:
+            report_dict["price_rows"] = report_dict["price_series"]
+        if "market_regime_series" in report_dict and "market_regime_rows" not in report_dict:
+            report_dict["market_regime_rows"] = report_dict["market_regime_series"]
+        if "warnings" in report_dict and "load_warnings" not in report_dict:
+            report_dict["load_warnings"] = report_dict["warnings"]
+        if isinstance(raw_article_groups, Sequence) and not isinstance(raw_article_groups, (str, bytes, bytearray)):
+            report_dict["article_groups"] = sorted(
+                (item for item in raw_article_groups if isinstance(item, Mapping)),
+                key=_stable_mapping_key,
+            )
+        payload = _build_payload_from_report(report_dict)
+        if isinstance(raw_article_groups, Sequence) and not isinstance(raw_article_groups, (str, bytes, bytearray)):
+            payload["article_groups"] = sorted(
+                raw_article_groups,
+                key=lambda item: (0, _stable_mapping_key(item)) if isinstance(item, Mapping) else (1, repr(item)),
+            )
+        if isinstance(raw_pipeline_sections, Mapping):
+            payload["pipeline_sections"] = dict(raw_pipeline_sections)
     payload["topic_relevance_review"] = build_layer1_topic_relevance_review(payload)
     payload["semantic_aggregate_review"] = build_layer1_semantic_aggregate_review(payload)
     payload.update(build_layer1_semantic_review_readiness_summary(payload))
@@ -1996,6 +2021,180 @@ def _normalize_reason_text(value: str) -> str:
     return text
 
 
+_MISSING = object()
+
+# B02-R2-001: the strict API contract is that the final pretty-encoded payload stays
+# under 200,000 UTF-8 bytes for arbitrary valid Mapping input. Generic per-node
+# bounds plus the final pretty-byte budget below make that contract hold on every
+# retained scalar/key route instead of only the expected fixture shapes.
+_PAYLOAD_PRETTY_BYTE_BUDGET = 200_000
+_PAYLOAD_BUDGET_METADATA_RESERVE = 1_024
+_PAYLOAD_TARGET_PRETTY_BYTES = _PAYLOAD_PRETTY_BYTE_BUDGET - _PAYLOAD_BUDGET_METADATA_RESERVE
+_PAYLOAD_STRING_CHARACTER_LIMIT = 256
+_PAYLOAD_MAPPING_KEY_LIMIT = 96
+_PAYLOAD_TOP_LEVEL_KEY_LIMIT = 256
+_PAYLOAD_KEY_NAME_LIMIT = 96
+_PAYLOAD_MAX_DEPTH = 5
+_PAYLOAD_SEQUENCE_ITEM_LIMIT = 32
+_PAYLOAD_NUMBER_REPR_LIMIT = 64
+_PAYLOAD_COMPACTION_PASSES = 12
+_PAYLOAD_SHRINK_FLOOR = 24
+_PAYLOAD_PRESERVED_STATUS_LIMIT = 256
+_PAYLOAD_NODE_FLOOR = 2
+_PAYLOAD_COMPACTABLE_ITEM_FLOOR = 2
+_PAYLOAD_SACRIFICED_SECTION_LIST_LIMIT = 8
+_HMM_CONTEXT_SCALAR_SAMPLE_LIMIT = 96
+_PAYLOAD_IMMUTABLE_TOP_LEVEL_KEYS = frozenset(
+    {
+        "ticker", "requested_ticker", "controls", "hmm_evaluation_context",
+        "smoke", "run_readiness", "pipeline_section_counts",
+        "article_group_counts", "accepted_article_counts", "flagged_article_counts",
+        "date_group_counts", "warnings_counts", "human_review_queue",
+    }
+)
+
+
+def _payload_compaction_marker(field: str, value: int) -> dict[str, object]:
+    """Return an explicit deterministic marker for bounded dropped content."""
+    return {field: value, "truncated": True, "payload_compaction_marker": True}
+
+
+def _pretty_payload_size(candidate: object) -> int:
+    """Return the strict contract metric: pretty sorted UTF-8 JSON byte length."""
+    return len(json.dumps(candidate, indent=2, sort_keys=True, default=str).encode("utf-8"))
+
+
+def _shrink_payload_node(node: object, depth: int = 0, key: str = "") -> tuple[object, int, int]:
+    """Halve oversized keys, items, and strings; return (node, dropped, truncated)."""
+    dropped = 0
+    truncated = 0
+    if isinstance(node, Mapping):
+        raw_keys = sorted(node, key=str)
+        total_keys = len(raw_keys)
+        if total_keys > _PAYLOAD_NODE_FLOOR and (depth or total_keys > _PAYLOAD_MAPPING_KEY_LIMIT) and key != "pipeline_sections":
+            keep = max(_PAYLOAD_NODE_FLOOR, -(-total_keys // 2))
+            # Preserve identity fields on diagnostic rows while compacting their
+            # lower-value detail.  In particular, ``key`` is the stable route
+            # used by the readiness UI and must not disappear from a row merely
+            # because the final byte-budget pass is active.
+            priority_keys = [
+                candidate
+                for candidate in (
+                    "key", "label", "scope", "status", "ready_for_final_human_acceptance",
+                    "recommendation", "human_review_status", "overall_state",
+                )
+                if candidate in node
+            ]
+            keep = max(keep, len(priority_keys))
+            kept_keys = list(dict.fromkeys(priority_keys + raw_keys[:keep]))[:keep]
+            dropped += total_keys - len(kept_keys)
+            raw_keys = kept_keys
+        result: dict[str, object] = {}
+        for raw_key in raw_keys:
+            name = str(raw_key)
+            if len(name) > _PAYLOAD_KEY_NAME_LIMIT:
+                result[f"{name[:_PAYLOAD_KEY_NAME_LIMIT]}..."] = None
+                result[f"key_truncated_{name[:_PAYLOAD_KEY_NAME_LIMIT]}"] = len(name)
+                truncated += 1
+                continue
+            child, child_dropped, child_truncated = _shrink_payload_node(
+                node[raw_key], depth + 1, name
+            )
+            result[name] = child
+            dropped += child_dropped
+            truncated += child_truncated
+        if dropped:
+            result["payload_compaction_omitted_node_count"] = dropped
+        return result, dropped, truncated
+    if isinstance(node, Sequence) and not isinstance(node, (str, bytes, bytearray)):
+        items = list(node)
+        # Readiness section identities are small but semantically complete; do
+        # not replace missing-section rows with an anonymous compaction marker.
+        preserve_rows = key == "missing_pipeline_sections"
+        if len(items) > _PAYLOAD_COMPACTABLE_ITEM_FLOOR and not preserve_rows:
+            keep = max(_PAYLOAD_COMPACTABLE_ITEM_FLOOR, -(-len(items) // 2))
+            dropped += len(items) - keep
+            items = items[:keep]
+        shrunk: list[object] = []
+        for item in items:
+            child, child_dropped, child_truncated = _shrink_payload_node(item, depth + 1, key)
+            shrunk.append(child)
+            dropped += child_dropped
+            truncated += child_truncated
+        if dropped and not preserve_rows:
+            shrunk.append(_payload_compaction_marker("payload_compaction_omitted_item_count", dropped))
+        return shrunk, dropped, truncated
+    if isinstance(node, str) and key in {
+        "recommendation", "human_review_status", "status", "state", "reason",
+    } and len(node) <= _PAYLOAD_PRESERVED_STATUS_LIMIT:
+        return node, 0, 0
+    if isinstance(node, str) and len(node) > _PAYLOAD_SHRINK_FLOOR:
+        keep = max(_PAYLOAD_SHRINK_FLOOR, len(node) // 2)
+        return f"{node[:keep]}...", 0, 1
+    return node, 0, 0
+
+
+def _enforce_payload_pretty_byte_budget(payload: Mapping[str, object]) -> dict[str, object]:
+    """Enforce the strict pretty-JSON byte budget at the final public-builder boundary.
+
+    The generic per-node bounds keep legitimate payloads inside the budget, so the
+    compaction loop below never fires for normal reports. For arbitrary Mapping
+    input it repeatedly halves oversized branches deterministically (sorted keys,
+    canonical list order) until the pretty payload fits; because every pass strictly
+    reduces encoded volume toward a constant skeleton, the loop converges. Dropped
+    content is reported through ``payload_budget`` metadata and inline
+    ``payload_compaction_*`` markers instead of being silently hidden.
+    """
+    import copy as _copy
+
+    result = _copy.deepcopy(dict(payload))
+    initial_size = _pretty_payload_size(result)
+    compacted = False
+    passes = 0
+    dropped_nodes = 0
+    truncated_scalars = 0
+    sacrificed_sections: list[str] = []
+    while _pretty_payload_size(result) >= _PAYLOAD_TARGET_PRETTY_BYTES and passes < _PAYLOAD_COMPACTION_PASSES:
+        compacted = True
+        passes += 1
+        if passes == _PAYLOAD_COMPACTION_PASSES // 2:
+            # Mid-loop accelerator: drop whole lowest-value sample sections first;
+            # authoritative *_counts metadata and readiness blocks remain.
+            section_keys = sorted(
+                key for key in result
+                if isinstance(result.get(key), list)
+                and key not in _PAYLOAD_IMMUTABLE_TOP_LEVEL_KEYS
+                and not str(key).endswith("_counts")
+            )
+            sacrificed_sections = []
+            for key in reversed(section_keys):
+                result.pop(key, None)
+                if len(sacrificed_sections) < _PAYLOAD_SACRIFICED_SECTION_LIST_LIMIT:
+                    sacrificed_sections.append(str(key))
+                elif sacrificed_sections[-1] != "payload_compaction_more_sections":
+                    sacrificed_sections.append("payload_compaction_more_sections")
+                if _pretty_payload_size(result) < _PAYLOAD_TARGET_PRETTY_BYTES:
+                    break
+            continue
+        shrunk, dropped, truncated = _shrink_payload_node(result)
+        result = cast(dict[str, object], shrunk)
+        dropped_nodes += dropped
+        truncated_scalars += truncated
+
+    final_size = _pretty_payload_size(result)
+    result["payload_budget"] = {
+        "pretty_utf8_byte_budget": _PAYLOAD_PRETTY_BYTE_BUDGET,
+        "initial_pretty_utf8_bytes": initial_size,
+        "final_pretty_utf8_bytes": final_size,
+        "within_budget": final_size < _PAYLOAD_PRETTY_BYTE_BUDGET,
+        "compacted": compacted,
+        "compaction_passes": passes,
+        "omitted_node_count": dropped_nodes,
+        "truncated_scalar_count": truncated_scalars,
+        "sacrificed_sections": sacrificed_sections,
+    }
+    return result
+
 _PIPELINE_SECTION_SAMPLE_LIMITS: dict[str, int] = {
     "raw_preprocessing_rows": 1,
     "article_embedding_rows": 1,
@@ -2007,11 +2206,74 @@ _PIPELINE_SECTION_SAMPLE_LIMITS: dict[str, int] = {
     "stock_price_rows": 2,
     "date_aligned_price_hmm_rows": 2,
 }
+_CHART_SAMPLE_LIMIT = 32
+_WARNING_SAMPLE_LIMIT = 12
 _ARTICLE_DETAIL_SAMPLE_LIMIT = 1
 _FINBERT_SENTENCE_SAMPLE_LIMIT = 3
 _FULL_TEXT_PREVIEW_LIMIT = 280
 _TOP_LEVEL_ARTICLE_SAMPLE_LIMIT = 25
 _TOP_LEVEL_DATE_SAMPLE_LIMIT = 50
+_UNKNOWN_PIPELINE_SECTION_LIMIT = 4
+_MISSING = object()
+_PROSE_CHARACTER_LIMIT = 240
+_HMM_CONTEXT_LIST_LIMIT = 8
+_HMM_CONTEXT_SCALAR_KEYS = frozenset(
+    {
+        "requested_inference_dates", "observed_inference_dates", "missing_inference_dates",
+        "stale_manifest_dates", "warnings", "warning_codes", "degradation_state",
+        "feature_set_blocking", "feature_set_name", "source_manifest_keys",
+        "requested_from_date", "requested_to_date", "observed_from_date", "observed_to_date",
+    }
+)
+_HMM_CONTEXT_LIST_KEYS = frozenset(
+    {"manifest_summaries", "training_windows", "requested_inference_dates", "observed_inference_dates",
+     "missing_inference_dates", "stale_manifest_dates", "warnings", "warning_codes", "source_manifest_keys"}
+)
+_HMM_ROW_KEYS = frozenset(
+    {
+        "date", "from_date", "to_date", "train_start_date", "train_end_date", "inference_date",
+        "requested_date", "observed_date", "run_id", "stage", "status", "state", "warning",
+        "warnings", "warning_codes", "degradation_state", "feature_set_blocking", "feature_set_name",
+        "artifact_key", "manifest_key", "source_manifest_key", "model_version", "model", "ticker",
+    }
+)
+
+
+def _compact_hmm_evaluation_context(value: object) -> dict[str, object]:
+    """Keep auditable HMM dates, warnings, manifests, and windows within fixed bounds."""
+    context = _json_mapping(value)
+    compact: dict[str, object] = {}
+    for key in sorted(context):
+        if key not in _HMM_CONTEXT_SCALAR_KEYS and key not in _HMM_CONTEXT_LIST_KEYS:
+            continue
+        raw = context[key]
+        if key in {"manifest_summaries", "training_windows"}:
+            rows = [dict(item) for item in _json_list(raw) if isinstance(item, Mapping)]
+            rows.sort(key=_stable_mapping_key)
+            sample = [
+                {
+                    str(row_key): _bound_json_value(row_value, key=str(row_key), depth=1)
+                    for row_key, row_value in sorted(row.items(), key=lambda item: str(item[0]))
+                    if str(row_key) in _HMM_ROW_KEYS
+                }
+                for row in rows[:_HMM_CONTEXT_LIST_LIMIT]
+            ]
+            compact[key] = sample
+            compact[f"{key}_counts"] = _sampling_counts(len(rows), len(sample))
+        elif key in _HMM_CONTEXT_LIST_KEYS:
+            raw_items = _json_string_list(raw)
+            items = sorted(raw_items)[:_HMM_CONTEXT_LIST_LIMIT]
+            compact[key] = [_bound_json_value(item, key=key) for item in items]
+            counts = _sampling_counts(len(raw_items), len(items))
+            truncated_item_count = sum(
+                1 for item in items if len(item) > _PAYLOAD_STRING_CHARACTER_LIMIT
+            )
+            counts["truncated_item_count"] = truncated_item_count
+            counts["item_truncated"] = truncated_item_count > 0
+            compact[f"{key}_counts"] = counts
+        else:
+            compact[key] = _bound_json_value(raw, key=key)
+    return compact
 
 
 def _compact_layer1_semantic_review_dashboard_payload(payload: Mapping[str, object]) -> dict[str, object]:
@@ -2030,20 +2292,39 @@ def _compact_layer1_semantic_review_dashboard_payload(payload: Mapping[str, obje
             "summary": _json_mapping(report.get("summary")),
             "artifact_keys": _json_mapping(report.get("artifact_keys")),
         }
+    if "artifact_keys" in compact:
+        compact["artifact_keys"] = _bounded_artifact_keys(compact.get("artifact_keys"))
+    if "hmm_evaluation_context" in compact:
+        compact["hmm_evaluation_context"] = _compact_hmm_evaluation_context(
+            compact.get("hmm_evaluation_context")
+        )
 
-    article_groups = [dict(item) for item in _json_list(compact.get("article_groups")) if isinstance(item, Mapping)]
+    article_groups_raw = _json_list(compact.get("article_groups"))
+    article_groups = [dict(item) for item in article_groups_raw if isinstance(item, Mapping)]
+    article_groups.sort(key=_stable_mapping_key)
     accepted_articles = [
         dict(item) for item in _json_list(compact.get("accepted_articles")) if isinstance(item, Mapping)
     ]
+    accepted_articles.sort(key=_stable_mapping_key)
     flagged_articles = [
         dict(item) for item in _json_list(compact.get("flagged_articles")) if isinstance(item, Mapping)
     ]
-    compact["article_group_counts"] = {
-        "full_count": len(article_groups),
+    flagged_articles.sort(key=_stable_mapping_key)
+    article_group_counts: dict[str, object] = {
+        "full_count": len(article_groups_raw),
         "sample_count": min(len(article_groups), _TOP_LEVEL_ARTICLE_SAMPLE_LIMIT),
-        "omitted_count": max(0, len(article_groups) - _TOP_LEVEL_ARTICLE_SAMPLE_LIMIT),
-        "truncated": len(article_groups) > _TOP_LEVEL_ARTICLE_SAMPLE_LIMIT,
+        "omitted_count": max(0, len(article_groups_raw) - min(len(article_groups), _TOP_LEVEL_ARTICLE_SAMPLE_LIMIT)),
+        "truncated": len(article_groups_raw) > _TOP_LEVEL_ARTICLE_SAMPLE_LIMIT,
     }
+    if len(article_groups_raw) != len(article_groups):
+        article_group_counts.update(
+            {
+                "row_count": len(article_groups_raw),
+                "omitted_row_count": max(0, len(article_groups_raw) - len(article_groups)),
+                "invalid_row_count": len(article_groups_raw) - len(article_groups),
+            }
+        )
+    compact["article_group_counts"] = article_group_counts
     compact["article_groups"] = [
         _compact_article_summary_row(article)
         for article in article_groups[:_TOP_LEVEL_ARTICLE_SAMPLE_LIMIT]
@@ -2071,6 +2352,7 @@ def _compact_layer1_semantic_review_dashboard_payload(payload: Mapping[str, obje
     date_groups = [
         dict(item) for item in _json_list(compact.get("date_groups")) if isinstance(item, Mapping)
     ]
+    date_groups.sort(key=_stable_mapping_key)
     compact["date_group_counts"] = {
         "full_count": len(date_groups),
         "sample_count": min(len(date_groups), _TOP_LEVEL_DATE_SAMPLE_LIMIT),
@@ -2095,25 +2377,45 @@ def _compact_layer1_semantic_review_dashboard_payload(payload: Mapping[str, obje
         compact["finbert_sentence_review"] = _compact_finbert_sentence_review(finbert_sentence_review)
 
     pipeline_sections = _json_mapping(compact.get("pipeline_sections"))
+    known_sections = tuple(_PIPELINE_SECTION_SAMPLE_LIMITS)
+    section_items = {str(key): value for key, value in pipeline_sections.items()}
+    unknown_keys = sorted(set(section_items) - set(known_sections))
+    kept_unknown = unknown_keys[:4]
+    section_keys = set(known_sections) | set(kept_unknown)
+    for key in known_sections:
+        section_items.setdefault(key, _MISSING)
     compact["pipeline_section_counts"] = {
         str(key): {
-            "row_count": len(rows),
-            "full_count": len(rows),
-            "sample_count": min(len(rows), _PIPELINE_SECTION_SAMPLE_LIMITS.get(str(key), 1)),
-            "omitted_count": max(0, len(rows) - _PIPELINE_SECTION_SAMPLE_LIMITS.get(str(key), 1)),
-            "truncated": len(rows) > _PIPELINE_SECTION_SAMPLE_LIMITS.get(str(key), 1),
+            **_collection_counts(value, _PIPELINE_SECTION_SAMPLE_LIMITS.get(str(key), 1)),
         }
-        for key, rows in ((str(key), _json_list(value)) for key, value in pipeline_sections.items())
+        for key, value in ((str(key), value) for key, value in section_items.items() if key in section_keys)
     }
     compact["pipeline_sections"] = {
-        str(key): [
-            dict(item)
-            for item in _json_list(value)[: _PIPELINE_SECTION_SAMPLE_LIMITS.get(str(key), 1)]
-            if isinstance(item, Mapping)
-        ]
-        for key, value in pipeline_sections.items()
+        key: _compact_fixed_section_rows(
+            value,
+            _PIPELINE_SECTION_SAMPLE_LIMITS.get(key, 1) if key in known_sections else _UNKNOWN_PIPELINE_SECTION_LIMIT,
+        )
+        for key, value in section_items.items()
+        if key in section_keys
     }
-    return compact
+    if len(unknown_keys) > len(kept_unknown):
+        compact.setdefault("warnings", []).append({
+            "code": "unknown_pipeline_sections_omitted",
+            "message": "Unknown pipeline section detail was omitted from the bounded review payload.",
+        })
+    for key in (
+        "price_series",
+        "benchmark_price_series",
+        "market_regime_series",
+        "benchmark_market_regime_series",
+        "warnings",
+    ):
+        limit = _WARNING_SAMPLE_LIMIT if key == "warnings" else _CHART_SAMPLE_LIMIT
+        rows, counts = _bounded_extremes(compact.get(key), limit)
+        compact[key] = rows
+        compact[f"{key}_counts"] = counts
+    bounded = cast(dict[str, object], _bound_json_value(compact))
+    return _enforce_payload_pretty_byte_budget(bounded)
 
 
 def _compact_article_summary_row(article: Mapping[str, object]) -> dict[str, object]:
@@ -2397,6 +2699,316 @@ def _compact_topic_relevance_article_row(article: Mapping[str, object]) -> dict[
     return compact
 
 
+_FIXED_ROW_SCALAR_KEYS = frozenset(
+    {
+        "date", "ticker", "article_id", "sentence_index", "chunk_index", "chunk_id", "topic_id",
+        "run_id", "stage", "status", "state", "label", "headline", "normalized_headline",
+        "article_status", "relevance_decision", "relevance_score", "relevance_category",
+        "target_context_score", "target_company_impact_direction", "target_company_impact_magnitude",
+        "article_contribution_weight", "final_contribution", "included_in_signal", "regime",
+        "close", "open", "high", "low", "volume", "adj_close", "price", "probability",
+        "positive", "negative", "neutral", "sentiment_score", "reason", "warning", "message",
+        "source_text_field", "source_text_order", "source_character_count", "missing_text_state",
+        "extraction_status", "selection_status", "artifact_key", "model", "model_version",
+    }
+)
+
+
+_FIXED_ROW_LIST_KEYS = frozenset(
+    {
+        "article_ids", "ticker_mentions", "entity_mentions", "source_tickers", "topic_keywords",
+        "reason_codes", "warning_codes", "assignment_evidence_kinds", "requested_ticker_terms",
+        "requested_ticker_term_hits", "missing_evidence_flags", "resolved_artifact_keys",
+    }
+)
+
+
+def _compact_fixed_section_rows(value: object, limit: int) -> list[dict[str, object]]:
+    """Project known and unknown pipeline rows to bounded approved fields."""
+    rows, _ = _bounded_mappings(value, limit)
+    projected: list[dict[str, object]] = []
+    for row in rows:
+        item: dict[str, object] = {}
+        for key, raw_value in row.items():
+            name = str(key)
+            if name == "source_text_provenance":
+                continue
+            if name not in _FIXED_ROW_SCALAR_KEYS and name not in _FIXED_ROW_LIST_KEYS:
+                continue
+            if isinstance(raw_value, Mapping):
+                continue
+            if isinstance(raw_value, Sequence) and not isinstance(raw_value, (str, bytes, bytearray)):
+                if name not in _FIXED_ROW_LIST_KEYS:
+                    continue
+                item[name] = [_bound_json_value(member, key=name) for member in list(raw_value)[:8] if not isinstance(member, Mapping)]
+                continue
+            item[name] = _bound_json_value(raw_value, key=name)
+        projected.append(item)
+    return projected
+
+
 def _sample_mapping_rows(value: object, *, limit: int) -> list[dict[str, object]]:
     """Return a bounded list of JSON-mapping rows."""
-    return [dict(item) for item in _json_list(value)[: max(limit, 0)] if isinstance(item, Mapping)]
+    rows, _ = _bounded_mappings(value, limit)
+    return rows
+
+
+def _collection_counts(value: object, limit: int) -> dict[str, object]:
+    """Return complete metadata for a possibly malformed dynamic row list."""
+    if value is _MISSING:
+        return {
+            "row_count": 0, "sample_count": 0, "omitted_row_count": 0,
+            "invalid_row_count": 0, "truncated": False, "input_state": "missing",
+            "full_count": 0, "omitted_count": 0,
+        }
+    if value is None or not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return {
+            "row_count": 0, "sample_count": 0, "omitted_row_count": 0,
+            "invalid_row_count": 1, "truncated": False, "input_state": "invalid",
+            "full_count": 0, "omitted_count": 0,
+        }
+    invalid = sum(1 for item in value if not isinstance(item, Mapping))
+    # A valid sequence's authoritative count includes malformed members.
+    row_count = len(value)
+    sample_count = min(row_count - invalid, max(limit, 0))
+    omitted = row_count - sample_count
+    return {
+        "row_count": row_count, "sample_count": sample_count,
+        "omitted_row_count": omitted, "invalid_row_count": invalid,
+        "truncated": omitted > 0, "input_state": "present",
+        "full_count": row_count, "omitted_count": omitted,
+    }
+
+
+def _bounded_artifact_keys(value: object) -> dict[str, object]:
+    """Keep a deterministic stage/path artifact index without raw provenance."""
+    mapping = _json_mapping(value)
+    keys = sorted(mapping)[:16]
+    result: dict[str, object] = {}
+    counts: dict[str, object] = {}
+    for key in keys:
+        raw = mapping[key]
+        if isinstance(raw, Sequence) and not isinstance(raw, (str, bytes, bytearray)):
+            values = sorted((str(item) for item in raw), key=lambda item: item)[:8]
+            result[key] = values
+            counts[key] = {
+                "entry_count": len(raw), "sample_count": len(values),
+                "omitted_entry_count": max(0, len(raw) - len(values)),
+                "invalid_entry_count": 0, "truncated": len(raw) > len(values),
+                "input_state": "present", "full_count": len(raw),
+                "omitted_count": max(0, len(raw) - len(values)),
+            }
+        else:
+            result[key] = []
+            counts[key] = _collection_counts(raw, 8)
+    result["artifact_key_counts"] = counts
+    result["artifact_key_entry_count"] = len(mapping)
+    result["artifact_key_omitted_entry_count"] = max(0, len(mapping) - len(keys))
+    result["artifact_key_truncated"] = len(mapping) > len(keys)
+    return result
+
+
+def _bound_json_value(value: object, *, key: str = "", depth: int = 0) -> object:
+    """Project arbitrary report values into deterministic, shallow JSON-safe values."""
+    import json
+
+    if depth > _PAYLOAD_MAX_DEPTH and isinstance(value, (Mapping, Sequence)) and not isinstance(value, (str, bytes, bytearray)):
+        return None
+    if isinstance(value, Mapping):
+        result: dict[str, object] = {}
+        raw_keys = sorted(value, key=str)
+        if depth >= 5 and key not in {"summary", "controls", "features"}:
+            raw_keys = raw_keys[:32]
+        if key == "features":
+            raw_keys = raw_keys[:32]
+        key_limit = _PAYLOAD_TOP_LEVEL_KEY_LIMIT if depth == 0 else _PAYLOAD_MAPPING_KEY_LIMIT
+        if len(raw_keys) > key_limit:
+            result["key_count"] = len(raw_keys)
+            result["keys_truncated"] = True
+            raw_keys = raw_keys[:key_limit]
+        for raw_key in raw_keys:
+            name = str(raw_key)
+            if name == "source_text_provenance":
+                continue
+            if len(name) > _PAYLOAD_KEY_NAME_LIMIT:
+                truncated_name = f"{name[:_PAYLOAD_KEY_NAME_LIMIT]}..."
+                result[f"key_character_count_{truncated_name}"] = len(name)
+                result[truncated_name] = _bound_json_value(value[raw_key], key=truncated_name, depth=depth + 1)
+                continue
+            item = value[raw_key]
+            result[name] = _bound_json_value(item, key=name, depth=depth + 1)
+            if isinstance(item, str) and name in {
+                "text", "full_scored_text", "headline", "message", "reason",
+                "summary", "topic_example_text", "snippet", "detail",
+            } and len(item) > _PROSE_CHARACTER_LIMIT:
+                result[f"{name}_character_count"] = len(item)
+                result[f"{name}_truncated"] = True
+            elif isinstance(item, str) and len(item) > _PAYLOAD_STRING_CHARACTER_LIMIT:
+                result[f"{name}_character_count"] = len(item)
+                result[f"{name}_truncated"] = True
+        return result
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        items = list(value)
+        if key in {"article_groups", "accepted_articles", "flagged_articles"}:
+            limit = 6
+        elif key in {
+            "article_ids", "topic_keywords", "reason_codes", "warning_codes",
+            "entity_evidence", "ticker_evidence", "assignment_evidence_kinds",
+            "assignment_classifications", "assignment_reasons", "ticker_terms", "ticker_hits",
+        }:
+            limit = 8
+        elif key == "sentence_rows":
+            limit = 3
+        elif key in {"preprocessing_rows", "topic_evidence", "relevance_gate_rows", "embedding_evidence"}:
+            limit = 2
+        elif key in {"examples", "evidence_snippets", "snippets"}:
+            limit = 3
+        elif key in {"warnings", "summary_cards", "gate_cards", "failures"}:
+            limit = 12
+        else:
+            limit = _PAYLOAD_SEQUENCE_ITEM_LIMIT
+        if all(isinstance(item, Mapping) for item in items):
+            items.sort(key=lambda item: _stable_mapping_key(item))  # type: ignore[arg-type]
+        else:
+            items.sort(key=lambda item: (type(item).__name__, json.dumps(item, sort_keys=True, default=str)))
+        return [_bound_json_value(item, key=key, depth=depth + 1) for item in items[:limit]]
+    if isinstance(value, str):
+        if key in {
+            "text", "full_scored_text", "headline", "message", "reason", "summary",
+            "topic_example_text", "snippet", "detail",
+        }:
+            return value[:_PROSE_CHARACTER_LIMIT]
+        if len(value) > _PAYLOAD_STRING_CHARACTER_LIMIT:
+            return f"{value[:_PAYLOAD_STRING_CHARACTER_LIMIT]}..."
+        return value
+    if isinstance(value, int) and not isinstance(value, bool):
+        digits = str(value)
+        if len(digits) > _PAYLOAD_NUMBER_REPR_LIMIT:
+            return f"{digits[:_PAYLOAD_NUMBER_REPR_LIMIT]}..."
+    return value
+
+
+def _sampling_counts(full_count: int, sample_count: int) -> dict[str, object]:
+    """Return the canonical metadata for one bounded collection."""
+    omitted = max(0, full_count - sample_count)
+    return {
+        "row_count": full_count,
+        "sample_count": sample_count,
+        "omitted_row_count": omitted,
+        "invalid_row_count": 0,
+        "truncated": omitted > 0,
+        "input_state": "present",
+        "full_count": full_count,
+        "omitted_count": omitted,
+    }
+
+
+def _bounded_mappings(value: object, limit: int) -> tuple[list[dict[str, object]], dict[str, object]]:
+    """Sort JSON mapping rows by stable content and return a bounded sample plus counts."""
+    rows = [dict(item) for item in _json_list(value) if isinstance(item, Mapping)]
+    rows.sort(key=lambda item: _stable_mapping_key(item))
+    sample = rows[: max(limit, 0)]
+    counts = _collection_counts(value, limit)
+    counts["sample_count"] = len(sample)
+    counts["omitted_row_count"] = max(0, int(counts["row_count"]) - len(sample))
+    counts["omitted_count"] = counts["omitted_row_count"]
+    counts["truncated"] = bool(counts["omitted_row_count"] > 0)
+    return sample, counts
+
+
+def _stratified_bounded_mappings(value: object, limit: int) -> tuple[list[dict[str, object]], dict[str, object]]:
+    """Select deterministic representatives without discarding higher-priority strata."""
+    rows = [dict(item) for item in _json_list(value) if isinstance(item, Mapping)]
+    rows.sort(key=_stable_mapping_key)
+    selected: list[dict[str, object]] = []
+
+    def status(row: Mapping[str, object]) -> str:
+        return str(row.get("evidence_status", "")).lower()
+
+    def categories(row: Mapping[str, object]) -> set[str]:
+        values = [row.get("relevance_category"), row.get("assignment_classification")]
+        values.extend(_json_string_list(row.get("assignment_classifications")))
+        return {str(item).lower().replace("-", "_") for item in values if item is not None}
+
+    def has_category(row: Mapping[str, object], *names: str) -> bool:
+        row_categories = categories(row)
+        return bool(row_categories.intersection(names))
+
+    predicates = (
+        lambda row: has_category(row, "direct") or status(row) == "direct",
+        lambda row: has_category(row, "indirect") or status(row) == "indirect",
+        lambda row: has_category(row, "broad_market", "broad") or status(row) == "broad_market",
+        lambda row: has_category(row, "contamination", "competitor")
+        or status(row) in {"contamination", "flagged", "weak"}
+        or bool(_json_string_list(row.get("contamination_flags"))),
+        lambda row: status(row) == "accepted",
+        lambda row: status(row) == "rejected" or str(row.get("relevance_decision", "")).lower() == "reject",
+        lambda row: bool(_json_string_list(row.get("missing_evidence_flags")))
+        or status(row) in {"missing", "missing_text", "missing_or_default"},
+    )
+    for predicate in predicates:
+        candidates = [row for row in rows if predicate(row)]
+        candidates.sort(key=lambda row: (
+            _maybe_float(row.get("relevance_score")) is None,
+            _maybe_float(row.get("relevance_score")) or 0.0,
+            _stable_mapping_key(row),
+        ))
+        if candidates and candidates[0] not in selected:
+            selected.append(candidates[0])
+    for row in rows:
+        if row not in selected:
+            selected.append(row)
+        if len(selected) >= max(limit, 0):
+            break
+    # Priority order above is authoritative; stable keys only break ties within a stratum.
+    sample = selected[: max(limit, 0)]
+    counts = _collection_counts(value, limit)
+    counts["sample_count"] = len(sample)
+    counts["omitted_row_count"] = max(0, int(cast(int, counts["row_count"])) - len(sample))
+    counts["omitted_count"] = counts["omitted_row_count"]
+    counts["truncated"] = bool(counts["omitted_row_count"] > 0)
+    return sample, counts
+
+
+def _bounded_extremes(value: object, limit: int) -> tuple[list[dict[str, object]], dict[str, object]]:
+    """Return deterministic evenly spaced, endpoint-preserving date-series samples."""
+    rows, _ = _bounded_mappings(value, len(_json_list(value)))
+    rows.sort(key=lambda row: (_date_sort_key(row.get("date")), _stable_mapping_key(row)))
+    if len(rows) <= limit:
+        sample = rows
+    elif limit <= 1:
+        sample = rows[:1]
+    else:
+        indices = [round(index * (len(rows) - 1) / (limit - 1)) for index in range(limit)]
+        sample = [rows[index] for index in indices]
+    counts = _collection_counts(value, limit)
+    counts["sample_count"] = len(sample)
+    counts["omitted_row_count"] = max(0, int(cast(int, counts["row_count"])) - len(sample))
+    counts["omitted_count"] = counts["omitted_row_count"]
+    counts["truncated"] = bool(counts["omitted_row_count"] > 0)
+    return sample, counts
+
+
+def _date_sort_key(value: object) -> tuple[int, str]:
+    """Sort ISO dates chronologically while keeping malformed values deterministic."""
+    text = "" if value is None else str(value)
+    try:
+        from datetime import date
+        return (0, date.fromisoformat(text).isoformat())
+    except ValueError:
+        return (1, text)
+
+
+def _stable_mapping_key(value: Mapping[str, object]) -> tuple[str, ...]:
+    """Return the approved deterministic semantic ordering key for a JSON mapping."""
+    import json
+
+    def field(name: str) -> str:
+        item = value.get(name)
+        return "" if item is None else str(item)
+
+    return (
+        field("date"), field("ticker"), field("article_id"), field("sentence_index"),
+        field("chunk_index"), field("chunk_id"), field("topic_id"),
+        json.dumps(value, sort_keys=True, default=str, separators=(",", ":")),
+    )
