@@ -8,7 +8,7 @@ import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
-from typing import Protocol
+from typing import Any, Protocol
 
 from loguru import logger
 
@@ -330,6 +330,7 @@ class Layer0PipelineResult:
 
 _SPLIT_LIKE_RATIO_THRESHOLD = 1.8
 _SPLIT_LIKE_SAMPLE_LIMIT = 20
+_TARGET_DATE_PRICE_SAMPLE_LIMIT = 20
 
 
 def run_historical_layer0_backfill(
@@ -912,6 +913,8 @@ def _write_historical_universe_masks(
     written = 0
     skipped = 0
     total_records = 0
+    exact_target_date_price_exclusion_count = 0
+    exact_target_date_price_exclusion_samples: list[dict[str, str]] = []
     days = _business_days(config.from_date, config.to_date)
     quality_windows = prepare_quality_windows(ohlcv_window)
 
@@ -932,6 +935,16 @@ def _write_historical_universe_masks(
             config.quality_config,
             shares_outstanding_window,
         )
+        records, coverage_metadata = _apply_historical_target_date_price_gate(
+            records=records,
+            ohlcv_window=ohlcv_window,
+        )
+        exact_target_date_price_exclusion_count += int(
+            coverage_metadata["exact_target_date_price_exclusion_count"]
+        )
+        exact_target_date_price_exclusion_samples.extend(
+            coverage_metadata["exact_target_date_price_exclusion_samples"]
+        )
         result = _write_universe_mask(
             as_of_date=current_date,
             records=records,
@@ -951,6 +964,11 @@ def _write_historical_universe_masks(
             "written": written,
             "skipped": skipped,
             "total_records": total_records,
+            "exact_target_date_price_exclusion_count": exact_target_date_price_exclusion_count,
+            "exact_target_date_price_exclusion_samples": sorted(
+                exact_target_date_price_exclusion_samples,
+                key=lambda sample: (sample["date"], sample["ticker"]),
+            )[:_TARGET_DATE_PRICE_SAMPLE_LIMIT],
             "output_keys": output_keys,
         },
     )
@@ -1826,6 +1844,46 @@ def _require_price_coverage_for_eligible_universe(
             "Layer 0 cannot mark the universe ready without raw target-date price coverage for: "
             + ", ".join(sorted(set(missing)))
         )
+
+
+def _apply_historical_target_date_price_gate(
+    *,
+    records: Sequence[UniverseRecord],
+    ohlcv_window: Mapping[str, Sequence[OHLCVRecord]],
+) -> tuple[list[UniverseRecord], dict[str, Any]]:
+    """Mark otherwise-eligible historical rows lacking an exact-date price bar ineligible."""
+    indexed_dates = {
+        _canonicalize_ticker(ticker): {record.date for record in rows}
+        for ticker, rows in ohlcv_window.items()
+    }
+    updated_records: list[UniverseRecord] = []
+    samples: list[dict[str, str]] = []
+    for record in records:
+        ticker = _canonicalize_ticker(record.ticker)
+        eligible = (
+            record.in_universe
+            and record.tradable
+            and record.liquid
+            and record.data_quality_ok
+            and not record.halted
+        )
+        if eligible and record.date not in indexed_dates.get(ticker, set()):
+            reasons = [token.strip() for token in (record.reason or "").split(";") if token.strip()]
+            if "missing_target_date_price" not in reasons:
+                reasons.append("missing_target_date_price")
+            updated_records.append(
+                record.model_copy(
+                    update={"data_quality_ok": False, "reason": ";".join(reasons)}
+                )
+            )
+            samples.append({"date": record.date, "ticker": ticker})
+        else:
+            updated_records.append(record)
+    samples.sort(key=lambda sample: (sample["date"], sample["ticker"]))
+    return updated_records, {
+        "exact_target_date_price_exclusion_count": len(samples),
+        "exact_target_date_price_exclusion_samples": samples[:_TARGET_DATE_PRICE_SAMPLE_LIMIT],
+    }
 
 
 def _require_target_date_price_coverage(
