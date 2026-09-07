@@ -531,7 +531,9 @@ def run_daily_layer1(
         )
         finished_at = (now or datetime.now(UTC)).replace(microsecond=0)
         final_status = (
-            RunStatus.COMPLETED if preliminary_report.ready_for_layer2 else RunStatus.FAILED
+            RunStatus.COMPLETED
+            if _report_session_complete(preliminary_report)
+            else RunStatus.FAILED
         )
         _write_manifest(
             writer=active_writer,
@@ -557,6 +559,7 @@ def run_daily_layer1(
                 "validation_status": report.validation_status,
                 "manifest_status": report.manifest_status,
                 "ready_for_layer2": report.ready_for_layer2,
+                "zero_news_session": report.zero_news_session,
                 "stale_manifest_keys": report.stale_manifest_keys,
                 "related_manifest_keys": [
                     str(entry["key"])
@@ -565,7 +568,7 @@ def run_daily_layer1(
                 ],
             }
         )
-        if not report.ready_for_layer2:
+        if not _report_session_complete(report):
             metadata["error"] = {
                 "type": Layer1ValidationError.__name__,
                 "message": "Layer 1 validation failed: ready_for_layer2 is false",
@@ -603,7 +606,7 @@ def run_daily_layer1(
         raise
     if report is None or report_path is None:
         raise RuntimeError("Layer 1 validation report was not written")
-    if not report.ready_for_layer2:
+    if not _report_session_complete(report):
         raise Layer1ValidationError(report, report_path)
     return Layer1DailyResult(
         run_id=config.run_id,
@@ -1455,6 +1458,29 @@ def _expected_dates_by_ticker(
         for ticker in tickers:
             by_ticker.setdefault(ticker, []).append(date_text)
     return by_ticker
+
+
+def _report_session_complete(report: Layer1ValidationReport) -> bool:
+    """Return whether one validation report describes a terminal complete session.
+
+    A session is complete when readiness flips normally (`ready_for_layer2`) or
+    when the validator explicitly declares a genuine zero-news session with no
+    missing/schema/row-count/archive/manifest/regime/leakage failures. The
+    explicit zero-news marker never rescues a failed session.
+    """
+    if report.ready_for_layer2:
+        return True
+    if not report.zero_news_session:
+        return False
+    return (
+        not report.missing_ticker_files
+        and not report.schema_failure_keys
+        and not report.row_count_failure_keys
+        and not report.archive_layout_failures
+        and not report.manifest_errors
+        and not report.regime_failures
+        and not any(check["status"] == "fail" for check in report.leakage_spot_checks)
+    )
 
 
 def _validation_failure_summary(report: Layer1ValidationReport) -> str:

@@ -623,7 +623,7 @@ def test_validate_layer1_archive_rejects_non_iso_dates() -> None:
 
 
 def test_validate_layer1_archive_empty_universe_is_not_ready() -> None:
-    """An empty universe means we have nothing to check; never marked ready."""
+    """An empty universe dict is ambiguous scope state; fail-closed, never ready."""
     reader = _Reader({})
 
     report = validate_layer1_archive(
@@ -635,7 +635,62 @@ def test_validate_layer1_archive_empty_universe_is_not_ready() -> None:
     )
 
     assert report.ready_for_layer2 is False
+    assert report.zero_news_session is False
     assert report.expected_rows == 0
+
+
+def test_validate_layer1_archive_genuine_zero_news_session_is_ready() -> None:
+    """A declared universe with zero eligible tickers and no failures is complete."""
+    reader = _Reader(_ready_regime_objects("layer1-zero-news", "2024-01-02"))
+
+    report = validate_layer1_archive(
+        run_id="layer1-zero-news",
+        from_date="2024-01-02",
+        to_date="2024-01-02",
+        universe={"2024-01-02": []},
+        reader=reader,
+    )
+
+    assert report.ready_for_layer2 is True
+    assert report.zero_news_session is True
+    assert report.validation_status == "completed"
+    assert report.expected_rows == 0
+    assert report.present_rows == 0
+    assert report.dated_shard_counts_by_date == {"2024-01-02": 0}
+
+    payload = json.loads(render_validation_report(report))
+    assert payload["ready_for_layer2"] is True
+    assert payload["zero_news_session"] is True
+
+
+def test_validate_layer1_archive_ambiguous_empty_universe_stays_not_ready() -> None:
+    """Empty declared scope with unexpected dated shards remains fail-closed."""
+    reader = _Reader(
+        {
+            "features/2024-01-02/AAPL.parquet": feature_records_to_parquet_bytes(
+                [
+                    FeatureRecord(
+                        date="2024-01-02",
+                        ticker="AAPL",
+                        features={"returns_1d": 0.01, **_ready_regime_features()},
+                    )
+                ]
+            ),
+            **_ready_regime_objects("layer1-ambiguous-zero-news", "2024-01-02"),
+        }
+    )
+
+    report = validate_layer1_archive(
+        run_id="layer1-ambiguous-zero-news",
+        from_date="2024-01-02",
+        to_date="2024-01-02",
+        universe={"2024-01-02": []},
+        reader=reader,
+    )
+
+    assert report.ready_for_layer2 is False
+    assert report.zero_news_session is False
+    assert report.dated_shard_counts_by_date == {"2024-01-02": 1}
 
 
 def test_validate_layer1_archive_samples_daily_shards_deterministically() -> None:

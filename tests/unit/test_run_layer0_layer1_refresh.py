@@ -216,20 +216,31 @@ def test_refresh_stops_after_first_failed_stage(tmp_path: Path, monkeypatch: pyt
     assert len(calls) == 1
 
 
-def _ready_objects(days: list[str]) -> dict[str, bytes]:
+def _ready_objects(days: list[str], *, zero_news_days: list[str] | None = None) -> dict[str, bytes]:
+    zero_news = set(zero_news_days or [])
     objects: dict[str, bytes] = {}
     for day in days:
         report_key = f"artifacts/reports/integration/layer1_archive_validation_x_{day}_to_{day}.json"
         manifest_key = f"manifests/layer1/x-{day}.json"
-        objects[report_key] = json.dumps(
-            {
+        if day in zero_news:
+            report = {
+                "run_id": "x",
+                "from_date": day,
+                "to_date": day,
+                "ready_for_layer2": True,
+                "zero_news_session": True,
+                "validation_status": "completed",
+                "manifest_key": manifest_key,
+            }
+        else:
+            report = {
                 "run_id": "x",
                 "from_date": day,
                 "to_date": day,
                 "ready_for_layer2": True,
                 "manifest_key": manifest_key,
             }
-        ).encode()
+        objects[report_key] = json.dumps(report).encode()
         objects[manifest_key] = json.dumps(
             {
                 "run_id": "x",
@@ -239,6 +250,115 @@ def _ready_objects(days: list[str]) -> dict[str, bytes]:
             }
         ).encode()
     return objects
+
+
+def test_ready_reports_accepts_explicit_zero_news_session() -> None:
+    key = "artifacts/reports/integration/layer1_archive_validation_x_2026-08-14_to_2026-08-14.json"
+    manifest_key = "manifests/layer1/x.json"
+    objects = {
+        key: json.dumps(
+            {
+                "run_id": "x",
+                "from_date": "2026-08-14",
+                "to_date": "2026-08-14",
+                "validation_status": "completed",
+                "zero_news_session": True,
+                "manifest_key": manifest_key,
+            }
+        ).encode(),
+        manifest_key: json.dumps(
+            {
+                "run_id": "x",
+                "stage": "layer1",
+                "status": "completed",
+                "metadata": {"requested_tickers": [], "processed_dates": ["2026-08-14"]},
+            }
+        ).encode(),
+    }
+    assert set(ready_reports(FakeR2(objects))) == {"2026-08-14"}
+
+
+def test_ready_reports_rejects_unproven_zero_news_claims() -> None:
+    key = "artifacts/reports/integration/layer1_archive_validation_x_2026-08-14_to_2026-08-14.json"
+    base = {
+        "run_id": "x",
+        "from_date": "2026-08-14",
+        "to_date": "2026-08-14",
+        "zero_news_session": True,
+        "manifest_key": "manifests/layer1/x.json",
+    }
+    unproven = FakeR2(
+        {
+            key: json.dumps({**base, "validation_status": "completed"}).encode(),
+        }
+    )
+    assert ready_reports(unproven) == {}
+
+    failed_manifest = FakeR2(
+        {
+            key: json.dumps({**base, "validation_status": "completed"}).encode(),
+            "manifests/layer1/x.json": json.dumps(
+                {
+                    "run_id": "x",
+                    "stage": "layer1",
+                    "status": "failed",
+                    "metadata": {"requested_tickers": [], "processed_dates": ["2026-08-14"]},
+                }
+            ).encode(),
+        }
+    )
+    assert ready_reports(failed_manifest) == {}
+
+    failed_validation = FakeR2(
+        {
+            key: json.dumps({**base, "validation_status": "failed"}).encode(),
+            "manifests/layer1/x.json": json.dumps(
+                {
+                    "run_id": "x",
+                    "stage": "layer1",
+                    "status": "completed",
+                    "metadata": {"requested_tickers": [], "processed_dates": ["2026-08-14"]},
+                }
+            ).encode(),
+        }
+    )
+    assert ready_reports(failed_validation) == {}
+
+
+def test_verify_ready_accepts_zero_news_session() -> None:
+    key = "artifacts/reports/integration/layer1_archive_validation_layer1-daily-2026-08-14_2026-08-14_to_2026-08-14.json"
+    client = FakeR2(
+        {
+            key: json.dumps(
+                {
+                    "run_id": "layer1-daily-2026-08-14",
+                    "from_date": "2026-08-14",
+                    "to_date": "2026-08-14",
+                    "validation_status": "completed",
+                    "zero_news_session": True,
+                }
+            ).encode()
+        }
+    )
+    assert verify_ready(client, "2026-08-14")["zero_news_session"] is True
+
+
+def test_refresh_default_history_frontier_advances_past_zero_news_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A zero-news complete session keeps the ready history contiguous."""
+    client = FakeR2(
+        _ready_objects(["2026-08-13", "2026-08-14", "2026-08-17"], zero_news_days=["2026-08-14"])
+    )
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "app.pi.run_layer0_layer1_refresh.run_command",
+        lambda command, *args, **kwargs: (calls.append(command) or CommandResult(command, 0)),
+    )
+    monkeypatch.setattr("app.pi.run_layer0_layer1_refresh.verify_ready", lambda *_args: {})
+    args = type("Args", (), {"target_date": "2026-08-18", "from_date": None, "max_days": 0, "dry_run": False})()
+    assert refresh(args, RefreshConfig(repo_root=tmp_path, home=tmp_path), lambda _env: client) == 0
+    assert [command[5] for command in calls[::3]] == ["2026-08-18"]
 
 
 def test_refresh_default_history_crosses_holiday_and_weekend(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
