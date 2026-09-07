@@ -247,6 +247,19 @@ def latest_target(now: datetime | None = None) -> str:
     return today.isoformat()
 
 
+def _payload_completeness_claim(payload: dict) -> bool:
+    """Return whether a validation payload claims a terminal complete session.
+
+    Normal sessions claim readiness through ``ready_for_layer2``. A genuine
+    zero-news session may instead carry the explicit ``zero_news_session``
+    marker with a completed validation status; callers must still prove the
+    associated manifest before trusting the claim.
+    """
+    if payload.get("ready_for_layer2") is True:
+        return True
+    return payload.get("zero_news_session") is True and payload.get("validation_status") == "completed"
+
+
 def ready_reports(client: R2Client) -> dict[str, dict[str, Any]]:
     """Return proven full-universe validation coverage keyed by session date."""
     reports: dict[str, dict[str, Any]] = {}
@@ -260,7 +273,7 @@ def ready_reports(client: R2Client) -> dict[str, dict[str, Any]]:
             continue
         if (
             not isinstance(payload, dict)
-            or payload.get("ready_for_layer2") is not True
+            or not _payload_completeness_claim(payload)
             or payload.get("run_id") != match.group("run_id")
             or payload.get("from_date") != match.group("from")
             or payload.get("to_date") != match.group("to")
@@ -375,7 +388,7 @@ def verify_ready(client: R2Client, day: str) -> dict[str, Any]:
         raise PipelineError("final Layer 1 validation report is unreadable") from exc
     if (
         not isinstance(payload, dict)
-        or payload.get("ready_for_layer2") is not True
+        or not _payload_completeness_claim(payload)
         or payload.get("run_id") != run_id
         or payload.get("from_date") != day
         or payload.get("to_date") != day

@@ -13,7 +13,12 @@ presence, row coverage, basic schema integrity, and related manifest state so
 operators can see which run is authoritative and which sibling manifests are
 stale. `ready_for_layer2` flips to True iff every expected ticker history is
 present, the present histories round-trip through the FeatureRecord contract
-with the expected dates, and any requested manifest check passes.
+with the expected dates, and any requested manifest check passes. A session
+whose declared universe is genuinely empty for the requested dates (zero
+eligible tickers, zero dated shards, and no missing/schema/leakage/regime
+failures) is a legitimately complete zero-news session: it is marked
+`ready_for_layer2=True` with `zero_news_session=True`. An empty universe with
+any failure remains fail-closed.
 """
 from __future__ import annotations
 
@@ -124,6 +129,7 @@ class Layer1ValidationReport:
     present_rows: int
     schema_failures: int
     row_count_failures: int
+    zero_news_session: bool = False
     manifest_key: str | None = None
     report_key: str | None = None
     manifest_status: str | None = None
@@ -308,7 +314,13 @@ def validate_layer1_archive(
 
     expected_files = sum(len({_normalize_ticker(ticker) for ticker in tickers}) for tickers in universe.values())
     expected_rows = expected_files
-    ready = expected_rows > 0 and not missing and not schema_failures and not row_count_failures
+    zero_news_candidate = bool(universe) and expected_rows == 0
+    ready = (
+        (expected_rows > 0 or zero_news_candidate)
+        and not missing
+        and not schema_failures
+        and not row_count_failures
+    )
     (
         present_ticker_counts_by_date,
         missing_tickers_by_date,
@@ -327,6 +339,14 @@ def validate_layer1_archive(
         requested_dates=requested_dates,
     )
     if archive_layout.failures:
+        ready = False
+    if (
+        zero_news_candidate
+        and any(archive_layout.dated_shard_counts_by_date.values())
+    ):
+        # Ambiguous empty universe: the declared scope expects no rows for the
+        # requested dates, yet dated feature shards exist. Never treat this as
+        # a genuine zero-news session; keep the historical fail-closed result.
         ready = False
     leakage_spot_checks = _build_leakage_spot_checks(
         reader=reader,
@@ -361,6 +381,7 @@ def validate_layer1_archive(
         )
     if manifest_state.manifest_errors:
         ready = False
+    zero_news_session = bool(ready and zero_news_candidate)
     has_leakage_failures = any(check["status"] == "fail" for check in leakage_spot_checks)
     only_regime_warnings = (
         not ready
@@ -384,6 +405,7 @@ def validate_layer1_archive(
         present_rows=present_rows,
         schema_failures=len(schema_failures),
         row_count_failures=len(row_count_failures),
+        zero_news_session=zero_news_session,
         manifest_key=manifest_key,
         report_key=report_key,
         manifest_status=manifest_state.manifest_status,
