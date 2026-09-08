@@ -2106,7 +2106,13 @@ def _shrink_payload_node(node: object, depth: int = 0, key: str = "") -> tuple[o
         raw_keys = sorted(node, key=str)
         total_keys = len(raw_keys)
         protected_keys = _PAYLOAD_PROTECTED_MAPPING_KEYS.get(key, frozenset())
-        if total_keys > _PAYLOAD_NODE_FLOOR and (depth or total_keys > _PAYLOAD_MAPPING_KEY_LIMIT) and key != "pipeline_sections" and key not in _PAYLOAD_IMMUTABLE_TOP_LEVEL_KEYS:
+        if (
+            total_keys > _PAYLOAD_NODE_FLOOR
+            and (depth or total_keys > _PAYLOAD_MAPPING_KEY_LIMIT)
+            and key != "pipeline_sections"
+            and key not in _PAYLOAD_IMMUTABLE_TOP_LEVEL_KEYS
+            and not protected_keys
+        ):
             keep = max(_PAYLOAD_NODE_FLOOR, -(-total_keys // 2))
             # Preserve identity fields on diagnostic rows while compacting their
             # lower-value detail.  In particular, ``key`` is the stable route
