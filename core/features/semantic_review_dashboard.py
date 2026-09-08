@@ -186,6 +186,7 @@ def build_layer1_semantic_review_dashboard_smoke_payload(
         }
         benchmark_price_rows_source = report.benchmark_price_rows
         benchmark_market_regime_rows_source = report.benchmark_market_regime_rows
+        training_regime_rows_source = report.training_regime_rows
         preprocessing_rows_source = report.preprocessing_rows
         embedding_rows_source = report.embedding_rows
         topic_label_rows_source = report.topic_label_rows
@@ -210,6 +211,7 @@ def build_layer1_semantic_review_dashboard_smoke_payload(
         }
         benchmark_price_rows_source = report_dict.get("benchmark_price_rows", [])
         benchmark_market_regime_rows_source = report_dict.get("benchmark_market_regime_rows", [])
+        training_regime_rows_source = report_dict.get("training_regime_rows", [])
         preprocessing_rows_source = report_dict.get("preprocessing_rows", [])
         embedding_rows_source = report_dict.get("embedding_rows", [])
         topic_label_rows_source = report_dict.get("topic_label_rows", [])
@@ -243,6 +245,9 @@ def build_layer1_semantic_review_dashboard_smoke_payload(
         ],
         "benchmark_market_regime_series": [
             dict(item) for item in _smoke_sample_rows(benchmark_market_regime_rows_source, limit=3)
+        ],
+        "training_regime_rows": [
+            dict(item) for item in _smoke_sample_rows(training_regime_rows_source, limit=250)
         ],
         "hmm_evaluation_context": hmm_context,
         "artifact_keys": artifact_keys,

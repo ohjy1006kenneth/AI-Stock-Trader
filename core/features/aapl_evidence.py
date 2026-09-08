@@ -236,6 +236,7 @@ class Layer1SemanticReviewReport:
     benchmark_ticker: str | None
     benchmark_price_rows: list[dict[str, object]]
     benchmark_market_regime_rows: list[dict[str, object]]
+    training_regime_rows: list[dict[str, object]]
     hmm_evaluation_context: dict[str, object]
     article_groups: list[dict[str, object]]
     date_groups: list[dict[str, object]]
@@ -370,11 +371,12 @@ def build_layer1_aapl_evidence_report(
         load_warnings=load_warnings,
     )
     benchmark_ticker = _benchmark_ticker_from_manifest_context(regime_manifest_context)
+    benchmark_context_dates = _benchmark_context_dates(trading_date_list)
     benchmark_price_rows = _load_price_rows(
         writer=active_writer,
         key=raw_price_path(benchmark_ticker),
         ticker=benchmark_ticker,
-        dates=trading_date_list,
+        dates=benchmark_context_dates,
         artifact_keys=artifact_keys,
         load_warnings=load_warnings,
     )
@@ -525,6 +527,12 @@ def build_layer1_aapl_evidence_report(
         price_rows=benchmark_price_rows,
         regime_map=regime_by_date,
     )
+    training_regime_rows = _load_training_regime_rows(
+        writer=active_writer,
+        manifests=regime_manifest_context.get("manifests", []),
+        run_id=run_id,
+        artifact_keys=artifact_keys,
+    )
     hmm_evaluation_context = _build_hmm_evaluation_context(
         dates=trading_date_list,
         regime_map=regime_by_date,
@@ -591,6 +599,7 @@ def build_layer1_aapl_evidence_report(
         benchmark_ticker=benchmark_ticker,
         benchmark_price_rows=[item.to_dict() for item in benchmark_price_rows],
         benchmark_market_regime_rows=benchmark_market_regime_rows,
+        training_regime_rows=training_regime_rows,
         hmm_evaluation_context=hmm_evaluation_context,
         article_groups=[group.to_dict() for group in article_groups],
         date_groups=[group.to_dict() for group in date_groups],
@@ -1336,6 +1345,7 @@ def _manifest_summary(payload: Mapping[str, object], key: str) -> dict[str, obje
         "warning_inference_dates": _json_string_list(metadata.get("warning_inference_dates")),
         "training_rows": _maybe_int(metadata.get("training_rows")),
         "complete_training_rows": _maybe_int(metadata.get("complete_training_rows")),
+        "min_training_rows": _maybe_int(metadata.get("min_training_rows")),
         "dropped_feature_columns": _json_string_list(metadata.get("dropped_feature_columns")),
         "regime_layer2_ready": _maybe_bool(metadata.get("regime_layer2_ready")),
     }
@@ -1515,7 +1525,10 @@ def _build_hmm_evaluation_context(
     regime_layer2_ready = bool(manifests) and all(
         _maybe_bool(manifest.get("regime_layer2_ready")) is True for manifest in manifests
     )
-    complete_training_rows_sufficient = _training_rows_are_complete(training_windows)
+    complete_training_rows_sufficient = _training_rows_sufficient(training_windows)
+    complete_training_rows_sufficient_derivation = _training_rows_sufficient_derivation(
+        training_windows
+    )
     feature_set_status = "complete" if not dropped_columns else "degraded"
     feature_set_blocking = bool(non_optional_dropped_columns) or (
         bool(dropped_columns) and not (regime_layer2_ready and complete_training_rows_sufficient)
@@ -1556,11 +1569,61 @@ def _build_hmm_evaluation_context(
         "stale_manifest_dates": stale_manifest_dates,
         "training_windows": training_windows,
         "complete_training_rows_sufficient": complete_training_rows_sufficient,
+        "complete_training_rows_sufficient_derivation": complete_training_rows_sufficient_derivation,
         "source_artifact_keys": list(artifact_keys.get("regime", [])),
         "source_manifest_keys": source_manifest_keys,
         "manifest_summaries": manifests,
         "warnings": warnings,
     }
+
+
+def _benchmark_context_dates(dates: Sequence[str], max_points: int = 25) -> list[str]:
+    """Return the bounded trailing trading-date window for benchmark context."""
+    if not dates:
+        return []
+    end_date = Date.fromisoformat(max(str(item) for item in dates))
+    start_date = end_date.fromordinal(end_date.toordinal() - 90)
+    return list(trading_dates(start_date.isoformat(), end_date.isoformat())[-max_points:])
+
+
+def _load_training_regime_rows(
+    *,
+    writer: R2Writer,
+    manifests: object,
+    run_id: str,
+    artifact_keys: dict[str, list[str]],
+    max_points: int = 250,
+) -> list[dict[str, object]]:
+    """Load a bounded, date-first HMM history for the manifest training window."""
+    if not isinstance(manifests, Sequence) or isinstance(manifests, (str, bytes, bytearray)):
+        return []
+    rows_by_date: dict[str, SemanticReviewRegimeRow] = {}
+    for manifest in manifests:
+        if not isinstance(manifest, Mapping):
+            continue
+        start_date = _optional_str(manifest.get("train_start_date"))
+        end_date = _optional_str(manifest.get("train_end_date"))
+        if not start_date or not end_date:
+            continue
+        for date_text in trading_dates(start_date, end_date):
+            primary_key = layer1_regime_path(date_text, run_id)
+            fallback_key = layer1_regime_path(date_text, f"{run_id}-{date_text}")
+            frame, resolved_key = _read_first_available_parquet_frame(
+                writer, (primary_key, fallback_key)
+            )
+            if frame is None or frame.empty:
+                continue
+            frame = frame.copy()
+            frame["_artifact_key"] = resolved_key
+            for row_date, row in _build_regime_map(frame).items():
+                rows_by_date[row_date] = row
+            if resolved_key and resolved_key not in artifact_keys["regime"]:
+                artifact_keys["regime"].append(resolved_key)
+    rows = [rows_by_date[key].to_dict() for key in sorted(rows_by_date)]
+    if len(rows) <= max_points:
+        return rows
+    indices = [round(index * (len(rows) - 1) / (max_points - 1)) for index in range(max_points)]
+    return [rows[index] for index in indices]
 
 
 def _benchmark_ticker_from_manifest_context(manifest_context: Mapping[str, object]) -> str:
@@ -1590,6 +1653,7 @@ def _training_windows_from_manifests(
             "macro_load_end_date": _optional_str(manifest.get("macro_load_end_date")),
             "training_rows": _maybe_int(manifest.get("training_rows")),
             "complete_training_rows": _maybe_int(manifest.get("complete_training_rows")),
+            "min_training_rows": _maybe_int(manifest.get("min_training_rows")),
         }
         key = tuple(window.values())
         if key in seen:
@@ -1597,6 +1661,29 @@ def _training_windows_from_manifests(
         seen.add(key)
         windows.append(window)
     return windows
+
+
+def _training_rows_sufficient(windows: Sequence[Mapping[str, object]]) -> bool | None:
+    """Derive training sufficiency only when every window has an explicit threshold."""
+    if not windows:
+        return None
+    result = True
+    for window in windows:
+        complete = _maybe_int(window.get("complete_training_rows"))
+        minimum = _maybe_int(window.get("min_training_rows"))
+        if complete is None or minimum is None:
+            return None
+        result = result and complete >= minimum
+    return result
+
+
+def _training_rows_sufficient_derivation(windows: Sequence[Mapping[str, object]]) -> str:
+    """Explain whether the nullable training-sufficiency value was derived."""
+    if not windows:
+        return "unknown: no HMM training-window metadata was available"
+    if any(_maybe_int(window.get("min_training_rows")) is None for window in windows):
+        return "unknown: min_training_rows is absent from the regime manifest"
+    return "derived from complete_training_rows >= min_training_rows for every training window"
 
 
 def _training_rows_are_complete(windows: Sequence[Mapping[str, object]]) -> bool:
