@@ -2050,8 +2050,26 @@ _PAYLOAD_IMMUTABLE_TOP_LEVEL_KEYS = frozenset(
         "smoke", "run_readiness", "pipeline_section_counts",
         "article_group_counts", "accepted_article_counts", "flagged_article_counts",
         "date_group_counts", "warnings_counts", "human_review_queue",
+        "gate_cards", "missing_pipeline_sections",
     }
 )
+
+# These mappings are part of the public readiness contract.  Their values may
+# still be bounded, but dropping keys makes otherwise equivalent ticker
+# responses impossible for clients to consume uniformly.
+_PAYLOAD_PROTECTED_MAPPING_KEYS: dict[str, frozenset[str]] = {
+    "run_readiness": frozenset({
+        "readiness_status", "status_reason", "run_id", "ticker", "from_date", "to_date",
+        "topic_review_state", "topic_relevance_review_status", "relevance_informativeness_state",
+        "diagnostic_states", "diagnostic_summary",
+    }),
+    "diagnostic_states": frozenset({
+        "embedding_coverage", "hmm_chart_auditability", "relevance_informativeness",
+        "topic_review", "hmm_feature_set", "overall_state", "reviewable",
+    }),
+    "gate_cards": frozenset({"key", "label", "status", "reason", "ready", "row_count"}),
+    "missing_pipeline_sections": frozenset({"key", "label", "reason", "scope", "status"}),
+}
 
 
 def _payload_compaction_marker(field: str, value: int) -> dict[str, object]:
@@ -2064,6 +2082,22 @@ def _pretty_payload_size(candidate: object) -> int:
     return len(json.dumps(candidate, indent=2, sort_keys=True, default=str).encode("utf-8"))
 
 
+def _payload_has_truncation_metadata(node: object) -> bool:
+    """Detect bounded samples created before the final byte-budget pass."""
+    if isinstance(node, Mapping):
+        if node.get("truncated") is True:
+            return True
+        if any(
+            key in node and isinstance(node[key], (int, float)) and node[key] > 0
+            for key in ("omitted_count", "omitted_row_count", "invalid_row_count")
+        ):
+            return True
+        return any(_payload_has_truncation_metadata(value) for value in node.values())
+    if isinstance(node, Sequence) and not isinstance(node, (str, bytes, bytearray)):
+        return any(_payload_has_truncation_metadata(value) for value in node)
+    return False
+
+
 def _shrink_payload_node(node: object, depth: int = 0, key: str = "") -> tuple[object, int, int]:
     """Halve oversized keys, items, and strings; return (node, dropped, truncated)."""
     dropped = 0
@@ -2071,7 +2105,8 @@ def _shrink_payload_node(node: object, depth: int = 0, key: str = "") -> tuple[o
     if isinstance(node, Mapping):
         raw_keys = sorted(node, key=str)
         total_keys = len(raw_keys)
-        if total_keys > _PAYLOAD_NODE_FLOOR and (depth or total_keys > _PAYLOAD_MAPPING_KEY_LIMIT) and key != "pipeline_sections":
+        protected_keys = _PAYLOAD_PROTECTED_MAPPING_KEYS.get(key, frozenset())
+        if total_keys > _PAYLOAD_NODE_FLOOR and (depth or total_keys > _PAYLOAD_MAPPING_KEY_LIMIT) and key != "pipeline_sections" and key not in _PAYLOAD_IMMUTABLE_TOP_LEVEL_KEYS:
             keep = max(_PAYLOAD_NODE_FLOOR, -(-total_keys // 2))
             # Preserve identity fields on diagnostic rows while compacting their
             # lower-value detail.  In particular, ``key`` is the stable route
@@ -2089,6 +2124,11 @@ def _shrink_payload_node(node: object, depth: int = 0, key: str = "") -> tuple[o
             kept_keys = list(dict.fromkeys(priority_keys + raw_keys[:keep]))[:keep]
             dropped += total_keys - len(kept_keys)
             raw_keys = kept_keys
+        elif protected_keys:
+            # Keep the complete contract shape, then compact only values under
+            # it.  Protected keys may be absent in legacy/minimal input, so do
+            # not synthesize values here.
+            raw_keys = list(raw_keys)
         result: dict[str, object] = {}
         for raw_key in raw_keys:
             name = str(raw_key)
@@ -2110,7 +2150,7 @@ def _shrink_payload_node(node: object, depth: int = 0, key: str = "") -> tuple[o
         items = list(node)
         # Readiness section identities are small but semantically complete; do
         # not replace missing-section rows with an anonymous compaction marker.
-        preserve_rows = key == "missing_pipeline_sections"
+        preserve_rows = key in {"missing_pipeline_sections", "gate_cards"}
         if len(items) > _PAYLOAD_COMPACTABLE_ITEM_FLOOR and not preserve_rows:
             keep = max(_PAYLOAD_COMPACTABLE_ITEM_FLOOR, -(-len(items) // 2))
             dropped += len(items) - keep
@@ -2148,6 +2188,7 @@ def _enforce_payload_pretty_byte_budget(payload: Mapping[str, object]) -> dict[s
     import copy as _copy
 
     result = _copy.deepcopy(dict(payload))
+    preexisting_truncation = _payload_has_truncation_metadata(result)
     initial_size = _pretty_payload_size(result)
     compacted = False
     passes = 0
@@ -2192,6 +2233,10 @@ def _enforce_payload_pretty_byte_budget(payload: Mapping[str, object]) -> dict[s
         "omitted_node_count": dropped_nodes,
         "truncated_scalar_count": truncated_scalars,
         "sacrificed_sections": sacrificed_sections,
+        "truncated": bool(
+            preexisting_truncation
+            or (compacted and (dropped_nodes or truncated_scalars or sacrificed_sections))
+        ),
     }
     return result
 

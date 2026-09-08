@@ -13,6 +13,7 @@ from app.lab.semantic_review_dashboard import _DashboardDefaults, _render_dashbo
 from core.features.aapl_evidence import build_layer1_aapl_evidence_report
 from core.features.regime_training import HMM_OPTIONAL_FEATURE_COLUMNS
 from core.features.semantic_review_dashboard import (
+    _compact_layer1_semantic_review_dashboard_payload,
     _stratified_bounded_mappings,
     build_layer1_semantic_review_dashboard_payload,
     build_layer1_semantic_review_dashboard_smoke_payload,
@@ -1421,3 +1422,42 @@ def test_semantic_review_dashboard_smoke_payload_is_compact_and_valid(tmp_path: 
     assert len(cast(list[dict[str, Any]], payload["pipeline_sections"]["raw_preprocessing_rows"])) == 1
     assert len(cast(list[dict[str, Any]], payload["pipeline_sections"]["finbert_sentence_rows"])) == 1
     assert len(json.dumps(payload)) < 50_000
+
+
+def test_semantic_review_compaction_preserves_stable_readiness_schema() -> None:
+    """A packet-sized payload keeps readiness, diagnostics, gates, and reasons intact."""
+    readiness_keys = {
+        "readiness_status", "status_reason", "run_id", "ticker", "from_date", "to_date",
+        "topic_review_state", "topic_relevance_review_status", "relevance_informativeness_state",
+        "diagnostic_states", "diagnostic_summary",
+    }
+    diagnostic_keys = {
+        "embedding_coverage", "hmm_chart_auditability", "relevance_informativeness",
+        "topic_review", "hmm_feature_set",
+    }
+    payload = _compact_layer1_semantic_review_dashboard_payload({
+        "ticker": "AAPL",
+        "run_readiness": {
+            **{key: f"value-{key}" for key in readiness_keys if key not in {"diagnostic_states", "diagnostic_summary"}},
+            "diagnostic_states": {key: "WARN" for key in diagnostic_keys},
+            "diagnostic_summary": {"overall_state": "WARN"},
+        },
+        "gate_cards": [
+            {"key": f"gate-{index}", "label": f"Gate {index}", "status": "ready", "reason": "ok"}
+            for index in range(10)
+        ],
+        "missing_pipeline_sections": [
+            {"key": "topic_labels", "label": "Topics", "reason": "not present", "scope": "packet"}
+        ],
+        "article_groups": [
+            {"article_id": f"article-{index}", "headline": "x" * 2_000}
+            for index in range(32)
+        ],
+        "oversized_detail": [{"value": "y" * 10_000} for _ in range(32)],
+    })
+
+    assert set(payload["run_readiness"]) == readiness_keys
+    assert set(payload["run_readiness"]["diagnostic_states"]) == diagnostic_keys
+    assert len(payload["gate_cards"]) == 10
+    assert payload["missing_pipeline_sections"][0]["reason"] == "not present"
+    assert payload["payload_budget"]["truncated"] is True
