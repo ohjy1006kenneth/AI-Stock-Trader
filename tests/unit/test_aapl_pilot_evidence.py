@@ -117,6 +117,66 @@ def test_gate_provenance_overrides_stale_scored_relevance() -> None:
     assert groups[0].sentence_rows[0]["relevance_decision"] == "borderline"
 
 
+def test_article_contribution_is_zero_for_no_term_borderline_rejected_article() -> None:
+    scored = pd.DataFrame([
+        {
+            "date": "2026-09-04", "ticker": "MSFT", "article_id": "61622532",
+            "sentence_index": index, "chunk_index": index, "headline": "Nvidia Fiscal Year Results",
+            "text": "Nvidia reports fiscal year results.", "relevance_score": 0.4,
+        }
+        for index in range(3)
+    ])
+    gate = [
+        {
+            "date": "2026-09-04", "ticker": "MSFT", "article_id": "61622532",
+            "sentence_index": index, "chunk_index": index, "relevance_score": 0.4,
+            "relevance_decision": decision,
+        }
+        for index, decision in enumerate(("borderline", "borderline", "rejected"))
+    ]
+
+    groups, _ = _build_article_groups(
+        scored, requested_ticker="MSFT", relevance_threshold=0.6, relevance_gate_rows=gate
+    )
+
+    article = groups[0]
+    assert article.contribution_sum == 0.0
+    assert article.contribution_cap_applied is True
+    assert all(row["final_contribution"] == 0.0 for row in article.sentence_rows)
+    assert all(row["contribution_cap_applied"] is True for row in article.relevance_gate_rows)
+    assert {row["relevance_decision"] for row in article.relevance_gate_rows} == {"borderline", "rejected"}
+
+
+def test_article_contribution_caps_sparse_positive_term_article() -> None:
+    scored = pd.DataFrame([
+        {
+            "date": "2026-09-04", "ticker": "AAPL", "article_id": "61622533",
+            "sentence_index": index, "chunk_index": index,
+            "headline": "Snap Q2 2026 misses EPS", "text": text, "relevance_score": 0.4,
+        }
+        for index, text in enumerate(["AAPL supplier impact."] + ["Snap misses EPS."] * 9)
+    ])
+    gate = [
+        {
+            "date": "2026-09-04", "ticker": "AAPL", "article_id": "61622533",
+            "sentence_index": index, "chunk_index": index, "relevance_score": 0.4,
+            "relevance_decision": "accepted" if index == 0 else "borderline",
+        }
+        for index in range(10)
+    ]
+
+    groups, _ = _build_article_groups(
+        scored, requested_ticker="AAPL", relevance_threshold=0.6, relevance_gate_rows=gate
+    )
+
+    article = groups[0]
+    assert article.contribution_cap_applied is True
+    assert article.contribution_sum == pytest.approx(0.9)
+    assert article.contribution_sum < 10.0
+    assert all(row["contribution_cap_applied"] is True for row in article.sentence_rows)
+    assert all(row["final_contribution"] == pytest.approx(0.09) for row in article.sentence_rows)
+
+
 def test_build_aapl_pilot_evidence_bundle_separates_machine_and_human_review(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

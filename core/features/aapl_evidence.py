@@ -112,6 +112,8 @@ class SemanticReviewArticleGroup:
     topic_evidence: list[dict[str, object]]
     relevance_gate_rows: list[dict[str, object]]
     sentence_rows: list[dict[str, object]]
+    contribution_sum: float = 0.0
+    contribution_cap_applied: bool = False
 
     def to_dict(self) -> dict[str, object]:
         """Return a JSON-serializable representation."""
@@ -748,8 +750,47 @@ def _build_article_groups(
         if "low_relevance_score" in contamination_flags or "missing_relevance_score" in contamination_flags:
             weak_count += 1
 
+        # Gate contribution at article scope so incidental competitor/read-through rows
+        # remain visible without becoming ticker signal.
+        row_provenance: list[tuple[Mapping[str, object], bool]] = []
+        for _, scored_row in article_frame.iterrows():
+            gate_row = _matching_gate_row(scored_row, article_relevance_rows)
+            source_row = gate_row if gate_row is not None else scored_row
+            row_provenance.append((source_row, bool(scored_row.get("requested_ticker_term_hits"))))
+        decisions = [(_optional_str(row.get("relevance_decision")) or "").lower() for row, _ in row_provenance]
+        only_borderline_or_rejected = bool(decisions) and all(
+            decision in {"borderline", "rejected"} for decision in decisions
+        )
+        borderline_count = sum(decision == "borderline" for decision in decisions)
+        accepted_positive_term_count = sum(
+            decision == "accepted" and has_term
+            for (row, has_term), decision in zip(row_provenance, decisions)
+        )
+        contribution_cap_applied = False
+        if not requested_ticker_term_hits and only_borderline_or_rejected:
+            contribution_cap_applied = True
+            contribution_weights = [0.0] * row_count
+        elif requested_ticker_term_hits and accepted_positive_term_count / row_count < 0.20:
+            contribution_cap_applied = True
+            cap = 0.1 * borderline_count
+            eligible_indexes = [
+                index for index, decision in enumerate(decisions)
+                if decision in {"accepted", "borderline"}
+            ]
+            per_row_weight = cap / len(eligible_indexes) if eligible_indexes else 0.0
+            contribution_weights = [
+                per_row_weight if index in eligible_indexes else 0.0
+                for index in range(row_count)
+            ]
+        else:
+            contribution_weights = [
+                1.0 if decision in {"accepted", "borderline"} else 0.0
+                for decision in decisions
+            ]
+        contribution_sum = float(sum(contribution_weights))
+
         sentence_rows: list[dict[str, object]] = []
-        for _, row in article_frame.iterrows():
+        for row_index, (_, row) in enumerate(article_frame.iterrows()):
             gate_row = _matching_gate_row(row, article_relevance_rows)
             relevance_source = gate_row if gate_row is not None else row
             assignment_fields = _assignment_provenance_fields(
@@ -791,6 +832,10 @@ def _build_article_groups(
                         )
                     }
                 )
+            sentence_rows[-1]["article_contribution_weight"] = contribution_weights[row_index]
+            sentence_rows[-1]["final_contribution"] = contribution_weights[row_index]
+            sentence_rows[-1]["final_signal_contribution"] = contribution_weights[row_index]
+            sentence_rows[-1]["contribution_cap_applied"] = contribution_cap_applied
         assignment_classifications = tuple(
             _dedupe_preserve_order(
                 [
@@ -815,6 +860,10 @@ def _build_article_groups(
                 ]
             )
         )
+        compact_relevance_rows = _compact_article_relevance_rows(article_relevance_rows)
+        for compact_row in compact_relevance_rows:
+            compact_row["contribution_cap_applied"] = contribution_cap_applied
+            compact_row["contribution_sum"] = contribution_sum
         article_groups.append(
             SemanticReviewArticleGroup(
                 article_id=str(article_id),
@@ -845,8 +894,10 @@ def _build_article_groups(
                 evidence_snippets=evidence_snippets,
                 preprocessing_rows=preprocessing_by_article.get((str(date_text), str(article_id)), []),
                 topic_evidence=topic_by_article.get((str(date_text), str(article_id)), []),
-                relevance_gate_rows=_compact_article_relevance_rows(article_relevance_rows),
+                relevance_gate_rows=compact_relevance_rows,
                 sentence_rows=sentence_rows,
+                contribution_sum=contribution_sum,
+                contribution_cap_applied=contribution_cap_applied,
             )
         )
 
@@ -859,6 +910,9 @@ def _build_article_groups(
         "repeated_headline_count": repeated_headline_count,
         "weak_article_count": weak_count,
         "sentence_count": sentence_count,
+        "contribution_cap_applied_article_count": sum(
+            1 for article in article_groups if article.contribution_cap_applied
+        ),
     }
     return article_groups, summary
 
