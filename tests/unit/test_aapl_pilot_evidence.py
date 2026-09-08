@@ -130,7 +130,8 @@ def test_article_contribution_is_zero_for_no_term_borderline_rejected_article() 
         {
             "date": "2026-09-04", "ticker": "MSFT", "article_id": "61622532",
             "sentence_index": index, "chunk_index": index, "relevance_score": 0.4,
-            "relevance_decision": decision,
+            "relevance_decision": decision, "article_contribution_weight": 1.0,
+            "included_in_signal": True,
         }
         for index, decision in enumerate(("borderline", "borderline", "rejected"))
     ]
@@ -143,7 +144,15 @@ def test_article_contribution_is_zero_for_no_term_borderline_rejected_article() 
     assert article.contribution_sum == 0.0
     assert article.contribution_cap_applied is True
     assert all(row["final_contribution"] == 0.0 for row in article.sentence_rows)
+    assert all(row["article_contribution_weight"] == 0.0 for row in article.sentence_rows)
+    assert all(row["included_in_signal"] is False for row in article.sentence_rows)
+    assert all(row["source_article_contribution_weight"] == 1.0 for row in article.sentence_rows)
+    assert all(row["source_included_in_signal"] is True for row in article.sentence_rows)
     assert all(row["contribution_cap_applied"] is True for row in article.relevance_gate_rows)
+    assert all(row["article_contribution_weight"] == 0.0 for row in article.relevance_gate_rows)
+    assert all(row["included_in_signal"] is False for row in article.relevance_gate_rows)
+    assert all(row["source_article_contribution_weight"] == 1.0 for row in article.relevance_gate_rows)
+    assert all(row["source_included_in_signal"] is True for row in article.relevance_gate_rows)
     assert {row["relevance_decision"] for row in article.relevance_gate_rows} == {"borderline", "rejected"}
 
 
@@ -161,6 +170,7 @@ def test_article_contribution_caps_sparse_positive_term_article() -> None:
             "date": "2026-09-04", "ticker": "AAPL", "article_id": "61622533",
             "sentence_index": index, "chunk_index": index, "relevance_score": 0.4,
             "relevance_decision": "accepted" if index == 0 else "borderline",
+            "article_contribution_weight": 1.0, "included_in_signal": True,
         }
         for index in range(10)
     ]
@@ -175,6 +185,11 @@ def test_article_contribution_caps_sparse_positive_term_article() -> None:
     assert article.contribution_sum < 10.0
     assert all(row["contribution_cap_applied"] is True for row in article.sentence_rows)
     assert all(row["final_contribution"] == pytest.approx(0.09) for row in article.sentence_rows)
+    assert all(row["article_contribution_weight"] == pytest.approx(0.09) for row in article.sentence_rows)
+    assert all(row["included_in_signal"] is True for row in article.sentence_rows)
+    assert all(row["source_article_contribution_weight"] == 1.0 for row in article.sentence_rows)
+    assert all(row["source_included_in_signal"] is True for row in article.sentence_rows)
+    assert all(row["article_contribution_weight"] == pytest.approx(0.09) for row in article.relevance_gate_rows)
 
 
 def test_build_aapl_pilot_evidence_bundle_separates_machine_and_human_review(

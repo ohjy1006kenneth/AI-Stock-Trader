@@ -832,7 +832,16 @@ def _build_article_groups(
                         )
                     }
                 )
+            source_weight = sentence_rows[-1].get("article_contribution_weight")
+            source_included = sentence_rows[-1].get("included_in_signal")
+            if source_included is None:
+                source_included = _target_row_included_in_signal(sentence_rows[-1])
+            sentence_rows[-1]["source_article_contribution_weight"] = source_weight
+            sentence_rows[-1]["source_included_in_signal"] = bool(source_included)
             sentence_rows[-1]["article_contribution_weight"] = contribution_weights[row_index]
+            sentence_rows[-1]["included_in_signal"] = bool(
+                contribution_weights[row_index] > 0 and source_included
+            )
             sentence_rows[-1]["final_contribution"] = contribution_weights[row_index]
             sentence_rows[-1]["final_signal_contribution"] = contribution_weights[row_index]
             sentence_rows[-1]["contribution_cap_applied"] = contribution_cap_applied
@@ -861,7 +870,15 @@ def _build_article_groups(
             )
         )
         compact_relevance_rows = _compact_article_relevance_rows(article_relevance_rows)
-        for compact_row in compact_relevance_rows:
+        for row_index, compact_row in enumerate(compact_relevance_rows):
+            source_weight = compact_row.get("article_contribution_weight")
+            source_included = compact_row.get("included_in_signal")
+            compact_row["source_article_contribution_weight"] = source_weight
+            compact_row["source_included_in_signal"] = bool(source_included)
+            compact_row["article_contribution_weight"] = contribution_weights[row_index]
+            compact_row["included_in_signal"] = bool(
+                contribution_weights[row_index] > 0 and source_included
+            )
             compact_row["contribution_cap_applied"] = contribution_cap_applied
             compact_row["contribution_sum"] = contribution_sum
         article_groups.append(
@@ -2091,7 +2108,11 @@ def _compact_article_relevance_rows(rows: Sequence[Mapping[str, object]]) -> lis
                 "relevance_category": _optional_str(row.get("relevance_category")),
                 "target_company_impact_direction": _optional_str(row.get("target_company_impact_direction")),
                 "article_contribution_weight": _maybe_float(row.get("article_contribution_weight")),
-                "included_in_signal": _target_row_included_in_signal(row),
+                "included_in_signal": (
+                    bool(row.get("included_in_signal"))
+                    if row.get("included_in_signal") is not None
+                    else _target_row_included_in_signal(row)
+                ),
                 "final_contribution": _target_row_final_contribution(row),
                 "reason_codes": _json_string_list(row.get("reason_codes")),
             }
