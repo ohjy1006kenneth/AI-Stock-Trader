@@ -752,47 +752,84 @@ def _build_article_groups(
 
         # Gate contribution at article scope so incidental competitor/read-through rows
         # remain visible without becoming ticker signal.
-        row_provenance: list[tuple[Mapping[str, object], bool]] = []
+        row_provenance: list[tuple[Mapping[str, object], bool, bool]] = []
         for _, scored_row in article_frame.iterrows():
             gate_row = _matching_gate_row(scored_row, article_relevance_rows)
-            source_row = gate_row if gate_row is not None else scored_row
-            row_provenance.append((source_row, bool(scored_row.get("requested_ticker_term_hits"))))
-        decisions = [(_optional_str(row.get("relevance_decision")) or "").lower() for row, _ in row_provenance]
+            source_row = (
+                {**dict(scored_row), **dict(gate_row)}
+                if gate_row is not None
+                else scored_row
+            )
+            row_provenance.append((
+                source_row,
+                bool(scored_row.get("requested_ticker_term_hits")),
+                gate_row is not None,
+            ))
+        decisions = [(_optional_str(row.get("relevance_decision")) or "").lower() for row, _, _ in row_provenance]
+        exact_gate_provenance = (
+            len(article_relevance_rows) == row_count
+            and all(matched for _, _, matched in row_provenance)
+            and all(
+                _maybe_float(row.get("article_contribution_weight")) is not None
+                and row.get("included_in_signal") is not None
+                for row, _, _ in row_provenance
+            )
+        )
         only_borderline_or_rejected = bool(decisions) and all(
             decision in {"borderline", "rejected"} for decision in decisions
         )
         borderline_count = sum(decision == "borderline" for decision in decisions)
         accepted_positive_term_count = sum(
             decision == "accepted" and has_term
-            for (row, has_term), decision in zip(row_provenance, decisions)
+            for (row, has_term, _), decision in zip(row_provenance, decisions)
         )
         contribution_cap_applied = False
-        if not requested_ticker_term_hits and only_borderline_or_rejected:
+        source_weights = [
+            _maybe_float(row.get("article_contribution_weight"))
+            for row, _, _ in row_provenance
+        ]
+        source_included = [
+            (
+                bool(row.get("included_in_signal"))
+                if row.get("included_in_signal") is not None
+                else _target_row_included_in_signal(row)
+            )
+            for row, _, _ in row_provenance
+        ]
+        eligible_source_weights = [
+            weight if included and decision in {"accepted", "borderline"} and weight is not None and weight > 0
+            else 0.0
+            for weight, included, decision in zip(source_weights, source_included, decisions)
+        ]
+        if exact_gate_provenance and not requested_ticker_term_hits and only_borderline_or_rejected:
             contribution_cap_applied = True
             contribution_weights = [0.0] * row_count
-        elif requested_ticker_term_hits and accepted_positive_term_count / row_count < 0.20:
+        elif exact_gate_provenance and requested_ticker_term_hits and accepted_positive_term_count / row_count < 0.20:
             contribution_cap_applied = True
-            cap = 0.1 * borderline_count
-            eligible_indexes = [
-                index for index, decision in enumerate(decisions)
-                if decision in {"accepted", "borderline"}
-            ]
-            per_row_weight = cap / len(eligible_indexes) if eligible_indexes else 0.0
-            contribution_weights = [
-                per_row_weight if index in eligible_indexes else 0.0
-                for index in range(row_count)
-            ]
+            cap = min(sum(eligible_source_weights), 0.1 * borderline_count)
+            source_total = sum(eligible_source_weights)
+            scale = cap / source_total if source_total > 0 else 0.0
+            contribution_weights = [weight * scale for weight in eligible_source_weights]
         else:
             contribution_weights = [
-                1.0 if decision in {"accepted", "borderline"} else 0.0
-                for decision in decisions
+                weight
+                if included
+                and (decision in {"accepted", "borderline"} or not decision)
+                and weight is not None
+                and weight > 0
+                else 0.0
+                for weight, included, decision in zip(source_weights, source_included, decisions)
             ]
         contribution_sum = float(sum(contribution_weights))
 
         sentence_rows: list[dict[str, object]] = []
         for row_index, (_, row) in enumerate(article_frame.iterrows()):
             gate_row = _matching_gate_row(row, article_relevance_rows)
-            relevance_source = gate_row if gate_row is not None else row
+            relevance_source = (
+                {**dict(row), **dict(gate_row)}
+                if gate_row is not None
+                else row
+            )
             assignment_fields = _assignment_provenance_fields(
                 row,
                 fallback_rows=preprocessing_by_article.get((str(date_text), str(article_id)), []),
@@ -833,17 +870,18 @@ def _build_article_groups(
                     }
                 )
             source_weight = sentence_rows[-1].get("article_contribution_weight")
-            source_included = sentence_rows[-1].get("included_in_signal")
-            if source_included is None:
-                source_included = _target_row_included_in_signal(sentence_rows[-1])
+            source_included_value = sentence_rows[-1].get("included_in_signal")
+            if source_included_value is None:
+                source_included_value = _target_row_included_in_signal(sentence_rows[-1])
             sentence_rows[-1]["source_article_contribution_weight"] = source_weight
-            sentence_rows[-1]["source_included_in_signal"] = bool(source_included)
-            sentence_rows[-1]["article_contribution_weight"] = contribution_weights[row_index]
-            sentence_rows[-1]["included_in_signal"] = bool(
-                contribution_weights[row_index] > 0 and source_included
-            )
-            sentence_rows[-1]["final_contribution"] = contribution_weights[row_index]
-            sentence_rows[-1]["final_signal_contribution"] = contribution_weights[row_index]
+            sentence_rows[-1]["source_included_in_signal"] = bool(source_included_value)
+            if exact_gate_provenance:
+                sentence_rows[-1]["article_contribution_weight"] = contribution_weights[row_index]
+                sentence_rows[-1]["included_in_signal"] = bool(
+                    contribution_weights[row_index] > 0 and source_included_value
+                )
+                sentence_rows[-1]["final_contribution"] = contribution_weights[row_index]
+                sentence_rows[-1]["final_signal_contribution"] = contribution_weights[row_index]
             sentence_rows[-1]["contribution_cap_applied"] = contribution_cap_applied
         assignment_classifications = tuple(
             _dedupe_preserve_order(
@@ -870,15 +908,32 @@ def _build_article_groups(
             )
         )
         compact_relevance_rows = _compact_article_relevance_rows(article_relevance_rows)
-        for row_index, compact_row in enumerate(compact_relevance_rows):
+        for compact_row in compact_relevance_rows:
             source_weight = compact_row.get("article_contribution_weight")
-            source_included = compact_row.get("included_in_signal")
+            source_included_value = compact_row.get("included_in_signal")
             compact_row["source_article_contribution_weight"] = source_weight
-            compact_row["source_included_in_signal"] = bool(source_included)
-            compact_row["article_contribution_weight"] = contribution_weights[row_index]
-            compact_row["included_in_signal"] = bool(
-                contribution_weights[row_index] > 0 and source_included
+            compact_row["source_included_in_signal"] = (
+                bool(source_included_value)
+                if source_included_value is not None
+                else _target_row_included_in_signal(compact_row)
             )
+            compact_key = _stable_relevance_row_key(compact_row)
+            scored_index = next(
+                (index for index, (_, row) in enumerate(article_frame.iterrows())
+                 if _stable_relevance_row_key(row) == compact_key),
+                None,
+            )
+            if exact_gate_provenance and scored_index is not None:
+                compact_row["article_contribution_weight"] = contribution_weights[scored_index]
+                compact_row["included_in_signal"] = bool(
+                    contribution_weights[scored_index] > 0 and source_included_value
+                )
+                compact_row["final_contribution"] = contribution_weights[scored_index]
+            elif scored_index is None:
+                compact_row["contribution_provenance"] = "unmatched_gate_row"
+                compact_row["article_contribution_weight"] = 0.0
+                compact_row["included_in_signal"] = False
+                compact_row["final_contribution"] = 0.0
             compact_row["contribution_cap_applied"] = contribution_cap_applied
             compact_row["contribution_sum"] = contribution_sum
         article_groups.append(
@@ -1166,22 +1221,10 @@ def _matching_gate_row(
     gate_rows: Sequence[Mapping[str, object]],
 ) -> dict[str, object] | None:
     """Select a deterministic exact-granularity relevance-gate row."""
-    key = (
-        _optional_str(scored_row.get("date")) or "",
-        (_optional_str(scored_row.get("ticker")) or "").strip().upper(),
-        _optional_str(scored_row.get("article_id")) or "",
-        _maybe_int(scored_row.get("sentence_index")),
-        _maybe_int(scored_row.get("chunk_index")),
-    )
+    key = _stable_relevance_row_key(scored_row)
     candidates = []
     for row in gate_rows:
-        candidate_key = (
-            _optional_str(row.get("date")) or "",
-            (_optional_str(row.get("ticker")) or "").strip().upper(),
-            _optional_str(row.get("article_id")) or "",
-            _maybe_int(row.get("sentence_index")),
-            _maybe_int(row.get("chunk_index")),
-        )
+        candidate_key = _stable_relevance_row_key(row)
         if candidate_key == key and key[1]:
             candidates.append(dict(row))
     if not candidates:
@@ -1190,6 +1233,17 @@ def _matching_gate_row(
         candidates,
         key=lambda row: json.dumps(_json_safe(row), sort_keys=True, default=str),
     )[0]
+
+
+def _stable_relevance_row_key(row: Mapping[str, object]) -> tuple[object, ...]:
+    """Return the exact identity used to join scored and relevance-gate rows."""
+    return (
+        _optional_str(row.get("date")) or "",
+        (_optional_str(row.get("ticker")) or "").strip().upper(),
+        _optional_str(row.get("article_id")) or "",
+        _maybe_int(row.get("sentence_index")),
+        _maybe_int(row.get("chunk_index")),
+    )
 
 
 def _read_parquet_frame(data: bytes) -> pd.DataFrame:
@@ -2102,6 +2156,7 @@ def _compact_article_relevance_rows(rows: Sequence[Mapping[str, object]]) -> lis
                 "ticker": _optional_str(row.get("ticker")),
                 "article_id": _optional_str(row.get("article_id")),
                 "sentence_index": _maybe_int(row.get("sentence_index")),
+                "chunk_index": _maybe_int(row.get("chunk_index")),
                 "relevance_decision": _optional_str(row.get("relevance_decision")),
                 "relevance_score": _maybe_float(row.get("relevance_score")),
                 "target_context_score": _maybe_float(row.get("target_context_score")),
