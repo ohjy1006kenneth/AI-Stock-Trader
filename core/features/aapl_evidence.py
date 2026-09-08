@@ -882,6 +882,9 @@ def _build_article_groups(
                 )
                 sentence_rows[-1]["final_contribution"] = contribution_weights[row_index]
                 sentence_rows[-1]["final_signal_contribution"] = contribution_weights[row_index]
+            sentence_rows[-1]["contribution_provenance"] = (
+                "exact_gate" if exact_gate_provenance else "source_retained"
+            )
             sentence_rows[-1]["contribution_cap_applied"] = contribution_cap_applied
         assignment_classifications = tuple(
             _dedupe_preserve_order(
@@ -929,11 +932,14 @@ def _build_article_groups(
                     contribution_weights[scored_index] > 0 and source_included_value
                 )
                 compact_row["final_contribution"] = contribution_weights[scored_index]
+                compact_row["contribution_provenance"] = "exact_gate"
             elif scored_index is None:
                 compact_row["contribution_provenance"] = "unmatched_gate_row"
                 compact_row["article_contribution_weight"] = 0.0
                 compact_row["included_in_signal"] = False
                 compact_row["final_contribution"] = 0.0
+            else:
+                compact_row["contribution_provenance"] = "source_retained"
             compact_row["contribution_cap_applied"] = contribution_cap_applied
             compact_row["contribution_sum"] = contribution_sum
         article_groups.append(

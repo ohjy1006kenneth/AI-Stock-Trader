@@ -256,7 +256,8 @@ def test_article_contribution_matches_reversed_gate_order_and_retains_extra_row(
     assert article.contribution_sum == pytest.approx(0.95)
     assert article.contribution_cap_applied is False
     assert len(article.relevance_gate_rows) == 3
-    assert {row.get("contribution_provenance") for row in article.relevance_gate_rows} == {None, "unmatched_gate_row"}
+    assert {row.get("contribution_provenance") for row in article.relevance_gate_rows} == {"source_retained", "unmatched_gate_row"}
+    assert all(row["contribution_cap_applied"] is False for row in article.relevance_gate_rows)
     extra_row = next(row for row in article.relevance_gate_rows if row.get("contribution_provenance") == "unmatched_gate_row")
     assert extra_row["source_article_contribution_weight"] == pytest.approx(0.2)
     assert extra_row["article_contribution_weight"] == 0.0
