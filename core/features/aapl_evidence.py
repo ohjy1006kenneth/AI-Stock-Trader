@@ -1683,6 +1683,8 @@ def _training_rows_sufficient_derivation(windows: Sequence[Mapping[str, object]]
         return "unknown: no HMM training-window metadata was available"
     if any(_maybe_int(window.get("min_training_rows")) is None for window in windows):
         return "unknown: min_training_rows is absent from the regime manifest"
+    if any(_maybe_int(window.get("complete_training_rows")) is None for window in windows):
+        return "unknown: complete_training_rows is absent from the regime manifest"
     return "derived from complete_training_rows >= min_training_rows for every training window"
 
 
@@ -2692,6 +2694,7 @@ def _build_payload_from_report(report: Layer1SemanticReviewReport | Mapping[str,
     ]
     benchmark_price_rows = report_dict.get("benchmark_price_rows")
     benchmark_market_regime_rows = report_dict.get("benchmark_market_regime_rows")
+    training_regime_rows = report_dict.get("training_regime_rows")
     payload = {
         "title": "Layer 1 semantic review dashboard",
         "description": (
@@ -2715,6 +2718,11 @@ def _build_payload_from_report(report: Layer1SemanticReviewReport | Mapping[str,
         "benchmark_price_series": benchmark_price_rows if isinstance(benchmark_price_rows, list) else [],
         "benchmark_market_regime_series": (
             benchmark_market_regime_rows if isinstance(benchmark_market_regime_rows, list) else []
+        ),
+        "training_regime_rows": (
+            [dict(item) for item in training_regime_rows if isinstance(item, Mapping)]
+            if isinstance(training_regime_rows, list)
+            else []
         ),
         "hmm_evaluation_context": dict(report_dict.get("hmm_evaluation_context", {})),
         "article_groups": article_groups,

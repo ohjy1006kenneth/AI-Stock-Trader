@@ -947,6 +947,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       const benchmarkSeries = Array.isArray(payload.benchmark_market_regime_series) ? payload.benchmark_market_regime_series : [];
       const benchmarkPrices = Array.isArray(payload.benchmark_price_series) ? payload.benchmark_price_series : [];
       const trainingWindows = Array.isArray(hmmContext.training_windows) ? hmmContext.training_windows : [];
+      const trainingRows = Array.isArray(payload.training_regime_rows) ? payload.training_regime_rows : [];
       const sourceManifestKeys = Array.isArray(hmmContext.source_manifest_keys) ? hmmContext.source_manifest_keys : [];
       const inputFeatureColumns = Array.isArray(hmmContext.input_feature_columns_used) ? hmmContext.input_feature_columns_used : [];
       const missingFeatureColumns = Array.isArray(hmmContext.dropped_feature_columns) ? hmmContext.dropped_feature_columns : [];
@@ -958,6 +959,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
           metricCard('Date rows', benchmarkSeries.length, 'benchmark_market_regime_series.length', 'How many benchmark/HMM rows are available for review.'),
           metricCard('Benchmark prices', benchmarkPrices.length, 'benchmark_price_series.length', 'How many SPY/S&P 500 price rows are available.'),
           metricCard('Training windows', trainingWindows.length, 'hmm_evaluation_context.training_windows.length', 'How many HMM training-window metadata blocks are present.'),
+          metricCard('Training regime points', trainingRows.length, 'training_regime_rows.length', 'Bounded secondary HMM history from the model training window.'),
         ].join('');
       }}
       if (hmmContextCardsEl) {{
@@ -996,6 +998,9 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
                 </div>`;
             }}).join('')
           : '<p class="muted">No benchmark/HMM rows are available for this run.</p>';
+        if (trainingRows.length) {{
+          hmmDateRowsEl.insertAdjacentHTML('afterbegin', `<p class="chart-note"><strong>Secondary training-window HMM context</strong>: ${{trainingRows.length}} bounded historical regime points are available for review (independent of the inference-day chart).</p>`);
+        }}
       }}
     }}
     function renderSummaryGateStatus(payload) {{

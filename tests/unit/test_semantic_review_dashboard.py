@@ -85,6 +85,25 @@ def test_semantic_review_payload_bounds_retained_hmm_context_and_preserves_evide
     assert encoded == json.dumps(reversed_payload, indent=2, sort_keys=True).encode("utf-8")
 
 
+def test_semantic_review_payload_forwards_and_bounds_training_regime_rows() -> None:
+    rows = [{"date": f"2025-01-{index:03d}", "regime": "sideways"} for index in range(1, 301)]
+    payload = cast(
+        dict[str, Any],
+        build_layer1_semantic_review_dashboard_payload(
+            {"ticker": "AAPL", "training_regime_rows": rows}
+        ),
+    )
+    returned = cast(list[dict[str, Any]], payload["training_regime_rows"])
+    assert len(returned) <= 250
+    assert returned[0]["date"] == rows[0]["date"]
+    assert returned[-1]["date"] == rows[-1]["date"]
+    counts = cast(dict[str, Any], payload["training_regime_row_counts"])
+    assert counts["full_count"] == 300
+    assert counts["sample_count"] == len(returned)
+    assert counts["omitted_row_count"] == 300 - len(returned)
+    assert counts["truncated"] is True
+
+
 @pytest.mark.parametrize(
     "report",
     [
