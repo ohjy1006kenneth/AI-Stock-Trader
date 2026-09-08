@@ -218,6 +218,78 @@ def test_score_news_sentiment_requires_explicit_relevance_evidence() -> None:
     assert relevance_by_article["noise-nvda"] is None
 
 
+def test_score_news_sentiment_preserves_gate_computed_relevance_over_assignment_class() -> None:
+    """Gate-computed nuance survives scoring even when provenance has an assignment class."""
+    records = [
+        NewsSentimentRecord(
+            date="2024-04-10",
+            ticker="NVDA",
+            text="Nvidia says data-center demand beat expectations.",
+            article_id="gate-borderline",
+            sentence_index=0,
+            source="Reuters",
+            relevance_score=0.48,
+            source_text_provenance={"assignment_classification": "direct"},
+        ),
+        NewsSentimentRecord(
+            date="2024-04-10",
+            ticker="AAPL",
+            text="Apple says iPhone demand beats expectations.",
+            article_id="gate-direct",
+            sentence_index=0,
+            source="Reuters",
+            relevance_score=0.525,
+            source_text_provenance={"assignment_classification": "direct"},
+        ),
+    ]
+
+    scored = score_news_sentiment(records, scorer=_FakeScorer(), batch_size=2)
+    relevance_by_article = {record.article_id: record.relevance_score for record in scored}
+
+    assert relevance_by_article["gate-borderline"] == pytest.approx(0.48)
+    assert relevance_by_article["gate-direct"] == pytest.approx(0.525)
+
+
+def test_score_news_sentiment_falls_back_to_assignment_class_without_gate_score() -> None:
+    """Legacy rows without an explicit relevance score keep assignment-class weights."""
+    records = [
+        NewsSentimentRecord(
+            date="2024-04-10",
+            ticker="AAPL",
+            text="Weekend weather update.",
+            article_id="legacy-direct",
+            sentence_index=0,
+            source="Reuters",
+            source_text_provenance={"assignment_classification": "direct"},
+        ),
+        NewsSentimentRecord(
+            date="2024-04-10",
+            ticker="MSFT",
+            text="Weekend weather update.",
+            article_id="legacy-indirect",
+            sentence_index=0,
+            source="Reuters",
+            source_text_provenance={"assignment_classification": "indirect"},
+        ),
+        NewsSentimentRecord(
+            date="2024-04-10",
+            ticker="SPY",
+            text="Weekend weather update.",
+            article_id="legacy-broad",
+            sentence_index=0,
+            source="Reuters",
+            source_text_provenance={"assignment_classification": "broad_market"},
+        ),
+    ]
+
+    scored = score_news_sentiment(records, scorer=_FakeScorer(), batch_size=3)
+    relevance_by_article = {record.article_id: record.relevance_score for record in scored}
+
+    assert relevance_by_article["legacy-direct"] == pytest.approx(1.0)
+    assert relevance_by_article["legacy-indirect"] == pytest.approx(0.25)
+    assert relevance_by_article["legacy-broad"] == pytest.approx(0.0)
+
+
 def test_sentiment_feature_records_accept_legacy_relevance_gate_without_reason_codes() -> None:
     """Legacy relevance-gate rows without reason codes should still attach cleanly."""
     scored_news = pd.DataFrame([
