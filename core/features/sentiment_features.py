@@ -989,17 +989,18 @@ def _resolve_relevance_score(
 ) -> float | None:
     """Return a conservative relevance score inferred from explicit evidence.
 
-    Rows that already carry a relevance score keep it. When no explicit score is
-    present, provenance classification is authoritative if available; otherwise
-    we fall back to text heuristics.
+    Rows that already carry a relevance score keep it: the gate-computed score
+    is the finest-grained provenance available and must survive scoring.
+    When no explicit score is present, provenance classification is
+    authoritative if available; otherwise we fall back to text heuristics.
     """
-    assignment_class = _assignment_classification(record)
-    if assignment_class is not None:
-        return NEWS_EVIDENCE_RELEVANCE_WEIGHTS[assignment_class]
-
     existing = _to_float_or_none(record.relevance_score)
     if existing is not None:
         return min(max(existing, 0.0), 1.0)
+
+    assignment_class = _assignment_classification(record)
+    if assignment_class is not None:
+        return NEWS_EVIDENCE_RELEVANCE_WEIGHTS[assignment_class]
 
     text = _scoring_text(record)
     if text is None:
