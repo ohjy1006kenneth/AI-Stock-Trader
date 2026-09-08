@@ -2044,20 +2044,28 @@ _PAYLOAD_NODE_FLOOR = 2
 _PAYLOAD_COMPACTABLE_ITEM_FLOOR = 2
 _PAYLOAD_SACRIFICED_SECTION_LIST_LIMIT = 8
 _HMM_CONTEXT_SCALAR_SAMPLE_LIMIT = 96
-_PAYLOAD_IMMUTABLE_TOP_LEVEL_KEYS = frozenset(
+# This is the public control-plane contract.  Control-plane containers and
+# collection metadata must remain addressable even when evidence samples are
+# compacted.  Values inside these mappings may still be bounded.
+_PAYLOAD_CONTROL_PLANE_KEYS = frozenset(
     {
         "ticker", "requested_ticker", "controls", "hmm_evaluation_context",
-        "smoke", "run_readiness", "pipeline_section_counts",
+        "smoke", "run_readiness", "summary_cards", "pipeline_section_counts",
         "article_group_counts", "accepted_article_counts", "flagged_article_counts",
         "date_group_counts", "warnings_counts", "human_review_queue",
         "gate_cards", "missing_pipeline_sections",
     }
 )
+_PAYLOAD_IMMUTABLE_TOP_LEVEL_KEYS = _PAYLOAD_CONTROL_PLANE_KEYS
 
-# These mappings are part of the public readiness contract.  Their values may
-# still be bounded, but dropping keys makes otherwise equivalent ticker
-# responses impossible for clients to consume uniformly.
+# These mappings are part of the public readiness/control-plane contract.
+# Keeping this declaration centralized ensures the mapping-prune predicate and
+# the priority/list preservation logic cannot drift apart.
 _PAYLOAD_PROTECTED_MAPPING_KEYS: dict[str, frozenset[str]] = {
+    "__row_priority__": frozenset({
+        "key", "label", "scope", "status", "ready_for_final_human_acceptance",
+        "recommendation", "human_review_status", "overall_state",
+    }),
     "run_readiness": frozenset({
         "readiness_status", "status_reason", "run_id", "ticker", "from_date", "to_date",
         "topic_review_state", "topic_relevance_review_status", "relevance_informativeness_state",
@@ -2067,9 +2075,15 @@ _PAYLOAD_PROTECTED_MAPPING_KEYS: dict[str, frozenset[str]] = {
         "embedding_coverage", "hmm_chart_auditability", "relevance_informativeness",
         "topic_review", "hmm_feature_set", "overall_state", "reviewable",
     }),
+    "summary_cards": frozenset({"label", "value", "field"}),
     "gate_cards": frozenset({"key", "label", "status", "reason", "ready", "row_count"}),
     "missing_pipeline_sections": frozenset({"key", "label", "reason", "scope", "status"}),
 }
+_PAYLOAD_COLLECTION_METADATA_KEYS = frozenset({
+    "full_count", "sample_count", "omitted_count", "row_count", "omitted_row_count",
+    "invalid_row_count", "truncated", "sampling_method", "truncated_item_count",
+    "item_truncated",
+})
 
 
 def _payload_compaction_marker(field: str, value: int) -> dict[str, object]:
@@ -2106,6 +2120,8 @@ def _shrink_payload_node(node: object, depth: int = 0, key: str = "") -> tuple[o
         raw_keys = sorted(node, key=str)
         total_keys = len(raw_keys)
         protected_keys = _PAYLOAD_PROTECTED_MAPPING_KEYS.get(key, frozenset())
+        if key.endswith("_counts"):
+            protected_keys = _PAYLOAD_COLLECTION_METADATA_KEYS
         if (
             total_keys > _PAYLOAD_NODE_FLOOR
             and (depth or total_keys > _PAYLOAD_MAPPING_KEY_LIMIT)
@@ -2120,10 +2136,7 @@ def _shrink_payload_node(node: object, depth: int = 0, key: str = "") -> tuple[o
             # because the final byte-budget pass is active.
             priority_keys = [
                 candidate
-                for candidate in (
-                    "key", "label", "scope", "status", "ready_for_final_human_acceptance",
-                    "recommendation", "human_review_status", "overall_state",
-                )
+                for candidate in sorted(_PAYLOAD_PROTECTED_MAPPING_KEYS["__row_priority__"])
                 if candidate in node
             ]
             keep = max(keep, len(priority_keys))
@@ -2156,7 +2169,7 @@ def _shrink_payload_node(node: object, depth: int = 0, key: str = "") -> tuple[o
         items = list(node)
         # Readiness section identities are small but semantically complete; do
         # not replace missing-section rows with an anonymous compaction marker.
-        preserve_rows = key in {"missing_pipeline_sections", "gate_cards"}
+        preserve_rows = key in {"summary_cards", "missing_pipeline_sections", "gate_cards"}
         if len(items) > _PAYLOAD_COMPACTABLE_ITEM_FLOOR and not preserve_rows:
             keep = max(_PAYLOAD_COMPACTABLE_ITEM_FLOOR, -(-len(items) // 2))
             dropped += len(items) - keep

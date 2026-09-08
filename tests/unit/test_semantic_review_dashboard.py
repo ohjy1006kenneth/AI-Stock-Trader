@@ -1515,3 +1515,55 @@ def test_semantic_review_compaction_preserves_stable_readiness_schema() -> None:
     assert len(payload["gate_cards"]) == 10
     assert payload["missing_pipeline_sections"][0]["reason"] == "not present"
     assert payload["payload_budget"]["truncated"] is True
+
+
+def test_semantic_review_final_compaction_preserves_control_plane_contract() -> None:
+    """The final pretty-byte pass may compact evidence, not public control-plane shape."""
+    readiness_keys = {
+        "readiness_status", "status_reason", "run_id", "ticker", "from_date", "to_date",
+        "topic_review_state", "topic_relevance_review_status", "relevance_informativeness_state",
+        "diagnostic_states", "diagnostic_summary",
+    }
+    diagnostic_keys = {
+        "embedding_coverage", "hmm_chart_auditability", "relevance_informativeness",
+        "topic_review", "hmm_feature_set",
+    }
+    summary_cards = [
+        {"label": f"Card {index}", "value": f"value-{index}", "field": f"field-{index}"}
+        for index in range(10)
+    ]
+    payload = cast(dict[str, Any], _enforce_payload_pretty_byte_budget({
+        "run_readiness": {
+            **{key: f"value-{key}" for key in readiness_keys if key not in {"diagnostic_states", "diagnostic_summary"}},
+            "diagnostic_states": {key: "WARN" for key in diagnostic_keys},
+            "diagnostic_summary": {"overall_state": "WARN"},
+        },
+        "summary_cards": summary_cards,
+        "gate_cards": [
+            {"key": f"gate-{index}", "label": f"Gate {index}", "status": "ready", "reason": "ok"}
+            for index in range(10)
+        ],
+        "missing_pipeline_sections": [
+            {"key": "topic_labels", "label": "Topics", "reason": "not present", "scope": "packet"}
+        ],
+        "article_group_counts": {
+            "full_count": 32, "sample_count": 6, "omitted_count": 26,
+            "truncated": True, "sampling_method": "extremes",
+        },
+        "oversized_detail": [{"value": "x" * 20_000} for _ in range(32)],
+    }))
+
+    assert payload["payload_budget"]["compacted"] is True
+    assert payload["payload_budget"]["truncated"] is True
+    assert len(json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")) < 200_000
+    assert set(payload["run_readiness"]) == readiness_keys
+    assert set(payload["run_readiness"]["diagnostic_states"]) == diagnostic_keys
+    assert len(payload["summary_cards"]) == 10
+    assert {frozenset(card) for card in payload["summary_cards"]} == {
+        frozenset({"label", "value", "field"})
+    }
+    assert len(payload["gate_cards"]) == 10
+    assert payload["missing_pipeline_sections"][0]["reason"] == "not present"
+    assert set(payload["article_group_counts"]) >= {
+        "full_count", "sample_count", "omitted_count", "truncated", "sampling_method"
+    }
