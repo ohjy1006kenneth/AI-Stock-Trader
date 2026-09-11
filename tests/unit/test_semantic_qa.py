@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from http.client import HTTPConnection
+from pathlib import Path
 from threading import Thread
 from typing import Any
 
@@ -438,7 +439,7 @@ def test_stale_freshness_is_advisory_not_integrity_failure() -> None:
 # Endpoint behavior                                                            #
 # --------------------------------------------------------------------------- #
 @pytest.fixture
-def qa_server() -> object:
+def qa_server(tmp_path: Path) -> object:
     defaults = dashboard._DashboardDefaults(
         run_id="run",
         from_date="2026-05-21",
@@ -446,6 +447,7 @@ def qa_server() -> object:
         ticker="AAPL",
         host="127.0.0.1",
         port=0,
+        local_root=tmp_path,
     )
     server = dashboard._DashboardHTTPServer((defaults.host, defaults.port), defaults)
     thread = Thread(target=server.serve_forever, daemon=True)
