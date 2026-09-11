@@ -27,6 +27,12 @@ _STAGE_FIELDS = {
 }
 
 
+_REJECTED_DECISIONS = frozenset({"rejected", "reject", "exclude", "excluded"})
+_ACCEPTED_DECISIONS = frozenset({"accepted", "accept", "include", "included"})
+_BORDERLINE_DECISIONS = frozenset({"borderline"})
+_MATRIX_UNKNOWN_SUBJECT = "unknown_generic"
+
+
 def normalize_semantic_qa_query(
     *,
     run_id: str | None,
@@ -121,7 +127,7 @@ def build_semantic_qa_payload(
         if not any(_ticker_has_rows(item) for item in ticker_payloads.values())
         else ("warning" if warnings or freshness["state"] == "stale" else "ready")
     )
-    matrix = _build_leakage_matrix(reports, normalized_tickers)
+    matrix = _build_leakage_matrix(reports, normalized_tickers, sample_limit)
     integrity = _integrity(ticker_payloads, reports, run_id, from_date, to_date, normalized_tickers)
     if integrity["status"] == "fail":
         status = "warning"
@@ -166,26 +172,29 @@ def _build_ticker(
     }
     for row in rows:
         local = _local_evidence(row, ticker)
-        included = _bool(
-            row.get("included_in_signal", row.get("signal", {}).get("included_in_signal"))
-        )
-        rejected = _bool(row.get("rejected")) or str(row.get("relevance_decision", "")).lower() in {
-            "rejected",
-            "exclude",
-            "excluded",
-        }
+        included = _included_in_signal(row)
+        decision = _relevance_decision(row)
+        rejected = decision in _REJECTED_DECISIONS or _bool(row.get("rejected"))
         material = _material_evidence(row)
-        owner = _owner(row)
+        owner = _evidence_owner(row, ticker)
         relationship = _bool(row.get("explicit_local_material_relationship"))
         if included and (not local or (owner not in {None, ticker} and not relationship)):
-            queues["potential_false_positives"].append(_queue_row(row, "potential_false_positive"))
+            queues["potential_false_positives"].append(
+                _queue_row(row, "potential_false_positive", owner=owner)
+            )
         elif rejected and local and material:
-            queues["potential_false_negatives"].append(_queue_row(row, "potential_false_negative"))
+            queues["potential_false_negatives"].append(
+                _queue_row(row, "potential_false_negative", owner=owner)
+            )
         if included and owner not in {None, ticker} and not relationship:
-            queues["cross_ticker_anomalies"].append(_queue_row(row, "cross_ticker_anomaly"))
+            queues["cross_ticker_anomalies"].append(
+                _queue_row(row, "cross_ticker_anomaly", owner=owner)
+            )
         contribution = _row_contribution(row)
         if included and contribution is not None and contribution != 0:
-            queues["top_contributors"].append(_queue_row(row, "top_contributor"))
+            queues["top_contributors"].append(
+                _queue_row(row, "top_contributor", owner=owner)
+            )
     queues["top_contributors"].sort(
         key=lambda row: (
             -abs(_row_contribution(row) or 0),
@@ -195,23 +204,45 @@ def _build_ticker(
     for name in queues:
         # These rows are the complete canonical producer slice; only the returned rows are bounded.
         queues[name] = _queue(queues[name], len(queues[name]), limit)
-    summary = {
-        "signal_rows": _canonical(
+    accepted, borderline, rejected_count, has_decision = _decision_counts(rows)
+    established_empty = _establishes_empty(report, rows)
+    summary: dict[str, Any] = {
+        "signal_rows": _summary_count(
             report,
             ("signal_rows", "included_in_signal_count"),
-            sum(1 for row in rows if _bool(row.get("included_in_signal"))),
+            sum(1 for row in rows if _included_in_signal(row)),
+            observable=any(_has_included_flag(row) for row in rows),
+            established_empty=established_empty,
+            ticker=ticker,
+            warnings=warnings,
         ),
-        "rejected_rows": _canonical(
-            report, ("rejected_rows",), sum(1 for row in rows if _bool(row.get("rejected")))
+        "rejected_rows": _summary_count(
+            report,
+            ("rejected_rows",),
+            rejected_count,
+            observable=has_decision,
+            established_empty=established_empty,
+            ticker=ticker,
+            warnings=warnings,
         ),
         "leakage_candidates": queues["potential_false_positives"]["canonical_count"],
-        "direct_accepted": _canonical(
+        "direct_accepted": _summary_count(
             report,
             ("direct_accepted",),
-            sum(1 for row in rows if _bool(row.get("direct_accepted"))),
+            accepted,
+            observable=has_decision,
+            established_empty=established_empty,
+            ticker=ticker,
+            warnings=warnings,
         ),
-        "borderline": _canonical(
-            report, ("borderline",), sum(1 for row in rows if _bool(row.get("borderline")))
+        "borderline": _summary_count(
+            report,
+            ("borderline",),
+            borderline,
+            observable=has_decision,
+            established_empty=established_empty,
+            ticker=ticker,
+            warnings=warnings,
         ),
         "total_contribution": _total_contribution(report, rows),
         "human_status": None,
@@ -256,8 +287,8 @@ def _funnel(
     stages: dict[str, Any] = {}
     for stage, names in _STAGE_FIELDS.items():
         count = _canonical(report, names, None)
-        sample = min(count, len(rows)) if count is not None else len(rows)
-        stages[stage] = _count_record(count, sample)
+        # ``sample_count`` is the retained row slice for this stage, not the canonical count.
+        stages[stage] = _count_record(count, _stage_stats(stage, rows, ticker))
         if count is None:
             warnings.append(
                 _warning(
@@ -267,15 +298,13 @@ def _funnel(
                     "Producer did not expose a trustworthy canonical count.",
                 )
             )
-    if not rows and (
-        report.get("row_count") == 0
-        or all(_canonical(report, names, None) == 0 for names in _STAGE_FIELDS.values())
-    ):
+    if _establishes_empty(report, rows):
         warnings.append(_warning("no_review_rows", ticker, None, "The producer established an empty review result."))
     return stages
 
 
-def _stage_fallback(stage: str, rows: list[dict[str, Any]], ticker: str) -> int:
+def _stage_stats(stage: str, rows: list[dict[str, Any]], ticker: str) -> int:
+    """Return the retained row count observed for a canonical funnel/integrity stage."""
     if stage == "total_preprocessed_chunks":
         return len(rows)
     if stage == "local_target_evidence":
@@ -283,7 +312,7 @@ def _stage_fallback(stage: str, rows: list[dict[str, Any]], ticker: str) -> int:
     if stage == "materially_relevant":
         return sum(1 for r in rows if _material_evidence(r))
     if stage == "accepted_or_borderline":
-        return sum(1 for r in rows if not _bool(r.get("rejected")))
+        return sum(1 for r in rows if _relevance_decision(r) in (_ACCEPTED_DECISIONS | _BORDERLINE_DECISIONS))
     if stage == "sentiment_scored":
         return sum(
             1
@@ -291,10 +320,11 @@ def _stage_fallback(stage: str, rows: list[dict[str, Any]], ticker: str) -> int:
             if any(r.get(k) is not None for k in ("sentiment_score", "positive_probability"))
         )
     if stage == "included_in_signal":
-        return sum(1 for r in rows if _bool(r.get("included_in_signal")))
+        return sum(1 for r in rows if _included_in_signal(r))
     if stage == "nonzero_effective_contribution":
-        return sum(1 for r in rows if _number(r.get("effective_contribution")) not in (None, 0))
-    return sum(1 for r in rows if _bool(r.get("rejected")) and not _local_evidence(r, ticker))
+        return sum(1 for r in rows if _row_contribution(r) not in (None, 0))
+    rejected = (r for r in rows if _relevance_decision(r) in _REJECTED_DECISIONS or _bool(r.get("rejected")))
+    return sum(1 for r in rejected if not _local_evidence(r, ticker))
 
 
 def _queue(rows: list[dict[str, Any]], canonical: int | None, limit: int) -> dict[str, Any]:
@@ -309,7 +339,9 @@ def _queue(rows: list[dict[str, Any]], canonical: int | None, limit: int) -> dic
     }
 
 
-def _queue_row(row: Mapping[str, Any], reason: str) -> dict[str, Any]:
+def _queue_row(
+    row: Mapping[str, Any], reason: str, *, owner: str | None = None
+) -> dict[str, Any]:
     identity_keys = (
         "row_id",
         "ticker",
@@ -335,36 +367,53 @@ def _queue_row(row: Mapping[str, Any], reason: str) -> dict[str, Any]:
     result = {key: row[key] for key in identity_keys if key in row and _json_safe(row[key])}
     result["row_id"] = str(row.get("row_id") or _identity(row))
     result["reason_code"] = reason
+    if owner is not None:
+        result["evidence_owner"] = owner
     result["article_context"] = dict(row.get("article_context", {}))
     result["chunk_local_evidence"] = dict(row.get("chunk_local_evidence", {}))
     result["relevance"] = dict(row.get("relevance", {}))
     result["signal"] = {
         key: row[key]
-        for key in ("included_in_signal", "effective_contribution", "contribution")
+        for key in (
+            "included_in_signal",
+            "effective_contribution",
+            "contribution",
+            "final_contribution",
+            "final_signal_contribution",
+        )
         if key in row
     }
     return result
 
 
-def _build_leakage_matrix(reports: Mapping[str, Any], columns: Sequence[str]) -> dict[str, Any]:
+def _build_leakage_matrix(
+    reports: Mapping[str, Any], columns: Sequence[str], limit: int
+) -> dict[str, Any]:
+    """Derive the full canonical owner matrix before any bounded row sampling.
+
+    The matrix is built from every qualifying canonical contributing row, so cell
+    ``canonical_count`` is the true canonical count. Only the retained ``row_ids``
+    are bounded by the normalized ``sample_limit``.
+    """
     subjects: dict[str, dict[str, Any]] = defaultdict(dict)
     for ticker in columns:
         report = reports.get(ticker)
         if report is None:
             continue
         for row in _evidence_rows(_as_mapping(report), ticker):
-            owner = _owner(row)
-            relationship = _bool(row.get("explicit_local_material_relationship"))
-            included = _bool(row.get("included_in_signal"))
-            if not included or owner in {None, ticker} or relationship:
+            if not _included_in_signal(row):
                 continue
-            subject = owner or "unknown_generic"
+            owner = _evidence_owner(row, ticker)
+            subject = owner or _MATRIX_UNKNOWN_SUBJECT
+            relationship = _bool(row.get("explicit_local_material_relationship"))
             cell = subjects[subject].setdefault(
-                ticker, {"canonical_count": 0, "row_ids": [], "suspicious": True}
+                ticker, {"canonical_count": 0, "row_ids": [], "suspicious": False}
             )
             cell["canonical_count"] += 1
-            if len(cell["row_ids"]) < 50:
+            if len(cell["row_ids"]) < limit:
                 cell["row_ids"].append(str(row.get("row_id") or _identity(row)))
+            if subject != ticker and not relationship:
+                cell["suspicious"] = True
     return {
         subject: {
             column: subjects.get(subject, {}).get(
@@ -386,21 +435,30 @@ def _integrity(
 ) -> dict[str, Any]:
     issues: list[str] = []
     stages: dict[str, Any] = {}
+    identity_checks = (
+        ("run_id", run_id, ("run_id",)),
+        ("ticker", None, ("ticker",)),
+        ("from_date", from_date, ("from_date", "requested_start")),
+        ("to_date", to_date, ("to_date", "requested_end")),
+        ("schema_id", SEMANTIC_QA_SCHEMA_ID, ("schema_id",)),
+    )
     for ticker in tickers:
         report = reports.get(ticker)
         if report is None:
             continue
         data = _as_mapping(report)
-        for key, expected in (("run_id", run_id), ("ticker", ticker), ("from_date", from_date), ("to_date", to_date), ("schema_id", SEMANTIC_QA_SCHEMA_ID)):
-            if data.get(key) is not None and data.get(key) != expected:
+        for key, expected, names in identity_checks:
+            if key == "ticker":
+                expected = ticker
+            value = _first_present(data, names)
+            if value is not None and expected is not None and value != expected:
                 issues.append(f"{ticker}:{key}_mismatch")
+        rows = _evidence_rows(data, ticker)
         for stage, names in _STAGE_FIELDS.items():
             count = _canonical(data, names, None)
-            rows = _evidence_rows(data, ticker)
-            sample = min(count, len(rows)) if count is not None else len(rows)
-            omitted = count - sample if count is not None and sample is not None and count >= sample else None
-            stages[f"{ticker}:{stage}"] = _count_record(count, sample)
-            if count is not None and sample is not None and omitted is not None and sample + omitted != count:
+            record = _reconcile_record(count, _stage_stats(stage, rows, ticker))
+            stages[f"{ticker}:{stage}"] = record
+            if record["reconciles"] is False:
                 issues.append(f"{ticker}:{stage}_not_reconciled")
     return {
         "status": "fail"
@@ -437,12 +495,34 @@ def _empty_ticker() -> dict[str, Any]:
 
 
 def _count_record(canonical: int | None, sample: int | None) -> dict[str, Any]:
-    omitted = canonical - sample if canonical is not None and sample is not None and canonical >= sample else None
+    """Return a funnel stage record ``{canonical_count, sample_count, omitted_count, status}``."""
+    omitted = canonical - sample if canonical is not None and sample is not None else None
+    if omitted is not None and omitted < 0:
+        omitted = None
     return {
         "canonical_count": canonical,
         "sample_count": sample,
         "omitted_count": omitted,
         "status": "measured" if canonical is not None else "unknown",
+    }
+
+
+def _reconcile_record(canonical: int | None, sample: int | None) -> dict[str, Any]:
+    """Return an integrity stage record ``{..., reconciles}`` with the reconciliation verdict."""
+    if canonical is None or sample is None:
+        return {
+            "canonical_count": canonical,
+            "sample_count": sample,
+            "omitted_count": None,
+            "reconciles": None,
+        }
+    omitted = canonical - sample
+    reconciles = omitted >= 0 and sample + omitted == canonical
+    return {
+        "canonical_count": canonical,
+        "sample_count": sample,
+        "omitted_count": omitted if omitted >= 0 else None,
+        "reconciles": reconciles,
     }
 
 
@@ -515,9 +595,135 @@ def _identity(row: Mapping[str, Any]) -> str:
     )
 
 
-def _owner(row: Mapping[str, Any]) -> str | None:
-    value = row.get("evidence_owner", row.get("owner", row.get("evidence_subject")))
-    return str(value).upper() if value not in (None, "") else None
+def _owner(row: Mapping[str, Any], ticker: str | None = None) -> str | None:
+    """Return the normalized evidence owner, deriving from canonical producer fields."""
+    explicit = row.get("evidence_owner", row.get("owner", row.get("evidence_subject")))
+    if explicit not in (None, ""):
+        return str(explicit).strip().upper() or None
+    if ticker is None:
+        return None
+    mentions = _pilot_mentions(row)
+    if not mentions:
+        return None
+    if ticker in mentions:
+        return ticker
+    if len(mentions) == 1:
+        return next(iter(mentions))
+    return None
+
+
+def _evidence_owner(row: Mapping[str, Any], ticker: str) -> str | None:
+    """Return the chunk-local evidence owner relative to the signal ticker.
+
+    Producer rows do not emit an explicit ``evidence_owner``; the canonical owner
+    is derived from the chunk-local pilot ticker mentions. A row whose chunk-local
+    mentions include the signal ticker is owned by that ticker; a row that mentions
+    exactly one other pilot ticker is owned by that ticker; otherwise the owner is
+    unknown and the matrix records the ``unknown_generic`` subject.
+    """
+    return _owner(row, ticker)
+
+
+def _pilot_mentions(row: Mapping[str, Any]) -> set[str]:
+    """Return the set of pilot tickers mentioned in the chunk-local evidence."""
+    mentioned: set[str] = set()
+    nested = row.get("chunk_local_evidence")
+    sources = [row.get("ticker_mentions")]
+    if isinstance(nested, Mapping):
+        sources.append(nested.get("ticker_mentions"))
+    for source in sources:
+        if isinstance(source, (list, tuple)):
+            mentioned.update(str(item).strip().upper() for item in source if str(item).strip())
+    return mentioned & set(PILOT_TICKERS)
+
+
+def _included_in_signal(row: Mapping[str, Any]) -> bool:
+    """Return the producer's inclusion decision, tolerating a nested signal object."""
+    value = row.get("included_in_signal")
+    if value is None and isinstance(row.get("signal"), Mapping):
+        value = row["signal"].get("included_in_signal")
+    return _bool(value)
+
+
+def _has_included_flag(row: Mapping[str, Any]) -> bool:
+    """Return True when a row exposes an inclusion decision (even if false)."""
+    if row.get("included_in_signal") is not None:
+        return True
+    signal = row.get("signal")
+    return isinstance(signal, Mapping) and signal.get("included_in_signal") is not None
+
+
+def _relevance_decision(row: Mapping[str, Any]) -> str:
+    """Return the normalized producer relevance decision for a row."""
+    value = row.get("relevance_decision")
+    if value is None and isinstance(row.get("relevance"), Mapping):
+        value = row["relevance"].get("relevance_decision")
+    return str(value).strip().lower() if value not in (None, "") else ""
+
+
+def _decision_counts(rows: Sequence[Mapping[str, Any]]) -> tuple[int, int, int, bool]:
+    """Count accepted/borderline/rejected decisions and whether decisions are observable."""
+    accepted = borderline = rejected = 0
+    observable = False
+    for row in rows:
+        decision = _relevance_decision(row)
+        if not decision:
+            continue
+        observable = True
+        if decision in _REJECTED_DECISIONS:
+            rejected += 1
+        elif decision in _BORDERLINE_DECISIONS:
+            borderline += 1
+        elif decision in _ACCEPTED_DECISIONS:
+            accepted += 1
+    return accepted, borderline, rejected, observable
+
+
+def _establishes_empty(report: Mapping[str, Any], rows: Sequence[Mapping[str, Any]]) -> bool:
+    """Return True only when the producer canonically established an empty result."""
+    if rows:
+        return False
+    if report.get("row_count") == 0:
+        return True
+    known = [_canonical(report, names, None) for names in _STAGE_FIELDS.values()]
+    return bool(known) and all(value == 0 for value in known)
+
+
+def _first_present(data: Mapping[str, Any], names: Sequence[str]) -> Any:
+    """Return the first present, non-null value among candidate identity keys."""
+    for name in names:
+        if data.get(name) is not None:
+            return data[name]
+    return None
+
+
+def _summary_count(
+    report: Mapping[str, Any],
+    names: Sequence[str],
+    measured: int,
+    *,
+    observable: bool,
+    established_empty: bool,
+    ticker: str,
+    warnings: list[dict[str, Any]],
+) -> int | None:
+    """Return a trustworthy summary count or ``null`` plus a warning when unavailable."""
+    canonical = _canonical(report, names, None)
+    if canonical is not None:
+        return canonical
+    if observable:
+        return measured
+    if established_empty:
+        return 0
+    warnings.append(
+        _warning(
+            "canonical_count_unavailable",
+            ticker,
+            names[0],
+            "Producer did not expose a trustworthy canonical count.",
+        )
+    )
+    return None
 
 
 def _local_evidence(row: Mapping[str, Any], ticker: str) -> bool:
