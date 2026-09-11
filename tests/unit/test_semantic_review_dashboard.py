@@ -7,10 +7,16 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, cast
 
+import pandas as pd
 import pytest
 
 from app.lab.semantic_review_dashboard import _DashboardDefaults, _render_dashboard_html
-from core.features.aapl_evidence import build_layer1_aapl_evidence_report
+from core.features.aapl_evidence import (
+    _benchmark_context_dates,
+    _load_training_regime_rows,
+    _training_rows_sufficient,
+    build_layer1_aapl_evidence_report,
+)
 from core.features.regime_training import HMM_OPTIONAL_FEATURE_COLUMNS
 from core.features.semantic_review_dashboard import (
     _compact_layer1_semantic_review_dashboard_payload,
@@ -79,6 +85,25 @@ def test_semantic_review_payload_bounds_retained_hmm_context_and_preserves_evide
         ),
     )
     assert encoded == json.dumps(reversed_payload, indent=2, sort_keys=True).encode("utf-8")
+
+
+def test_semantic_review_payload_forwards_and_bounds_training_regime_rows() -> None:
+    rows = [{"date": f"2025-01-{index:03d}", "regime": "sideways"} for index in range(1, 301)]
+    payload = cast(
+        dict[str, Any],
+        build_layer1_semantic_review_dashboard_payload(
+            {"ticker": "AAPL", "training_regime_rows": rows}
+        ),
+    )
+    returned = cast(list[dict[str, Any]], payload["training_regime_rows"])
+    assert len(returned) <= 250
+    assert returned[0]["date"] == rows[0]["date"]
+    assert returned[-1]["date"] == rows[-1]["date"]
+    counts = cast(dict[str, Any], payload["training_regime_row_counts"])
+    assert counts["full_count"] == 300
+    assert counts["sample_count"] == len(returned)
+    assert counts["omitted_row_count"] == 300 - len(returned)
+    assert counts["truncated"] is True
 
 
 @pytest.mark.parametrize(
@@ -407,6 +432,43 @@ def test_semantic_review_report_includes_benchmark_rows(tmp_path: Path) -> None:
     assert context["observed_inference_dates"] == ["2026-05-21", "2026-05-22"]
     assert context["warnings"] == []
     assert context["training_windows"][0]["train_end_date"] == "2026-05-20"
+    assert context["complete_training_rows_sufficient"] is None
+    assert "min_training_rows is absent" in context["complete_training_rows_sufficient_derivation"]
+
+
+def test_benchmark_context_is_bounded_to_trailing_25_trading_days() -> None:
+    """A one-day inference request still asks the benchmark loader for 25 days."""
+    dates = _benchmark_context_dates(["2026-05-22"])
+    assert len(dates) == 25
+    assert dates[-1] == "2026-05-22"
+
+
+def test_hmm_training_sufficiency_requires_explicit_threshold() -> None:
+    """Absent thresholds stay unknown; explicit 98 >= 30 derives true."""
+    assert _training_rows_sufficient([{"complete_training_rows": 98}]) is None
+    assert _training_rows_sufficient(
+        [{"complete_training_rows": 98, "min_training_rows": 30}]
+    ) is True
+
+
+def test_training_regime_rows_are_bounded_to_250_points(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Training-window chart context preserves endpoints while bounding payload size."""
+    def fake_read(_writer: object, keys: tuple[str, str]) -> tuple[pd.DataFrame, str]:
+        date_text = keys[0].split("/")[1]
+        return pd.DataFrame(
+            [{"date": date_text, "regime": "sideways", "confidence": 0.8}]
+        ), keys[0]
+
+    monkeypatch.setattr("core.features.aapl_evidence._read_first_available_parquet_frame", fake_read)
+    rows = _load_training_regime_rows(
+        writer=cast(Any, object()),
+        manifests=[{"train_start_date": "2025-01-01", "train_end_date": "2026-03-31"}],
+        run_id="run-1",
+        artifact_keys={"regime": []},
+    )
+    assert len(rows) == 250
+    assert rows[0]["date"] == "2025-01-02"
+    assert rows[-1]["date"] == "2026-03-31"
 
 
 def test_semantic_review_report_loads_dated_stage_artifacts_for_parent_run_id(tmp_path: Path) -> None:

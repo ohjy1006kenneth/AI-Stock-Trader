@@ -186,6 +186,7 @@ def build_layer1_semantic_review_dashboard_smoke_payload(
         }
         benchmark_price_rows_source = report.benchmark_price_rows
         benchmark_market_regime_rows_source = report.benchmark_market_regime_rows
+        training_regime_rows_source = report.training_regime_rows
         preprocessing_rows_source = report.preprocessing_rows
         embedding_rows_source = report.embedding_rows
         topic_label_rows_source = report.topic_label_rows
@@ -210,6 +211,7 @@ def build_layer1_semantic_review_dashboard_smoke_payload(
         }
         benchmark_price_rows_source = report_dict.get("benchmark_price_rows", [])
         benchmark_market_regime_rows_source = report_dict.get("benchmark_market_regime_rows", [])
+        training_regime_rows_source = report_dict.get("training_regime_rows", [])
         preprocessing_rows_source = report_dict.get("preprocessing_rows", [])
         embedding_rows_source = report_dict.get("embedding_rows", [])
         topic_label_rows_source = report_dict.get("topic_label_rows", [])
@@ -243,6 +245,9 @@ def build_layer1_semantic_review_dashboard_smoke_payload(
         ],
         "benchmark_market_regime_series": [
             dict(item) for item in _smoke_sample_rows(benchmark_market_regime_rows_source, limit=3)
+        ],
+        "training_regime_rows": [
+            dict(item) for item in _smoke_sample_rows(training_regime_rows_source, limit=250)
         ],
         "hmm_evaluation_context": hmm_context,
         "artifact_keys": artifact_keys,
@@ -2287,7 +2292,7 @@ _HMM_CONTEXT_SCALAR_KEYS = frozenset(
         "stale_manifest_dates", "warnings", "warning_codes", "degradation_state",
         "feature_set_blocking", "feature_set_name", "source_manifest_keys",
         "requested_from_date", "requested_to_date", "observed_from_date", "observed_to_date",
-    }
+        "complete_training_rows_sufficient", "complete_training_rows_sufficient_derivation",    }
 )
 _HMM_CONTEXT_LIST_KEYS = frozenset(
     {"manifest_summaries", "training_windows", "requested_inference_dates", "observed_inference_dates",
@@ -2362,6 +2367,20 @@ def _compact_layer1_semantic_review_dashboard_payload(payload: Mapping[str, obje
         compact["hmm_evaluation_context"] = _compact_hmm_evaluation_context(
             compact.get("hmm_evaluation_context")
         )
+    raw_training_value = compact.get("training_regime_rows")
+    raw_training_rows = raw_training_value if isinstance(raw_training_value, list) else []
+    training_rows = [dict(item) for item in raw_training_rows if isinstance(item, Mapping)]
+    training_rows.sort(key=_stable_mapping_key)
+    if len(training_rows) > 250:
+        indices = [round(index * (len(training_rows) - 1) / 249) for index in range(250)]
+        training_rows = [training_rows[index] for index in indices]
+    compact["training_regime_rows"] = training_rows
+    compact["training_regime_row_counts"] = {
+        "full_count": len(raw_training_rows),
+        "sample_count": len(training_rows),
+        "omitted_row_count": max(0, len(raw_training_rows) - len(training_rows)),
+        "truncated": len(raw_training_rows) > len(training_rows),
+    }
 
     article_groups_raw = _json_list(compact.get("article_groups"))
     article_groups = [dict(item) for item in article_groups_raw if isinstance(item, Mapping)]
@@ -2913,7 +2932,9 @@ def _bound_json_value(value: object, *, key: str = "", depth: int = 0) -> object
         return result
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         items = list(value)
-        if key in {"article_groups", "accepted_articles", "flagged_articles"}:
+        if key == "training_regime_rows":
+            limit = 250
+        elif key in {"article_groups", "accepted_articles", "flagged_articles"}:
             limit = 6
         elif key in {
             "article_ids", "topic_keywords", "reason_codes", "warning_codes",
@@ -2935,6 +2956,9 @@ def _bound_json_value(value: object, *, key: str = "", depth: int = 0) -> object
             items.sort(key=lambda item: _stable_mapping_key(item))  # type: ignore[arg-type]
         else:
             items.sort(key=lambda item: (type(item).__name__, json.dumps(item, sort_keys=True, default=str)))
+        if key == "training_regime_rows" and len(items) > limit:
+            selected_indices = [round(index * (len(items) - 1) / (limit - 1)) for index in range(limit)]
+            items = [items[index] for index in selected_indices]
         return [_bound_json_value(item, key=key, depth=depth + 1) for item in items[:limit]]
     if isinstance(value, str):
         if key in {
