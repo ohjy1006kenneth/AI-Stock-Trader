@@ -385,7 +385,10 @@ def _build_record_analysis(
     if (
         ticker_score < 1.0
         and relevance_category == "irrelevant"
-        and ticker in {value.strip().upper() for value in source_tickers}
+        and (
+            ticker in {value.strip().upper() for value in source_tickers}
+            or assignment_classification is not None
+        )
     ):
         reasons.append("article_only_context_insufficient")
 
@@ -654,7 +657,9 @@ def _target_conditioned_metadata(
             reasons,
         )
 
-    if (direct_evidence or assignment_classification == "indirect") and has_supplier_context:
+    # Assignment classification is article-level provenance only.  It must
+    # never supply the missing chunk-local target evidence for a signal row.
+    if direct_evidence and has_supplier_context:
         category = "supplier_or_input_cost_exposure"
         reasons.append("target_conditioned_category:supplier_or_input_cost_exposure")
         reasons.append("causal_channel:supplier_input_cost")
@@ -669,7 +674,7 @@ def _target_conditioned_metadata(
         )
 
 
-    if (direct_evidence or assignment_classification == "indirect") and has_competitor_context:
+    if direct_evidence and has_competitor_context:
         category = "competitor_read_through"
         reasons.append("target_conditioned_category:competitor_read_through")
         reasons.append("causal_channel:competitor_readthrough")
@@ -683,7 +688,7 @@ def _target_conditioned_metadata(
             reasons,
         )
 
-    if assignment_classification == "broad_market" or (direct_evidence and has_macro_context):
+    if direct_evidence and has_macro_context:
         category = "industry_or_macro_exposure"
         reasons.append("target_conditioned_category:industry_or_macro_exposure")
         reasons.append("causal_channel:industry_macro")

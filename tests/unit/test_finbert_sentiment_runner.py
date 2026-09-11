@@ -91,6 +91,68 @@ def test_run_finbert_sentiment_reads_preprocessed_news_and_writes_outputs(
     assert manifest["metadata"]["semantic_aggregation"]["relevance_gate_loaded"] is True
 
 
+def test_run_finbert_sentiment_excludes_indirect_article_context_rows(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """FinBERT receives no rows whose target evidence exists only in article context."""
+    writer = _local_writer(tmp_path, monkeypatch)
+    input_key = news_preprocessing_output_path("nlp-indirect-run", "2024-01-02")
+    _write_preprocessed_news(
+        writer,
+        input_key,
+        [
+            _record(
+                ticker="AAPL",
+                text="Supplier costs and market demand may affect margins.",
+                sentence_index=0,
+                article_id="aapl-indirect-missing",
+                article_tickers=("AAPL",),
+                source_text_field=None,
+                assignment_classification="indirect",
+            ),
+            _record(
+                ticker="AAPL",
+                text="Supplier costs and market demand may affect margins.",
+                sentence_index=1,
+                article_id="aapl-indirect-present",
+                article_tickers=("AAPL",),
+                source_text_field="content",
+                assignment_classification="indirect",
+            ),
+        ],
+    )
+
+    result = run_finbert_sentiment(
+        FinBERTPipelineConfig(
+            run_id="finbert-indirect-run",
+            as_of_date="2024-01-02",
+            preprocessed_news_key=input_key,
+        ),
+        writer=writer,
+        scorer=_FakeScorer(),
+        runtime_config=_runtime_config(tmp_path),
+    )
+
+    assert result.scored_news_key is not None
+    assert result.relevance_gate_key is not None
+    scored = pd.read_parquet(io.BytesIO(writer.get_object(result.scored_news_key)))
+    gate = pd.read_parquet(io.BytesIO(writer.get_object(result.relevance_gate_key)))
+    rejected = gate.loc[
+        gate["article_id"].isin({"aapl-indirect-missing", "aapl-indirect-present"})
+    ]
+
+    assert scored.empty
+    assert len(rejected) == 2
+    assert set(rejected["relevance_decision"]) == {"rejected"}
+    assert set(rejected["included_in_signal"]) == {False}
+    assert set(rejected["effective_contribution"]) == {0.0}
+    assert all(
+        "article_only_context_insufficient" in json.loads(value)
+        for value in rejected["reason_codes"]
+    )
+
+
 def test_run_finbert_sentiment_honors_requested_ticker_scope(
     tmp_path: Path,
     monkeypatch,
@@ -338,6 +400,7 @@ def _record(
     entity_mentions: tuple[str, ...] | None = None,
     article_tickers: tuple[str, ...] | None = None,
     source_text_field: str | None = None,
+    assignment_classification: str | None = None,
 ) -> NewsSentimentRecord:
     """Build one sentence-level news record."""
     normalized_article_tickers = article_tickers or (ticker,)
@@ -356,6 +419,11 @@ def _record(
             "article_tickers": list(normalized_article_tickers),
             "chunk_tickers": [],
             "entity_mentions": list(normalized_entity_mentions),
+            **(
+                {"assignment_classification": assignment_classification}
+                if assignment_classification is not None
+                else {}
+            ),
         },
         ticker_mentions=normalized_article_tickers,
         entity_mentions=normalized_entity_mentions,
