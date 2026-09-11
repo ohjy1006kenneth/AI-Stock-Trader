@@ -42,6 +42,17 @@ from services.r2.writer import R2Writer
 from tests.fixtures.semantic_review_support import seed_semantic_review_fixture
 
 
+def _evidence_row_count(rows: object) -> int:
+    """Count delivered evidence rows, excluding typed compaction markers."""
+    if not isinstance(rows, list):
+        raise AssertionError(f"expected list of rows, got {type(rows).__name__}")
+    return sum(
+        1
+        for row in rows
+        if not (isinstance(row, dict) and row.get("payload_compaction_marker") is True)
+    )
+
+
 def test_smoke_preserves_canonical_counts_and_exact_controls() -> None:
     """A one-row smoke sample must retain producer counts and immutable identity."""
     run_id = "layer1-daily-2026-06-18-2026-06-18-post-pr312-modal-t4-v1"
@@ -109,6 +120,9 @@ def test_public_builder_preserves_long_ids_and_audits_oversized_ids() -> None:
     )
     assert payload["controls"]["run_id"] == run_id
     assert payload["report_summary"]["run_id"] == run_id
+    artifact_id = "artifact-" + "a" * 300
+    assert payload["artifact_keys"]["manifest"][0] == artifact_id
+    assert payload["report_summary"]["artifact_keys"]["manifest"][0] == artifact_id
 
     oversized = "r" * 4_097
     oversized_payload = cast(
@@ -121,6 +135,102 @@ def test_public_builder_preserves_long_ids_and_audits_oversized_ids() -> None:
     assert bounded_id["exact_value_omitted"] is True
     assert bounded_id["exact_character_count"] == len(oversized)
     assert len(bounded_id["exact_sha256"]) == 64
+
+    oversized_artifact = "artifact-" + "b" * 4_097
+    oversized_artifact_payload = cast(
+        dict[str, Any],
+        build_layer1_semantic_review_dashboard_payload(
+            {"ticker": "AAPL", "artifact_keys": {"manifest": [oversized_artifact]}}
+        ),
+    )
+    bounded_artifact = oversized_artifact_payload["artifact_keys"]["manifest"][0]
+    assert bounded_artifact["exact_value_omitted"] is True
+    assert bounded_artifact["exact_character_count"] == len(oversized_artifact)
+    assert len(bounded_artifact["exact_sha256"]) == 64
+
+
+def test_compaction_preserves_canonical_smoke_counts_and_exact_identity_indexes() -> None:
+    """A byte-budget-compacted payload keeps smoke counts, IDs, and preview hashes exact."""
+    run_id = "layer1-daily-2026-06-18-2026-06-18-post-pr312-modal-t4-v1"
+    artifact_id = "artifact-" + "a" * 300
+    oversized_artifact = "s" * 5_000
+    rows = [
+        {
+            "article_id": f"aapl-{index:04d}",
+            "article_status": "accepted",
+            "headline": "h" * 2_000,
+            "date": f"2026-05-{(index % 28) + 1:02d}",
+            "ticker": "AAPL",
+            "summary": {f"metric_{metric}": metric for metric in range(30)},
+        }
+        for index in range(400)
+    ]
+    report: dict[str, object] = {
+        "ticker": "AAPL",
+        "run_id": run_id,
+        "from_date": "2026-06-18",
+        "to_date": "2026-06-18",
+        "summary": {
+            "preprocessing_row_count": 650,
+            "relevance_gate_row_count": 650,
+            "embedding_row_count": 157,
+            "topic_label_row_count": 16,
+            "semantic_aggregate_row_count": 2,
+            "hmm_regime_row_count": 1,
+            "price_row_count": 25,
+        },
+        "article_groups": rows,
+        "artifact_keys": {
+            "manifest": [artifact_id, "short-key"],
+            "news_sentiment_scored": [oversized_artifact],
+        },
+    }
+    payload = cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report))
+    assert payload["payload_budget"]["compacted"] is True
+
+    # Exact control/provenance identity survives the final byte-budget pass.
+    assert payload["controls"]["run_id"] == run_id
+    assert payload["report_summary"]["run_id"] == run_id
+    assert payload["run_readiness"]["run_id"] == run_id
+
+    # Canonical readiness/smoke counts stay authoritative under compaction.
+    stage_counts = cast(dict[str, Any], payload["smoke"]["required_stage_row_counts"])
+    assert stage_counts["news_preprocessing"] == 650
+    assert stage_counts["news_sentiment_scored"] == 0  # no scored rows in this fixture
+    assert stage_counts["text_embeddings"] == 157
+    assert stage_counts["topic_labels"] == 16
+    assert stage_counts["sentiment_features"] == 2
+    assert stage_counts["stock_price_context"] == 25
+
+    # Artifact index: ordinary ID byte-exact, oversized ID typed preview+hash.
+    artifact_index = cast(dict[str, Any], payload["artifact_keys"])
+    assert artifact_index["manifest"][0] == artifact_id
+    preview = cast(dict[str, Any], artifact_index["news_sentiment_scored"][0])
+    assert preview["exact_value_omitted"] is True
+    assert preview["exact_character_count"] == 5_000
+    assert len(preview["exact_sha256"]) == 64
+
+    encoded = json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
+    assert len(encoded) < 200_000
+    assert payload["payload_budget"]["final_pretty_utf8_bytes"] == len(encoded)
+    reversed_payload = build_layer1_semantic_review_dashboard_payload(
+        dict(reversed(list(report.items())))
+    )
+    assert encoded == json.dumps(reversed_payload, indent=2, sort_keys=True).encode("utf-8")
+
+    # Count metadata is internally consistent for every delivered collection.
+    for collection_key, counts_key in (
+        ("article_groups", "article_group_counts"),
+        ("date_groups", "date_group_counts"),
+        ("warnings", "warnings_counts"),
+    ):
+        counts = cast(dict[str, Any], payload[counts_key])
+        if collection_key not in payload:
+            assert counts["sample_count"] == 0
+            continue
+        delivered = _evidence_row_count(payload[collection_key])
+        assert counts["sample_count"] == delivered
+        assert counts["omitted_count"] == counts["full_count"] - delivered
 
 
 def test_smoke_finbert_sample_is_strictly_ticker_isolated() -> None:
@@ -287,19 +397,33 @@ def test_semantic_review_payload_bounds_high_cardinality_article_indexes() -> No
     report_dict: dict[str, object] = {
         "ticker": "AAPL",
         "article_groups": [
-            {"article_id": f"aapl-{index:04d}", "article_status": "accepted"}
+            {
+                "article_id": f"aapl-{index:04d}",
+                "article_status": "accepted" if index < 250 else "flagged",
+            }
             for index in range(500)
         ],
     }
     payload = cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report_dict))
     assert len(json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")) < 200_000
-    assert payload["article_group_counts"] == {
-        "full_count": 500,
-        "sample_count": 25,
-        "omitted_count": 475,
-        "truncated": True,
-    }
-    assert payload["accepted_article_counts"]["full_count"] == 500
+    assert payload["article_group_counts"]["full_count"] == 500
+    for collection_key, counts_key, expected_sample in (
+        ("article_groups", "article_group_counts", 500),
+        ("accepted_articles", "accepted_article_counts", 250),
+        ("flagged_articles", "flagged_article_counts", 250),
+    ):
+        assert payload[counts_key]["full_count"] == expected_sample
+        delivered = _evidence_row_count(payload[collection_key])
+        assert delivered == payload[counts_key]["sample_count"]
+        assert payload[counts_key]["omitted_count"] == (
+            payload[counts_key]["full_count"] - delivered
+        )
+    reversed_payload = build_layer1_semantic_review_dashboard_payload(
+        dict(reversed(list(report_dict.items())))
+    )
+    assert json.dumps(payload, indent=2, sort_keys=True) == json.dumps(
+        reversed_payload, indent=2, sort_keys=True
+    )
 
 
 def test_semantic_review_payload_projects_high_cardinality_pipeline_rows() -> None:
@@ -422,7 +546,26 @@ def test_semantic_review_payload_compacts_nested_dynamic_branches_deterministica
     encoded = json.dumps(first, indent=2, sort_keys=True).encode("utf-8")
     assert len(encoded) < 200_000
     assert encoded == json.dumps(second, indent=2, sort_keys=True).encode("utf-8")
-    assert len(cast(list[Any], first["article_groups"])) <= 6
+    delivered_articles = _evidence_row_count(first["article_groups"])
+    assert delivered_articles == first["article_group_counts"]["sample_count"]
+    assert first["article_group_counts"]["omitted_count"] == (
+        first["article_group_counts"]["full_count"] - delivered_articles
+    )
+    assert all(
+        _evidence_row_count(section) == counts["sample_count"]
+        for section, counts in (
+            (first["accepted_articles"], first["accepted_article_counts"]),
+            (first["flagged_articles"], first["flagged_article_counts"]),
+            (first["date_groups"], first["date_group_counts"]),
+            (first["price_series"], first["price_series_counts"]),
+            (first["warnings"], first["warnings_counts"]),
+        )
+    )
+    for section_name, section_rows in cast(dict[str, Any], first["pipeline_sections"]).items():
+        if section_name.startswith("payload_compaction_"):
+            continue
+        counts = cast(dict[str, Any], first["pipeline_section_counts"])[section_name]
+        assert _evidence_row_count(section_rows) == counts["sample_count"]
     assert len(cast(list[Any], first["price_series"])) <= 32
     assert len(cast(list[Any], first["date_groups"])[0]["article_ids"]) <= 8
     assert "source_text_provenance" not in json.dumps(first)
