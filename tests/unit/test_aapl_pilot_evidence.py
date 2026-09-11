@@ -20,6 +20,7 @@ from core.features.aapl_accuracy import (
 from core.features.aapl_evidence import (
     _build_article_groups,
     _filter_exact_ticker_frame,
+    _relevance_gate_rows,
     build_aapl_pilot_evidence_bundle,
     build_layer1_aapl_evidence_report,
     render_aapl_pilot_human_review_csv,
@@ -115,6 +116,240 @@ def test_gate_provenance_overrides_stale_scored_relevance() -> None:
     assert groups[0].relevance_state == "borderline"
     assert groups[0].sentence_rows[0]["relevance_score"] == pytest.approx(0.293)
     assert groups[0].sentence_rows[0]["relevance_decision"] == "borderline"
+
+
+def test_article_contribution_is_zero_for_no_term_borderline_rejected_article() -> None:
+    scored = pd.DataFrame([
+        {
+            "date": "2026-09-04", "ticker": "MSFT", "article_id": "61622532",
+            "sentence_index": index, "chunk_index": index, "headline": "Nvidia Fiscal Year Results",
+            "text": "Nvidia reports fiscal year results.", "relevance_score": 0.4,
+        }
+        for index in range(3)
+    ])
+    gate = [
+        {
+            "date": "2026-09-04", "ticker": "MSFT", "article_id": "61622532",
+            "sentence_index": index, "chunk_index": index, "relevance_score": 0.4,
+            "relevance_decision": decision, "article_contribution_weight": 1.0,
+            "included_in_signal": True,
+        }
+        for index, decision in enumerate(("borderline", "borderline", "rejected"))
+    ]
+
+    groups, _ = _build_article_groups(
+        scored, requested_ticker="MSFT", relevance_threshold=0.6, relevance_gate_rows=gate
+    )
+
+    article = groups[0]
+    assert article.contribution_sum == 0.0
+    assert article.contribution_cap_applied is True
+    assert all(row["final_contribution"] == 0.0 for row in article.sentence_rows)
+    assert all(row["article_contribution_weight"] == 0.0 for row in article.sentence_rows)
+    assert all(row["included_in_signal"] is False for row in article.sentence_rows)
+    assert all(row["source_article_contribution_weight"] == 1.0 for row in article.sentence_rows)
+    assert all(row["source_included_in_signal"] is True for row in article.sentence_rows)
+    assert all(row["contribution_cap_applied"] is True for row in article.relevance_gate_rows)
+    assert all(row["article_contribution_weight"] == 0.0 for row in article.relevance_gate_rows)
+    assert all(row["included_in_signal"] is False for row in article.relevance_gate_rows)
+    assert all(row["source_article_contribution_weight"] == 1.0 for row in article.relevance_gate_rows)
+    assert all(row["source_included_in_signal"] is True for row in article.relevance_gate_rows)
+    assert {row["relevance_decision"] for row in article.relevance_gate_rows} == {"borderline", "rejected"}
+
+
+def test_article_contribution_caps_sparse_positive_term_article() -> None:
+    scored = pd.DataFrame([
+        {
+            "date": "2026-09-04", "ticker": "AAPL", "article_id": "61622533",
+            "sentence_index": index, "chunk_index": index,
+            "headline": "Snap Q2 2026 misses EPS", "text": text, "relevance_score": 0.4,
+        }
+        for index, text in enumerate(["AAPL supplier impact."] + ["Snap misses EPS."] * 9)
+    ])
+    gate = [
+        {
+            "date": "2026-09-04", "ticker": "AAPL", "article_id": "61622533",
+            "sentence_index": index, "chunk_index": index, "relevance_score": 0.4,
+            "relevance_decision": "accepted" if index == 0 else "borderline",
+            "article_contribution_weight": 1.0, "included_in_signal": True,
+        }
+        for index in range(10)
+    ]
+
+    groups, _ = _build_article_groups(
+        scored, requested_ticker="AAPL", relevance_threshold=0.6, relevance_gate_rows=gate
+    )
+
+    article = groups[0]
+    assert article.contribution_cap_applied is True
+    assert article.contribution_sum == pytest.approx(0.9)
+    assert article.contribution_sum < 10.0
+    assert all(row["contribution_cap_applied"] is True for row in article.sentence_rows)
+    assert all(row["final_contribution"] == pytest.approx(0.09) for row in article.sentence_rows)
+    assert all(row["article_contribution_weight"] == pytest.approx(0.09) for row in article.sentence_rows)
+    assert all(row["included_in_signal"] is True for row in article.sentence_rows)
+    assert all(row["source_article_contribution_weight"] == 1.0 for row in article.sentence_rows)
+    assert all(row["source_included_in_signal"] is True for row in article.sentence_rows)
+    assert all(row["article_contribution_weight"] == pytest.approx(0.09) for row in article.relevance_gate_rows)
+
+
+def test_article_contribution_preserves_source_weights_and_excludes_source_rows() -> None:
+    scored = pd.DataFrame([
+        {
+            "date": "2026-09-04", "ticker": "AAPL", "article_id": "weights",
+            "sentence_index": index, "chunk_index": index, "headline": "Apple update",
+            "text": "AAPL supplier impact.", "relevance_score": 0.8,
+        }
+        for index in range(3)
+    ])
+    gate = [
+        {
+            "date": "2026-09-04", "ticker": "AAPL", "article_id": "weights",
+            "sentence_index": 0, "chunk_index": 0, "relevance_score": 0.8,
+            "relevance_decision": "accepted", "relevance_category": "direct_target_event",
+            "article_contribution_weight": 0.35, "included_in_signal": True,
+        },
+        {
+            "date": "2026-09-04", "ticker": "AAPL", "article_id": "weights",
+            "sentence_index": 1, "chunk_index": 1, "relevance_score": 0.8,
+            "relevance_decision": "accepted", "relevance_category": "direct_target_event",
+            "article_contribution_weight": 0.60, "included_in_signal": True,
+        },
+        {
+            "date": "2026-09-04", "ticker": "AAPL", "article_id": "weights",
+            "sentence_index": 2, "chunk_index": 2, "relevance_score": 0.8,
+            "relevance_decision": "accepted", "relevance_category": "direct_target_event",
+            "article_contribution_weight": 0.90, "included_in_signal": False,
+        },
+    ]
+    groups, _ = _build_article_groups(scored, requested_ticker="AAPL", relevance_threshold=0.6,
+                                      relevance_gate_rows=gate)
+    article = groups[0]
+    assert article.contribution_cap_applied is False
+    assert article.contribution_sum == pytest.approx(0.95)
+    assert [row["article_contribution_weight"] for row in article.sentence_rows] == [0.35, 0.60, 0.0]
+    assert [row["included_in_signal"] for row in article.sentence_rows] == [True, True, False]
+
+
+def test_report_path_preserves_explicit_source_exclusion_through_relevance_gate_rows() -> None:
+    """S2-BLOCK-005: an explicit source included_in_signal=False survives normalization."""
+    frame = pd.DataFrame([
+        {
+            "date": "2026-09-04", "ticker": "AAPL", "article_id": "gate-normalized",
+            "sentence_index": 0, "chunk_index": 0, "headline": "Apple update",
+            "text": "AAPL supplier impact.", "relevance_score": 0.8,
+            "relevance_decision": "accepted", "relevance_category": "direct_target_event",
+            "article_contribution_weight": 0.35, "included_in_signal": True,
+        },
+        {
+            "date": "2026-09-04", "ticker": "AAPL", "article_id": "gate-normalized",
+            "sentence_index": 1, "chunk_index": 1, "headline": "Apple update",
+            "text": "AAPL supplier impact.", "relevance_score": 0.8,
+            "relevance_decision": "accepted", "relevance_category": "direct_target_event",
+            "article_contribution_weight": 0.90, "included_in_signal": False,
+        },
+    ])
+    normalized = _relevance_gate_rows(frame, requested_ticker="AAPL")
+    assert len(normalized) == 2
+    excluded = next(row for row in normalized if row["sentence_index"] == 1)
+    assert excluded["included_in_signal"] is False
+    assert excluded["article_contribution_weight"] == pytest.approx(0.90)
+    assert excluded["final_contribution"] == 0.0
+    assert excluded["final_signal_contribution"] == 0.0
+
+    scored = pd.DataFrame([
+        {
+            "date": "2026-09-04", "ticker": "AAPL", "article_id": "gate-normalized",
+            "sentence_index": index, "chunk_index": index, "headline": "Apple update",
+            "text": "AAPL supplier impact.", "relevance_score": 0.8,
+        }
+        for index in range(2)
+    ])
+    groups, _ = _build_article_groups(
+        scored, requested_ticker="AAPL", relevance_threshold=0.6,
+        relevance_gate_rows=normalized,
+    )
+    article = groups[0]
+    assert article.contribution_cap_applied is False
+    assert article.contribution_sum == pytest.approx(0.35)
+    excluded_sentence = article.sentence_rows[1]
+    assert excluded_sentence["source_included_in_signal"] is False
+    assert excluded_sentence["source_article_contribution_weight"] == pytest.approx(0.90)
+    assert excluded_sentence["article_contribution_weight"] == 0.0
+    assert excluded_sentence["included_in_signal"] is False
+    assert excluded_sentence["final_contribution"] == 0.0
+    assert excluded_sentence["final_signal_contribution"] == 0.0
+    excluded_compact = next(
+        row for row in article.relevance_gate_rows if row["sentence_index"] == 1
+    )
+    assert excluded_compact["source_included_in_signal"] is False
+    assert excluded_compact["source_article_contribution_weight"] == pytest.approx(0.90)
+    assert excluded_compact["article_contribution_weight"] == 0.0
+    assert excluded_compact["included_in_signal"] is False
+    assert excluded_compact["final_contribution"] == 0.0
+    included_compact = next(
+        row for row in article.relevance_gate_rows if row["sentence_index"] == 0
+    )
+    assert included_compact["source_included_in_signal"] is True
+    assert included_compact["article_contribution_weight"] == pytest.approx(0.35)
+    assert included_compact["included_in_signal"] is True
+
+
+def test_article_contribution_matches_reversed_gate_order_and_retains_extra_row() -> None:
+    scored = pd.DataFrame([
+        {
+            "date": "2026-09-04", "ticker": "AAPL", "article_id": "reordered",
+            "sentence_index": index, "chunk_index": index, "headline": "AAPL update",
+            "text": "AAPL supplier impact.", "relevance_score": 0.8,
+        }
+        for index in range(2)
+    ])
+    base = [
+        {"date": "2026-09-04", "ticker": "AAPL", "article_id": "reordered",
+         "sentence_index": index, "chunk_index": index, "relevance_score": 0.8,
+         "relevance_decision": "accepted", "relevance_category": "direct_target_event",
+         "article_contribution_weight": weight, "included_in_signal": True}
+        for index, weight in ((0, 0.35), (1, 0.60))
+    ]
+    extra = {**base[0], "sentence_index": 99, "chunk_index": 99,
+             "article_contribution_weight": 0.2}
+    groups, _ = _build_article_groups(
+        scored, requested_ticker="AAPL", relevance_threshold=0.6,
+        relevance_gate_rows=[extra, base[1], base[0]],
+    )
+    article = groups[0]
+    assert article.contribution_sum == pytest.approx(0.95)
+    assert article.contribution_cap_applied is False
+    assert len(article.relevance_gate_rows) == 3
+    assert {row.get("contribution_provenance") for row in article.relevance_gate_rows} == {"source_retained", "unmatched_gate_row"}
+    assert all(row["contribution_cap_applied"] is False for row in article.relevance_gate_rows)
+    extra_row = next(row for row in article.relevance_gate_rows if row.get("contribution_provenance") == "unmatched_gate_row")
+    assert extra_row["source_article_contribution_weight"] == pytest.approx(0.2)
+    assert extra_row["article_contribution_weight"] == 0.0
+    assert extra_row["included_in_signal"] is False
+    assert [row["article_contribution_weight"] for row in article.sentence_rows] == [0.35, 0.6]
+
+
+def test_article_contribution_does_not_zero_without_complete_gate_provenance() -> None:
+    scored = pd.DataFrame([{
+        "date": "2026-09-04", "ticker": "AAPL", "article_id": "partial",
+        "sentence_index": 0, "chunk_index": 0, "headline": "AAPL update",
+        "text": "AAPL supplier impact.", "relevance_score": 0.8,
+        "article_contribution_weight": 0.35, "included_in_signal": True,
+    }])
+    groups, _ = _build_article_groups(
+        scored, requested_ticker="AAPL", relevance_threshold=0.6,
+        relevance_gate_rows=[{
+            "date": "2026-09-04", "ticker": "AAPL", "article_id": "partial",
+            "sentence_index": 0, "chunk_index": 0, "relevance_score": 0.8,
+            "relevance_decision": "accepted",
+        }],
+    )
+    article = groups[0]
+    assert article.contribution_cap_applied is False
+    assert article.contribution_sum == pytest.approx(0.35)
+    assert article.sentence_rows[0]["article_contribution_weight"] == pytest.approx(0.35)
+    assert article.sentence_rows[0]["contribution_cap_applied"] is False
 
 
 def test_build_aapl_pilot_evidence_bundle_separates_machine_and_human_review(
