@@ -2269,6 +2269,44 @@ _TARGET_SIGNAL_CATEGORIES = frozenset(
 )
 
 
+TOPIC_OUTLIER_ONLY_REASON = (
+    "No non-outlier topic clusters were found. All rows are outlier topic -1."
+)
+
+_TOPIC_REVIEW_STATE_KEY = "topic_review_state"
+
+
+def topic_review_outlier_only_state(topic_review: Mapping[str, object]) -> dict[str, object]:
+    """Return explicit NO_DATA topic-review evidence when every row is outlier topic -1.
+
+    S1: when BERTopic labels every article as the outlier cluster (topic_id == -1),
+    the topic review section must state that explicitly instead of implying the
+    diagnostic simply produced no rows.
+    """
+    rows = [dict(item) for item in _json_list(topic_review.get("rows")) if isinstance(item, Mapping)]
+    topics = _json_list(topic_review.get("topics"))
+    non_outlier_topic_ids = {
+        topic_id
+        for row in rows
+        for topic_id in [_maybe_int(row.get("topic_id"))]
+        if topic_id is not None and topic_id >= 0
+    }
+    outlier_only = bool(rows) and not topics and not non_outlier_topic_ids
+    return {
+        "outlier_only_topic_rows": outlier_only,
+        "non_outlier_topic_count": len(non_outlier_topic_ids),
+        _TOPIC_REVIEW_STATE_KEY: "NO_DATA" if outlier_only else None,
+        "topic_review_reason": TOPIC_OUTLIER_ONLY_REASON if outlier_only else None,
+    }
+
+
+def _decorate_topic_review_payload(value: object) -> dict[str, object]:
+    """Return the topic-review payload decorated with explicit S1 review fields."""
+    decorated = _json_mapping(value)
+    decorated.update(topic_review_outlier_only_state(decorated))
+    return decorated
+
+
 def _target_impact_summary(rows: Sequence[Mapping[str, object]]) -> dict[str, object]:
     """Return article-level target-impact inclusion evidence for review payloads."""
     category = _first_row_text(rows, "relevance_category")
@@ -2867,13 +2905,13 @@ def _build_payload_from_report(report: Layer1SemanticReviewReport | Mapping[str,
         "accepted_articles": accepted_articles,
         "flagged_articles": flagged_articles,
         "article_review": _build_article_review_payload(date_groups=date_groups),
-        "topic_review": _json_mapping(report_dict.get("topic_review")),
+        "topic_review": _decorate_topic_review_payload(report_dict.get("topic_review")),
         "pipeline_sections": {
             "raw_preprocessing_rows": list(report_dict.get("preprocessing_rows", [])),
             "article_embedding_rows": list(report_dict.get("embedding_rows", [])),
             "topic_label_rows": list(report_dict.get("topic_label_rows", [])),
             "relevance_gate_rows": list(report_dict.get("relevance_gate_rows", [])),
-            "topic_review": _json_mapping(report_dict.get("topic_review")),
+            "topic_review": _decorate_topic_review_payload(report_dict.get("topic_review")),
             "finbert_sentence_rows": [
                 row
                 for article in article_groups

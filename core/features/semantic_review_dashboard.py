@@ -7,9 +7,11 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 from core.features.aapl_evidence import (
+    TOPIC_OUTLIER_ONLY_REASON,
     Layer1SemanticReviewReport,
     _build_payload_from_report,
     build_layer1_semantic_review_dashboard_smoke_result,
+    topic_review_outlier_only_state,
 )
 
 
@@ -101,6 +103,109 @@ _GATE_DEFINITIONS = (
 
 _DIAGNOSTIC_STATES = ("PASS", "WARN", "FAIL", "NOT_RUN", "NO_DATA")
 
+# B3: independent feature-diagnostic slots.  The checks themselves are out of
+# scope for this slice; every slot must exist with an explicit state (default
+# NOT_RUN with a reason) instead of being silently absent from the payload.
+_FEATURE_DIAGNOSTIC_CHECKS = (
+    "heatmap",
+    "null_rate",
+    "recomputation",
+    "formula",
+    "leakage",
+    "outlier",
+)
+_FEATURE_DIAGNOSTIC_NOT_RUN_REASON = (
+    "No independent feature-diagnostic evidence was loaded for this run, so this "
+    "check has not been executed and must not be read as a pass."
+)
+# S5: the single-point HMM chart is not reviewable; keep the required minimum
+# explicit instead of encoding it only inside prose.
+_HMM_CHART_REQUIRED_MINIMUM = 2
+
+
+def _feature_diagnostics_section(payload: Mapping[str, object]) -> dict[str, object]:
+    """Return B3 feature-diagnostic slots, defaulting every sub-check to NOT_RUN.
+
+    When a future producer loads ``payload["feature_diagnostics"]`` records, their
+    state/reason/reviewable fields are adopted here; otherwise all six sub-checks
+    stay explicit NOT_RUN slots so absence can never be confused with success.
+    """
+    loaded = _json_mapping(payload.get("feature_diagnostics"))
+    records: dict[str, dict[str, object]] = {}
+    for check in _FEATURE_DIAGNOSTIC_CHECKS:
+        record = _json_mapping(loaded.get(check))
+        state = _optional_str(record.get("state"))
+        if state:
+            records[check] = _diagnostic_record(
+                state,
+                str(record.get("reason") or ""),
+                reviewable=bool(record.get("reviewable")),
+            )
+        else:
+            records[check] = _diagnostic_record(
+                "NOT_RUN", _FEATURE_DIAGNOSTIC_NOT_RUN_REASON, reviewable=False
+            )
+    section: dict[str, object] = dict(records)
+    section["overall_state"] = _diagnostic_worst_state(
+        *[str(records[check]["state"]) for check in _FEATURE_DIAGNOSTIC_CHECKS]
+    )
+    section["reviewable"] = all(
+        bool(records[check]["reviewable"]) for check in _FEATURE_DIAGNOSTIC_CHECKS
+    )
+    return section
+
+
+def _target_impact_review_diagnostic_state(
+    *,
+    rows: Sequence[Mapping[str, object]],
+    warning_codes: Sequence[str],
+) -> dict[str, object]:
+    """Return the S4 target-impact review state as an explicit diagnostic record.
+
+    ``NO_DATA`` when no aggregate row carries a concrete (non-``unclear``)
+    direction, ``WARN`` when evidence is mixed or flagged by target-impact
+    warnings, and ``PASS`` only when every row states a concrete direction.
+    """
+    if not rows:
+        return _diagnostic_record(
+            "NO_DATA",
+            "No ticker-date semantic aggregate rows exist, so there is no target-impact evidence to review.",
+            reviewable=False,
+        )
+    concrete_flags = [_row_has_concrete_impact_direction(row) for row in rows]
+    if not any(concrete_flags):
+        return _diagnostic_record(
+            "NO_DATA",
+            "Every aggregate target-impact direction is unclear or missing, so there is no reviewable target-impact evidence.",
+            reviewable=False,
+        )
+    impact_warnings = {
+        "unclear_target_company_impact_direction",
+        "missing_target_impact_evidence",
+    }
+    if not all(concrete_flags) or impact_warnings.intersection(str(code) for code in warning_codes):
+        return _diagnostic_record(
+            "WARN",
+            "Only part of the aggregate rows carry a concrete target-impact direction, so the target-impact evidence needs human follow-up.",
+            reviewable=False,
+        )
+    return _diagnostic_record(
+        "PASS",
+        "Every aggregate row carries a concrete target-impact direction for human review.",
+        reviewable=True,
+    )
+
+
+def _row_has_concrete_impact_direction(row: Mapping[str, object]) -> bool:
+    """Return True when one aggregate row carries a concrete target-impact direction."""
+    direction = _optional_str(row.get("target_company_impact_direction"))
+    if direction is None:
+        features = _json_mapping(row.get("features"))
+        direction = _first_text(
+            [features.get("nlp_target_impact_direction"), features.get("target_company_impact_direction")]
+        )
+    return bool(direction and direction != "unclear")
+
 
 def _diagnostic_record(state: str, reason: str, *, reviewable: bool) -> dict[str, object]:
     normalized_state = state.upper()
@@ -158,6 +263,11 @@ def build_layer1_semantic_review_dashboard_payload(
             )
         if isinstance(raw_pipeline_sections, Mapping):
             payload["pipeline_sections"] = dict(raw_pipeline_sections)
+        # B3: forward explicitly loaded feature-diagnostic records so the
+        # readiness builder can adopt their states; absence keeps NOT_RUN slots.
+        loaded_feature_diagnostics = report_dict.get("feature_diagnostics")
+        if isinstance(loaded_feature_diagnostics, Mapping):
+            payload["feature_diagnostics"] = dict(loaded_feature_diagnostics)
     payload["topic_relevance_review"] = build_layer1_topic_relevance_review(payload)
     payload["semantic_aggregate_review"] = build_layer1_semantic_aggregate_review(payload)
     payload.update(build_layer1_semantic_review_readiness_summary(payload))
@@ -478,30 +588,27 @@ def _hmm_chart_auditability_state(payload: Mapping[str, object]) -> dict[str, ob
     ]
     point_count = min(len(benchmark_prices), len(benchmark_rows))
     if point_count == 0:
-        return {
-            **_diagnostic_record("NO_DATA", "No benchmark/HMM chart rows are available.", reviewable=False),
-            "point_count": point_count,
-            "price_row_count": len(benchmark_prices),
-            "market_regime_row_count": len(benchmark_rows),
-        }
-    if point_count < 2:
-        return {
-            **_diagnostic_record(
-                "WARN",
-                "Only one benchmark/HMM point is available, so the chart is limited for auditability.",
-                reviewable=False,
-            ),
-            "point_count": point_count,
-            "price_row_count": len(benchmark_prices),
-            "market_regime_row_count": len(benchmark_rows),
-        }
-    return {
-        **_diagnostic_record(
+        record = _diagnostic_record(
+            "NO_DATA", "No benchmark/HMM chart rows are available.", reviewable=False
+        )
+    elif point_count < _HMM_CHART_REQUIRED_MINIMUM:
+        record = _diagnostic_record(
+            "WARN",
+            "Only one benchmark/HMM point is available, so the chart is limited for auditability.",
+            reviewable=False,
+        )
+    else:
+        record = _diagnostic_record(
             "PASS",
             "The benchmark/HMM chart has enough points for meaningful auditability.",
             reviewable=True,
-        ),
+        )
+    # S5: expose the numeric auditability facts next to the state so compaction
+    # of prose never hides how short the chart fell.
+    return {
+        **record,
         "point_count": point_count,
+        "required_minimum": _HMM_CHART_REQUIRED_MINIMUM,
         "price_row_count": len(benchmark_prices),
         "market_regime_row_count": len(benchmark_rows),
     }
@@ -599,6 +706,13 @@ def build_layer1_semantic_review_readiness_summary(
     embedding_state = _json_mapping(topic_relevance_summary.get("embedding_coverage_state"))
     hmm_chart_state = _hmm_chart_auditability_state(payload)
     hmm_feature_state = _hmm_feature_set_summary(payload)
+    topic_review_evidence = topic_review_outlier_only_state(_json_mapping(payload.get("topic_review")))
+    outlier_only_topics = bool(topic_review_evidence["outlier_only_topic_rows"])
+    target_impact_state = _target_impact_review_diagnostic_state(
+        rows=[dict(item) for item in _json_list(semantic_aggregate_review.get("rows")) if isinstance(item, Mapping)],
+        warning_codes=_json_string_list(semantic_aggregate_summary.get("semantic_warning_codes")),
+    )
+    feature_diagnostics = _feature_diagnostics_section(payload)
     failures = [dict(item) for item in _json_list(smoke.get("failures")) if isinstance(item, Mapping)]
     failure_map = _failures_by_stage(failures)
     gate_cards = [
@@ -616,6 +730,24 @@ def build_layer1_semantic_review_readiness_summary(
         "relevance_informativeness": str(relevance_state.get("state") or "NOT_RUN"),
         "embedding_coverage": str(embedding_state.get("state") or "NOT_RUN"),
         "hmm_chart_auditability": str(hmm_chart_state.get("state") or "NOT_RUN"),
+        # S1: explicit topic-review state/reason, not only nested pipeline sections.
+        "topic_review_state": (
+            "NO_DATA"
+            if outlier_only_topics
+            else str(topic_review_state.get("state") or "NOT_RUN")
+        ),
+        "topic_review_reason": (
+            TOPIC_OUTLIER_ONLY_REASON
+            if outlier_only_topics
+            else str(topic_review_state.get("reason") or "No topic review evidence was loaded for this run.")
+        ),
+        # S4: first-class target-impact review state with explicit null semantics.
+        "target_impact_review_status": str(target_impact_state["state"]),
+        # S5: numeric chart auditability facts alongside the string state.
+        "hmm_chart_point_count": _first_int([hmm_chart_state.get("point_count")]) or 0,
+        "hmm_chart_required_minimum": (
+            _first_int([hmm_chart_state.get("required_minimum")]) or _HMM_CHART_REQUIRED_MINIMUM
+        ),
     }
     diagnostics_reviewable = all(
         state and bool(state.get("reviewable"))
@@ -658,6 +790,8 @@ def build_layer1_semantic_review_readiness_summary(
         "embedding_coverage": embedding_state,
         "hmm_chart_auditability": hmm_chart_state,
         "hmm_feature_set": hmm_feature_state,
+        "target_impact_review": target_impact_state,
+        "feature_diagnostics_overall_state": feature_diagnostics["overall_state"],
         "overall_state": _diagnostic_worst_state(
             diagnostic_states["topic_review"],
             diagnostic_states["relevance_informativeness"],
@@ -682,7 +816,14 @@ def build_layer1_semantic_review_readiness_summary(
             [semantic_aggregate_summary.get("single_source_concentration_count")]
         )
         or 0,
-        "target_impact_review_status": semantic_aggregate_summary.get("target_impact_review_status") or "unclear",
+        # S4: explicit first-class review state (PASS/WARN/NO_DATA) derived from
+        # row-level target-impact evidence, replacing the legacy derived/unclear
+        # label while keeping its reason visible.
+        "target_impact_review_status": str(target_impact_state["state"]),
+        "target_impact_review_reason": str(target_impact_state["reason"]),
+        "target_impact_legacy_status_label": str(
+            semantic_aggregate_summary.get("target_impact_review_status") or "unclear"
+        ),
         "target_impact_warning": semantic_aggregate_summary.get("target_impact_warning"),
         "target_impact_direction": semantic_aggregate_summary.get("target_impact_direction"),
         "target_impact_magnitude": semantic_aggregate_summary.get("target_impact_magnitude"),
@@ -700,6 +841,10 @@ def build_layer1_semantic_review_readiness_summary(
         "flagged_article_count": int(summary.get("flagged_article_count") or 0),
         "blocked_gate_count": len(blocked_gates),
         "missing_pipeline_section_count": len(missing_pipeline_sections),
+        # B3: independent feature-diagnostic slots (heatmap, null_rate,
+        # recomputation, formula, leakage, outlier), each explicitly
+        # PASS/WARN/FAIL/NOT_RUN/NO_DATA and defaulting to NOT_RUN.
+        "feature_diagnostics": feature_diagnostics,
         "diagnostic_states": diagnostic_states,
         "diagnostic_summary": diagnostic_summary,
         "topic_relevance_review_status": topic_relevance_summary.get("review_status") or "unknown",
@@ -720,6 +865,7 @@ def build_layer1_semantic_review_readiness_summary(
             run_readiness["status_reason"] = _normalize_reason_text(base_reason)
     return {
         "run_readiness": run_readiness,
+        "feature_diagnostics": feature_diagnostics,
         "summary_cards": _summary_cards(run_readiness),
         "gate_cards": gate_cards,
         "missing_pipeline_sections": missing_pipeline_sections,
@@ -1234,8 +1380,16 @@ def _topic_review_diagnostic_state(
     collapsed = topic_count <= 1 or len(topic_ids) <= 1
     readable = bool(topic_review_rows) and human_labels > 0 and keyword_rows > 0 and example_rows > 0
     if row_count == 0 or topic_count == 0:
+        # S1: rows exist but every one is the BERTopic outlier cluster (-1). Say
+        # that explicitly instead of the misleading "no rows were produced".
+        if row_count == 0:
+            no_data_reason = "No topic review rows were produced."
+        elif topic_ids and all(topic_id < 0 for topic_id in topic_ids):
+            no_data_reason = TOPIC_OUTLIER_ONLY_REASON
+        else:
+            no_data_reason = "No non-outlier topic clusters were found."
         return {
-            **_diagnostic_record("NO_DATA", "No topic review rows were produced.", reviewable=False),
+            **_diagnostic_record("NO_DATA", no_data_reason, reviewable=False),
             "topic_count": topic_count,
             "row_count": row_count,
             "topic_ids": sorted(topic_ids),
@@ -2068,18 +2222,42 @@ _PAYLOAD_IMMUTABLE_TOP_LEVEL_KEYS = _PAYLOAD_CONTROL_PLANE_KEYS
 # the priority/list preservation logic cannot drift apart.
 _PAYLOAD_PROTECTED_MAPPING_KEYS: dict[str, frozenset[str]] = {
     "__row_priority__": frozenset({
-        "key", "label", "scope", "status", "ready_for_final_human_acceptance",
+        "key", "label", "scope", "status", "state", "ready_for_final_human_acceptance",
         "recommendation", "human_review_status", "overall_state",
     }),
     "run_readiness": frozenset({
         "readiness_status", "status_reason", "run_id", "ticker", "from_date", "to_date",
         "topic_review_state", "topic_relevance_review_status", "relevance_informativeness_state",
         "diagnostic_states", "diagnostic_summary",
+        "feature_diagnostics", "target_impact_review_status", "target_impact_review_reason",
     }),
     "diagnostic_states": frozenset({
         "embedding_coverage", "hmm_chart_auditability", "relevance_informativeness",
         "topic_review", "hmm_feature_set", "overall_state", "reviewable",
+        "topic_review_state", "topic_review_reason", "target_impact_review_status",
+        "hmm_chart_point_count", "hmm_chart_required_minimum",
     }),
+    # B3: the six feature-diagnostic slots are control-plane evidence states.
+    "feature_diagnostics": frozenset({
+        "heatmap", "null_rate", "recomputation", "formula", "leakage", "outlier",
+        "overall_state", "reviewable",
+    }),
+    # S5: chart auditability facts (point_count/required_minimum) must survive compaction.
+    "hmm_chart_auditability": frozenset({
+        "state", "reason", "reviewable", "point_count", "required_minimum",
+        "price_row_count", "market_regime_row_count",
+    }),
+    "hmm_chart_auditability_state": frozenset({
+        "state", "reason", "reviewable", "point_count", "required_minimum",
+        "price_row_count", "market_regime_row_count",
+    }),
+    # S1/S4: explicit review records for topic and target-impact evidence.
+    "topic_review_state": frozenset({
+        "state", "reason", "reviewable", "topic_count", "row_count", "topic_ids",
+        "readable_topic_count", "keyword_row_count", "example_row_count",
+        "metadata_label_count",
+    }),
+    "target_impact_review": frozenset({"state", "reason", "reviewable"}),
     "summary_cards": frozenset({"label", "value", "field"}),
     "gate_cards": frozenset({"key", "label", "status", "reason", "ready", "row_count"}),
     "missing_pipeline_sections": frozenset({"key", "label", "reason", "scope", "status"}),
