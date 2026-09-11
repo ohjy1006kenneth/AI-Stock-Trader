@@ -31,6 +31,7 @@ _REJECTED_DECISIONS = frozenset({"rejected", "reject", "exclude", "excluded"})
 _ACCEPTED_DECISIONS = frozenset({"accepted", "accept", "include", "included"})
 _BORDERLINE_DECISIONS = frozenset({"borderline"})
 _MATRIX_UNKNOWN_SUBJECT = "unknown_generic"
+_GENERIC_OWNER_SUBJECTS = frozenset({_MATRIX_UNKNOWN_SUBJECT, "broad_market"})
 
 
 def normalize_semantic_qa_query(
@@ -596,10 +597,18 @@ def _identity(row: Mapping[str, Any]) -> str:
 
 
 def _owner(row: Mapping[str, Any], ticker: str | None = None) -> str | None:
-    """Return the normalized evidence owner, deriving from canonical producer fields."""
+    """Return the normalized evidence owner, deriving from canonical producer fields.
+
+    Generic subjects keep their canonical lowercase literal (``broad_market``,
+    ``unknown_generic``); ticker-like owners normalize to uppercase symbols.
+    """
     explicit = row.get("evidence_owner", row.get("owner", row.get("evidence_subject")))
     if explicit not in (None, ""):
-        return str(explicit).strip().upper() or None
+        value = str(explicit).strip()
+        normalized = value.lower().replace("-", "_").replace(" ", "_")
+        if normalized in _GENERIC_OWNER_SUBJECTS:
+            return normalized
+        return value.upper() or None
     if ticker is None:
         return None
     mentions = _pilot_mentions(row)

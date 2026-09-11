@@ -1,5 +1,4 @@
 """Local read-only web UI for the Layer 1 semantic-review dashboard."""
-
 from __future__ import annotations
 
 import argparse
@@ -272,9 +271,7 @@ def _build_dashboard_payload(
 
 def _run_dashboard_smoke(*, defaults: _DashboardDefaults, args: argparse.Namespace) -> int:
     """Run API and rendered-browser smoke checks for the semantic-review dashboard."""
-    writer = (
-        R2Writer(local_root=defaults.local_root) if defaults.local_root is not None else R2Writer()
-    )
+    writer = R2Writer(local_root=defaults.local_root) if defaults.local_root is not None else R2Writer()
     report = build_layer1_aapl_evidence_report(
         run_id=defaults.run_id,
         from_date=defaults.from_date,
@@ -440,7 +437,6 @@ def _render_smoke_html(defaults: _DashboardDefaults, payload: Mapping[str, objec
   </script>
 </body>
 </html>"""
-
 
 def _resolve_browser_binary(browser_binary: str) -> str:
     """Return a browser executable suitable for headless smoke rendering."""

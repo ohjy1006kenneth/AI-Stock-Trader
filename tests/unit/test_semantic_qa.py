@@ -260,6 +260,20 @@ def test_leakage_matrix_records_unknown_generic_for_unattributable_contributions
     assert payload["leakage_matrix"]["unknown_generic"]["AAPL"]["suspicious"] is True
 
 
+def test_leakage_matrix_keeps_canonical_generic_subject_literal() -> None:
+    report = _report(
+        "AAPL",
+        [_group("AAPL", "g1", "Market context", [_row(included=True, decision="accepted", contribution=0.1)])],
+        [_preproc("AAPL", "g1", ["AAPL"])],
+    )
+    report["article_groups"][0]["sentence_rows"][0]["evidence_owner"] = "broad_market"
+    payload = _build({"AAPL": report}, tickers=("AAPL",))
+    cell = payload["leakage_matrix"]["broad_market"]["AAPL"]
+    assert cell["canonical_count"] == 1
+    assert cell["suspicious"] is True
+    assert "BROAD_MARKET" not in payload["leakage_matrix"]
+
+
 def test_four_ticker_queue_isolation_keeps_cross_ticker_rows_off_own_queues() -> None:
     reports: dict[str, object] = {}
     for ticker in ("AAPL", "NVDA", "MSFT"):
