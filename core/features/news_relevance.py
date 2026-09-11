@@ -21,6 +21,7 @@ RELEVANCE_GATE_COLUMNS: tuple[str, ...] = (
     "article_id",
     "sentence_index",
     "chunk_index",
+    "source_text_field",
     "headline",
     "text",
     "source",
@@ -42,6 +43,8 @@ RELEVANCE_GATE_COLUMNS: tuple[str, ...] = (
     "article_contamination_count",
     "article_signal_count",
     "article_contribution_weight",
+    "included_in_signal",
+    "effective_contribution",
     "reason_codes",
     "ticker_evidence",
     "entity_evidence",
@@ -314,13 +317,18 @@ def _build_record_analysis(
     """Return row-level evidence and base scores for one preprocessed news record."""
     ticker = record.ticker.strip().upper()
     provenance = _provenance(record)
-    text = " ".join(part for part in (record.headline, record.text) if part)
+    # The headline is repeated on every chunk for audit display. It is not
+    # chunk-local evidence for summary/content rows; headline chunks already
+    # carry the headline in ``record.text``.
+    text = record.text or ""
     normalized_text = _normalize_text(text)
     source_tickers = _json_string_list(provenance.get("article_tickers"))
     chunk_tickers = _json_string_list(provenance.get("chunk_tickers"))
-    entity_mentions = _json_string_list(
-        provenance.get("entity_mentions") or list(record.entity_mentions)
-    )
+    entity_mentions = [
+        mention
+        for mention in _json_string_list(provenance.get("entity_mentions") or list(record.entity_mentions))
+        if _contains_phrase(normalized_text, mention)
+    ]
     assignment_classification = _optional_text(provenance.get("assignment_classification"))
     assignment_evidence_kinds = _json_string_list(provenance.get("assignment_evidence_kinds"))
 
@@ -329,8 +337,15 @@ def _build_record_analysis(
         text=normalized_text,
         source_tickers=source_tickers,
         entity_mentions=entity_mentions,
-        assignment_classification=assignment_classification,
+        # Assignment provenance may include headline/provider context. Keep it
+        # in the audit row, but never use it as chunk-local ticker evidence.
+        assignment_classification=None,
     )
+    if assignment_classification is not None and ticker_score == 0.45:
+        # A provider tag is article context, not evidence for this chunk.
+        ticker_score = 0.0
+        ticker_reasons = [reason for reason in ticker_reasons if reason != "source_ticker_tag_only"]
+        ticker_reasons.append("article_only_source_tag")
     financial_score, financial_reasons = _financial_relevance(normalized_text)
     topic_row = topic_lookup.get((record.date, ticker, _stable_article_id(record)))
     topic_score, topic_reasons = _topic_relevance(topic_row, config=config)
@@ -359,12 +374,23 @@ def _build_record_analysis(
         base_relevance_score = min(base_relevance_score, 0.30)
 
     reasons = [*ticker_reasons, *financial_reasons, *topic_reasons, *category_reasons]
+    if assignment_classification is not None:
+        reasons.append(f"assignment_classification:{assignment_classification}")
     if embedding_row is None:
         reasons.append("missing_embedding")
     if financial_score < config.min_financial_score:
         reasons.append("low_financial_relevance")
-    if ticker_score <= 0.0:
+    if ticker_score < 1.0:
         reasons.append("low_ticker_relevance")
+    if (
+        ticker_score < 1.0
+        and relevance_category == "irrelevant"
+        and (
+            ticker in {value.strip().upper() for value in source_tickers}
+            or assignment_classification is not None
+        )
+    ):
+        reasons.append("article_only_context_insufficient")
 
     return {
         "date": record.date,
@@ -373,6 +399,7 @@ def _build_record_analysis(
         "article_key": record.article_id or _stable_article_id(record),
         "sentence_index": record.sentence_index,
         "chunk_index": record.chunk_index,
+        "source_text_field": record.source_text_field,
         "headline": record.headline,
         "text": record.text,
         "source": record.source,
@@ -470,6 +497,7 @@ def _finalize_record_analysis(
         reasons.add("rejected_by_relevance_gate")
     else:
         decision = "rejected"
+        relevance_score = 0.0
         reasons.add("rejected_by_relevance_gate")
 
     if decision != "rejected" and financial_score < config.min_financial_score:
@@ -486,6 +514,7 @@ def _finalize_record_analysis(
         "article_id": analysis["article_id"],
         "sentence_index": analysis["sentence_index"],
         "chunk_index": analysis["chunk_index"],
+        "source_text_field": analysis["source_text_field"],
         "headline": analysis["headline"],
         "text": analysis["text"],
         "source": analysis["source"],
@@ -507,6 +536,12 @@ def _finalize_record_analysis(
         "article_contamination_count": article_contamination_count,
         "article_signal_count": article_signal_count,
         "article_contribution_weight": article_contribution_weight,
+        "included_in_signal": decision in {"accepted", "borderline"},
+        "effective_contribution": (
+            relevance_score * article_contribution_weight
+            if decision in {"accepted", "borderline"}
+            else 0.0
+        ),
         "reason_codes": json.dumps(sorted(reasons)),
         "ticker_evidence": json.dumps(analysis["ticker_evidence"], sort_keys=True),
         "entity_evidence": json.dumps(analysis["entity_evidence"]),
@@ -567,15 +602,8 @@ def _target_conditioned_metadata(
     """Return target-conditioned category and audit metadata for a row."""
     reasons: list[str] = []
     lower_text = normalized_text.lower()
-    direct_evidence = ticker_score >= 1.0 or assignment_classification == "direct" or (
-        assignment_classification == "indirect" and "company_alias_entity_match" in assignment_evidence_kinds
-    )
-    source_tag_financial_evidence = (
-        assignment_classification is None
-        and not competitor_reasons
-        and ticker_score >= 0.45
-        and financial_score >= 0.35
-    )
+    direct_evidence = ticker_score >= 1.0
+
     has_direct_business_context = any(
         _contains_phrase(lower_text, term) for term in _DIRECT_TARGET_BUSINESS_TERMS
     )
@@ -601,15 +629,19 @@ def _target_conditioned_metadata(
             reasons,
         )
 
-    if direct_evidence and (has_direct_business_context or business_channel in {
-        "legal_regulatory",
-        "product_device",
-        "analyst_investor",
-        "ownership",
-        "options_market",
-        "enterprise_cloud",
-        "ai_chip_device",
-    }):
+    if direct_evidence and (
+        has_direct_business_context
+        or business_channel in {
+            "legal_regulatory",
+            "product_device",
+            "analyst_investor",
+            "ownership",
+            "options_market",
+            "enterprise_cloud",
+            "ai_chip_device",
+        }
+        or financial_score >= 0.35
+    ):
         category = "direct_target_event"
         reasons.append("target_conditioned_category:direct_target_event")
         reasons.append(f"causal_channel:{business_channel}")
@@ -625,7 +657,9 @@ def _target_conditioned_metadata(
             reasons,
         )
 
-    if (direct_evidence or assignment_classification == "indirect") and has_supplier_context:
+    # Assignment classification is article-level provenance only.  It must
+    # never supply the missing chunk-local target evidence for a signal row.
+    if direct_evidence and has_supplier_context:
         category = "supplier_or_input_cost_exposure"
         reasons.append("target_conditioned_category:supplier_or_input_cost_exposure")
         reasons.append("causal_channel:supplier_input_cost")
@@ -639,37 +673,8 @@ def _target_conditioned_metadata(
             reasons,
         )
 
-    if source_tag_financial_evidence and has_macro_context:
-        category = "industry_or_macro_exposure"
-        reasons.append("target_conditioned_category:industry_or_macro_exposure")
-        reasons.append("causal_channel:industry_macro")
-        reasons.append("source_tag_financial_evidence")
-        return (
-            category,
-            _impact_direction(lower_text),
-            "low",
-            "medium_term",
-            "industry_macro",
-            0.55,
-            reasons,
-        )
 
-    if source_tag_financial_evidence:
-        category = "direct_target_event"
-        reasons.append("target_conditioned_category:direct_target_event")
-        reasons.append("causal_channel:source_tagged_financial_event")
-        reasons.append("source_tag_financial_evidence")
-        return (
-            category,
-            _impact_direction(lower_text),
-            "medium",
-            "short_term",
-            "source_tagged_financial_event",
-            0.62,
-            reasons,
-        )
-
-    if (direct_evidence or assignment_classification == "indirect") and has_competitor_context:
+    if direct_evidence and has_competitor_context:
         category = "competitor_read_through"
         reasons.append("target_conditioned_category:competitor_read_through")
         reasons.append("causal_channel:competitor_readthrough")
@@ -683,7 +688,7 @@ def _target_conditioned_metadata(
             reasons,
         )
 
-    if assignment_classification == "broad_market" or (direct_evidence and has_macro_context):
+    if direct_evidence and has_macro_context:
         category = "industry_or_macro_exposure"
         reasons.append("target_conditioned_category:industry_or_macro_exposure")
         reasons.append("causal_channel:industry_macro")
@@ -708,20 +713,6 @@ def _target_conditioned_metadata(
             "same_day",
             "comparison_context",
             0.15,
-            reasons,
-        )
-
-    if direct_evidence and has_macro_context:
-        category = "industry_or_macro_exposure"
-        reasons.append("target_conditioned_category:industry_or_macro_exposure")
-        reasons.append("causal_channel:industry_macro")
-        return (
-            category,
-            _impact_direction(lower_text),
-            "low",
-            "medium_term",
-            "industry_macro",
-            0.55,
             reasons,
         )
 
