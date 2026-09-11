@@ -13,6 +13,8 @@ from app.lab.semantic_review_dashboard import _DashboardDefaults, _render_dashbo
 from core.features.aapl_evidence import build_layer1_aapl_evidence_report
 from core.features.regime_training import HMM_OPTIONAL_FEATURE_COLUMNS
 from core.features.semantic_review_dashboard import (
+    _compact_layer1_semantic_review_dashboard_payload,
+    _enforce_payload_pretty_byte_budget,
     _stratified_bounded_mappings,
     build_layer1_semantic_review_dashboard_payload,
     build_layer1_semantic_review_dashboard_smoke_payload,
@@ -192,6 +194,59 @@ def test_semantic_review_payload_projects_high_cardinality_pipeline_rows() -> No
     assert len(cast(list[str], unknown_sample[0]["article_ids"])) <= 8
     assert "sentence_rows" not in unknown_sample[0]
     assert "source_text_provenance" not in encoded.decode("utf-8")
+
+
+def test_final_byte_compaction_preserves_protected_readiness_and_diagnostic_shapes() -> None:
+    """The final pretty-byte pass may bound values, but cannot drop contract keys."""
+    diagnostic_keys = {
+        "embedding_coverage",
+        "hmm_chart_auditability",
+        "relevance_informativeness",
+        "topic_review",
+        "hmm_feature_set",
+    }
+    readiness_keys = {
+        "readiness_status",
+        "status_reason",
+        "run_id",
+        "ticker",
+        "from_date",
+        "to_date",
+        "topic_review_state",
+        "topic_relevance_review_status",
+        "relevance_informativeness_state",
+        "diagnostic_states",
+        "diagnostic_summary",
+    }
+    payload = {
+        "run_readiness": {
+            key: {"value": "r" * 30_000} for key in readiness_keys
+        },
+        "diagnostic_states": {
+            key: {"value": "d" * 30_000} for key in diagnostic_keys
+        },
+        "gate_cards": [
+            {"key": f"gate-{index}", "label": "gate", "status": "WARN", "reason": "reason"}
+            for index in range(10)
+        ],
+        "missing_pipeline_sections": [
+            {"key": f"missing-{index}", "label": "missing", "reason": "not produced"}
+            for index in range(3)
+        ],
+    }
+
+    compacted = _enforce_payload_pretty_byte_budget(payload)
+    compacted_readiness = cast(dict[str, Any], compacted["run_readiness"])
+    compacted_diagnostics = cast(dict[str, Any], compacted["diagnostic_states"])
+    compacted_gates = cast(list[dict[str, Any]], compacted["gate_cards"])
+    compacted_missing = cast(list[dict[str, Any]], compacted["missing_pipeline_sections"])
+
+    assert compacted["payload_budget"]["compacted"] is True
+    assert compacted["payload_budget"]["truncated"] is True
+    assert set(compacted_readiness) == readiness_keys
+    assert set(compacted_diagnostics) == diagnostic_keys
+    assert len(compacted_gates) == 10
+    assert all("reason" in row for row in compacted_missing)
 
 
 def test_semantic_review_payload_compacts_nested_dynamic_branches_deterministically() -> None:
@@ -1421,3 +1476,94 @@ def test_semantic_review_dashboard_smoke_payload_is_compact_and_valid(tmp_path: 
     assert len(cast(list[dict[str, Any]], payload["pipeline_sections"]["raw_preprocessing_rows"])) == 1
     assert len(cast(list[dict[str, Any]], payload["pipeline_sections"]["finbert_sentence_rows"])) == 1
     assert len(json.dumps(payload)) < 50_000
+
+
+def test_semantic_review_compaction_preserves_stable_readiness_schema() -> None:
+    """A packet-sized payload keeps readiness, diagnostics, gates, and reasons intact."""
+    readiness_keys = {
+        "readiness_status", "status_reason", "run_id", "ticker", "from_date", "to_date",
+        "topic_review_state", "topic_relevance_review_status", "relevance_informativeness_state",
+        "diagnostic_states", "diagnostic_summary",
+    }
+    diagnostic_keys = {
+        "embedding_coverage", "hmm_chart_auditability", "relevance_informativeness",
+        "topic_review", "hmm_feature_set",
+    }
+    payload = _compact_layer1_semantic_review_dashboard_payload({
+        "ticker": "AAPL",
+        "run_readiness": {
+            **{key: f"value-{key}" for key in readiness_keys if key not in {"diagnostic_states", "diagnostic_summary"}},
+            "diagnostic_states": {key: "WARN" for key in diagnostic_keys},
+            "diagnostic_summary": {"overall_state": "WARN"},
+        },
+        "gate_cards": [
+            {"key": f"gate-{index}", "label": f"Gate {index}", "status": "ready", "reason": "ok"}
+            for index in range(10)
+        ],
+        "missing_pipeline_sections": [
+            {"key": "topic_labels", "label": "Topics", "reason": "not present", "scope": "packet"}
+        ],
+        "article_groups": [
+            {"article_id": f"article-{index}", "headline": "x" * 2_000}
+            for index in range(32)
+        ],
+        "oversized_detail": [{"value": "y" * 10_000} for _ in range(32)],
+    })
+
+    assert set(payload["run_readiness"]) == readiness_keys
+    assert set(payload["run_readiness"]["diagnostic_states"]) == diagnostic_keys
+    assert len(payload["gate_cards"]) == 10
+    assert payload["missing_pipeline_sections"][0]["reason"] == "not present"
+    assert payload["payload_budget"]["truncated"] is True
+
+
+def test_semantic_review_final_compaction_preserves_control_plane_contract() -> None:
+    """The final pretty-byte pass may compact evidence, not public control-plane shape."""
+    readiness_keys = {
+        "readiness_status", "status_reason", "run_id", "ticker", "from_date", "to_date",
+        "topic_review_state", "topic_relevance_review_status", "relevance_informativeness_state",
+        "diagnostic_states", "diagnostic_summary",
+    }
+    diagnostic_keys = {
+        "embedding_coverage", "hmm_chart_auditability", "relevance_informativeness",
+        "topic_review", "hmm_feature_set",
+    }
+    summary_cards = [
+        {"label": f"Card {index}", "value": f"value-{index}", "field": f"field-{index}"}
+        for index in range(10)
+    ]
+    payload = cast(dict[str, Any], _enforce_payload_pretty_byte_budget({
+        "run_readiness": {
+            **{key: f"value-{key}" for key in readiness_keys if key not in {"diagnostic_states", "diagnostic_summary"}},
+            "diagnostic_states": {key: "WARN" for key in diagnostic_keys},
+            "diagnostic_summary": {"overall_state": "WARN"},
+        },
+        "summary_cards": summary_cards,
+        "gate_cards": [
+            {"key": f"gate-{index}", "label": f"Gate {index}", "status": "ready", "reason": "ok"}
+            for index in range(10)
+        ],
+        "missing_pipeline_sections": [
+            {"key": "topic_labels", "label": "Topics", "reason": "not present", "scope": "packet"}
+        ],
+        "article_group_counts": {
+            "full_count": 32, "sample_count": 6, "omitted_count": 26,
+            "truncated": True, "sampling_method": "extremes",
+        },
+        "oversized_detail": [{"value": "x" * 20_000} for _ in range(32)],
+    }))
+
+    assert payload["payload_budget"]["compacted"] is True
+    assert payload["payload_budget"]["truncated"] is True
+    assert len(json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")) < 200_000
+    assert set(payload["run_readiness"]) == readiness_keys
+    assert set(payload["run_readiness"]["diagnostic_states"]) == diagnostic_keys
+    assert len(payload["summary_cards"]) == 10
+    assert {frozenset(card) for card in payload["summary_cards"]} == {
+        frozenset({"label", "value", "field"})
+    }
+    assert len(payload["gate_cards"]) == 10
+    assert payload["missing_pipeline_sections"][0]["reason"] == "not present"
+    assert set(payload["article_group_counts"]) >= {
+        "full_count", "sample_count", "omitted_count", "truncated", "sampling_method"
+    }
