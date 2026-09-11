@@ -405,7 +405,9 @@ def build_layer1_semantic_review_dashboard_smoke_payload(
                     relevance_gate_rows_source, limit=1, requested_ticker=requested_ticker
                 )
             ],
-            "finbert_sentence_rows": _smoke_sentence_rows(article_groups_source),
+            "finbert_sentence_rows": _smoke_sentence_rows(
+                article_groups_source, requested_ticker=requested_ticker
+            ),
             "semantic_aggregate_rows": [
                 dict(item) for item in _smoke_sample_rows(
                     semantic_aggregate_rows_source, limit=1, requested_ticker=requested_ticker
@@ -915,12 +917,11 @@ def _smoke_sample_rows(
 ) -> list[Mapping[str, object]]:
     """Return a ticker-isolated, ordered sample of mapping rows for smoke payloads."""
     rows = [item for item in _json_list(value) if isinstance(item, Mapping)]
-    rows = [
-        item for item in rows
-        if requested_ticker is None
-        or item.get("ticker") is None
-        or str(item.get("ticker")).upper() == requested_ticker.upper()
-    ]
+    if requested_ticker is not None:
+        rows = [
+            item for item in rows
+            if str(item.get("ticker") or "").upper() == requested_ticker.upper()
+        ]
     return rows[: max(limit, 0)]
 
 
@@ -957,7 +958,9 @@ def _canonical_stage_counts_from_summary(
     return result
 
 
-def _smoke_sentence_rows(article_groups_value: object) -> list[dict[str, object]]:
+def _smoke_sentence_rows(
+    article_groups_value: object, *, requested_ticker: str | None = None
+) -> list[dict[str, object]]:
     """Return a compact sample of scored sentence rows for the smoke payload."""
     def _text(value: object) -> str | None:
         if value is None:
@@ -984,12 +987,23 @@ def _smoke_sentence_rows(article_groups_value: object) -> list[dict[str, object]
 
     article_groups = [item for item in _json_list(article_groups_value) if isinstance(item, Mapping)]
     for article in article_groups:
-        sentence_rows = [item for item in _json_list(article.get("sentence_rows")) if isinstance(item, Mapping)]
+        article_ticker = _text(article.get("ticker"))
+        if requested_ticker is not None and article_ticker != requested_ticker.upper():
+            continue
+        sentence_rows = [
+            item for item in _json_list(article.get("sentence_rows"))
+            if isinstance(item, Mapping)
+            and (
+                requested_ticker is None
+                or _text(item.get("ticker")) in {None, requested_ticker.upper()}
+            )
+        ]
         if sentence_rows:
             row = sentence_rows[0]
             return [
                 {
                     "date": _text(row.get("date")) or _text(article.get("date")),
+                    "ticker": _text(row.get("ticker")) or article_ticker,
                     "article_id": _text(row.get("article_id")) or _text(article.get("article_id")),
                     "sentence_index": _int(row.get("sentence_index")),
                     "chunk_index": _int(row.get("chunk_index")),
@@ -2267,6 +2281,7 @@ _PAYLOAD_PRETTY_BYTE_BUDGET = 200_000
 _PAYLOAD_BUDGET_METADATA_RESERVE = 1_024
 _PAYLOAD_TARGET_PRETTY_BYTES = _PAYLOAD_PRETTY_BYTE_BUDGET - _PAYLOAD_BUDGET_METADATA_RESERVE
 _PAYLOAD_STRING_CHARACTER_LIMIT = 256
+_PAYLOAD_EXACT_ID_SAFE_LIMIT = 4_096
 _PAYLOAD_MAPPING_KEY_LIMIT = 96
 _PAYLOAD_TOP_LEVEL_KEY_LIMIT = 256
 _PAYLOAD_KEY_NAME_LIMIT = 96
@@ -3228,6 +3243,20 @@ def _bound_json_value(value: object, *, key: str = "", depth: int = 0) -> object
             items = [items[index] for index in selected_indices]
         return [_bound_json_value(item, key=key, depth=depth + 1) for item in items[:limit]]
     if isinstance(value, str):
+        # Identity fields are never display prose.  This guard must precede the
+        # generic 256-character scalar bound because the public builder invokes
+        # this pass after the structural compaction pass.
+        if key in _PAYLOAD_EXACT_ID_KEYS:
+            if len(value) > _PAYLOAD_EXACT_ID_SAFE_LIMIT:
+                import hashlib
+
+                return {
+                    "display_preview": value[:_PAYLOAD_STRING_CHARACTER_LIMIT],
+                    "exact_sha256": hashlib.sha256(value.encode("utf-8")).hexdigest(),
+                    "exact_character_count": len(value),
+                    "exact_value_omitted": True,
+                }
+            return value
         if key in {
             "text", "full_scored_text", "headline", "message", "reason", "summary",
             "topic_example_text", "snippet", "detail",

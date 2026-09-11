@@ -92,6 +92,74 @@ def test_payload_budget_records_final_serialized_size_and_preserves_ids() -> Non
     assert payload["payload_budget"]["within_budget"] is True
 
 
+def test_public_builder_preserves_long_ids_and_audits_oversized_ids() -> None:
+    """Exact identifiers bypass prose bounds and use an auditable oversized-ID preview."""
+    run_id = "run-" + "x" * 300
+    payload = cast(
+        dict[str, Any],
+        build_layer1_semantic_review_dashboard_payload(
+            {
+                "ticker": "AAPL",
+                "run_id": run_id,
+                "from_date": "2026-01-01",
+                "to_date": "2026-01-02",
+                "artifact_keys": {"manifest": ["artifact-" + "a" * 300]},
+            }
+        ),
+    )
+    assert payload["controls"]["run_id"] == run_id
+    assert payload["report_summary"]["run_id"] == run_id
+
+    oversized = "r" * 4_097
+    oversized_payload = cast(
+        dict[str, Any],
+        build_layer1_semantic_review_dashboard_payload(
+            {"ticker": "AAPL", "run_id": oversized}
+        ),
+    )
+    bounded_id = oversized_payload["controls"]["run_id"]
+    assert bounded_id["exact_value_omitted"] is True
+    assert bounded_id["exact_character_count"] == len(oversized)
+    assert len(bounded_id["exact_sha256"]) == 64
+
+
+def test_smoke_finbert_sample_is_strictly_ticker_isolated() -> None:
+    """Foreign and missing-ticker article/sentence rows never enter evidence samples."""
+    payload = cast(
+        dict[str, Any],
+        build_layer1_semantic_review_dashboard_smoke_payload(
+            {
+                "ticker": "AAPL",
+                "article_groups": [
+                    {
+                        "ticker": "MSFT",
+                        "article_id": "foreign",
+                        "sentence_rows": [{"ticker": "MSFT", "text": "foreign"}],
+                    },
+                    {
+                        "ticker": None,
+                        "article_id": "missing-row-ticker",
+                        "sentence_rows": [{"ticker": "AAPL", "text": "untyped"}],
+                    },
+                    {
+                        "ticker": "AAPL",
+                        "article_id": "aapl-article",
+                        "sentence_rows": [
+                            {"ticker": "MSFT", "text": "foreign nested"},
+                            {"ticker": "AAPL", "text": "target", "sentence_index": 2},
+                        ],
+                    },
+                ],
+            }
+        ),
+    )
+    rows = cast(list[dict[str, Any]], payload["pipeline_sections"]["finbert_sentence_rows"])
+    assert len(rows) == 1
+    assert rows[0]["ticker"] == "AAPL"
+    assert rows[0]["article_id"] == "aapl-article"
+    assert rows[0]["text"] == "target"
+
+
 def test_semantic_review_payload_bounds_retained_hmm_context_and_preserves_evidence() -> None:
     """Retained HMM metadata stays useful and bounded even with adversarial mappings."""
     context: dict[str, object] = {
