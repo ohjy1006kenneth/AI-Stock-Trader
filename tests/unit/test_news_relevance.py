@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from core.features.news_preprocessing import preprocess_news_articles
 from core.features.news_relevance import (
@@ -323,6 +324,68 @@ def test_news_relevance_gate_does_not_reuse_target_headline_for_body_chunks() ->
     ].iloc[0]
     assert direct["relevance_category"] == "direct_target_event"
     assert direct["relevance_decision"] in {"accepted", "borderline"}
+
+
+@pytest.mark.parametrize(
+    ("ticker", "alias", "competitor_text", "direct_text"),
+    [
+        ("AAPL", "Apple", "Nvidia and Tesla are building new data centers.", "Apple will expand iPhone production."),
+        ("AMD", "AMD", "Nvidia launched a new GPU for AI datacenters.", "AMD will supply chips for new servers."),
+        ("NVDA", "NVIDIA", "AMD announced a new processor for cloud customers.", "NVIDIA GPU demand is rising in datacenters."),
+        ("MSFT", "Microsoft", "Apple announced a new iPhone product.", "Microsoft Azure cloud demand is rising."),
+    ],
+)
+def test_news_relevance_gate_isolated_across_target_tickers(
+    ticker: str,
+    alias: str,
+    competitor_text: str,
+    direct_text: str,
+) -> None:
+    """Provider/headline target tags cannot promote non-local cross-ticker chunks."""
+    records = preprocess_news_articles(
+        [
+            {
+                "id": f"{ticker.lower()}-leak",
+                "headline": f"{alias} announces a major technology update",
+                "content": competitor_text,
+                "created_at": "2024-01-02T12:00:00+00:00",
+                "source": "benzinga",
+                "symbols": [ticker],
+            },
+            {
+                "id": f"{ticker.lower()}-direct",
+                "headline": f"{alias} announces a major technology update",
+                "content": direct_text,
+                "created_at": "2024-01-02T12:01:00+00:00",
+                "source": "benzinga",
+                "symbols": [ticker],
+            },
+        ],
+        as_of_date="2024-01-02",
+        point_in_time_tickers=(ticker,),
+    )
+
+    result = apply_news_relevance_gate(records)
+    audit = result.audit_frame
+    leak = audit.loc[
+        (audit["article_id"] == f"{ticker.lower()}-leak")
+        & (audit["source_text_field"] == "content")
+    ].iloc[0]
+    direct = audit.loc[
+        (audit["article_id"] == f"{ticker.lower()}-direct")
+        & (audit["source_text_field"] == "content")
+    ].iloc[0]
+
+    assert leak["relevance_decision"] == "rejected"
+    assert leak["relevance_category"] == "irrelevant"
+    assert bool(leak["included_in_signal"]) is False
+    assert leak["effective_contribution"] == 0.0
+    assert "article_only_context_insufficient" in _reason_codes(leak)
+    assert direct["relevance_category"] == "direct_target_event"
+    assert direct["relevance_decision"] in {"accepted", "borderline"}
+    assert bool(direct["included_in_signal"]) is True
+    assert direct["effective_contribution"] > 0.0
+    assert {record.article_id for record in result.finbert_records} == {f"{ticker.lower()}-direct"}
 
 
 def _topic_label_frame(article_ids) -> pd.DataFrame:

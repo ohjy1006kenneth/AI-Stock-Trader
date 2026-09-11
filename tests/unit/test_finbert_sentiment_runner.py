@@ -77,17 +77,16 @@ def test_run_finbert_sentiment_reads_preprocessed_news_and_writes_outputs(
         "finbert-run",
     )
     assert result.manifest_key == pipeline_manifest_path(FINBERT_SENTIMENT_STAGE, "finbert-run")
-    assert len(scored) == 3
-    assert all(scored["relevance_score"].iloc[:2] == 0.8)
-    assert scored["relevance_score"].iloc[2] == pytest.approx(0.48)
+    assert len(scored) == 2
+    assert all(scored["relevance_score"] == 0.8)
     assert set(features["ticker"]) == {"AAPL", "MSFT"}
     assert json.loads(features.loc[features["ticker"] == "AAPL", "features"].iloc[0])[
         "nlp_sentence_count"
-    ] == 2
+    ] == 1
     assert manifest["status"] == RunStatus.COMPLETED
-    assert manifest["metadata"]["scored_rows"] == 3
+    assert manifest["metadata"]["scored_rows"] == 2
     assert manifest["metadata"]["relevance_accepted_rows"] == 2
-    assert manifest["metadata"]["relevance_borderline_rows"] == 1
+    assert manifest["metadata"]["relevance_borderline_rows"] == 0
     assert manifest["metadata"]["feature_rows"] == 2
     assert manifest["metadata"]["semantic_aggregation"]["relevance_gate_loaded"] is True
 
@@ -178,14 +177,67 @@ def test_run_finbert_sentiment_scores_only_relevance_gate_candidates(
     gate = pd.read_parquet(io.BytesIO(writer.get_object(str(result.relevance_gate_key))))
     manifest = json.loads(writer.get_object(result.manifest_key))
 
-    assert set(scored["article_id"]) == {"aapl-good", "aapl-borderline"}
-    assert set(gate["relevance_decision"]) == {"accepted", "borderline", "rejected"}
+    assert set(scored["article_id"]) == {"aapl-good"}
+    assert set(gate["relevance_decision"]) == {"accepted", "rejected"}
     assert gate.loc[
         gate["article_id"] == "aapl-contamination",
         "relevance_decision",
     ].iloc[0] == "rejected"
-    assert manifest["metadata"]["relevance_rejected_rows"] == 1
+    assert manifest["metadata"]["relevance_rejected_rows"] == 2
     assert manifest["metadata"]["semantic_aggregation"]["topic_labels_loaded"] is True
+
+
+def test_run_finbert_sentiment_excludes_provider_only_rows_with_missing_local_target_evidence(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Headline/provider tags remain auditable but cannot enter FinBERT scoring."""
+    writer = _local_writer(tmp_path, monkeypatch)
+    input_key = news_preprocessing_output_path("nlp-pre-run", "2024-01-02")
+    _write_preprocessed_news(
+        writer,
+        input_key,
+        [
+            _record(
+                ticker="AAPL",
+                text="It is crucial for investors to consider market conditions.",
+                sentence_index=0,
+                article_id="provider-only",
+                article_tickers=("AAPL",),
+                source_text_field="content",
+            ),
+            _record(
+                ticker="AAPL",
+                text="Apple will expand iPhone production after the product update.",
+                sentence_index=0,
+                article_id="local-target",
+                entity_mentions=("Apple",),
+                article_tickers=("AAPL",),
+                source_text_field="content",
+            ),
+        ],
+    )
+
+    result = run_finbert_sentiment(
+        FinBERTPipelineConfig(
+            run_id="finbert-provider-only",
+            as_of_date="2024-01-02",
+            preprocessed_news_key=input_key,
+        ),
+        writer=writer,
+        scorer=_FakeScorer(),
+        runtime_config=_runtime_config(tmp_path),
+    )
+
+    scored = pd.read_parquet(io.BytesIO(writer.get_object(result.scored_news_key)))
+    gate = pd.read_parquet(io.BytesIO(writer.get_object(str(result.relevance_gate_key))))
+    rejected = gate.loc[gate["article_id"] == "provider-only"].iloc[0]
+
+    assert set(scored["article_id"]) == {"local-target"}
+    assert rejected["relevance_decision"] == "rejected"
+    assert bool(rejected["included_in_signal"]) is False
+    assert rejected["effective_contribution"] == 0.0
+    assert "article_only_context_insufficient" in json.loads(rejected["reason_codes"])
 
 
 def test_run_finbert_sentiment_writes_failure_manifest(
@@ -285,6 +337,7 @@ def _record(
     article_id: str | None = None,
     entity_mentions: tuple[str, ...] | None = None,
     article_tickers: tuple[str, ...] | None = None,
+    source_text_field: str | None = None,
 ) -> NewsSentimentRecord:
     """Build one sentence-level news record."""
     normalized_article_tickers = article_tickers or (ticker,)
@@ -297,6 +350,7 @@ def _record(
         article_id=article_id or f"article-{ticker}",
         sentence_index=sentence_index,
         source="benzinga",
+        source_text_field=source_text_field,
         published_at="2024-01-02T12:00:00+00:00",
         source_text_provenance={
             "article_tickers": list(normalized_article_tickers),

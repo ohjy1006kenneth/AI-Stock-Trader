@@ -21,6 +21,7 @@ RELEVANCE_GATE_COLUMNS: tuple[str, ...] = (
     "article_id",
     "sentence_index",
     "chunk_index",
+    "source_text_field",
     "headline",
     "text",
     "source",
@@ -42,6 +43,8 @@ RELEVANCE_GATE_COLUMNS: tuple[str, ...] = (
     "article_contamination_count",
     "article_signal_count",
     "article_contribution_weight",
+    "included_in_signal",
+    "effective_contribution",
     "reason_codes",
     "ticker_evidence",
     "entity_evidence",
@@ -318,10 +321,6 @@ def _build_record_analysis(
     # chunk-local evidence for summary/content rows; headline chunks already
     # carry the headline in ``record.text``.
     text = record.text or ""
-    if record.source_text_field is None and record.headline:
-        # Legacy/minimal rows do not identify the chunk source field. Preserve
-        # their historical behavior while real preprocessed chunks stay local.
-        text = " ".join(part for part in (record.headline, text) if part)
     normalized_text = _normalize_text(text)
     source_tickers = _json_string_list(provenance.get("article_tickers"))
     chunk_tickers = _json_string_list(provenance.get("chunk_tickers"))
@@ -384,9 +383,9 @@ def _build_record_analysis(
     if ticker_score < 1.0:
         reasons.append("low_ticker_relevance")
     if (
-        assignment_classification in {"direct", "broad_market"}
-        and ticker_score < 1.0
+        ticker_score < 1.0
         and relevance_category == "irrelevant"
+        and ticker in {value.strip().upper() for value in source_tickers}
     ):
         reasons.append("article_only_context_insufficient")
 
@@ -397,6 +396,7 @@ def _build_record_analysis(
         "article_key": record.article_id or _stable_article_id(record),
         "sentence_index": record.sentence_index,
         "chunk_index": record.chunk_index,
+        "source_text_field": record.source_text_field,
         "headline": record.headline,
         "text": record.text,
         "source": record.source,
@@ -511,6 +511,7 @@ def _finalize_record_analysis(
         "article_id": analysis["article_id"],
         "sentence_index": analysis["sentence_index"],
         "chunk_index": analysis["chunk_index"],
+        "source_text_field": analysis["source_text_field"],
         "headline": analysis["headline"],
         "text": analysis["text"],
         "source": analysis["source"],
@@ -532,6 +533,12 @@ def _finalize_record_analysis(
         "article_contamination_count": article_contamination_count,
         "article_signal_count": article_signal_count,
         "article_contribution_weight": article_contribution_weight,
+        "included_in_signal": decision in {"accepted", "borderline"},
+        "effective_contribution": (
+            relevance_score * article_contribution_weight
+            if decision in {"accepted", "borderline"}
+            else 0.0
+        ),
         "reason_codes": json.dumps(sorted(reasons)),
         "ticker_evidence": json.dumps(analysis["ticker_evidence"], sort_keys=True),
         "entity_evidence": json.dumps(analysis["entity_evidence"]),
@@ -593,12 +600,7 @@ def _target_conditioned_metadata(
     reasons: list[str] = []
     lower_text = normalized_text.lower()
     direct_evidence = ticker_score >= 1.0
-    source_tag_financial_evidence = (
-        assignment_classification is None
-        and not competitor_reasons
-        and ticker_score >= 0.45
-        and financial_score >= 0.35
-    )
+
     has_direct_business_context = any(
         _contains_phrase(lower_text, term) for term in _DIRECT_TARGET_BUSINESS_TERMS
     )
@@ -624,15 +626,19 @@ def _target_conditioned_metadata(
             reasons,
         )
 
-    if direct_evidence and (has_direct_business_context or business_channel in {
-        "legal_regulatory",
-        "product_device",
-        "analyst_investor",
-        "ownership",
-        "options_market",
-        "enterprise_cloud",
-        "ai_chip_device",
-    }):
+    if direct_evidence and (
+        has_direct_business_context
+        or business_channel in {
+            "legal_regulatory",
+            "product_device",
+            "analyst_investor",
+            "ownership",
+            "options_market",
+            "enterprise_cloud",
+            "ai_chip_device",
+        }
+        or financial_score >= 0.35
+    ):
         category = "direct_target_event"
         reasons.append("target_conditioned_category:direct_target_event")
         reasons.append(f"causal_channel:{business_channel}")
@@ -662,35 +668,6 @@ def _target_conditioned_metadata(
             reasons,
         )
 
-    if source_tag_financial_evidence and has_macro_context:
-        category = "industry_or_macro_exposure"
-        reasons.append("target_conditioned_category:industry_or_macro_exposure")
-        reasons.append("causal_channel:industry_macro")
-        reasons.append("source_tag_financial_evidence")
-        return (
-            category,
-            _impact_direction(lower_text),
-            "low",
-            "medium_term",
-            "industry_macro",
-            0.55,
-            reasons,
-        )
-
-    if source_tag_financial_evidence:
-        category = "direct_target_event"
-        reasons.append("target_conditioned_category:direct_target_event")
-        reasons.append("causal_channel:source_tagged_financial_event")
-        reasons.append("source_tag_financial_evidence")
-        return (
-            category,
-            _impact_direction(lower_text),
-            "medium",
-            "short_term",
-            "source_tagged_financial_event",
-            0.62,
-            reasons,
-        )
 
     if (direct_evidence or assignment_classification == "indirect") and has_competitor_context:
         category = "competitor_read_through"
