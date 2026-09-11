@@ -6,6 +6,7 @@ import math
 import re
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
+from dataclasses import asdict, is_dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -120,7 +121,7 @@ def build_semantic_qa_payload(
         if not any(_ticker_has_rows(item) for item in ticker_payloads.values())
         else ("warning" if warnings or freshness["state"] == "stale" else "ready")
     )
-    matrix = _build_leakage_matrix(ticker_payloads, normalized_tickers)
+    matrix = _build_leakage_matrix(reports, normalized_tickers)
     integrity = _integrity(ticker_payloads, reports, run_id, from_date, to_date, normalized_tickers)
     if integrity["status"] == "fail":
         status = "warning"
@@ -182,17 +183,18 @@ def _build_ticker(
             queues["potential_false_negatives"].append(_queue_row(row, "potential_false_negative"))
         if included and owner not in {None, ticker} and not relationship:
             queues["cross_ticker_anomalies"].append(_queue_row(row, "cross_ticker_anomaly"))
-        contribution = _number(row.get("effective_contribution", row.get("contribution")))
+        contribution = _row_contribution(row)
         if included and contribution is not None and contribution != 0:
             queues["top_contributors"].append(_queue_row(row, "top_contributor"))
     queues["top_contributors"].sort(
         key=lambda row: (
-            -abs(_number(row.get("effective_contribution")) or 0),
+            -abs(_row_contribution(row) or 0),
             str(row.get("row_id", "")),
         )
     )
     for name in queues:
-        queues[name] = _queue(queues[name], _canonical_queue_count(report, name), limit)
+        # These rows are the complete canonical producer slice; only the returned rows are bounded.
+        queues[name] = _queue(queues[name], len(queues[name]), limit)
     summary = {
         "signal_rows": _canonical(
             report,
@@ -254,7 +256,7 @@ def _funnel(
     stages: dict[str, Any] = {}
     for stage, names in _STAGE_FIELDS.items():
         count = _canonical(report, names, None)
-        sample = min(count, len(rows)) if count is not None else len(rows) if rows else 0
+        sample = min(count, len(rows)) if count is not None else len(rows)
         stages[stage] = _count_record(count, sample)
         if count is None:
             warnings.append(
@@ -265,6 +267,11 @@ def _funnel(
                     "Producer did not expose a trustworthy canonical count.",
                 )
             )
+    if not rows and (
+        report.get("row_count") == 0
+        or all(_canonical(report, names, None) == 0 for names in _STAGE_FIELDS.values())
+    ):
+        warnings.append(_warning("no_review_rows", ticker, None, "The producer established an empty review result."))
     return stages
 
 
@@ -319,6 +326,11 @@ def _queue_row(row: Mapping[str, Any], reason: str) -> dict[str, Any]:
         "text",
         "effective_contribution",
         "sentiment_score",
+        "final_contribution",
+        "final_signal_contribution",
+        "evidence_owner",
+        "evidence_subject",
+        "explicit_local_material_relationship",
     )
     result = {key: row[key] for key in identity_keys if key in row and _json_safe(row[key])}
     result["row_id"] = str(row.get("row_id") or _identity(row))
@@ -334,16 +346,25 @@ def _queue_row(row: Mapping[str, Any], reason: str) -> dict[str, Any]:
     return result
 
 
-def _build_leakage_matrix(payloads: Mapping[str, Any], columns: Sequence[str]) -> dict[str, Any]:
+def _build_leakage_matrix(reports: Mapping[str, Any], columns: Sequence[str]) -> dict[str, Any]:
     subjects: dict[str, dict[str, Any]] = defaultdict(dict)
-    for ticker, payload in payloads.items():
-        for row in payload.get("queues", {}).get("cross_ticker_anomalies", {}).get("rows", []):
-            subject = _owner(row) or "unknown_generic"
+    for ticker in columns:
+        report = reports.get(ticker)
+        if report is None:
+            continue
+        for row in _evidence_rows(_as_mapping(report), ticker):
+            owner = _owner(row)
+            relationship = _bool(row.get("explicit_local_material_relationship"))
+            included = _bool(row.get("included_in_signal"))
+            if not included or owner in {None, ticker} or relationship:
+                continue
+            subject = owner or "unknown_generic"
             cell = subjects[subject].setdefault(
                 ticker, {"canonical_count": 0, "row_ids": [], "suspicious": True}
             )
             cell["canonical_count"] += 1
-            cell["row_ids"].append(row["row_id"])
+            if len(cell["row_ids"]) < 50:
+                cell["row_ids"].append(str(row.get("row_id") or _identity(row)))
     return {
         subject: {
             column: subjects.get(subject, {}).get(
@@ -364,24 +385,34 @@ def _integrity(
     tickers: Sequence[str],
 ) -> dict[str, Any]:
     issues: list[str] = []
+    stages: dict[str, Any] = {}
     for ticker in tickers:
         report = reports.get(ticker)
         if report is None:
             continue
         data = _as_mapping(report)
-        for key, expected in (("run_id", run_id), ("from_date", from_date), ("to_date", to_date)):
+        for key, expected in (("run_id", run_id), ("ticker", ticker), ("from_date", from_date), ("to_date", to_date), ("schema_id", SEMANTIC_QA_SCHEMA_ID)):
             if data.get(key) is not None and data.get(key) != expected:
                 issues.append(f"{ticker}:{key}_mismatch")
+        for stage, names in _STAGE_FIELDS.items():
+            count = _canonical(data, names, None)
+            rows = _evidence_rows(data, ticker)
+            sample = min(count, len(rows)) if count is not None else len(rows)
+            omitted = count - sample if count is not None and sample is not None and count >= sample else None
+            stages[f"{ticker}:{stage}"] = _count_record(count, sample)
+            if count is not None and sample is not None and omitted is not None and sample + omitted != count:
+                issues.append(f"{ticker}:{stage}_not_reconciled")
     return {
         "status": "fail"
         if issues
         else ("warn" if any(not reports.get(t) for t in tickers) else "pass"),
         "issue_codes": sorted(issues),
+        "stages": stages,
     }
 
 
 def _empty_ticker() -> dict[str, Any]:
-    empty = {"canonical_count": 0, "sample_count": 0, "omitted_count": 0, "status": "empty"}
+    empty = {"canonical_count": None, "sample_count": 0, "omitted_count": None, "status": "unknown"}
     return {
         "summary": {
             "signal_rows": None,
@@ -405,8 +436,8 @@ def _empty_ticker() -> dict[str, Any]:
     }
 
 
-def _count_record(canonical: int | None, sample: int) -> dict[str, Any]:
-    omitted = canonical - sample if canonical is not None and canonical >= sample else None
+def _count_record(canonical: int | None, sample: int | None) -> dict[str, Any]:
+    omitted = canonical - sample if canonical is not None and sample is not None and canonical >= sample else None
     return {
         "canonical_count": canonical,
         "sample_count": sample,
@@ -472,7 +503,7 @@ def _total_contribution(
     value = _number(report.get("total_contribution"))
     if value is not None:
         return value
-    values = [_number(row.get("effective_contribution")) for row in rows]
+    values = [_row_contribution(row) for row in rows]
     values = [x for x in values if x is not None]
     return float(sum(values)) if values else None
 
@@ -568,6 +599,8 @@ def _as_mapping(value: Any) -> Mapping[str, Any]:
     return (
         value.to_dict()
         if hasattr(value, "to_dict")
+        else asdict(value)  # type: ignore[arg-type]
+        if is_dataclass(value)
         else value
         if isinstance(value, Mapping)
         else {}
@@ -583,9 +616,23 @@ def _json_safe(value: Any) -> bool:
 
 
 def _ticker_has_rows(value: Mapping[str, Any]) -> bool:
-    return bool(
-        value.get("summary", {}).get("signal_rows") or value.get("summary", {}).get("rejected_rows")
+    summary = value.get("summary", {})
+    if any(isinstance(summary.get(key), int) and summary[key] > 0 for key in summary):
+        return True
+    return any(
+        bool(stage.get("canonical_count") or stage.get("sample_count"))
+        for stage in value.get("funnel", {}).values()
+        if isinstance(stage, Mapping)
     )
+
+
+def _row_contribution(row: Mapping[str, Any]) -> float | None:
+    """Read the producer's canonical final contribution with compatibility fallbacks."""
+    for key in ("final_signal_contribution", "final_contribution", "effective_contribution", "contribution"):
+        value = _number(row.get(key))
+        if value is not None:
+            return value
+    return None
 
 
 def _warning(code: str, ticker: str | None, stage: str | None, message: str) -> dict[str, Any]:

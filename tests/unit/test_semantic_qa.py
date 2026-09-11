@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+from http.client import HTTPConnection
+from threading import Thread
+
+import pytest
+
+from app.lab import semantic_review_dashboard as dashboard
 from core.features.semantic_qa import (
     SEMANTIC_QA_SCHEMA_ID,
     build_semantic_qa_payload,
@@ -187,3 +193,108 @@ def test_empty_and_missing_tickers_are_explicit() -> None:
     assert payload["status"] == "empty"
     assert payload["tickers"]["AAPL"]["summary"]["signal_rows"] is None
     assert any(item["code"] == "missing_review_artifacts" for item in payload["warnings"])
+
+
+def test_source_final_contribution_is_totalled_and_ranked_deterministically() -> None:
+    report = _report()
+    report["article_groups"][0]["sentence_rows"][0].pop("effective_contribution")
+    report["article_groups"][0]["sentence_rows"][0]["final_contribution"] = 0.75
+    report["article_groups"][0]["sentence_rows"][0]["final_signal_contribution"] = 0.75
+    report["article_groups"][3]["sentence_rows"][0].pop("effective_contribution")
+    report["article_groups"][3]["sentence_rows"][0]["final_signal_contribution"] = 0.25
+    payload = build_semantic_qa_payload(
+        reports={"AAPL": report}, run_id="exact-run/01", from_date="2026-05-21", to_date="2026-05-22"
+    )
+    ticker = payload["tickers"]["AAPL"]
+    assert ticker["summary"]["total_contribution"] == 1.0
+    assert ticker["queues"]["top_contributors"]["rows"][0]["final_contribution"] == 0.75
+
+
+def test_leakage_matrix_uses_full_owner_rows_before_sampling() -> None:
+    report = _report()
+    rows = []
+    for index in range(40):
+        rows.append(
+            {
+                "date": "2026-05-21",
+                "ticker": "AMD",
+                "article_id": f"cross-{index}",
+                "sentence_index": 0,
+                "chunk_index": 0,
+                "included_in_signal": True,
+                "final_contribution": 0.1,
+                "evidence_owner": "NVDA",
+                "has_requested_ticker_evidence": False,
+            }
+        )
+    report["article_groups"] = [{"ticker": "AMD", "sentence_rows": rows}]
+    payload = build_semantic_qa_payload(
+        reports={"AMD": report}, run_id="run", from_date="2026-05-21", to_date="2026-05-22", tickers=("AMD",), sample_limit=10
+    )
+    cell = payload["leakage_matrix"]["NVDA"]["AMD"]
+    assert cell["canonical_count"] == 40
+    assert len(cell["row_ids"]) == 40
+    assert payload["tickers"]["AMD"]["queues"]["cross_ticker_anomalies"]["sample_count"] == 10
+
+
+def test_integrity_reports_stage_reconciliation_and_identity_mismatch() -> None:
+    report = _report()
+    report["preprocessing_row_count"] = 650
+    report["run_id"] = "wrong-run"
+    payload = build_semantic_qa_payload(
+        reports={"AAPL": report}, run_id="exact-run/01", from_date="2026-05-21", to_date="2026-05-22", sample_limit=30
+    )
+    stage = payload["integrity"]["stages"]["AAPL:total_preprocessed_chunks"]
+    assert stage == {"canonical_count": 650, "sample_count": 4, "omitted_count": 646, "status": "measured"}
+    assert "AAPL:run_id_mismatch" in payload["integrity"]["issue_codes"]
+
+
+def test_established_empty_report_warns_without_fabricating_counts() -> None:
+    report = _report()
+    report["row_count"] = 0
+    report["article_groups"] = []
+    report["preprocessing_rows"] = []
+    report["summary"] = {"preprocessing_row_count": 0, "sentence_count": 0}
+    payload = build_semantic_qa_payload(
+        reports={"AAPL": report}, run_id="exact-run/01", from_date="2026-05-21", to_date="2026-05-22"
+    )
+    assert payload["status"] == "empty"
+    assert any(item["code"] == "no_review_rows" for item in payload["warnings"])
+    assert payload["tickers"]["AAPL"]["summary"]["signal_rows"] == 0
+
+
+def test_endpoint_validation_headers_and_missing_artifact_envelope(monkeypatch: pytest.MonkeyPatch) -> None:
+    defaults = dashboard._DashboardDefaults(
+        run_id="run", from_date="2026-05-21", to_date="2026-05-22", ticker="AAPL", host="127.0.0.1", port=0
+    )
+    server = dashboard._DashboardHTTPServer((defaults.host, defaults.port), defaults)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    connection = HTTPConnection(str(server.server_address[0]), int(server.server_address[1]), timeout=5)
+    try:
+        connection.request("GET", "/api/semantic-qa?run_id=run&from_date=bad&to_date=2026-05-22")
+        response = connection.getresponse()
+        assert response.status == 400
+        assert response.getheader("Cache-Control") == "no-store"
+        assert '"code": "invalid_request"' in response.read().decode()
+
+        def missing_report(**_: object) -> None:
+            raise FileNotFoundError("missing")
+
+        monkeypatch.setattr(dashboard, "build_layer1_aapl_evidence_report", missing_report)
+        connection.request(
+            "GET", "/api/semantic-qa?run_id=run&from_date=2026-05-21&to_date=2026-05-22&sample_limit=51"
+        )
+        response = connection.getresponse()
+        assert response.status == 400
+        assert '"code": "invalid_request"' in response.read().decode()
+
+        connection.request("GET", "/api/semantic-qa?run_id=run&from_date=2026-05-21&to_date=2026-05-22")
+        response = connection.getresponse()
+        assert response.status == 404
+        assert '"code": "review_artifacts_not_found"' in response.read().decode()
+    finally:
+        connection.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
