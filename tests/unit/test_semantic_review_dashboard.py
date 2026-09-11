@@ -42,6 +42,56 @@ from services.r2.writer import R2Writer
 from tests.fixtures.semantic_review_support import seed_semantic_review_fixture
 
 
+def test_smoke_preserves_canonical_counts_and_exact_controls() -> None:
+    """A one-row smoke sample must retain producer counts and immutable identity."""
+    run_id = "layer1-daily-2026-06-18-2026-06-18-post-pr312-modal-t4-v1"
+    report = {
+        "ticker": "AAPL",
+        "run_id": run_id,
+        "from_date": "2026-06-18",
+        "to_date": "2026-06-18",
+        "summary": {
+            "preprocessing_row_count": 650,
+            "embedding_row_count": 157,
+            "topic_label_row_count": 16,
+            "relevance_gate_row_count": 650,
+            "row_count": 157,
+            "semantic_aggregate_row_count": 2,
+            "hmm_regime_row_count": 1,
+            "price_row_count": 25,
+        },
+        "preprocessing_rows": [{"ticker": "AAPL", "article_id": "a"}],
+        "embedding_rows": [{"ticker": "AAPL", "article_id": "a"}],
+        "topic_label_rows": [{"ticker": "AAPL", "article_id": "a"}],
+        "relevance_gate_rows": [{"ticker": "AAPL", "article_id": "a"}],
+        "article_groups": [{"ticker": "AAPL", "article_id": "a"}],
+        "semantic_aggregate_rows": [{"ticker": "AAPL", "date": "2026-06-18"}],
+        "regime_rows": [{"ticker": "AAPL", "date": "2026-06-18"}],
+        "price_rows": [{"ticker": "AAPL", "date": "2026-06-18"}],
+    }
+    payload = cast(dict[str, Any], build_layer1_semantic_review_dashboard_smoke_payload(report))
+    assert payload["controls"]["run_id"] == run_id
+    assert payload["run_readiness"]["run_id"] == run_id
+    assert payload["smoke"]["required_stage_row_counts"]["news_preprocessing"] == 650
+    assert payload["smoke"]["required_stage_row_counts"]["news_sentiment_scored"] == 157
+
+
+def test_payload_budget_records_final_serialized_size_and_preserves_ids() -> None:
+    """The budget metadata describes the final pretty serialization, including itself."""
+    run_id = "r" * 72
+    payload = cast(
+        dict[str, Any],
+        build_layer1_semantic_review_dashboard_payload(
+            {"ticker": "AAPL", "run_id": run_id, "from_date": "2026-01-01", "to_date": "2026-01-02"}
+        ),
+    )
+    encoded = json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
+    assert payload["report_summary"]["run_id"] == run_id
+    assert payload["run_readiness"]["run_id"] == run_id
+    assert payload["payload_budget"]["final_pretty_utf8_bytes"] == len(encoded)
+    assert payload["payload_budget"]["within_budget"] is True
+
+
 def test_semantic_review_payload_bounds_retained_hmm_context_and_preserves_evidence() -> None:
     """Retained HMM metadata stays useful and bounded even with adversarial mappings."""
     context: dict[str, object] = {

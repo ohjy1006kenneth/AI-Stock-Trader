@@ -270,6 +270,13 @@ def build_layer1_semantic_review_dashboard_payload(
             payload["feature_diagnostics"] = dict(loaded_feature_diagnostics)
     payload["topic_relevance_review"] = build_layer1_topic_relevance_review(payload)
     payload["semantic_aggregate_review"] = build_layer1_semantic_aggregate_review(payload)
+    summary = _json_mapping(payload.get("summary"))
+    canonical_sources = dict(_json_mapping(payload.get("pipeline_sections")))
+    canonical_sources["benchmark_price_context"] = payload.get("benchmark_price_series")
+    canonical_sources["benchmark_price_hmm_context"] = payload.get("benchmark_market_regime_series")
+    payload["canonical_stage_counts"] = _canonical_stage_counts_from_summary(
+        summary, canonical_sources
+    )
     payload.update(build_layer1_semantic_review_readiness_summary(payload))
     return _compact_layer1_semantic_review_dashboard_payload(payload)
 
@@ -339,6 +346,20 @@ def build_layer1_semantic_review_dashboard_smoke_payload(
         hmm_context = _json_mapping(report_dict.get("hmm_evaluation_context"))
         benchmark_ticker = report_dict.get("benchmark_ticker")
 
+    requested_ticker = _optional_str(controls.get("ticker"))
+    source_rows = {
+        "news_preprocessing": preprocessing_rows_source,
+        "text_embeddings": embedding_rows_source,
+        "topic_labels": topic_label_rows_source,
+        "news_relevance_gate": relevance_gate_rows_source,
+        "news_sentiment_scored": article_groups_source,
+        "sentiment_features": semantic_aggregate_rows_source,
+        "hmm_regime": regime_rows_source,
+        "stock_price_context": price_rows_source,
+        "benchmark_price_context": benchmark_price_rows_source,
+        "benchmark_price_hmm_context": benchmark_market_regime_rows_source,
+    }
+    canonical_stage_counts = _canonical_stage_counts_from_summary(summary, source_rows)
     payload: dict[str, object] = {
         "title": "Layer 1 semantic review dashboard",
         "description": (
@@ -349,6 +370,7 @@ def build_layer1_semantic_review_dashboard_smoke_payload(
         "recommendation_for_issue_202": "needs_human_review",
         "summary": summary,
         "controls": controls,
+        "canonical_stage_counts": canonical_stage_counts,
         "benchmark_ticker": benchmark_ticker,
         "benchmark_price_series": [
             dict(item) for item in _smoke_sample_rows(benchmark_price_rows_source, limit=3)
@@ -364,25 +386,39 @@ def build_layer1_semantic_review_dashboard_smoke_payload(
         "warnings": [dict(item) for item in _smoke_sample_rows(warnings_source, limit=12)],
         "pipeline_sections": {
             "raw_preprocessing_rows": [
-                dict(item) for item in _smoke_sample_rows(preprocessing_rows_source, limit=1)
+                dict(item) for item in _smoke_sample_rows(
+                    preprocessing_rows_source, limit=1, requested_ticker=requested_ticker
+                )
             ],
             "article_embedding_rows": [
-                dict(item) for item in _smoke_sample_rows(embedding_rows_source, limit=1)
+                dict(item) for item in _smoke_sample_rows(
+                    embedding_rows_source, limit=1, requested_ticker=requested_ticker
+                )
             ],
             "topic_label_rows": [
-                dict(item) for item in _smoke_sample_rows(topic_label_rows_source, limit=1)
+                dict(item) for item in _smoke_sample_rows(
+                    topic_label_rows_source, limit=1, requested_ticker=requested_ticker
+                )
             ],
             "relevance_gate_rows": [
-                dict(item) for item in _smoke_sample_rows(relevance_gate_rows_source, limit=1)
+                dict(item) for item in _smoke_sample_rows(
+                    relevance_gate_rows_source, limit=1, requested_ticker=requested_ticker
+                )
             ],
             "finbert_sentence_rows": _smoke_sentence_rows(article_groups_source),
             "semantic_aggregate_rows": [
-                dict(item) for item in _smoke_sample_rows(semantic_aggregate_rows_source, limit=1)
+                dict(item) for item in _smoke_sample_rows(
+                    semantic_aggregate_rows_source, limit=1, requested_ticker=requested_ticker
+                )
             ],
             "date_level_regime_rows": [
-                dict(item) for item in _smoke_sample_rows(regime_rows_source, limit=1)
+                dict(item) for item in _smoke_sample_rows(
+                    regime_rows_source, limit=1, requested_ticker=requested_ticker
+                )
             ],
-            "stock_price_rows": [dict(item) for item in _smoke_sample_rows(price_rows_source, limit=3)],
+            "stock_price_rows": [dict(item) for item in _smoke_sample_rows(
+                price_rows_source, limit=3, requested_ticker=requested_ticker
+            )],
             "date_aligned_price_hmm_rows": [
                 dict(item) for item in _smoke_sample_rows(market_regime_rows_source, limit=3)
             ],
@@ -874,10 +910,51 @@ def build_layer1_semantic_review_readiness_summary(
 
 
 
-def _smoke_sample_rows(value: object, *, limit: int) -> list[Mapping[str, object]]:
-    """Return a small, ordered sample of mapping rows for smoke payloads."""
+def _smoke_sample_rows(
+    value: object, *, limit: int, requested_ticker: str | None = None
+) -> list[Mapping[str, object]]:
+    """Return a ticker-isolated, ordered sample of mapping rows for smoke payloads."""
     rows = [item for item in _json_list(value) if isinstance(item, Mapping)]
+    rows = [
+        item for item in rows
+        if requested_ticker is None
+        or item.get("ticker") is None
+        or str(item.get("ticker")).upper() == requested_ticker.upper()
+    ]
     return rows[: max(limit, 0)]
+
+
+def _canonical_row_count(value: object, *, requested_ticker: str | None) -> int:
+    """Count canonical mapping rows, excluding malformed and foreign-ticker evidence."""
+    return len(_smoke_sample_rows(value, limit=len(_json_list(value)), requested_ticker=requested_ticker))
+
+
+def _canonical_stage_counts_from_summary(
+    summary: Mapping[str, object], source_rows: object
+) -> dict[str, int]:
+    """Return authoritative stage counts, preferring producer summary counts."""
+    sources = _json_mapping(source_rows)
+    definitions = {
+        "news_preprocessing": ("preprocessing_row_count", "raw_preprocessing_rows"),
+        "text_embeddings": ("embedding_row_count", "article_embedding_rows"),
+        "topic_labels": ("topic_label_row_count", "topic_label_rows"),
+        "news_relevance_gate": ("relevance_gate_row_count", "relevance_gate_rows"),
+        "news_sentiment_scored": ("row_count", "finbert_sentence_rows"),
+        "sentiment_features": ("semantic_aggregate_row_count", "semantic_aggregate_rows"),
+        "hmm_regime": ("hmm_regime_row_count", "date_level_regime_rows"),
+        "stock_price_context": ("price_row_count", "stock_price_rows"),
+        "benchmark_price_context": ("benchmark_price_row_count", "benchmark_price_series"),
+        "benchmark_price_hmm_context": ("benchmark_hmm_row_count", "benchmark_market_regime_series"),
+    }
+    result: dict[str, int] = {}
+    for stage, (summary_key, source_key) in definitions.items():
+        summary_value = summary.get(summary_key)
+        if isinstance(summary_value, int) and not isinstance(summary_value, bool):
+            result[stage] = summary_value
+        else:
+            source_value = sources.get(source_key, sources.get(stage))
+            result[stage] = _canonical_row_count(source_value, requested_ticker=None)
+    return result
 
 
 def _smoke_sentence_rows(article_groups_value: object) -> list[dict[str, object]]:
@@ -2203,6 +2280,10 @@ _PAYLOAD_NODE_FLOOR = 2
 _PAYLOAD_COMPACTABLE_ITEM_FLOOR = 2
 _PAYLOAD_SACRIFICED_SECTION_LIST_LIMIT = 8
 _HMM_CONTEXT_SCALAR_SAMPLE_LIMIT = 96
+_PAYLOAD_EXACT_ID_KEYS = frozenset({
+    "run_id", "requested_ticker", "ticker", "from_date", "to_date", "stage",
+    "artifact_key", "manifest_key", "source_manifest_key", "artifact_id",
+})
 # This is the public control-plane contract.  Control-plane containers and
 # collection metadata must remain addressable even when evidence samples are
 # compacted.  Values inside these mappings may still be bounded.
@@ -2366,6 +2447,8 @@ def _shrink_payload_node(node: object, depth: int = 0, key: str = "") -> tuple[o
         if dropped and not preserve_rows:
             shrunk.append(_payload_compaction_marker("payload_compaction_omitted_item_count", dropped))
         return shrunk, dropped, truncated
+    if isinstance(node, str) and key in _PAYLOAD_EXACT_ID_KEYS:
+        return node, 0, 0
     if isinstance(node, str) and key in {
         "recommendation", "human_review_status", "status", "state", "reason",
     } and len(node) <= _PAYLOAD_PRESERVED_STATUS_LIMIT:
@@ -2424,12 +2507,11 @@ def _enforce_payload_pretty_byte_budget(payload: Mapping[str, object]) -> dict[s
         dropped_nodes += dropped
         truncated_scalars += truncated
 
-    final_size = _pretty_payload_size(result)
-    result["payload_budget"] = {
+    budget = {
         "pretty_utf8_byte_budget": _PAYLOAD_PRETTY_BYTE_BUDGET,
         "initial_pretty_utf8_bytes": initial_size,
-        "final_pretty_utf8_bytes": final_size,
-        "within_budget": final_size < _PAYLOAD_PRETTY_BYTE_BUDGET,
+        "final_pretty_utf8_bytes": 0,
+        "within_budget": False,
         "compacted": compacted,
         "compaction_passes": passes,
         "omitted_node_count": dropped_nodes,
@@ -2440,6 +2522,13 @@ def _enforce_payload_pretty_byte_budget(payload: Mapping[str, object]) -> dict[s
             or (compacted and (dropped_nodes or truncated_scalars or sacrificed_sections))
         ),
     }
+    result["payload_budget"] = budget
+    # The recorded metric includes payload_budget itself.  Iterate to the small
+    # fixed point caused by the decimal byte count changing its own width.
+    for _ in range(3):
+        measured = _pretty_payload_size(result)
+        budget["final_pretty_utf8_bytes"] = measured
+        budget["within_budget"] = measured < _PAYLOAD_PRETTY_BYTE_BUDGET
     return result
 
 _PIPELINE_SECTION_SAMPLE_LIMITS: dict[str, int] = {

@@ -2556,6 +2556,7 @@ def build_layer1_semantic_review_dashboard_smoke_result(
     warnings = [dict(item) for item in payload.get("warnings", []) if isinstance(item, Mapping)]
     artifact_keys = _json_mapping(payload.get("artifact_keys"))
     pipeline_sections = _json_mapping(payload.get("pipeline_sections"))
+    canonical_stage_counts = _json_mapping(payload.get("canonical_stage_counts"))
     hmm_context = _json_mapping(payload.get("hmm_evaluation_context"))
     benchmark_ticker = _optional_str(payload.get("benchmark_ticker")) or "SPY"
     failures: list[dict[str, object]] = []
@@ -2572,11 +2573,19 @@ def build_layer1_semantic_review_dashboard_smoke_result(
     )
     for stage_name, section_key, artifact_key_name in required_sections:
         rows = pipeline_sections.get(section_key)
-        if not isinstance(rows, list) or not rows:
+        canonical_count = _maybe_int(canonical_stage_counts.get(stage_name))
+        if canonical_count is None:
+            canonical_count = len(rows) if isinstance(rows, list) else 0
+        if canonical_count <= 0:
+            reason = (
+                "missing_or_incomplete_artifacts"
+                if _warning_keys_for_scopes(warnings, _warning_scopes_for_stage(stage_name))
+                else "empty_rows"
+            )
             failures.append(
                 _dashboard_smoke_failure(
                     stage=stage_name,
-                    reason="empty_rows",
+                    reason=reason,
                     warnings=warnings,
                     artifact_key_name=artifact_key_name,
                     artifact_keys=artifact_keys,
@@ -2619,17 +2628,18 @@ def build_layer1_semantic_review_dashboard_smoke_result(
             }
         )
 
-    benchmark_prices = [
-        dict(item)
-        for item in payload.get("benchmark_price_series", [])
-        if isinstance(item, Mapping)
-    ]
     benchmark_rows = [
         dict(item)
         for item in payload.get("benchmark_market_regime_series", [])
         if isinstance(item, Mapping)
     ]
-    if not benchmark_prices:
+    benchmark_price_count = _maybe_int(canonical_stage_counts.get("benchmark_price_context"))
+    benchmark_hmm_count = _maybe_int(canonical_stage_counts.get("benchmark_price_hmm_context"))
+    if benchmark_price_count is None:
+        benchmark_price_count = len(_json_list(payload.get("benchmark_price_series")))
+    if benchmark_hmm_count is None:
+        benchmark_hmm_count = len(benchmark_rows)
+    if benchmark_price_count <= 0:
         failures.append(
             _dashboard_smoke_failure(
                 stage="benchmark_price_context",
@@ -2639,7 +2649,7 @@ def build_layer1_semantic_review_dashboard_smoke_result(
                 artifact_keys=artifact_keys,
             )
         )
-    if not benchmark_rows:
+    if benchmark_hmm_count <= 0:
         failures.append(
             {
                 "stage": "benchmark_hmm_chart",
@@ -2651,7 +2661,7 @@ def build_layer1_semantic_review_dashboard_smoke_result(
                 ),
             }
         )
-    elif len(benchmark_prices) < 2 or len(benchmark_rows) < 2:
+    elif benchmark_price_count < 2 or benchmark_hmm_count < 2:
         failures.append(
             {
                 "stage": "benchmark_hmm_chart",
@@ -2743,16 +2753,16 @@ def build_layer1_semantic_review_dashboard_smoke_result(
         "status": status,
         "ready_for_final_human_acceptance": status == "pass",
         "required_stage_row_counts": {
-            "news_preprocessing": int(summary.get("preprocessing_row_count") or 0),
-            "text_embeddings": int(summary.get("embedding_row_count") or 0),
-            "topic_labels": int(summary.get("topic_label_row_count") or 0),
-            "news_relevance_gate": int(summary.get("relevance_gate_row_count") or 0),
-            "news_sentiment_scored": int(summary.get("row_count") or 0),
-            "sentiment_features": int(summary.get("semantic_aggregate_row_count") or 0),
-            "hmm_regime": int(summary.get("hmm_regime_row_count") or 0),
-            "stock_price_context": int(summary.get("price_row_count") or 0),
-            "benchmark_price_context": len(benchmark_prices),
-            "benchmark_price_hmm_context": len(benchmark_rows),
+            "news_preprocessing": _maybe_int(canonical_stage_counts.get("news_preprocessing")) or _maybe_int(summary.get("preprocessing_row_count")) or 0,
+            "text_embeddings": _maybe_int(canonical_stage_counts.get("text_embeddings")) or _maybe_int(summary.get("embedding_row_count")) or 0,
+            "topic_labels": _maybe_int(canonical_stage_counts.get("topic_labels")) or _maybe_int(summary.get("topic_label_row_count")) or 0,
+            "news_relevance_gate": _maybe_int(canonical_stage_counts.get("news_relevance_gate")) or _maybe_int(summary.get("relevance_gate_row_count")) or 0,
+            "news_sentiment_scored": _maybe_int(canonical_stage_counts.get("news_sentiment_scored")) or _maybe_int(summary.get("row_count")) or 0,
+            "sentiment_features": _maybe_int(canonical_stage_counts.get("sentiment_features")) or _maybe_int(summary.get("semantic_aggregate_row_count")) or 0,
+            "hmm_regime": _maybe_int(canonical_stage_counts.get("hmm_regime")) or _maybe_int(summary.get("hmm_regime_row_count")) or 0,
+            "stock_price_context": _maybe_int(canonical_stage_counts.get("stock_price_context")) or _maybe_int(summary.get("price_row_count")) or 0,
+            "benchmark_price_context": benchmark_price_count,
+            "benchmark_price_hmm_context": benchmark_hmm_count,
         },
         "benchmark_ticker": benchmark_ticker,
         "visual_browser_qa_required": True,
