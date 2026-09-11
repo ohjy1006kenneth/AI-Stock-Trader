@@ -233,6 +233,98 @@ def test_compaction_preserves_canonical_smoke_counts_and_exact_identity_indexes(
         assert counts["omitted_count"] == counts["full_count"] - delivered
 
 
+def _artifact_index_consistency(index: object) -> list[tuple[object, object, int]]:
+    """Return (stage, metadata, delivered) triples that disagree with the index."""
+    assert isinstance(index, dict)
+    counts = index.get("artifact_key_counts")
+    assert isinstance(counts, dict)
+    problems: list[tuple[object, object, int]] = []
+    for stage, values in index.items():
+        if stage in {
+            "artifact_key_counts", "artifact_key_entry_count",
+            "artifact_key_omitted_entry_count", "artifact_key_truncated",
+        } or not isinstance(values, list):
+            continue
+        meta = counts.get(stage)
+        delivered = _evidence_row_count(values)
+        if not isinstance(meta, dict):
+            problems.append((stage, meta, delivered))
+            continue
+        if (
+            meta.get("sample_count") != delivered
+            or meta.get("omitted_count") != meta.get("full_count", -1) - delivered
+            or meta.get("full_count", 0) < delivered
+        ):
+            problems.append((stage, meta, delivered))
+    return problems
+
+
+def test_high_cardinality_artifact_index_counts_reconcile_after_final_compaction() -> None:
+    """Every final artifact-index sample count matches delivered rows in both indexes."""
+    long_id = "artifact-" + "a" * 300
+    oversized_id = "s" * 5_000
+    stages = [f"stage_{index:02d}" for index in range(20)]
+    artifact_keys = {
+        stage: [f"{stage}-artifact-id-value-number-{item:03d}-padding" for item in range(40)]
+        for stage in stages
+    }
+    artifact_keys["manifest"] = [long_id, oversized_id] + [f"m-{item}" for item in range(38)]
+    report: dict[str, object] = {
+        "ticker": "AAPL",
+        "run_id": "layer1-daily-2026-06-18-2026-06-18-post-pr312-modal-t4-v1",
+        "summary": {"preprocessing_row_count": 650, "embedding_row_count": 157},
+        "article_groups": [
+            {
+                "article_id": f"a-{index:04d}",
+                "article_status": "accepted",
+                "headline": "h" * 2_000,
+                "date": f"2026-05-{(index % 28) + 1:02d}",
+                "ticker": "AAPL",
+            }
+            for index in range(400)
+        ],
+        "artifact_keys": artifact_keys,
+        "report": {
+            "run_id": "layer1-daily-2026-06-18-2026-06-18-post-pr312-modal-t4-v1",
+            "ticker": "AAPL",
+            "from_date": "2026-06-18",
+            "to_date": "2026-06-18",
+            "summary": {"preprocessing_row_count": 650},
+            "artifact_keys": artifact_keys,
+        },
+    }
+    payload = cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report))
+    assert payload["payload_budget"]["compacted"] is True
+
+    for index in (
+        payload["artifact_keys"],
+        cast(dict[str, Any], payload["report_summary"])["artifact_keys"],
+    ):
+        assert _artifact_index_consistency(index) == []
+        # Exact-ID policy for every delivered manifest value: ordinary IDs are
+        # byte-exact (never ellipsized); dicts are typed compaction markers or
+        # complete oversized-ID previews; the long ID itself survived halving.
+        manifest_values = index["manifest"]
+        ordinary = [value for value in manifest_values if isinstance(value, str)]
+        assert long_id in ordinary
+        assert all(not value.endswith("...") for value in ordinary)
+        for value in manifest_values:
+            if isinstance(value, dict):
+                assert value.get("payload_compaction_marker") is True or (
+                    value.get("exact_value_omitted") is True
+                    and value.get("exact_character_count") == 5_000
+                    and len(value["exact_sha256"]) == 64
+                )
+
+    encoded = json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
+    assert len(encoded) < 200_000
+    assert payload["payload_budget"]["final_pretty_utf8_bytes"] == len(encoded)
+    reversed_payload = build_layer1_semantic_review_dashboard_payload(
+        dict(reversed(list(report.items())))
+    )
+    assert encoded == json.dumps(reversed_payload, indent=2, sort_keys=True).encode("utf-8")
+
+
 def test_smoke_finbert_sample_is_strictly_ticker_isolated() -> None:
     """Foreign and missing-ticker article/sentence rows never enter evidence samples."""
     payload = cast(

@@ -2488,10 +2488,8 @@ def _shrink_payload_node(node: object, depth: int = 0, key: str = "") -> tuple[o
         items = list(node)
         # Readiness section identities are small but semantically complete; do
         # not replace missing-section rows with an anonymous compaction marker.
-        # Artifact-index stage values are provenance identifiers bound to the
-        # ``artifact_key_counts`` metadata and must not silently diverge.
         preserve_rows = key in {
-            "summary_cards", "missing_pipeline_sections", "gate_cards", "artifact_key",
+            "summary_cards", "missing_pipeline_sections", "gate_cards",
         }
         if len(items) > _PAYLOAD_COMPACTABLE_ITEM_FLOOR and not preserve_rows:
             keep = max(_PAYLOAD_COMPACTABLE_ITEM_FLOOR, -(-len(items) // 2))
@@ -2698,6 +2696,54 @@ def _reconcile_top_level_collection_counts(payload: dict[str, object]) -> None:
                 }
             )
         payload["pipeline_section_counts"] = updated_sections
+
+    _reconcile_artifact_index(payload.get("artifact_keys"))
+    report_summary = payload.get("report_summary")
+    if isinstance(report_summary, Mapping):
+        _reconcile_artifact_index(report_summary.get("artifact_keys"))
+
+
+def _reconcile_artifact_index(index: object) -> None:
+    """Keep the artifact stage index addressable with consistent entry counts."""
+    if not isinstance(index, dict):
+        return
+    counts = index.get("artifact_key_counts")
+    if not isinstance(counts, Mapping):
+        return
+    updated: dict[str, dict[str, object]] = {
+        str(stage): dict(meta) for stage, meta in counts.items() if isinstance(meta, Mapping)
+    }
+
+    def evidence_values(values: list[object]) -> int:
+        return sum(
+            1
+            for value in values
+            if not (isinstance(value, Mapping) and value.get("payload_compaction_marker") is True)
+        )
+
+    for stage, values in index.items():
+        meta = updated.get(str(stage))
+        if meta is None or not isinstance(values, list):
+            continue
+        delivered = evidence_values(values)
+        raw_full_count = meta.get("full_count", delivered)
+        parsed_full_count = (
+            raw_full_count
+            if isinstance(raw_full_count, int) and not isinstance(raw_full_count, bool)
+            else delivered
+        )
+        parsed_full_count = max(delivered, parsed_full_count)
+        omitted = max(0, parsed_full_count - delivered)
+        meta.update(
+            {
+                "full_count": parsed_full_count,
+                "sample_count": delivered,
+                "omitted_count": omitted,
+                "omitted_entry_count": omitted,
+                "truncated": omitted > 0,
+            }
+        )
+    index["artifact_key_counts"] = updated
 
 
 _PIPELINE_SECTION_SAMPLE_LIMITS: dict[str, int] = {
