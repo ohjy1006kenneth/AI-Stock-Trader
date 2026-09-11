@@ -1629,3 +1629,194 @@ def test_semantic_review_final_compaction_preserves_control_plane_contract() -> 
     assert set(payload["article_group_counts"]) >= {
         "full_count", "sample_count", "omitted_count", "truncated", "sampling_method"
     }
+
+
+# ---------------------------------------------------------------------------
+# B3/S1/S4/S5 — explicit independent evidence-gate fields
+# ---------------------------------------------------------------------------
+
+_EXPLICIT_REVIEW_STATE_KEYS = {
+    "topic_review_state",
+    "topic_review_reason",
+    "target_impact_review_status",
+    "hmm_chart_point_count",
+    "hmm_chart_required_minimum",
+}
+
+
+def _report_dict_for_ticker(
+    tmp_path: Path,
+    ticker: str,
+) -> dict[str, Any]:
+    """Return the semantic fixture report dict re-targeted at one ticker."""
+    fixture = seed_semantic_review_fixture(local_root=tmp_path / "r2")
+    report = build_layer1_aapl_evidence_report(
+        run_id=str(fixture["run_id"]),
+        from_date="2026-05-21",
+        to_date="2026-05-22",
+        ticker="AAPL",
+        writer=fixture["writer"],
+    )
+    report_dict = cast(dict[str, Any], report.to_dict())
+    report_dict["ticker"] = ticker
+    return report_dict
+
+
+def test_semantic_review_feature_diagnostics_default_to_not_run(tmp_path: Path) -> None:
+    """B3: all six feature-diagnostic slots exist and default to explicit NOT_RUN."""
+    fixture = seed_semantic_review_fixture(local_root=tmp_path / "r2")
+    report = build_layer1_aapl_evidence_report(
+        run_id=str(fixture["run_id"]),
+        from_date="2026-05-21",
+        to_date="2026-05-22",
+        ticker="AAPL",
+        writer=fixture["writer"],
+    )
+    payload = cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report))
+
+    section = cast(dict[str, Any], payload["feature_diagnostics"])
+    readiness_section = cast(dict[str, Any], payload["run_readiness"]["feature_diagnostics"])
+    for checks in (section, readiness_section):
+        for check in ("heatmap", "null_rate", "recomputation", "formula", "leakage", "outlier"):
+            record = cast(dict[str, Any], checks[check])
+            assert record["state"] == "NOT_RUN"
+            assert "not been executed" in record["reason"]
+            assert record["reviewable"] is False
+        assert checks["overall_state"] == "NOT_RUN"
+        assert checks["reviewable"] is False
+    # Slot presence must not silently change the existing human-review gate.
+    assert payload["run_readiness"]["ready_for_final_human_acceptance"] is True
+
+
+def test_semantic_review_feature_diagnostics_adopt_loaded_records(tmp_path: Path) -> None:
+    """B3: when a future producer loads real diagnostics, their states are adopted."""
+    report_dict = _report_dict_for_ticker(tmp_path, "AAPL")
+    report_dict["feature_diagnostics"] = {
+        "heatmap": {"state": "PASS", "reason": "Heatmap regenerated cleanly.", "reviewable": True},
+        "null_rate": {"state": "FAIL", "reason": "Null rate exceeds threshold.", "reviewable": False},
+    }
+
+    payload = cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report_dict))
+    section = cast(dict[str, Any], payload["feature_diagnostics"])
+
+    assert section["heatmap"]["state"] == "PASS"
+    assert section["null_rate"]["state"] == "FAIL"
+    assert section["null_rate"]["reviewable"] is False
+    assert section["formula"]["state"] == "NOT_RUN"
+    assert section["overall_state"] == "FAIL"
+
+
+def test_semantic_review_diagnostic_states_expose_explicit_review_fields(
+    tmp_path: Path,
+) -> None:
+    """S1/S4/S5: all four ticker responses carry the explicit review-state fields."""
+    for ticker in ("AAPL", "AMD", "NVDA", "MSFT"):
+        report_dict = _report_dict_for_ticker(tmp_path / ticker, ticker)
+        payload = cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report_dict))
+        states = cast(dict[str, Any], payload["run_readiness"]["diagnostic_states"])
+
+        assert _EXPLICIT_REVIEW_STATE_KEYS.issubset(states), f"{ticker}: {sorted(states)}"
+        assert states["topic_review_state"] in {"PASS", "WARN", "FAIL", "NOT_RUN", "NO_DATA"}
+        assert isinstance(states["topic_review_reason"], str) and states["topic_review_reason"]
+        assert states["target_impact_review_status"] in {"PASS", "WARN", "NO_DATA"}
+        assert states["hmm_chart_point_count"] == 2
+        assert states["hmm_chart_required_minimum"] == 2
+        assert "feature_diagnostics" in payload["run_readiness"]
+
+
+def test_semantic_review_topic_review_state_is_no_data_for_outlier_only_topics(
+    tmp_path: Path,
+) -> None:
+    """S1: all-outlier topic rows produce explicit NO_DATA with the exact reason."""
+    report_dict = _report_dict_for_ticker(tmp_path, "AAPL")
+    topic_review = cast(dict[str, Any], report_dict["topic_review"])
+    rows = [dict(row) for row in cast(list[dict[str, Any]], topic_review["rows"])]
+    assert rows
+    for row in rows:
+        row["topic_id"] = -1
+    topic_review["rows"] = rows
+    topic_review["topics"] = []
+    topic_review["topic_count"] = 0
+
+    payload = cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report_dict))
+    states = cast(dict[str, Any], payload["run_readiness"]["diagnostic_states"])
+
+    assert states["topic_review_state"] == "NO_DATA"
+    assert states["topic_review_reason"] == (
+        "No non-outlier topic clusters were found. All rows are outlier topic -1."
+    )
+    nested = cast(dict[str, Any], payload["run_readiness"]["topic_review_state"])
+    assert nested["state"] == "NO_DATA"
+    assert "outlier topic -1" in str(nested["reason"])
+    assert payload["run_readiness"]["ready_for_final_human_acceptance"] is False
+
+
+def test_semantic_review_target_impact_review_status_warns_on_mixed_directions(
+    tmp_path: Path,
+) -> None:
+    """S4: partial concrete directions yield WARN; full concrete coverage yields PASS."""
+    report_dict = _report_dict_for_ticker(tmp_path, "AAPL")
+    semantic_rows = cast(list[dict[str, Any]], report_dict["semantic_aggregate_rows"])
+    cast(dict[str, Any], semantic_rows[0]["features"])["nlp_target_impact_direction"] = "positive"
+
+    payload = cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report_dict))
+    states = cast(dict[str, Any], payload["run_readiness"]["diagnostic_states"])
+    assert states["target_impact_review_status"] == "WARN"
+    reason = cast(str, payload["run_readiness"]["target_impact_review_reason"])
+    assert "part of the aggregate rows" in reason
+
+    report_dict = _report_dict_for_ticker(tmp_path / "pass", "AAPL")
+    semantic_rows = cast(list[dict[str, Any]], report_dict["semantic_aggregate_rows"])
+    for row in semantic_rows:
+        features = cast(dict[str, Any], row["features"])
+        features["nlp_target_impact_direction"] = "positive"
+        features["nlp_target_impact_magnitude"] = "medium"
+
+    payload = cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report_dict))
+    states = cast(dict[str, Any], payload["run_readiness"]["diagnostic_states"])
+    assert states["target_impact_review_status"] == "PASS"
+
+
+def test_semantic_review_hmm_chart_point_count_survives_one_point_compaction(
+    tmp_path: Path,
+) -> None:
+    """S5: a one-point chart keeps WARN state plus numeric point/minimum facts."""
+    report_dict = _report_dict_for_ticker(tmp_path, "AAPL")
+    report_dict["benchmark_price_rows"] = cast(list[dict[str, Any]], report_dict["benchmark_price_rows"])[:1]
+    report_dict["benchmark_market_regime_rows"] = cast(
+        list[dict[str, Any]], report_dict["benchmark_market_regime_rows"]
+    )[:1]
+
+    payload = cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report_dict))
+    states = cast(dict[str, Any], payload["run_readiness"]["diagnostic_states"])
+
+    assert states["hmm_chart_auditability"] == "WARN"
+    assert states["hmm_chart_point_count"] == 1
+    assert states["hmm_chart_required_minimum"] == 2
+    hmm_state = cast(dict[str, Any], payload["run_readiness"]["hmm_chart_auditability_state"])
+    assert hmm_state["point_count"] == 1
+    assert hmm_state["required_minimum"] == 2
+
+
+def test_semantic_review_compaction_preserves_explicit_review_fields(tmp_path: Path) -> None:
+    """B1-style compaction must keep the new review fields on AAPL, NVDA, MSFT."""
+    for ticker in ("AAPL", "NVDA", "MSFT"):
+        report_dict = _report_dict_for_ticker(tmp_path / ticker, ticker)
+        payload = cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report_dict))
+        # Double compaction with oversized synthetic evidence branches attached.
+        payload["oversized_detail"] = [{"value": "x" * 20_000} for _ in range(32)]
+        compacted = cast(
+            dict[str, Any], _compact_layer1_semantic_review_dashboard_payload(payload)
+        )
+        assert compacted["payload_budget"]["compacted"] is True
+        assert compacted["payload_budget"]["truncated"] is True
+
+        states = cast(dict[str, Any], compacted["run_readiness"]["diagnostic_states"])
+        assert _EXPLICIT_REVIEW_STATE_KEYS.issubset(states), f"{ticker}: {sorted(states)}"
+        assert states["hmm_chart_point_count"] == 2
+        assert states["hmm_chart_required_minimum"] == 2
+        assert isinstance(states["topic_review_reason"], str) and states["topic_review_reason"]
+        fd = cast(dict[str, Any], compacted["feature_diagnostics"])
+        for check in ("heatmap", "null_rate", "recomputation", "formula", "leakage", "outlier"):
+            assert cast(dict[str, Any], fd[check])["state"] == "NOT_RUN"
+        assert compacted["payload_budget"]["within_budget"] is True
