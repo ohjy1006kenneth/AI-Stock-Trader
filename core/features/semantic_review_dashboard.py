@@ -270,6 +270,13 @@ def build_layer1_semantic_review_dashboard_payload(
             payload["feature_diagnostics"] = dict(loaded_feature_diagnostics)
     payload["topic_relevance_review"] = build_layer1_topic_relevance_review(payload)
     payload["semantic_aggregate_review"] = build_layer1_semantic_aggregate_review(payload)
+    summary = _json_mapping(payload.get("summary"))
+    canonical_sources = dict(_json_mapping(payload.get("pipeline_sections")))
+    canonical_sources["benchmark_price_context"] = payload.get("benchmark_price_series")
+    canonical_sources["benchmark_price_hmm_context"] = payload.get("benchmark_market_regime_series")
+    payload["canonical_stage_counts"] = _canonical_stage_counts_from_summary(
+        summary, canonical_sources
+    )
     payload.update(build_layer1_semantic_review_readiness_summary(payload))
     return _compact_layer1_semantic_review_dashboard_payload(payload)
 
@@ -339,6 +346,20 @@ def build_layer1_semantic_review_dashboard_smoke_payload(
         hmm_context = _json_mapping(report_dict.get("hmm_evaluation_context"))
         benchmark_ticker = report_dict.get("benchmark_ticker")
 
+    requested_ticker = _optional_str(controls.get("ticker"))
+    source_rows = {
+        "news_preprocessing": preprocessing_rows_source,
+        "text_embeddings": embedding_rows_source,
+        "topic_labels": topic_label_rows_source,
+        "news_relevance_gate": relevance_gate_rows_source,
+        "news_sentiment_scored": article_groups_source,
+        "sentiment_features": semantic_aggregate_rows_source,
+        "hmm_regime": regime_rows_source,
+        "stock_price_context": price_rows_source,
+        "benchmark_price_context": benchmark_price_rows_source,
+        "benchmark_price_hmm_context": benchmark_market_regime_rows_source,
+    }
+    canonical_stage_counts = _canonical_stage_counts_from_summary(summary, source_rows)
     payload: dict[str, object] = {
         "title": "Layer 1 semantic review dashboard",
         "description": (
@@ -349,6 +370,7 @@ def build_layer1_semantic_review_dashboard_smoke_payload(
         "recommendation_for_issue_202": "needs_human_review",
         "summary": summary,
         "controls": controls,
+        "canonical_stage_counts": canonical_stage_counts,
         "benchmark_ticker": benchmark_ticker,
         "benchmark_price_series": [
             dict(item) for item in _smoke_sample_rows(benchmark_price_rows_source, limit=3)
@@ -364,25 +386,41 @@ def build_layer1_semantic_review_dashboard_smoke_payload(
         "warnings": [dict(item) for item in _smoke_sample_rows(warnings_source, limit=12)],
         "pipeline_sections": {
             "raw_preprocessing_rows": [
-                dict(item) for item in _smoke_sample_rows(preprocessing_rows_source, limit=1)
+                dict(item) for item in _smoke_sample_rows(
+                    preprocessing_rows_source, limit=1, requested_ticker=requested_ticker
+                )
             ],
             "article_embedding_rows": [
-                dict(item) for item in _smoke_sample_rows(embedding_rows_source, limit=1)
+                dict(item) for item in _smoke_sample_rows(
+                    embedding_rows_source, limit=1, requested_ticker=requested_ticker
+                )
             ],
             "topic_label_rows": [
-                dict(item) for item in _smoke_sample_rows(topic_label_rows_source, limit=1)
+                dict(item) for item in _smoke_sample_rows(
+                    topic_label_rows_source, limit=1, requested_ticker=requested_ticker
+                )
             ],
             "relevance_gate_rows": [
-                dict(item) for item in _smoke_sample_rows(relevance_gate_rows_source, limit=1)
+                dict(item) for item in _smoke_sample_rows(
+                    relevance_gate_rows_source, limit=1, requested_ticker=requested_ticker
+                )
             ],
-            "finbert_sentence_rows": _smoke_sentence_rows(article_groups_source),
+            "finbert_sentence_rows": _smoke_sentence_rows(
+                article_groups_source, requested_ticker=requested_ticker
+            ),
             "semantic_aggregate_rows": [
-                dict(item) for item in _smoke_sample_rows(semantic_aggregate_rows_source, limit=1)
+                dict(item) for item in _smoke_sample_rows(
+                    semantic_aggregate_rows_source, limit=1, requested_ticker=requested_ticker
+                )
             ],
             "date_level_regime_rows": [
-                dict(item) for item in _smoke_sample_rows(regime_rows_source, limit=1)
+                dict(item) for item in _smoke_sample_rows(
+                    regime_rows_source, limit=1, requested_ticker=requested_ticker
+                )
             ],
-            "stock_price_rows": [dict(item) for item in _smoke_sample_rows(price_rows_source, limit=3)],
+            "stock_price_rows": [dict(item) for item in _smoke_sample_rows(
+                price_rows_source, limit=3, requested_ticker=requested_ticker
+            )],
             "date_aligned_price_hmm_rows": [
                 dict(item) for item in _smoke_sample_rows(market_regime_rows_source, limit=3)
             ],
@@ -874,13 +912,55 @@ def build_layer1_semantic_review_readiness_summary(
 
 
 
-def _smoke_sample_rows(value: object, *, limit: int) -> list[Mapping[str, object]]:
-    """Return a small, ordered sample of mapping rows for smoke payloads."""
+def _smoke_sample_rows(
+    value: object, *, limit: int, requested_ticker: str | None = None
+) -> list[Mapping[str, object]]:
+    """Return a ticker-isolated, ordered sample of mapping rows for smoke payloads."""
     rows = [item for item in _json_list(value) if isinstance(item, Mapping)]
+    if requested_ticker is not None:
+        rows = [
+            item for item in rows
+            if str(item.get("ticker") or "").upper() == requested_ticker.upper()
+        ]
     return rows[: max(limit, 0)]
 
 
-def _smoke_sentence_rows(article_groups_value: object) -> list[dict[str, object]]:
+def _canonical_row_count(value: object, *, requested_ticker: str | None) -> int:
+    """Count canonical mapping rows, excluding malformed and foreign-ticker evidence."""
+    return len(_smoke_sample_rows(value, limit=len(_json_list(value)), requested_ticker=requested_ticker))
+
+
+def _canonical_stage_counts_from_summary(
+    summary: Mapping[str, object], source_rows: object
+) -> dict[str, int]:
+    """Return authoritative stage counts, preferring producer summary counts."""
+    sources = _json_mapping(source_rows)
+    definitions = {
+        "news_preprocessing": ("preprocessing_row_count", "raw_preprocessing_rows"),
+        "text_embeddings": ("embedding_row_count", "article_embedding_rows"),
+        "topic_labels": ("topic_label_row_count", "topic_label_rows"),
+        "news_relevance_gate": ("relevance_gate_row_count", "relevance_gate_rows"),
+        "news_sentiment_scored": ("row_count", "finbert_sentence_rows"),
+        "sentiment_features": ("semantic_aggregate_row_count", "semantic_aggregate_rows"),
+        "hmm_regime": ("hmm_regime_row_count", "date_level_regime_rows"),
+        "stock_price_context": ("price_row_count", "stock_price_rows"),
+        "benchmark_price_context": ("benchmark_price_row_count", "benchmark_price_series"),
+        "benchmark_price_hmm_context": ("benchmark_hmm_row_count", "benchmark_market_regime_series"),
+    }
+    result: dict[str, int] = {}
+    for stage, (summary_key, source_key) in definitions.items():
+        summary_value = summary.get(summary_key)
+        if isinstance(summary_value, int) and not isinstance(summary_value, bool):
+            result[stage] = summary_value
+        else:
+            source_value = sources.get(source_key, sources.get(stage))
+            result[stage] = _canonical_row_count(source_value, requested_ticker=None)
+    return result
+
+
+def _smoke_sentence_rows(
+    article_groups_value: object, *, requested_ticker: str | None = None
+) -> list[dict[str, object]]:
     """Return a compact sample of scored sentence rows for the smoke payload."""
     def _text(value: object) -> str | None:
         if value is None:
@@ -907,12 +987,23 @@ def _smoke_sentence_rows(article_groups_value: object) -> list[dict[str, object]
 
     article_groups = [item for item in _json_list(article_groups_value) if isinstance(item, Mapping)]
     for article in article_groups:
-        sentence_rows = [item for item in _json_list(article.get("sentence_rows")) if isinstance(item, Mapping)]
+        article_ticker = _text(article.get("ticker"))
+        if requested_ticker is not None and article_ticker != requested_ticker.upper():
+            continue
+        sentence_rows = [
+            item for item in _json_list(article.get("sentence_rows"))
+            if isinstance(item, Mapping)
+            and (
+                requested_ticker is None
+                or _text(item.get("ticker")) in {None, requested_ticker.upper()}
+            )
+        ]
         if sentence_rows:
             row = sentence_rows[0]
             return [
                 {
                     "date": _text(row.get("date")) or _text(article.get("date")),
+                    "ticker": _text(row.get("ticker")) or article_ticker,
                     "article_id": _text(row.get("article_id")) or _text(article.get("article_id")),
                     "sentence_index": _int(row.get("sentence_index")),
                     "chunk_index": _int(row.get("chunk_index")),
@@ -2190,6 +2281,7 @@ _PAYLOAD_PRETTY_BYTE_BUDGET = 200_000
 _PAYLOAD_BUDGET_METADATA_RESERVE = 1_024
 _PAYLOAD_TARGET_PRETTY_BYTES = _PAYLOAD_PRETTY_BYTE_BUDGET - _PAYLOAD_BUDGET_METADATA_RESERVE
 _PAYLOAD_STRING_CHARACTER_LIMIT = 256
+_PAYLOAD_EXACT_ID_SAFE_LIMIT = 4_096
 _PAYLOAD_MAPPING_KEY_LIMIT = 96
 _PAYLOAD_TOP_LEVEL_KEY_LIMIT = 256
 _PAYLOAD_KEY_NAME_LIMIT = 96
@@ -2203,6 +2295,10 @@ _PAYLOAD_NODE_FLOOR = 2
 _PAYLOAD_COMPACTABLE_ITEM_FLOOR = 2
 _PAYLOAD_SACRIFICED_SECTION_LIST_LIMIT = 8
 _HMM_CONTEXT_SCALAR_SAMPLE_LIMIT = 96
+_PAYLOAD_EXACT_ID_KEYS = frozenset({
+    "run_id", "requested_ticker", "ticker", "from_date", "to_date", "stage",
+    "artifact_key", "manifest_key", "source_manifest_key", "artifact_id",
+})
 # This is the public control-plane contract.  Control-plane containers and
 # collection metadata must remain addressable even when evidence samples are
 # compacted.  Values inside these mappings may still be bounded.
@@ -2230,6 +2326,21 @@ _PAYLOAD_PROTECTED_MAPPING_KEYS: dict[str, frozenset[str]] = {
         "topic_review_state", "topic_relevance_review_status", "relevance_informativeness_state",
         "diagnostic_states", "diagnostic_summary",
         "feature_diagnostics", "target_impact_review_status", "target_impact_review_reason",
+    }),
+    # #281: report summary is the canonical provenance echo; its identity fields
+    # must survive every compaction path intact.
+    "report_summary": frozenset({
+        "run_id", "ticker", "from_date", "to_date", "row_count", "article_count",
+        "date_count", "summary", "artifact_keys",
+    }),
+    # Stage-count and artifact-index maps are keyed by dynamic stage names.
+    # Every slot must stay addressable so readiness cannot silently diverge
+    # from the authoritative count metadata under final byte-budget passes.
+    "required_stage_row_counts": frozenset({"__all_stages__"}),
+    "canonical_stage_counts": frozenset({"__all_stages__"}),
+    "artifact_keys": frozenset({
+        "artifact_key_counts", "artifact_key_entry_count",
+        "artifact_key_omitted_entry_count", "artifact_key_truncated",
     }),
     "diagnostic_states": frozenset({
         "embedding_coverage", "hmm_chart_auditability", "relevance_informativeness",
@@ -2274,6 +2385,20 @@ def _payload_compaction_marker(field: str, value: int) -> dict[str, object]:
     return {field: value, "truncated": True, "payload_compaction_marker": True}
 
 
+_EXACT_ID_PREVIEW_KEYS = frozenset({
+    "display_preview", "exact_sha256", "exact_character_count", "exact_value_omitted",
+})
+
+
+def _is_exact_id_preview(node: object) -> bool:
+    """Return True for the typed bounded-preview object of an oversized identifier."""
+    return (
+        isinstance(node, Mapping)
+        and node.get("exact_value_omitted") is True
+        and _EXACT_ID_PREVIEW_KEYS.issubset(node.keys())
+    )
+
+
 def _pretty_payload_size(candidate: object) -> int:
     """Return the strict contract metric: pretty sorted UTF-8 JSON byte length."""
     return len(json.dumps(candidate, indent=2, sort_keys=True, default=str).encode("utf-8"))
@@ -2299,6 +2424,10 @@ def _shrink_payload_node(node: object, depth: int = 0, key: str = "") -> tuple[o
     """Halve oversized keys, items, and strings; return (node, dropped, truncated)."""
     dropped = 0
     truncated = 0
+    # The typed oversized-ID preview is itself the deterministic exact-identity
+    # contract (SHA-256 + length); its fields must never be halved or ellipsized.
+    if isinstance(node, Mapping) and _is_exact_id_preview(node):
+        return dict(node), 0, 0
     if isinstance(node, Mapping):
         raw_keys = sorted(node, key=str)
         total_keys = len(raw_keys)
@@ -2339,8 +2468,15 @@ def _shrink_payload_node(node: object, depth: int = 0, key: str = "") -> tuple[o
                 result[f"key_truncated_{name[:_PAYLOAD_KEY_NAME_LIMIT]}"] = len(name)
                 truncated += 1
                 continue
+            child_key = name
+            if key == "artifact_keys" and name not in {
+                "artifact_key_counts", "artifact_key_entry_count",
+                "artifact_key_omitted_entry_count", "artifact_key_truncated",
+            }:
+                # Stage-index values are provenance identifiers, not prose.
+                child_key = "artifact_key"
             child, child_dropped, child_truncated = _shrink_payload_node(
-                node[raw_key], depth + 1, name
+                node[raw_key], depth + 1, child_key
             )
             result[name] = child
             dropped += child_dropped
@@ -2352,7 +2488,9 @@ def _shrink_payload_node(node: object, depth: int = 0, key: str = "") -> tuple[o
         items = list(node)
         # Readiness section identities are small but semantically complete; do
         # not replace missing-section rows with an anonymous compaction marker.
-        preserve_rows = key in {"summary_cards", "missing_pipeline_sections", "gate_cards"}
+        preserve_rows = key in {
+            "summary_cards", "missing_pipeline_sections", "gate_cards",
+        }
         if len(items) > _PAYLOAD_COMPACTABLE_ITEM_FLOOR and not preserve_rows:
             keep = max(_PAYLOAD_COMPACTABLE_ITEM_FLOOR, -(-len(items) // 2))
             dropped += len(items) - keep
@@ -2366,8 +2504,20 @@ def _shrink_payload_node(node: object, depth: int = 0, key: str = "") -> tuple[o
         if dropped and not preserve_rows:
             shrunk.append(_payload_compaction_marker("payload_compaction_omitted_item_count", dropped))
         return shrunk, dropped, truncated
+    if isinstance(node, str) and key in _PAYLOAD_EXACT_ID_KEYS:
+        if len(node) > _PAYLOAD_EXACT_ID_SAFE_LIMIT:
+            import hashlib
+
+            return {
+                "display_preview": node[:_PAYLOAD_STRING_CHARACTER_LIMIT],
+                "exact_sha256": hashlib.sha256(node.encode("utf-8")).hexdigest(),
+                "exact_character_count": len(node),
+                "exact_value_omitted": True,
+            }, 0, 1
+        return node, 0, 0
     if isinstance(node, str) and key in {
         "recommendation", "human_review_status", "status", "state", "reason",
+        "readiness_status", "status_reason", "overall_state", "degradation_state",
     } and len(node) <= _PAYLOAD_PRESERVED_STATUS_LIMIT:
         return node, 0, 0
     if isinstance(node, str) and len(node) > _PAYLOAD_SHRINK_FLOOR:
@@ -2424,12 +2574,12 @@ def _enforce_payload_pretty_byte_budget(payload: Mapping[str, object]) -> dict[s
         dropped_nodes += dropped
         truncated_scalars += truncated
 
-    final_size = _pretty_payload_size(result)
-    result["payload_budget"] = {
+    _reconcile_top_level_collection_counts(result)
+    budget = {
         "pretty_utf8_byte_budget": _PAYLOAD_PRETTY_BYTE_BUDGET,
         "initial_pretty_utf8_bytes": initial_size,
-        "final_pretty_utf8_bytes": final_size,
-        "within_budget": final_size < _PAYLOAD_PRETTY_BYTE_BUDGET,
+        "final_pretty_utf8_bytes": 0,
+        "within_budget": False,
         "compacted": compacted,
         "compaction_passes": passes,
         "omitted_node_count": dropped_nodes,
@@ -2440,7 +2590,161 @@ def _enforce_payload_pretty_byte_budget(payload: Mapping[str, object]) -> dict[s
             or (compacted and (dropped_nodes or truncated_scalars or sacrificed_sections))
         ),
     }
+    result["payload_budget"] = budget
+    # The recorded metric includes payload_budget itself.  Iterate to the small
+    # fixed point caused by the decimal byte count changing its own width.
+    for _ in range(3):
+        measured = _pretty_payload_size(result)
+        budget["final_pretty_utf8_bytes"] = measured
+        budget["within_budget"] = measured < _PAYLOAD_PRETTY_BYTE_BUDGET
     return result
+
+
+def _reconcile_top_level_collection_counts(payload: dict[str, object]) -> None:
+    """Keep delivered sample metadata consistent after the final generic bound pass.
+
+    Compaction-marker objects are metadata, never evidence rows, so they are
+    excluded from every delivered sample count here.
+    """
+
+    def evidence_rows(rows: list[object]) -> int:
+        return sum(
+            1
+            for row in rows
+            if not (isinstance(row, Mapping) and row.get("payload_compaction_marker") is True)
+        )
+
+    collection_pairs = {
+        "article_groups": "article_group_counts",
+        "accepted_articles": "accepted_article_counts",
+        "flagged_articles": "flagged_article_counts",
+        "date_groups": "date_group_counts",
+        "training_regime_rows": "training_regime_row_counts",
+        "price_series": "price_series_counts",
+        "benchmark_price_series": "benchmark_price_series_counts",
+        "market_regime_series": "market_regime_series_counts",
+        "benchmark_market_regime_series": "benchmark_market_regime_series_counts",
+        "warnings": "warnings_counts",
+    }
+    for collection_key, counts_key in collection_pairs.items():
+        counts = payload.get(counts_key)
+        if not isinstance(counts, Mapping):
+            continue
+        if collection_key not in payload:
+            # The final byte-budget pass sacrificed the whole sample section;
+            # the authoritative full count stays, delivered samples are zero.
+            full_count = counts.get("full_count", 0)
+            updated = dict(counts)
+            updated["sample_count"] = 0
+            updated["omitted_count"] = full_count if isinstance(full_count, int) else 0
+            updated["truncated"] = updated["omitted_count"] > 0
+            if "omitted_row_count" in updated:
+                updated["omitted_row_count"] = updated["omitted_count"]
+            payload[counts_key] = updated
+            continue
+        rows = payload.get(collection_key)
+        if not isinstance(rows, list):
+            continue
+        updated = dict(counts)
+        full_count = updated.get("full_count", len(rows))
+        delivered = evidence_rows(rows)
+        try:
+            parsed_full_count = max(delivered, int(full_count))
+        except (TypeError, ValueError):
+            parsed_full_count = delivered
+        omitted = max(0, parsed_full_count - delivered)
+        updated.update(
+            {
+                "full_count": parsed_full_count,
+                "sample_count": delivered,
+                "omitted_count": omitted,
+                "truncated": omitted > 0,
+            }
+        )
+        if "omitted_row_count" in updated:
+            updated["omitted_row_count"] = omitted
+        payload[counts_key] = updated
+
+    section_counts = payload.get("pipeline_section_counts")
+    sections = payload.get("pipeline_sections")
+    if isinstance(section_counts, Mapping) and isinstance(sections, Mapping):
+        updated_sections = {
+            str(key): dict(value)
+            for key, value in section_counts.items()
+            if isinstance(value, Mapping)
+        }
+        for key, rows in sections.items():
+            if str(key).startswith("payload_compaction_"):
+                continue
+            counts = updated_sections.get(str(key))
+            if not isinstance(rows, list) or counts is None:
+                continue
+            delivered = evidence_rows(rows)
+            full_count = counts.get("full_count", delivered)
+            try:
+                parsed_full_count = max(delivered, int(full_count))
+            except (TypeError, ValueError):
+                parsed_full_count = delivered
+            omitted = max(0, parsed_full_count - delivered)
+            counts.update(
+                {
+                    "full_count": parsed_full_count,
+                    "sample_count": delivered,
+                    "omitted_count": omitted,
+                    "omitted_row_count": omitted,
+                    "truncated": omitted > 0,
+                }
+            )
+        payload["pipeline_section_counts"] = updated_sections
+
+    _reconcile_artifact_index(payload.get("artifact_keys"))
+    report_summary = payload.get("report_summary")
+    if isinstance(report_summary, Mapping):
+        _reconcile_artifact_index(report_summary.get("artifact_keys"))
+
+
+def _reconcile_artifact_index(index: object) -> None:
+    """Keep the artifact stage index addressable with consistent entry counts."""
+    if not isinstance(index, dict):
+        return
+    counts = index.get("artifact_key_counts")
+    if not isinstance(counts, Mapping):
+        return
+    updated: dict[str, dict[str, object]] = {
+        str(stage): dict(meta) for stage, meta in counts.items() if isinstance(meta, Mapping)
+    }
+
+    def evidence_values(values: list[object]) -> int:
+        return sum(
+            1
+            for value in values
+            if not (isinstance(value, Mapping) and value.get("payload_compaction_marker") is True)
+        )
+
+    for stage, values in index.items():
+        meta = updated.get(str(stage))
+        if meta is None or not isinstance(values, list):
+            continue
+        delivered = evidence_values(values)
+        raw_full_count = meta.get("full_count", delivered)
+        parsed_full_count = (
+            raw_full_count
+            if isinstance(raw_full_count, int) and not isinstance(raw_full_count, bool)
+            else delivered
+        )
+        parsed_full_count = max(delivered, parsed_full_count)
+        omitted = max(0, parsed_full_count - delivered)
+        meta.update(
+            {
+                "full_count": parsed_full_count,
+                "sample_count": delivered,
+                "omitted_count": omitted,
+                "omitted_entry_count": omitted,
+                "truncated": omitted > 0,
+            }
+        )
+    index["artifact_key_counts"] = updated
+
 
 _PIPELINE_SECTION_SAMPLE_LIMITS: dict[str, int] = {
     "raw_preprocessing_rows": 1,
@@ -2537,7 +2841,7 @@ def _compact_layer1_semantic_review_dashboard_payload(payload: Mapping[str, obje
             "article_count": report.get("article_count"),
             "date_count": report.get("date_count"),
             "summary": _json_mapping(report.get("summary")),
-            "artifact_keys": _json_mapping(report.get("artifact_keys")),
+            "artifact_keys": _bounded_artifact_keys(report.get("artifact_keys")),
         }
     if "artifact_keys" in compact:
         compact["artifact_keys"] = _bounded_artifact_keys(compact.get("artifact_keys"))
@@ -3050,7 +3354,10 @@ def _bounded_artifact_keys(value: object) -> dict[str, object]:
     for key in keys:
         raw = mapping[key]
         if isinstance(raw, Sequence) and not isinstance(raw, (str, bytes, bytearray)):
-            values = sorted((str(item) for item in raw), key=lambda item: item)[:8]
+            values = sorted(
+                (_bound_json_value(str(item), key="artifact_key") for item in raw),
+                key=lambda item: json.dumps(item, sort_keys=True, default=str),
+            )[:8]
             result[key] = values
             counts[key] = {
                 "entry_count": len(raw), "sample_count": len(values),
@@ -3097,7 +3404,8 @@ def _bound_json_value(value: object, *, key: str = "", depth: int = 0) -> object
                 result[truncated_name] = _bound_json_value(value[raw_key], key=truncated_name, depth=depth + 1)
                 continue
             item = value[raw_key]
-            result[name] = _bound_json_value(item, key=name, depth=depth + 1)
+            child_key = "artifact_key" if key == "artifact_keys" else name
+            result[name] = _bound_json_value(item, key=child_key, depth=depth + 1)
             if isinstance(item, str) and name in {
                 "text", "full_scored_text", "headline", "message", "reason",
                 "summary", "topic_example_text", "snippet", "detail",
@@ -3113,7 +3421,9 @@ def _bound_json_value(value: object, *, key: str = "", depth: int = 0) -> object
         if key == "training_regime_rows":
             limit = 250
         elif key in {"article_groups", "accepted_articles", "flagged_articles"}:
-            limit = 6
+            limit = _TOP_LEVEL_ARTICLE_SAMPLE_LIMIT
+        elif key == "date_groups":
+            limit = _TOP_LEVEL_DATE_SAMPLE_LIMIT
         elif key in {
             "article_ids", "topic_keywords", "reason_codes", "warning_codes",
             "entity_evidence", "ticker_evidence", "assignment_evidence_kinds",
@@ -3139,6 +3449,20 @@ def _bound_json_value(value: object, *, key: str = "", depth: int = 0) -> object
             items = [items[index] for index in selected_indices]
         return [_bound_json_value(item, key=key, depth=depth + 1) for item in items[:limit]]
     if isinstance(value, str):
+        # Identity fields are never display prose.  This guard must precede the
+        # generic 256-character scalar bound because the public builder invokes
+        # this pass after the structural compaction pass.
+        if key in _PAYLOAD_EXACT_ID_KEYS:
+            if len(value) > _PAYLOAD_EXACT_ID_SAFE_LIMIT:
+                import hashlib
+
+                return {
+                    "display_preview": value[:_PAYLOAD_STRING_CHARACTER_LIMIT],
+                    "exact_sha256": hashlib.sha256(value.encode("utf-8")).hexdigest(),
+                    "exact_character_count": len(value),
+                    "exact_value_omitted": True,
+                }
+            return value
         if key in {
             "text", "full_scored_text", "headline", "message", "reason", "summary",
             "topic_example_text", "snippet", "detail",
