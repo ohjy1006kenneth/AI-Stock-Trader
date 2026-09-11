@@ -314,13 +314,22 @@ def _build_record_analysis(
     """Return row-level evidence and base scores for one preprocessed news record."""
     ticker = record.ticker.strip().upper()
     provenance = _provenance(record)
-    text = " ".join(part for part in (record.headline, record.text) if part)
+    # The headline is repeated on every chunk for audit display. It is not
+    # chunk-local evidence for summary/content rows; headline chunks already
+    # carry the headline in ``record.text``.
+    text = record.text or ""
+    if record.source_text_field is None and record.headline:
+        # Legacy/minimal rows do not identify the chunk source field. Preserve
+        # their historical behavior while real preprocessed chunks stay local.
+        text = " ".join(part for part in (record.headline, text) if part)
     normalized_text = _normalize_text(text)
     source_tickers = _json_string_list(provenance.get("article_tickers"))
     chunk_tickers = _json_string_list(provenance.get("chunk_tickers"))
-    entity_mentions = _json_string_list(
-        provenance.get("entity_mentions") or list(record.entity_mentions)
-    )
+    entity_mentions = [
+        mention
+        for mention in _json_string_list(provenance.get("entity_mentions") or list(record.entity_mentions))
+        if _contains_phrase(normalized_text, mention)
+    ]
     assignment_classification = _optional_text(provenance.get("assignment_classification"))
     assignment_evidence_kinds = _json_string_list(provenance.get("assignment_evidence_kinds"))
 
@@ -329,8 +338,15 @@ def _build_record_analysis(
         text=normalized_text,
         source_tickers=source_tickers,
         entity_mentions=entity_mentions,
-        assignment_classification=assignment_classification,
+        # Assignment provenance may include headline/provider context. Keep it
+        # in the audit row, but never use it as chunk-local ticker evidence.
+        assignment_classification=None,
     )
+    if assignment_classification is not None and ticker_score == 0.45:
+        # A provider tag is article context, not evidence for this chunk.
+        ticker_score = 0.0
+        ticker_reasons = [reason for reason in ticker_reasons if reason != "source_ticker_tag_only"]
+        ticker_reasons.append("article_only_source_tag")
     financial_score, financial_reasons = _financial_relevance(normalized_text)
     topic_row = topic_lookup.get((record.date, ticker, _stable_article_id(record)))
     topic_score, topic_reasons = _topic_relevance(topic_row, config=config)
@@ -359,12 +375,20 @@ def _build_record_analysis(
         base_relevance_score = min(base_relevance_score, 0.30)
 
     reasons = [*ticker_reasons, *financial_reasons, *topic_reasons, *category_reasons]
+    if assignment_classification is not None:
+        reasons.append(f"assignment_classification:{assignment_classification}")
     if embedding_row is None:
         reasons.append("missing_embedding")
     if financial_score < config.min_financial_score:
         reasons.append("low_financial_relevance")
-    if ticker_score <= 0.0:
+    if ticker_score < 1.0:
         reasons.append("low_ticker_relevance")
+    if (
+        assignment_classification in {"direct", "broad_market"}
+        and ticker_score < 1.0
+        and relevance_category == "irrelevant"
+    ):
+        reasons.append("article_only_context_insufficient")
 
     return {
         "date": record.date,
@@ -470,6 +494,7 @@ def _finalize_record_analysis(
         reasons.add("rejected_by_relevance_gate")
     else:
         decision = "rejected"
+        relevance_score = 0.0
         reasons.add("rejected_by_relevance_gate")
 
     if decision != "rejected" and financial_score < config.min_financial_score:
@@ -567,9 +592,7 @@ def _target_conditioned_metadata(
     """Return target-conditioned category and audit metadata for a row."""
     reasons: list[str] = []
     lower_text = normalized_text.lower()
-    direct_evidence = ticker_score >= 1.0 or assignment_classification == "direct" or (
-        assignment_classification == "indirect" and "company_alias_entity_match" in assignment_evidence_kinds
-    )
+    direct_evidence = ticker_score >= 1.0
     source_tag_financial_evidence = (
         assignment_classification is None
         and not competitor_reasons
@@ -708,20 +731,6 @@ def _target_conditioned_metadata(
             "same_day",
             "comparison_context",
             0.15,
-            reasons,
-        )
-
-    if direct_evidence and has_macro_context:
-        category = "industry_or_macro_exposure"
-        reasons.append("target_conditioned_category:industry_or_macro_exposure")
-        reasons.append("causal_channel:industry_macro")
-        return (
-            category,
-            _impact_direction(lower_text),
-            "low",
-            "medium_term",
-            "industry_macro",
-            0.55,
             reasons,
         )
 

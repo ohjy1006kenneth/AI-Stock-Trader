@@ -268,6 +268,63 @@ def test_news_relevance_gate_excludes_snap_vision_pro_comparison_from_aapl_signa
     assert any("incidental_comparison_excluded_from_signal" in _reason_codes(row) for row in incidental_rows)
 
 
+def test_news_relevance_gate_does_not_reuse_target_headline_for_body_chunks() -> None:
+    """A target-tagged headline cannot promote competitor-only or boilerplate body chunks."""
+    articles = [
+        {
+            "id": "headline-target-body-competitor",
+            "headline": "Apple and Intel discuss next-generation chips",
+            "content": "Nvidia and Tesla are building new data centers and GPUs.",
+            "created_at": "2024-01-02T12:00:00+00:00",
+            "source": "benzinga",
+            "symbols": ["AAPL"],
+        },
+        {
+            "id": "headline-target-body-boilerplate",
+            "headline": "Apple compared with other large technology companies",
+            "content": "It is crucial for investors to consider valuation and market conditions.",
+            "created_at": "2024-01-02T12:01:00+00:00",
+            "source": "benzinga",
+            "symbols": ["AAPL"],
+        },
+        {
+            "id": "headline-target-body-direct",
+            "headline": "Apple and Intel discuss next-generation chips",
+            "content": "Apple will design and build chips with Intel for future devices.",
+            "created_at": "2024-01-02T12:02:00+00:00",
+            "source": "benzinga",
+            "symbols": ["AAPL"],
+        },
+    ]
+    records = preprocess_news_articles(
+        articles,
+        as_of_date="2024-01-02",
+        point_in_time_tickers=("AAPL",),
+    )
+
+    result = apply_news_relevance_gate(records)
+    audit = result.audit_frame
+
+    for article_id in ("headline-target-body-competitor", "headline-target-body-boilerplate"):
+        body = audit.loc[
+            (audit["article_id"] == article_id) & (audit["source"] == "benzinga")
+        ]
+        body = body.loc[~body["text"].str.contains("Apple", case=False, na=False)]
+        assert len(body) == 1
+        row = body.iloc[0]
+        assert row["relevance_decision"] == "rejected"
+        assert row["relevance_category"] == "irrelevant"
+        assert "article_only_context_insufficient" in _reason_codes(row)
+        assert row["relevance_score"] == 0.0
+
+    direct = audit.loc[
+        (audit["article_id"] == "headline-target-body-direct")
+        & audit["text"].str.contains("Apple will design", case=False, na=False)
+    ].iloc[0]
+    assert direct["relevance_category"] == "direct_target_event"
+    assert direct["relevance_decision"] in {"accepted", "borderline"}
+
+
 def _topic_label_frame(article_ids) -> pd.DataFrame:
     """Return topic-label rows for relevance-gate tests."""
     return pd.DataFrame(
