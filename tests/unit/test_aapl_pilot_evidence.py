@@ -20,6 +20,7 @@ from core.features.aapl_accuracy import (
 from core.features.aapl_evidence import (
     _build_article_groups,
     _filter_exact_ticker_frame,
+    _relevance_gate_rows,
     build_aapl_pilot_evidence_bundle,
     build_layer1_aapl_evidence_report,
     render_aapl_pilot_human_review_csv,
@@ -228,6 +229,70 @@ def test_article_contribution_preserves_source_weights_and_excludes_source_rows(
     assert article.contribution_sum == pytest.approx(0.95)
     assert [row["article_contribution_weight"] for row in article.sentence_rows] == [0.35, 0.60, 0.0]
     assert [row["included_in_signal"] for row in article.sentence_rows] == [True, True, False]
+
+
+def test_report_path_preserves_explicit_source_exclusion_through_relevance_gate_rows() -> None:
+    """S2-BLOCK-005: an explicit source included_in_signal=False survives normalization."""
+    frame = pd.DataFrame([
+        {
+            "date": "2026-09-04", "ticker": "AAPL", "article_id": "gate-normalized",
+            "sentence_index": 0, "chunk_index": 0, "headline": "Apple update",
+            "text": "AAPL supplier impact.", "relevance_score": 0.8,
+            "relevance_decision": "accepted", "relevance_category": "direct_target_event",
+            "article_contribution_weight": 0.35, "included_in_signal": True,
+        },
+        {
+            "date": "2026-09-04", "ticker": "AAPL", "article_id": "gate-normalized",
+            "sentence_index": 1, "chunk_index": 1, "headline": "Apple update",
+            "text": "AAPL supplier impact.", "relevance_score": 0.8,
+            "relevance_decision": "accepted", "relevance_category": "direct_target_event",
+            "article_contribution_weight": 0.90, "included_in_signal": False,
+        },
+    ])
+    normalized = _relevance_gate_rows(frame, requested_ticker="AAPL")
+    assert len(normalized) == 2
+    excluded = next(row for row in normalized if row["sentence_index"] == 1)
+    assert excluded["included_in_signal"] is False
+    assert excluded["article_contribution_weight"] == pytest.approx(0.90)
+    assert excluded["final_contribution"] == 0.0
+    assert excluded["final_signal_contribution"] == 0.0
+
+    scored = pd.DataFrame([
+        {
+            "date": "2026-09-04", "ticker": "AAPL", "article_id": "gate-normalized",
+            "sentence_index": index, "chunk_index": index, "headline": "Apple update",
+            "text": "AAPL supplier impact.", "relevance_score": 0.8,
+        }
+        for index in range(2)
+    ])
+    groups, _ = _build_article_groups(
+        scored, requested_ticker="AAPL", relevance_threshold=0.6,
+        relevance_gate_rows=normalized,
+    )
+    article = groups[0]
+    assert article.contribution_cap_applied is False
+    assert article.contribution_sum == pytest.approx(0.35)
+    excluded_sentence = article.sentence_rows[1]
+    assert excluded_sentence["source_included_in_signal"] is False
+    assert excluded_sentence["source_article_contribution_weight"] == pytest.approx(0.90)
+    assert excluded_sentence["article_contribution_weight"] == 0.0
+    assert excluded_sentence["included_in_signal"] is False
+    assert excluded_sentence["final_contribution"] == 0.0
+    assert excluded_sentence["final_signal_contribution"] == 0.0
+    excluded_compact = next(
+        row for row in article.relevance_gate_rows if row["sentence_index"] == 1
+    )
+    assert excluded_compact["source_included_in_signal"] is False
+    assert excluded_compact["source_article_contribution_weight"] == pytest.approx(0.90)
+    assert excluded_compact["article_contribution_weight"] == 0.0
+    assert excluded_compact["included_in_signal"] is False
+    assert excluded_compact["final_contribution"] == 0.0
+    included_compact = next(
+        row for row in article.relevance_gate_rows if row["sentence_index"] == 0
+    )
+    assert included_compact["source_included_in_signal"] is True
+    assert included_compact["article_contribution_weight"] == pytest.approx(0.35)
+    assert included_compact["included_in_signal"] is True
 
 
 def test_article_contribution_matches_reversed_gate_order_and_retains_extra_row() -> None:

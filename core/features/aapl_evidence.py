@@ -788,14 +788,7 @@ def _build_article_groups(
             _maybe_float(row.get("article_contribution_weight"))
             for row, _, _ in row_provenance
         ]
-        source_included = [
-            (
-                bool(row.get("included_in_signal"))
-                if row.get("included_in_signal") is not None
-                else _target_row_included_in_signal(row)
-            )
-            for row, _, _ in row_provenance
-        ]
+        source_included = [_report_row_included_in_signal(row) for row, _, _ in row_provenance]
         eligible_source_weights = [
             weight if included and decision in {"accepted", "borderline"} and weight is not None and weight > 0
             else 0.0
@@ -872,7 +865,7 @@ def _build_article_groups(
             source_weight = sentence_rows[-1].get("article_contribution_weight")
             source_included_value = sentence_rows[-1].get("included_in_signal")
             if source_included_value is None:
-                source_included_value = _target_row_included_in_signal(sentence_rows[-1])
+                source_included_value = _report_row_included_in_signal(sentence_rows[-1])
             sentence_rows[-1]["source_article_contribution_weight"] = source_weight
             sentence_rows[-1]["source_included_in_signal"] = bool(source_included_value)
             if exact_gate_provenance:
@@ -918,7 +911,7 @@ def _build_article_groups(
             compact_row["source_included_in_signal"] = (
                 bool(source_included_value)
                 if source_included_value is not None
-                else _target_row_included_in_signal(compact_row)
+                else _report_row_included_in_signal(compact_row)
             )
             compact_key = _stable_relevance_row_key(compact_row)
             scored_index = next(
@@ -2088,7 +2081,7 @@ def _relevance_gate_rows(
                 "article_contamination_count": _maybe_int(row.get("article_contamination_count")),
                 "article_signal_count": _maybe_int(row.get("article_signal_count")),
                 "article_contribution_weight": _maybe_float(row.get("article_contribution_weight")),
-                "included_in_signal": _target_row_included_in_signal(row),
+                "included_in_signal": _report_row_included_in_signal(row),
                 "final_contribution": _target_row_final_contribution(row),
                 "final_signal_contribution": _target_row_final_contribution(row),
                 "target_impact_evidence_status": _target_row_evidence_status(row),
@@ -2169,11 +2162,7 @@ def _compact_article_relevance_rows(rows: Sequence[Mapping[str, object]]) -> lis
                 "relevance_category": _optional_str(row.get("relevance_category")),
                 "target_company_impact_direction": _optional_str(row.get("target_company_impact_direction")),
                 "article_contribution_weight": _maybe_float(row.get("article_contribution_weight")),
-                "included_in_signal": (
-                    bool(row.get("included_in_signal"))
-                    if row.get("included_in_signal") is not None
-                    else _target_row_included_in_signal(row)
-                ),
+                "included_in_signal": _report_row_included_in_signal(row),
                 "final_contribution": _target_row_final_contribution(row),
                 "reason_codes": _json_string_list(row.get("reason_codes")),
             }
@@ -2196,7 +2185,7 @@ def _target_impact_summary(rows: Sequence[Mapping[str, object]]) -> dict[str, ob
     category = _first_row_text(rows, "relevance_category")
     target_context_score = _first_row_float(rows, "target_context_score")
     contribution_weight = _first_row_float(rows, "article_contribution_weight")
-    included = any(_target_row_included_in_signal(row) for row in rows)
+    included = any(_report_row_included_in_signal(row) for row in rows)
     final_contribution = contribution_weight if included else (0.0 if rows else None)
     missing_flags = sorted({flag for row in rows for flag in _target_row_missing_flags(row)})
     status = "missing" if not rows else ("included" if included else "excluded")
@@ -2223,6 +2212,19 @@ def _target_impact_summary(rows: Sequence[Mapping[str, object]]) -> dict[str, ob
     }
 
 
+def _report_row_included_in_signal(row: Mapping[str, object]) -> bool:
+    """Return report-path inclusion, preserving an explicitly present source value.
+
+    An explicit ``included_in_signal`` on the source gate row is immutable
+    provenance and is normalized as-is; the target-impact predicate derives
+    inclusion only when the source field is absent.
+    """
+    explicit = _maybe_bool(row.get("included_in_signal"))
+    if explicit is not None:
+        return explicit
+    return _target_row_included_in_signal(row)
+
+
 def _target_row_included_in_signal(row: Mapping[str, object]) -> bool:
     """Return True only for target-impact rows that can contribute to ticker signal."""
     category = _optional_str(row.get("relevance_category"))
@@ -2241,7 +2243,7 @@ def _target_row_final_contribution(row: Mapping[str, object]) -> float | None:
     """Return deterministic final article contribution for review displays."""
     if row is None:
         return None
-    if not _target_row_included_in_signal(row):
+    if not _report_row_included_in_signal(row):
         return 0.0
     weight = _maybe_float(row.get("article_contribution_weight"))
     return 1.0 if weight is None else weight
@@ -2252,8 +2254,8 @@ def _target_row_evidence_status(row: Mapping[str, object]) -> str:
     if row is None:
         return "missing"
     if _target_row_missing_flags(row):
-        return "missing" if not _target_row_included_in_signal(row) else "included_with_missing_fields"
-    return "included" if _target_row_included_in_signal(row) else "excluded"
+        return "missing" if not _report_row_included_in_signal(row) else "included_with_missing_fields"
+    return "included" if _report_row_included_in_signal(row) else "excluded"
 
 
 def _target_row_missing_flags(row: Mapping[str, object]) -> list[str]:
