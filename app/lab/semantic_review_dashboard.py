@@ -1,4 +1,5 @@
 """Local read-only web UI for the Layer 1 semantic-review dashboard."""
+
 from __future__ import annotations
 
 import argparse
@@ -17,6 +18,11 @@ from urllib.parse import parse_qs, urlparse
 from loguru import logger
 
 from core.features.aapl_evidence import build_layer1_aapl_evidence_report
+from core.features.semantic_qa import (
+    SEMANTIC_QA_SCHEMA_ID,
+    build_semantic_qa_payload,
+    normalize_semantic_qa_query,
+)
 from core.features.semantic_review_dashboard import (
     build_layer1_semantic_review_dashboard_payload,
     build_layer1_semantic_review_dashboard_smoke_payload,
@@ -55,6 +61,9 @@ class _DashboardHTTPServer(ThreadingHTTPServer):
         super().__init__(server_address, _DashboardRequestHandler)
         self.defaults = defaults
         self.payload_cache: dict[tuple[str, str, str, str], dict[str, object]] = {}
+        self.semantic_qa_cache: dict[
+            tuple[str, str, str, tuple[str, ...], int], dict[str, object]
+        ] = {}
         self.payload_cache_lock = Lock()
 
 
@@ -74,6 +83,9 @@ class _DashboardRequestHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/review":
             self._handle_review_request(parsed.query)
+            return
+        if parsed.path == "/api/semantic-qa":
+            self._handle_semantic_qa_request(parsed.query)
             return
         if parsed.path == "/health":
             self._send_json({"status": "ok"})
@@ -106,6 +118,80 @@ class _DashboardRequestHandler(BaseHTTPRequestHandler):
             return
         except FileNotFoundError as exc:
             self._send_json({"error": str(exc)}, status=HTTPStatus.NOT_FOUND)
+            return
+        self._send_json(payload)
+
+    def _handle_semantic_qa_request(self, query_text: str) -> None:
+        """Build the bounded four-ticker semantic QA response."""
+        params = parse_qs(query_text, keep_blank_values=True)
+        try:
+            query = normalize_semantic_qa_query(
+                run_id=_first_param(params, "run_id"),
+                from_date=_first_param(params, "from_date"),
+                to_date=_first_param(params, "to_date"),
+                tickers=_first_param(params, "tickers"),
+                sample_limit=_first_param(params, "sample_limit"),
+            )
+            cache_key = (
+                query["run_id"],
+                query["from_date"],
+                query["to_date"],
+                query["tickers"],
+                query["sample_limit"],
+            )
+            with self.server.payload_cache_lock:
+                cached = self.server.semantic_qa_cache.get(cache_key)
+            if cached is not None:
+                self._send_json(cached)
+                return
+            writer = (
+                R2Writer(local_root=self.server.defaults.local_root)
+                if self.server.defaults.local_root is not None
+                else R2Writer()
+            )
+            reports: dict[str, Any] = {}
+            for ticker in query["tickers"]:
+                try:
+                    reports[ticker] = build_layer1_aapl_evidence_report(
+                        run_id=query["run_id"],
+                        from_date=query["from_date"],
+                        to_date=query["to_date"],
+                        ticker=ticker,
+                        writer=writer,
+                    )
+                except FileNotFoundError:
+                    continue
+            if not reports:
+                self._send_json(
+                    _semantic_qa_error(
+                        "review_artifacts_not_found", "No requested ticker has review artifacts."
+                    ),
+                    status=HTTPStatus.NOT_FOUND,
+                )
+                return
+            payload = build_semantic_qa_payload(
+                reports=reports,
+                run_id=query["run_id"],
+                from_date=query["from_date"],
+                to_date=query["to_date"],
+                tickers=query["tickers"],
+                sample_limit=query["sample_limit"],
+            )
+            with self.server.payload_cache_lock:
+                self.server.semantic_qa_cache[cache_key] = payload
+        except ValueError as exc:
+            self._send_json(
+                _semantic_qa_error("invalid_request", str(exc)), status=HTTPStatus.BAD_REQUEST
+            )
+            return
+        except Exception:
+            logger.exception("Semantic QA payload construction failed")
+            self._send_json(
+                _semantic_qa_error(
+                    "semantic_qa_build_failed", "Unable to build semantic QA payload."
+                ),
+                status=HTTPStatus.INTERNAL_SERVER_ERROR,
+            )
             return
         self._send_json(payload)
 
@@ -186,7 +272,9 @@ def _build_dashboard_payload(
 
 def _run_dashboard_smoke(*, defaults: _DashboardDefaults, args: argparse.Namespace) -> int:
     """Run API and rendered-browser smoke checks for the semantic-review dashboard."""
-    writer = R2Writer(local_root=defaults.local_root) if defaults.local_root is not None else R2Writer()
+    writer = (
+        R2Writer(local_root=defaults.local_root) if defaults.local_root is not None else R2Writer()
+    )
     report = build_layer1_aapl_evidence_report(
         run_id=defaults.run_id,
         from_date=defaults.from_date,
@@ -353,6 +441,7 @@ def _render_smoke_html(defaults: _DashboardDefaults, payload: Mapping[str, objec
 </body>
 </html>"""
 
+
 def _resolve_browser_binary(browser_binary: str) -> str:
     """Return a browser executable suitable for headless smoke rendering."""
     requested = Path(browser_binary)
@@ -458,6 +547,16 @@ def _first_param(params: Mapping[str, list[str]], name: str) -> str | None:
         return None
     text = values[0].strip()
     return text or None
+
+
+def _semantic_qa_error(code: str, message: str) -> dict[str, object]:
+    """Return the stable semantic QA error envelope."""
+    return {
+        "ok": False,
+        "status": "error",
+        "schema_id": SEMANTIC_QA_SCHEMA_ID,
+        "error": {"code": code, "message": message},
+    }
 
 
 def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
