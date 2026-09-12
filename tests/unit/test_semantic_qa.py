@@ -50,7 +50,9 @@ def _row(
     return row
 
 
-def _preproc(ticker: str, article_id: str, mentions: list[str], *, si: int = 0, ci: int = 0) -> dict[str, Any]:
+def _preproc(
+    ticker: str, article_id: str, mentions: list[str], *, si: int = 0, ci: int = 0
+) -> dict[str, Any]:
     return {
         "date": "2026-05-21",
         "ticker": ticker,
@@ -61,7 +63,9 @@ def _preproc(ticker: str, article_id: str, mentions: list[str], *, si: int = 0, 
     }
 
 
-def _group(ticker: str, article_id: str, headline: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
+def _group(
+    ticker: str, article_id: str, headline: str, rows: list[dict[str, Any]]
+) -> dict[str, Any]:
     return {
         "date": "2026-05-21",
         "ticker": ticker,
@@ -96,10 +100,30 @@ def _report(
 def _mixed_report(ticker: str = "AAPL") -> dict[str, Any]:
     """AAPL product/legal report exercising leakage, context rejection, and false negative."""
     groups = [
-        _group(ticker, "a1", "Apple product event", [_row(included=True, decision="accepted", contribution=0.75)]),
-        _group(ticker, "a2", "Apple legal filing", [_row(included=False, decision="rejected", text="Apple legal regulatory filing")]),
-        _group(ticker, "a3", "Apple services", [_row(included=True, decision="borderline", contribution=0.25)]),
-        _group(ticker, "a4", "Market context", [_row(included=True, decision="accepted", contribution=0.1)]),
+        _group(
+            ticker,
+            "a1",
+            "Apple product event",
+            [_row(included=True, decision="accepted", contribution=0.75)],
+        ),
+        _group(
+            ticker,
+            "a2",
+            "Apple legal filing",
+            [_row(included=False, decision="rejected", text="Apple legal regulatory filing")],
+        ),
+        _group(
+            ticker,
+            "a3",
+            "Apple services",
+            [_row(included=True, decision="borderline", contribution=0.25)],
+        ),
+        _group(
+            ticker,
+            "a4",
+            "Market context",
+            [_row(included=True, decision="accepted", contribution=0.1)],
+        ),
         _group(ticker, "a5", "Ferrari comparison", [_row(included=False, decision="rejected")]),
     ]
     preproc = [
@@ -117,7 +141,13 @@ def _mixed_report(ticker: str = "AAPL") -> dict[str, Any]:
     return _report(ticker, groups, preproc, summary=summary)
 
 
-def _build(reports: dict[str, object], *, tickers: tuple[str, ...], sample_limit: int = 25, run_id: str = "exact-run/01") -> dict[str, Any]:
+def _build(
+    reports: dict[str, object],
+    *,
+    tickers: tuple[str, ...],
+    sample_limit: int = 25,
+    run_id: str = "exact-run/01",
+) -> dict[str, Any]:
     return build_semantic_qa_payload(
         reports=reports,
         run_id=run_id,
@@ -146,14 +176,15 @@ def test_normalize_query_preserves_opaque_run_and_pilot_order() -> None:
 
 
 def test_normalize_query_defaults_and_validation_bounds() -> None:
-    default = normalize_semantic_qa_query(
-        run_id="r", from_date="2026-05-21", to_date="2026-05-22"
-    )
+    default = normalize_semantic_qa_query(run_id="r", from_date="2026-05-21", to_date="2026-05-22")
     assert default["tickers"] == ("AAPL", "AMD", "NVDA", "MSFT")
     assert default["sample_limit"] == 25
-    assert normalize_semantic_qa_query(
-        run_id="r", from_date="2026-05-21", to_date="2026-05-22", sample_limit="1"
-    )["sample_limit"] == 1
+    assert (
+        normalize_semantic_qa_query(
+            run_id="r", from_date="2026-05-21", to_date="2026-05-22", sample_limit="1"
+        )["sample_limit"]
+        == 1
+    )
     for bad in ("0", "51", "-3", "abc"):
         with pytest.raises(ValueError):
             normalize_semantic_qa_query(
@@ -176,9 +207,17 @@ def test_queues_distinguish_leakage_context_rejection_and_false_negative() -> No
     payload = _build({"AAPL": _mixed_report()}, tickers=("AAPL",), sample_limit=25)
     ticker = payload["tickers"]["AAPL"]
     assert payload["schema_id"] == SEMANTIC_QA_SCHEMA_ID
-    assert [r["article_id"] for r in ticker["queues"]["potential_false_positives"]["rows"]] == ["a4"]
-    assert [r["article_id"] for r in ticker["queues"]["potential_false_negatives"]["rows"]] == ["a2"]
-    assert [r["article_id"] for r in ticker["queues"]["top_contributors"]["rows"]] == ["a1", "a3", "a4"]
+    assert [r["article_id"] for r in ticker["queues"]["potential_false_positives"]["rows"]] == [
+        "a4"
+    ]
+    assert [r["article_id"] for r in ticker["queues"]["potential_false_negatives"]["rows"]] == [
+        "a2"
+    ]
+    assert [r["article_id"] for r in ticker["queues"]["top_contributors"]["rows"]] == [
+        "a1",
+        "a3",
+        "a4",
+    ]
 
 
 def test_article_context_only_rejection_is_success_not_leakage() -> None:
@@ -206,20 +245,41 @@ def test_summary_uses_canonical_producer_decisions_not_absent_boolean_keys() -> 
 
 def test_top_contributors_use_canonical_final_contribution_and_rank_absolutely() -> None:
     groups = [
-        _group("AAPL", "a1", "Apple product event", [_row(included=True, decision="accepted", contribution=-0.9)]),
-        _group("AAPL", "a2", "Apple services", [_row(included=True, decision="accepted", contribution=0.4)]),
+        _group(
+            "AAPL",
+            "a1",
+            "Apple product event",
+            [_row(included=True, decision="accepted", contribution=-0.9)],
+        ),
+        _group(
+            "AAPL",
+            "a2",
+            "Apple services",
+            [_row(included=True, decision="accepted", contribution=0.4)],
+        ),
     ]
-    report = _report("AAPL", groups, [_preproc("AAPL", "a1", ["AAPL"]), _preproc("AAPL", "a2", ["AAPL"])])
+    report = _report(
+        "AAPL", groups, [_preproc("AAPL", "a1", ["AAPL"]), _preproc("AAPL", "a2", ["AAPL"])]
+    )
     payload = _build({"AAPL": report}, tickers=("AAPL",))
     summary = payload["tickers"]["AAPL"]["summary"]
     assert summary["total_contribution"] == pytest.approx(-0.5)
-    assert [r["article_id"] for r in payload["tickers"]["AAPL"]["queues"]["top_contributors"]["rows"]] == ["a1", "a2"]
+    assert [
+        r["article_id"] for r in payload["tickers"]["AAPL"]["queues"]["top_contributors"]["rows"]
+    ] == ["a1", "a2"]
 
 
 def test_cross_ticker_owner_is_derived_from_chunk_local_mentions() -> None:
     report = _report(
         "AMD",
-        [_group("AMD", "x1", "NVDA datacenter GPU", [_row(included=True, decision="accepted", contribution=0.2)])],
+        [
+            _group(
+                "AMD",
+                "x1",
+                "NVDA datacenter GPU",
+                [_row(included=True, decision="accepted", contribution=0.2)],
+            )
+        ],
         [_preproc("AMD", "x1", ["NVDA"])],
     )
     payload = _build({"AMD": report}, tickers=("AMD",), sample_limit=10)
@@ -236,7 +296,12 @@ def test_cross_ticker_owner_is_derived_from_chunk_local_mentions() -> None:
 # --------------------------------------------------------------------------- #
 def test_leakage_matrix_uses_full_owner_rows_before_sampling() -> None:
     groups = [
-        _group("AMD", f"cross-{i}", "NVDA datacenter GPU", [_row(included=True, decision="accepted", contribution=0.1)])
+        _group(
+            "AMD",
+            f"cross-{i}",
+            "NVDA datacenter GPU",
+            [_row(included=True, decision="accepted", contribution=0.1)],
+        )
         for i in range(40)
     ]
     preproc = [_preproc("AMD", f"cross-{i}", ["NVDA"]) for i in range(40)]
@@ -252,7 +317,14 @@ def test_leakage_matrix_uses_full_owner_rows_before_sampling() -> None:
 def test_leakage_matrix_records_unknown_generic_for_unattributable_contributions() -> None:
     report = _report(
         "AAPL",
-        [_group("AAPL", "a4", "Market context", [_row(included=True, decision="accepted", contribution=0.1)])],
+        [
+            _group(
+                "AAPL",
+                "a4",
+                "Market context",
+                [_row(included=True, decision="accepted", contribution=0.1)],
+            )
+        ],
         [_preproc("AAPL", "a4", [])],
     )
     payload = _build({"AAPL": report}, tickers=("AAPL",))
@@ -263,7 +335,14 @@ def test_leakage_matrix_records_unknown_generic_for_unattributable_contributions
 def test_leakage_matrix_keeps_canonical_generic_subject_literal() -> None:
     report = _report(
         "AAPL",
-        [_group("AAPL", "g1", "Market context", [_row(included=True, decision="accepted", contribution=0.1)])],
+        [
+            _group(
+                "AAPL",
+                "g1",
+                "Market context",
+                [_row(included=True, decision="accepted", contribution=0.1)],
+            )
+        ],
         [_preproc("AAPL", "g1", ["AAPL"])],
     )
     report["article_groups"][0]["sentence_rows"][0]["evidence_owner"] = "broad_market"
@@ -279,26 +358,46 @@ def test_four_ticker_queue_isolation_keeps_cross_ticker_rows_off_own_queues() ->
     for ticker in ("AAPL", "NVDA", "MSFT"):
         reports[ticker] = _report(
             ticker,
-            [_group(ticker, f"{ticker}-fp", "Market context", [_row(included=True, decision="accepted", contribution=0.1)])],
+            [
+                _group(
+                    ticker,
+                    f"{ticker}-fp",
+                    "Market context",
+                    [_row(included=True, decision="accepted", contribution=0.1)],
+                )
+            ],
             [_preproc(ticker, f"{ticker}-fp", [])],
         )
     reports["AMD"] = _report(
         "AMD",
-        [_group("AMD", "AMD-anom", "NVDA datacenter GPU", [_row(included=True, decision="accepted", contribution=0.2)])],
+        [
+            _group(
+                "AMD",
+                "AMD-anom",
+                "NVDA datacenter GPU",
+                [_row(included=True, decision="accepted", contribution=0.2)],
+            )
+        ],
         [_preproc("AMD", "AMD-anom", ["NVDA"])],
     )
     payload = _build(reports, tickers=("AAPL", "AMD", "NVDA", "MSFT"), sample_limit=5)
-    assert [r["row_id"] for r in payload["tickers"]["AAPL"]["queues"]["potential_false_positives"]["rows"]] == [
-        "2026-05-21:AAPL:AAPL-fp:0:0"
-    ]
+    assert [
+        r["row_id"]
+        for r in payload["tickers"]["AAPL"]["queues"]["potential_false_positives"]["rows"]
+    ] == ["2026-05-21:AAPL:AAPL-fp:0:0"]
     amd_fp = payload["tickers"]["AMD"]["queues"]["potential_false_positives"]
     assert [r["article_id"] for r in amd_fp["rows"]] == ["AMD-anom"]
-    assert payload["tickers"]["AMD"]["queues"]["cross_ticker_anomalies"]["rows"][0]["article_id"] == "AMD-anom"
+    assert (
+        payload["tickers"]["AMD"]["queues"]["cross_ticker_anomalies"]["rows"][0]["article_id"]
+        == "AMD-anom"
+    )
     for ticker in ("AAPL", "AMD", "NVDA", "MSFT"):
         own_fp = payload["tickers"][ticker]["queues"]["potential_false_positives"]["rows"]
         assert all(row["ticker"] == ticker for row in own_fp)
     for ticker in ("AAPL", "NVDA", "MSFT"):
-        assert payload["tickers"][ticker]["queues"]["cross_ticker_anomalies"]["canonical_count"] == 0
+        assert (
+            payload["tickers"][ticker]["queues"]["cross_ticker_anomalies"]["canonical_count"] == 0
+        )
     assert payload["leakage_matrix"]["NVDA"]["AMD"]["canonical_count"] == 1
 
 
@@ -307,15 +406,27 @@ def test_payload_is_deterministic_under_reversed_input() -> None:
         reports: dict[str, object] = {}
         for ticker in order:
             groups = [
-                _group(ticker, f"{ticker}-1", "Market context", [_row(included=True, decision="accepted", contribution=0.1)]),
-                _group(ticker, f"{ticker}-2", "Market context", [_row(included=True, decision="accepted", contribution=0.2)]),
+                _group(
+                    ticker,
+                    f"{ticker}-1",
+                    "Market context",
+                    [_row(included=True, decision="accepted", contribution=0.1)],
+                ),
+                _group(
+                    ticker,
+                    f"{ticker}-2",
+                    "Market context",
+                    [_row(included=True, decision="accepted", contribution=0.2)],
+                ),
             ]
             preproc = [_preproc(ticker, f"{ticker}-1", []), _preproc(ticker, f"{ticker}-2", [])]
             if reverse_groups:
                 groups.reverse()
                 preproc.reverse()
             reports[ticker] = _report(ticker, groups, preproc)
-        return _build(reports, tickers=order if not reverse_groups else tuple(reversed(order)), sample_limit=5)
+        return _build(
+            reports, tickers=order if not reverse_groups else tuple(reversed(order)), sample_limit=5
+        )
 
     forward = build(("AAPL", "AMD"), reverse_groups=False)
     reversed_ = build(("AAPL", "AMD"), reverse_groups=True)
@@ -327,15 +438,27 @@ def test_payload_is_deterministic_under_reversed_input() -> None:
 # --------------------------------------------------------------------------- #
 def test_integrity_stage_records_reconcile_and_surface_mismatch() -> None:
     groups = [
-        _group("AAPL", f"a{i}", "Apple product event", [_row(included=True, decision="accepted", contribution=0.1)])
+        _group(
+            "AAPL",
+            f"a{i}",
+            "Apple product event",
+            [_row(included=True, decision="accepted", contribution=0.1)],
+        )
         for i in range(30)
     ]
     preproc = [_preproc("AAPL", f"a{i}", ["AAPL"]) for i in range(30)]
-    report = _report("AAPL", groups, preproc, summary={"preprocessing_row_count": 650, "sentence_count": 30})
+    report = _report(
+        "AAPL", groups, preproc, summary={"preprocessing_row_count": 650, "sentence_count": 30}
+    )
     payload = _build({"AAPL": report}, tickers=("AAPL",), sample_limit=30)
     stage = payload["integrity"]["stages"]["AAPL:total_preprocessed_chunks"]
     assert set(stage) == {"canonical_count", "sample_count", "omitted_count", "reconciles"}
-    assert stage == {"canonical_count": 650, "sample_count": 30, "omitted_count": 620, "reconciles": True}
+    assert stage == {
+        "canonical_count": 650,
+        "sample_count": 30,
+        "omitted_count": 620,
+        "reconciles": True,
+    }
 
     mismatched = _report(
         "AAPL",
@@ -354,7 +477,14 @@ def test_integrity_stage_records_reconcile_and_surface_mismatch() -> None:
 def test_integrity_reports_unavailable_counts_as_null_not_zero() -> None:
     report = _report(
         "AAPL",
-        [_group("AAPL", "a1", "Apple product event", [_row(included=True, decision="accepted", contribution=0.5)])],
+        [
+            _group(
+                "AAPL",
+                "a1",
+                "Apple product event",
+                [_row(included=True, decision="accepted", contribution=0.5)],
+            )
+        ],
         [_preproc("AAPL", "a1", ["AAPL"])],
     )
     payload = _build({"AAPL": report}, tickers=("AAPL",))
@@ -368,7 +498,14 @@ def test_integrity_checks_exact_identity_without_truncation() -> None:
     opaque = "layer1-daily-2026-06-18...post-pr313_pr314-modal-t4-20260911_153730"
     report = _report(
         "AAPL",
-        [_group("AAPL", "a1", "Apple product event", [_row(included=True, decision="accepted", contribution=0.5)])],
+        [
+            _group(
+                "AAPL",
+                "a1",
+                "Apple product event",
+                [_row(included=True, decision="accepted", contribution=0.5)],
+            )
+        ],
         [_preproc("AAPL", "a1", ["AAPL"])],
         summary={"preprocessing_row_count": 1},
         run_id=opaque,
@@ -381,7 +518,9 @@ def test_integrity_checks_exact_identity_without_truncation() -> None:
     assert payload["schema_id"] == SEMANTIC_QA_SCHEMA_ID
     assert payload["integrity"]["issue_codes"] == []
 
-    mismatched = _build({"AAPL": _report("AAPL", run_id="other-run")}, tickers=("AAPL",), run_id=opaque)
+    mismatched = _build(
+        {"AAPL": _report("AAPL", run_id="other-run")}, tickers=("AAPL",), run_id=opaque
+    )
     assert "AAPL:run_id_mismatch" in mismatched["integrity"]["issue_codes"]
 
 
@@ -392,7 +531,9 @@ def test_empty_and_missing_tickers_are_explicit_null_not_zero() -> None:
     payload = _build({}, tickers=("AAPL", "AMD"), run_id="r")
     assert payload["status"] == "empty"
     assert payload["tickers"]["AAPL"]["summary"]["signal_rows"] is None
-    assert payload["tickers"]["AAPL"]["funnel"]["total_preprocessed_chunks"]["canonical_count"] is None
+    assert (
+        payload["tickers"]["AAPL"]["funnel"]["total_preprocessed_chunks"]["canonical_count"] is None
+    )
     codes = {w["code"] for w in payload["warnings"]}
     assert "missing_review_artifacts" in codes
     assert payload["human_gate"]["can_accept_four_ticker_pilot"] is False
@@ -436,7 +577,14 @@ def test_unobservable_decisions_return_null_with_warning() -> None:
 def test_stale_freshness_is_advisory_not_integrity_failure() -> None:
     report = _report(
         "AAPL",
-        [_group("AAPL", "a1", "Apple product event", [_row(included=True, decision="accepted", contribution=0.5)])],
+        [
+            _group(
+                "AAPL",
+                "a1",
+                "Apple product event",
+                [_row(included=True, decision="accepted", contribution=0.5)],
+            )
+        ],
         [_preproc("AAPL", "a1", ["AAPL"])],
         summary={"preprocessing_row_count": 1},
     )
@@ -475,7 +623,9 @@ def qa_server(tmp_path: Path) -> object:
 
 
 def _get(server: object, path: str) -> tuple[int, str | None, str]:
-    connection = HTTPConnection(str(server.server_address[0]), int(server.server_address[1]), timeout=5)  # type: ignore[attr-defined]
+    connection = HTTPConnection(
+        str(server.server_address[0]), int(server.server_address[1]), timeout=5
+    )  # type: ignore[attr-defined]
     try:
         connection.request("GET", path)
         response = connection.getresponse()
@@ -486,15 +636,24 @@ def _get(server: object, path: str) -> tuple[int, str | None, str]:
 
 def _fp_report(ticker: str, count: int) -> dict[str, Any]:
     groups = [
-        _group(ticker, f"{ticker}-fp-{i}", "Market context", [_row(included=True, decision="accepted", contribution=0.1, si=i, ci=i)])
+        _group(
+            ticker,
+            f"{ticker}-fp-{i}",
+            "Market context",
+            [_row(included=True, decision="accepted", contribution=0.1, si=i, ci=i)],
+        )
         for i in range(count)
     ]
     preproc = [_preproc(ticker, f"{ticker}-fp-{i}", [], si=i, ci=i) for i in range(count)]
     return _report(ticker, groups, preproc, summary={"preprocessing_row_count": count})
 
 
-def test_endpoint_rejects_invalid_requests_with_envelope(monkeypatch: pytest.MonkeyPatch, qa_server: object) -> None:
-    status, cache, body = _get(qa_server, "/api/semantic-qa?run_id=run&from_date=bad&to_date=2026-05-22")
+def test_endpoint_rejects_invalid_requests_with_envelope(
+    monkeypatch: pytest.MonkeyPatch, qa_server: object
+) -> None:
+    status, cache, body = _get(
+        qa_server, "/api/semantic-qa?run_id=run&from_date=bad&to_date=2026-05-22"
+    )
     assert status == 400
     assert cache == "no-store"
     payload = json.loads(body)
@@ -503,8 +662,12 @@ def test_endpoint_rejects_invalid_requests_with_envelope(monkeypatch: pytest.Mon
     assert payload["error"]["code"] == "invalid_request"
 
 
-def test_endpoint_enforces_sample_limit_bounds(monkeypatch: pytest.MonkeyPatch, qa_server: object) -> None:
-    monkeypatch.setattr(dashboard, "build_layer1_aapl_evidence_report", lambda **_: _fp_report("AAPL", 3))
+def test_endpoint_enforces_sample_limit_bounds(
+    monkeypatch: pytest.MonkeyPatch, qa_server: object
+) -> None:
+    monkeypatch.setattr(
+        dashboard, "build_layer1_aapl_evidence_report", lambda **_: _fp_report("AAPL", 3)
+    )
     for limit in ("0", "51"):
         status, _, body = _get(
             qa_server,
@@ -521,10 +684,15 @@ def test_endpoint_enforces_sample_limit_bounds(monkeypatch: pytest.MonkeyPatch, 
     assert json.loads(body)["schema_id"] == SEMANTIC_QA_SCHEMA_ID
 
 
-def test_endpoint_success_sets_no_store_and_exact_identity(monkeypatch: pytest.MonkeyPatch, qa_server: object) -> None:
-    monkeypatch.setattr(dashboard, "build_layer1_aapl_evidence_report", lambda **_: _fp_report("AAPL", 3))
+def test_endpoint_success_sets_no_store_and_exact_identity(
+    monkeypatch: pytest.MonkeyPatch, qa_server: object
+) -> None:
+    monkeypatch.setattr(
+        dashboard, "build_layer1_aapl_evidence_report", lambda **_: _fp_report("AAPL", 3)
+    )
     status, cache, body = _get(
-        qa_server, "/api/semantic-qa?run_id=run&from_date=2026-05-21&to_date=2026-05-22&tickers=AAPL"
+        qa_server,
+        "/api/semantic-qa?run_id=run&from_date=2026-05-21&to_date=2026-05-22&tickers=AAPL",
     )
     assert status == 200
     assert cache == "no-store"
@@ -534,7 +702,9 @@ def test_endpoint_success_sets_no_store_and_exact_identity(monkeypatch: pytest.M
     assert payload["run"]["requested_end"] == "2026-05-22"
 
 
-def test_endpoint_missing_artifacts_returns_404_envelope(monkeypatch: pytest.MonkeyPatch, qa_server: object) -> None:
+def test_endpoint_missing_artifacts_returns_404_envelope(
+    monkeypatch: pytest.MonkeyPatch, qa_server: object
+) -> None:
     def missing(**_: object) -> dict[str, Any]:
         raise FileNotFoundError("missing")
 
@@ -547,7 +717,9 @@ def test_endpoint_missing_artifacts_returns_404_envelope(monkeypatch: pytest.Mon
     assert json.loads(body)["error"]["code"] == "review_artifacts_not_found"
 
 
-def test_endpoint_partial_missing_returns_200_with_warning(monkeypatch: pytest.MonkeyPatch, qa_server: object) -> None:
+def test_endpoint_partial_missing_returns_200_with_warning(
+    monkeypatch: pytest.MonkeyPatch, qa_server: object
+) -> None:
     def partial(*, ticker: str, **_: object) -> dict[str, Any]:
         if ticker != "AAPL":
             raise FileNotFoundError("missing")
@@ -562,11 +734,18 @@ def test_endpoint_partial_missing_returns_200_with_warning(monkeypatch: pytest.M
     payload = json.loads(body)
     assert payload["tickers"]["AAPL"]["summary"]["signal_rows"] == 3
     assert payload["tickers"]["AMD"]["summary"]["signal_rows"] is None
-    assert any(w["code"] == "missing_review_artifacts" and w["ticker"] == "AMD" for w in payload["warnings"])
+    assert any(
+        w["code"] == "missing_review_artifacts" and w["ticker"] == "AMD"
+        for w in payload["warnings"]
+    )
 
 
-def test_endpoint_producer_failure_is_sanitized_500(monkeypatch: pytest.MonkeyPatch, qa_server: object) -> None:
-    monkeypatch.setattr(dashboard, "build_layer1_aapl_evidence_report", lambda **_: _fp_report("AAPL", 1))
+def test_endpoint_producer_failure_is_sanitized_500(
+    monkeypatch: pytest.MonkeyPatch, qa_server: object
+) -> None:
+    monkeypatch.setattr(
+        dashboard, "build_layer1_aapl_evidence_report", lambda **_: _fp_report("AAPL", 1)
+    )
 
     def explode(**_: object) -> dict[str, Any]:
         raise RuntimeError("boom secret-token /var/secrets/creds.json")
@@ -598,14 +777,24 @@ def test_endpoint_cache_key_isolates_limit_and_ticker_identities(
     _, _, body_limit1 = _get(qa_server, f"{base}&sample_limit=1")
     after_first = len(calls)
     assert after_first == 4  # four pilot tickers built
-    assert json.loads(body_limit1)["tickers"]["AAPL"]["queues"]["potential_false_positives"]["sample_count"] == 1
+    assert (
+        json.loads(body_limit1)["tickers"]["AAPL"]["queues"]["potential_false_positives"][
+            "sample_count"
+        ]
+        == 1
+    )
 
     _get(qa_server, f"{base}&sample_limit=1")
     assert len(calls) == after_first  # identical request served from cache
 
     _, _, body_limit2 = _get(qa_server, f"{base}&sample_limit=2")
     assert len(calls) == after_first + 4  # different limit is a distinct cache key
-    assert json.loads(body_limit2)["tickers"]["AAPL"]["queues"]["potential_false_positives"]["sample_count"] == 2
+    assert (
+        json.loads(body_limit2)["tickers"]["AAPL"]["queues"]["potential_false_positives"][
+            "sample_count"
+        ]
+        == 2
+    )
 
     _, _, body_ticker = _get(qa_server, f"{base}&tickers=AAPL&sample_limit=2")
     assert len(calls) == after_first + 5  # different ticker set is a distinct cache key

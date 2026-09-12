@@ -193,9 +193,7 @@ def _build_ticker(
             )
         contribution = _row_contribution(row)
         if included and contribution is not None and contribution != 0:
-            queues["top_contributors"].append(
-                _queue_row(row, "top_contributor", owner=owner)
-            )
+            queues["top_contributors"].append(_queue_row(row, "top_contributor", owner=owner))
     queues["top_contributors"].sort(
         key=lambda row: (
             -abs(_row_contribution(row) or 0),
@@ -300,7 +298,11 @@ def _funnel(
                 )
             )
     if _establishes_empty(report, rows):
-        warnings.append(_warning("no_review_rows", ticker, None, "The producer established an empty review result."))
+        warnings.append(
+            _warning(
+                "no_review_rows", ticker, None, "The producer established an empty review result."
+            )
+        )
     return stages
 
 
@@ -313,7 +315,11 @@ def _stage_stats(stage: str, rows: list[dict[str, Any]], ticker: str) -> int:
     if stage == "materially_relevant":
         return sum(1 for r in rows if _material_evidence(r))
     if stage == "accepted_or_borderline":
-        return sum(1 for r in rows if _relevance_decision(r) in (_ACCEPTED_DECISIONS | _BORDERLINE_DECISIONS))
+        return sum(
+            1
+            for r in rows
+            if _relevance_decision(r) in (_ACCEPTED_DECISIONS | _BORDERLINE_DECISIONS)
+        )
     if stage == "sentiment_scored":
         return sum(
             1
@@ -324,7 +330,9 @@ def _stage_stats(stage: str, rows: list[dict[str, Any]], ticker: str) -> int:
         return sum(1 for r in rows if _included_in_signal(r))
     if stage == "nonzero_effective_contribution":
         return sum(1 for r in rows if _row_contribution(r) not in (None, 0))
-    rejected = (r for r in rows if _relevance_decision(r) in _REJECTED_DECISIONS or _bool(r.get("rejected")))
+    rejected = (
+        r for r in rows if _relevance_decision(r) in _REJECTED_DECISIONS or _bool(r.get("rejected"))
+    )
     return sum(1 for r in rejected if not _local_evidence(r, ticker))
 
 
@@ -340,9 +348,7 @@ def _queue(rows: list[dict[str, Any]], canonical: int | None, limit: int) -> dic
     }
 
 
-def _queue_row(
-    row: Mapping[str, Any], reason: str, *, owner: str | None = None
-) -> dict[str, Any]:
+def _queue_row(row: Mapping[str, Any], reason: str, *, owner: str | None = None) -> dict[str, Any]:
     identity_keys = (
         "row_id",
         "ticker",
@@ -843,7 +849,12 @@ def _ticker_has_rows(value: Mapping[str, Any]) -> bool:
 
 def _row_contribution(row: Mapping[str, Any]) -> float | None:
     """Read the producer's canonical final contribution with compatibility fallbacks."""
-    for key in ("final_signal_contribution", "final_contribution", "effective_contribution", "contribution"):
+    for key in (
+        "final_signal_contribution",
+        "final_contribution",
+        "effective_contribution",
+        "contribution",
+    ):
         value = _number(row.get(key))
         if value is not None:
             return value
