@@ -1,4 +1,5 @@
 """Local read-only web UI for the Layer 1 semantic-review dashboard."""
+
 from __future__ import annotations
 
 import argparse
@@ -18,6 +19,7 @@ from loguru import logger
 
 from core.features.aapl_evidence import build_layer1_aapl_evidence_report
 from core.features.semantic_qa import (
+    PILOT_TICKERS,
     SEMANTIC_QA_SCHEMA_ID,
     build_semantic_qa_payload,
     normalize_semantic_qa_query,
@@ -159,11 +161,15 @@ class _DashboardRequestHandler(BaseHTTPRequestHandler):
                         writer=writer,
                     )
                 except FileNotFoundError:
-                    continue
-            if not reports:
+                    reports[ticker] = None
+            pilot_reports = {
+                t: reports[t] for t in query["tickers"] if t.upper() in PILOT_TICKERS
+            }
+            if pilot_reports and all(v is None for v in pilot_reports.values()):
                 self._send_json(
                     _semantic_qa_error(
-                        "review_artifacts_not_found", "No requested ticker has review artifacts."
+                        "review_artifacts_not_found",
+                        "No requested ticker has review artifacts.",
                     ),
                     status=HTTPStatus.NOT_FOUND,
                 )
@@ -271,7 +277,9 @@ def _build_dashboard_payload(
 
 def _run_dashboard_smoke(*, defaults: _DashboardDefaults, args: argparse.Namespace) -> int:
     """Run API and rendered-browser smoke checks for the semantic-review dashboard."""
-    writer = R2Writer(local_root=defaults.local_root) if defaults.local_root is not None else R2Writer()
+    writer = (
+        R2Writer(local_root=defaults.local_root) if defaults.local_root is not None else R2Writer()
+    )
     report = build_layer1_aapl_evidence_report(
         run_id=defaults.run_id,
         from_date=defaults.from_date,
@@ -438,6 +446,7 @@ def _render_smoke_html(defaults: _DashboardDefaults, payload: Mapping[str, objec
 </body>
 </html>"""
 
+
 def _resolve_browser_binary(browser_binary: str) -> str:
     """Return a browser executable suitable for headless smoke rendering."""
     requested = Path(browser_binary)
@@ -553,6 +562,782 @@ def _semantic_qa_error(code: str, message: str) -> dict[str, object]:
         "schema_id": SEMANTIC_QA_SCHEMA_ID,
         "error": {"code": code, "message": message},
     }
+
+
+_SEMANTIC_QA_CSS = """
+    .qa-shell { display: grid; gap: 16px; min-width: 0; }
+    .qa-section { display: grid; gap: 12px; scroll-margin-top: 180px; min-width: 0; }
+    .qa-section + .qa-section { border-top: 1px solid var(--border); padding-top: 18px; }
+    .qa-state {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 14px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: rgba(15, 23, 42, 0.72);
+    }
+    .qa-state.good { border-color: rgba(74, 222, 128, 0.48); }
+    .qa-state.warn { border-color: rgba(251, 191, 36, 0.5); }
+    .qa-state.bad { border-color: rgba(251, 113, 133, 0.52); }
+    .qa-filter-bar {
+      position: sticky;
+      top: 112px;
+      z-index: 3;
+      display: grid;
+      grid-template-columns: repeat(4, minmax(150px, 1fr));
+      gap: 10px;
+      padding: 12px;
+      border: 1px solid rgba(56, 189, 248, 0.35);
+      border-radius: 14px;
+      background: rgba(11, 18, 32, 0.97);
+      box-shadow: 0 8px 24px rgba(2, 6, 23, 0.36);
+    }
+    .qa-field { display: grid; gap: 5px; min-width: 0; }
+    .qa-field label { color: var(--muted); font-size: 0.78rem; font-weight: 700; }
+    .qa-field input, .qa-field select, .qa-notes {
+      width: 100%;
+      min-height: 44px;
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      background: #0a1220;
+      color: var(--text);
+      padding: 9px 10px;
+    }
+    .qa-actions { display: flex; gap: 8px; align-items: end; flex-wrap: wrap; }
+    .qa-button, .qa-metric-button, .qa-cell, .qa-row-button, .qa-disposition {
+      min-height: 44px;
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      background: rgba(30, 41, 59, 0.92);
+      color: var(--text);
+      padding: 8px 10px;
+      cursor: pointer;
+      font: inherit;
+    }
+    .qa-button:hover, .qa-metric-button:hover, .qa-cell:hover, .qa-row-button:hover,
+    .qa-disposition:hover { border-color: var(--accent); }
+    .qa-button:focus-visible, .qa-metric-button:focus-visible, .qa-cell:focus-visible,
+    .qa-row-button:focus-visible, .qa-disposition:focus-visible {
+      outline: 3px solid rgba(56, 189, 248, 0.45);
+      outline-offset: 2px;
+    }
+    .qa-button.active, .qa-disposition.active {
+      border-color: var(--accent);
+      background: rgba(56, 189, 248, 0.2);
+    }
+    .qa-button:disabled, .qa-disposition:disabled { cursor: not-allowed; opacity: 0.46; }
+    .qa-scroll { overflow-x: auto; max-width: 100%; border: 1px solid var(--border); border-radius: 12px; }
+    .qa-table { width: 100%; border-collapse: collapse; min-width: 860px; }
+    .qa-table th, .qa-table td {
+      padding: 10px;
+      text-align: left;
+      border-bottom: 1px solid rgba(36, 50, 69, 0.76);
+      vertical-align: top;
+    }
+    .qa-table th { color: var(--muted); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; }
+    .qa-table tbody tr:last-child td { border-bottom: 0; }
+    .qa-metric-button { width: 100%; font-weight: 750; text-align: right; }
+    .qa-metric-button.issue, .qa-cell.issue { color: #fecdd3; border-color: rgba(251, 113, 133, 0.55); }
+    .qa-metric-button.review { color: #fde68a; border-color: rgba(251, 191, 36, 0.48); }
+    .qa-cell.pass { color: #baf7c9; border-color: rgba(74, 222, 128, 0.4); }
+    .qa-funnel-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .qa-funnel-card { border: 1px solid var(--border); border-radius: 12px; padding: 12px; min-width: 0; }
+    .qa-funnel-flow { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+    .qa-funnel-stage { display: grid; gap: 4px; text-align: left; min-width: 0; }
+    .qa-funnel-stage strong { font-size: 1.05rem; }
+    .qa-funnel-stage small { color: var(--muted); overflow-wrap: anywhere; }
+    .qa-queue-tabs { display: flex; flex-wrap: wrap; gap: 8px; }
+    .qa-row-list { display: grid; gap: 8px; }
+    .qa-row-button { display: grid; width: 100%; gap: 7px; text-align: left; }
+    .qa-row-button.selected { border-color: var(--accent); background: rgba(56, 189, 248, 0.12); }
+    .qa-row-meta { display: flex; flex-wrap: wrap; gap: 6px; color: var(--muted); font-size: 0.82rem; }
+    .qa-preview { overflow-wrap: anywhere; }
+    .qa-inspector-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .qa-evidence-panel { border: 1px solid var(--border); border-radius: 12px; padding: 12px; min-width: 0; }
+    .qa-evidence-panel h4 { margin: 0 0 8px; color: #fff; }
+    .qa-kv { display: grid; grid-template-columns: minmax(115px, 0.35fr) minmax(0, 1fr); gap: 6px 10px; }
+    .qa-kv dt { color: var(--muted); }
+    .qa-kv dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+    .qa-exact { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+    .qa-status-good { color: #baf7c9; }
+    .qa-status-warn { color: #fde68a; }
+    .qa-status-bad { color: #fecdd3; }
+    .qa-disposition-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .qa-disposition-card { display: grid; gap: 9px; border: 1px solid var(--border); border-radius: 12px; padding: 12px; }
+    .qa-disposition-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+    .qa-notes { min-height: 74px; resize: vertical; }
+    .qa-overall { display: grid; gap: 10px; padding: 14px; border: 1px solid var(--border); border-radius: 12px; }
+    .qa-empty { padding: 18px; border: 1px dashed var(--border); border-radius: 12px; color: var(--muted); }
+    @media (max-width: 900px) {
+      .qa-filter-bar { grid-template-columns: repeat(2, minmax(0, 1fr)); top: 104px; }
+      .qa-funnel-grid, .qa-disposition-grid { grid-template-columns: 1fr; }
+      .qa-funnel-flow { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 600px) {
+      header { position: static; }
+      main { padding: 14px 12px 24px; }
+      .panel { padding: 14px; border-radius: 14px; }
+      .qa-filter-bar { position: static; grid-template-columns: 1fr; }
+      .qa-funnel-flow, .qa-inspector-grid { grid-template-columns: 1fr; }
+      .qa-table { min-width: 760px; }
+      .qa-state { display: grid; }
+      .qa-actions, .qa-disposition-actions { display: grid; grid-template-columns: 1fr 1fr; }
+      .qa-button, .qa-metric-button, .qa-cell, .qa-row-button, .qa-disposition,
+      .qa-field input, .qa-field select { min-height: 44px; }
+    }
+"""
+
+
+_SEMANTIC_QA_HTML = """
+      <section class="panel tab-panel hidden" id="semantic-qa-tab" role="tabpanel" aria-hidden="true">
+        <div class="qa-shell">
+          <div>
+            <h2>Semantic QA / Human Review</h2>
+            <p class="section-note">Review the four-ticker pilot from canonical Layer 1 evidence. Counts come from the server-side semantic QA aggregation; bounded samples never replace canonical totals.</p>
+          </div>
+          <div class="qa-state warn" id="semantic-qa-state" role="status" aria-live="polite">
+            <div><strong>Loading four-ticker semantic QA…</strong><div class="muted">Open this tab to load the bounded review payload.</div></div>
+          </div>
+          <div class="qa-filter-bar" id="semantic-qa-filter-bar" aria-label="Semantic QA filters">
+            <div class="qa-field"><label for="qa-run-id">Exact run ID</label><input id="qa-run-id" type="text" /></div>
+            <div class="qa-field"><label for="qa-from-date">Requested start</label><input id="qa-from-date" type="date" /></div>
+            <div class="qa-field"><label for="qa-to-date">Requested end</label><input id="qa-to-date" type="date" /></div>
+            <div class="qa-field"><label for="qa-filter-ticker">Ticker</label><select id="qa-filter-ticker"><option value="">All pilot tickers</option></select></div>
+            <div class="qa-field"><label for="qa-filter-decision">Decision</label><select id="qa-filter-decision"><option value="">All decisions</option></select></div>
+            <div class="qa-field"><label for="qa-filter-included">Included in signal</label><select id="qa-filter-included"><option value="">Any</option><option value="true">Included</option><option value="false">Excluded</option></select></div>
+            <div class="qa-field"><label for="qa-filter-relevance">Relevance category</label><select id="qa-filter-relevance"><option value="">All categories</option></select></div>
+            <div class="qa-field"><label for="qa-filter-reason">Reason code</label><select id="qa-filter-reason"><option value="">All reason codes</option></select></div>
+            <div class="qa-field"><label for="qa-filter-source">Source / provider</label><select id="qa-filter-source"><option value="">All sources</option></select></div>
+            <div class="qa-field"><label for="qa-filter-anomaly">Anomaly type</label><select id="qa-filter-anomaly"><option value="">All anomaly types</option></select></div>
+            <div class="qa-field"><label for="qa-filter-subject">Evidence subject / entity</label><select id="qa-filter-subject"><option value="">All subjects</option></select></div>
+            <div class="qa-actions"><button class="qa-button" id="qa-reload" type="button">Load exact run</button><button class="qa-button" id="qa-reset-filters" type="button">Reset filters</button></div>
+          </div>
+
+          <section class="qa-section" id="semantic-qa-summary">
+            <div><h3>1. Four-ticker summary</h3><p class="section-note">Click any metric to drill into the bounded review rows for that ticker.</p></div>
+            <div class="qa-scroll" aria-label="Four-ticker summary table"><table class="qa-table"><thead><tr><th>Ticker</th><th>Signal</th><th>Rejected</th><th>Leakage</th><th>Direct</th><th>Borderline</th><th>Contribution</th><th>Human status</th></tr></thead><tbody id="qa-summary-body"></tbody></table></div>
+          </section>
+
+          <section class="qa-section" id="semantic-qa-funnel">
+            <div><h3>2. Signal funnel</h3><p class="section-note">Canonical producer totals are primary. Each stage also names the delivered sample and omitted count; Unknown is never treated as zero.</p></div>
+            <div class="qa-funnel-grid" id="qa-funnel-grid"></div>
+          </section>
+
+          <section class="qa-section" id="semantic-qa-matrix">
+            <div><h3>3. Cross-ticker leakage matrix</h3><p class="section-note">Rows are chunk-local evidence owners; columns are signal tickers. Red off-diagonal or generic cells need review. Select a cell to open its rows.</p></div>
+            <div class="qa-scroll" id="qa-matrix-table" aria-label="Cross-ticker leakage matrix"></div>
+          </section>
+
+          <section class="qa-section" id="semantic-qa-queues">
+            <div><h3>4. QA review queues</h3><p class="section-note">Ranked, bounded queues prioritize potential false positives, potential false negatives, highest contributors, and cross-ticker anomalies.</p></div>
+            <div class="qa-queue-tabs" id="qa-queue-tabs"></div>
+            <p class="readiness-line" id="qa-queue-counts"></p>
+            <div class="qa-row-list" id="qa-queue-list"><div class="qa-empty">No semantic QA rows match the current filters.</div></div>
+          </section>
+
+          <section class="qa-section" id="semantic-qa-inspector">
+            <div><h3>5. Article / chunk inspector</h3><p class="section-note">Article context, chunk-local evidence, the derived relevance decision, and final signal contribution remain visibly separate.</p></div>
+            <div id="qa-inspector-content" class="qa-empty">Select a summary metric, funnel stage, matrix cell, or queue row to inspect bounded evidence.</div>
+          </section>
+
+          <section class="qa-section" id="semantic-qa-integrity">
+            <div><h3>6. Payload / artifact integrity</h3><p class="section-note">The check is sample_count + omitted_count = canonical_count when every operand is known. Exact identity values remain visible and auditable.</p></div>
+            <div id="qa-integrity-content"></div>
+          </section>
+
+          <section class="qa-section" id="semantic-qa-controls">
+            <div><h3>7. Human acceptance controls</h3><p class="section-note">These read-only review choices live only in this browser tab. They do not write to R2, the API, local storage, or authorize the trading pipeline.</p></div>
+            <div class="qa-disposition-grid" id="qa-ticker-dispositions"></div>
+            <div class="qa-overall" id="qa-overall-controls"></div>
+          </section>
+        </div>
+      </section>
+"""
+
+
+_SEMANTIC_QA_JS = """
+    const QA_PILOT_TICKERS = ['AAPL', 'AMD', 'NVDA', 'MSFT'];
+    const QA_QUEUE_LABELS = {
+      potential_false_positives: 'Potential false positives',
+      potential_false_negatives: 'Potential false negatives',
+      top_contributors: 'Highest contributors',
+      cross_ticker_anomalies: 'Cross-ticker anomalies',
+    };
+    const QA_FUNNEL_LABELS = {
+      total_preprocessed_chunks: 'Preprocessed chunks',
+      local_target_evidence: 'Local target evidence',
+      materially_relevant: 'Materially relevant',
+      accepted_or_borderline: 'Accepted / borderline',
+      sentiment_scored: 'Sentiment scored',
+      included_in_signal: 'Included in signal',
+      nonzero_effective_contribution: 'Non-zero contribution',
+      article_context_only_rejected: 'Context-only rejected',
+    };
+    const qaState = {
+      payload: null,
+      loaded: false,
+      loading: false,
+      queue: 'potential_false_positives',
+      filters: {
+        ticker: '', decision: '', included: '', relevance: '', reason: '', source: '',
+        anomaly: '', subject: '',
+      },
+      selectedKey: '',
+      dispositions: Object.fromEntries(QA_PILOT_TICKERS.map((ticker) => [ticker, 'Pending'])),
+      notes: Object.fromEntries(QA_PILOT_TICKERS.map((ticker) => [ticker, ''])),
+      overall: null,
+    };
+    const qaPanelEl = document.getElementById('semantic-qa-tab');
+    const qaStateEl = document.getElementById('semantic-qa-state');
+    const qaSummaryBodyEl = document.getElementById('qa-summary-body');
+    const qaFunnelGridEl = document.getElementById('qa-funnel-grid');
+    const qaMatrixTableEl = document.getElementById('qa-matrix-table');
+    const qaQueueTabsEl = document.getElementById('qa-queue-tabs');
+    const qaQueueCountsEl = document.getElementById('qa-queue-counts');
+    const qaQueueListEl = document.getElementById('qa-queue-list');
+    const qaInspectorEl = document.getElementById('qa-inspector-content');
+    const qaIntegrityEl = document.getElementById('qa-integrity-content');
+    const qaDispositionsEl = document.getElementById('qa-ticker-dispositions');
+    const qaOverallEl = document.getElementById('qa-overall-controls');
+    const qaRunIdEl = document.getElementById('qa-run-id');
+    const qaFromDateEl = document.getElementById('qa-from-date');
+    const qaToDateEl = document.getElementById('qa-to-date');
+
+    function qaDisplay(value, fallback = 'Unknown') {
+      if (value === null || value === undefined || value === '') return fallback;
+      return String(value);
+    }
+
+    function qaNumber(value, digits = null) {
+      if (value === null || value === undefined || value === '') return 'Unknown';
+      const number = Number(value);
+      if (!Number.isFinite(number)) return 'Unknown';
+      return digits === null ? String(number) : number.toFixed(digits);
+    }
+
+    function qaList(value) {
+      if (Array.isArray(value)) return value.filter((item) => item !== null && item !== undefined);
+      return value === null || value === undefined || value === '' ? [] : [value];
+    }
+
+    function qaNested(row, key) {
+      if (row && row[key] !== undefined && row[key] !== null) return row[key];
+      for (const container of ['relevance', 'signal', 'chunk_local_evidence', 'article_context']) {
+        const nested = row && row[container];
+        if (nested && nested[key] !== undefined && nested[key] !== null) return nested[key];
+      }
+      return null;
+    }
+
+    function qaDecision(row) {
+      return qaDisplay(qaNested(row, 'relevance_decision'), '').toLowerCase();
+    }
+
+    function qaIncluded(row) {
+      const value = qaNested(row, 'included_in_signal');
+      if (value === true || String(value).toLowerCase() === 'true') return 'true';
+      if (value === false || String(value).toLowerCase() === 'false') return 'false';
+      return '';
+    }
+
+    function qaCategory(row) {
+      return qaDisplay(qaNested(row, 'relevance_category'), '');
+    }
+
+    function qaReasons(row) {
+      const values = [row?.reason_code, ...qaList(qaNested(row, 'reason_codes'))];
+      return [...new Set(values.map((item) => qaDisplay(item, '')).filter(Boolean))];
+    }
+
+    function qaSource(row) {
+      return qaDisplay(row?.source ?? row?.provider ?? qaNested(row, 'source'), '');
+    }
+
+    function qaSubject(row) {
+      return qaDisplay(
+        row?.evidence_owner ?? row?.evidence_subject ?? qaNested(row, 'evidence_owner'),
+        'unknown_generic',
+      );
+    }
+
+    function qaRowId(row) {
+      return qaDisplay(row?.row_id, [
+        row?._qaTicker, row?.article_id, row?.sentence_index, row?.chunk_index,
+      ].map((item) => qaDisplay(item, '')).join(':'));
+    }
+
+    function qaRowKey(row) {
+      return `${row?._qaTicker || row?.ticker || ''}|${row?._qaQueue || ''}|${qaRowId(row)}`;
+    }
+
+    function qaAllRows() {
+      const rows = [];
+      const tickers = qaState.payload?.tickers || {};
+      for (const ticker of QA_PILOT_TICKERS) {
+        const queues = tickers[ticker]?.queues || {};
+        for (const queueName of Object.keys(QA_QUEUE_LABELS)) {
+          const queueRows = Array.isArray(queues[queueName]?.rows) ? queues[queueName].rows : [];
+          for (const row of queueRows) {
+            rows.push({...row, _qaTicker: ticker, _qaQueue: queueName});
+          }
+        }
+      }
+      return rows;
+    }
+
+    function qaSetSelectOptions(id, label, values) {
+      const element = document.getElementById(id);
+      if (!element) return;
+      const previous = element.value;
+      const options = [...new Set(values.map((value) => qaDisplay(value, '')).filter(Boolean))].sort();
+      element.innerHTML = `<option value="">${escapeHtml(label)}</option>` + options.map(
+        (value) => `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`,
+      ).join('');
+      if (options.includes(previous)) element.value = previous;
+    }
+
+    function qaPopulateFilters() {
+      const rows = qaAllRows();
+      qaSetSelectOptions('qa-filter-ticker', 'All pilot tickers', QA_PILOT_TICKERS);
+      qaSetSelectOptions('qa-filter-decision', 'All decisions', rows.map(qaDecision));
+      qaSetSelectOptions('qa-filter-relevance', 'All categories', rows.map(qaCategory));
+      qaSetSelectOptions('qa-filter-reason', 'All reason codes', rows.flatMap(qaReasons));
+      qaSetSelectOptions('qa-filter-source', 'All sources', rows.map(qaSource));
+      qaSetSelectOptions('qa-filter-anomaly', 'All anomaly types', rows.map((row) => row.reason_code));
+      const matrixSubjects = Object.keys(qaState.payload?.leakage_matrix || {});
+      qaSetSelectOptions('qa-filter-subject', 'All subjects', [
+        ...rows.map(qaSubject), ...matrixSubjects,
+      ]);
+    }
+
+    function qaSyncFilterControls() {
+      const ids = {
+        ticker: 'qa-filter-ticker', decision: 'qa-filter-decision',
+        included: 'qa-filter-included', relevance: 'qa-filter-relevance',
+        reason: 'qa-filter-reason', source: 'qa-filter-source', anomaly: 'qa-filter-anomaly',
+        subject: 'qa-filter-subject',
+      };
+      for (const [key, id] of Object.entries(ids)) {
+        const element = document.getElementById(id);
+        if (element) element.value = qaState.filters[key] || '';
+      }
+    }
+
+    function qaMatchesFilters(row) {
+      const filters = qaState.filters;
+      if (filters.ticker && row._qaTicker !== filters.ticker) return false;
+      if (filters.decision && qaDecision(row) !== filters.decision.toLowerCase()) return false;
+      if (filters.included && qaIncluded(row) !== filters.included) return false;
+      if (filters.relevance && qaCategory(row) !== filters.relevance) return false;
+      if (filters.reason && !qaReasons(row).includes(filters.reason)) return false;
+      if (filters.source && qaSource(row) !== filters.source) return false;
+      if (filters.anomaly && row.reason_code !== filters.anomaly) return false;
+      if (filters.subject && qaSubject(row) !== filters.subject) return false;
+      return true;
+    }
+
+    function qaRowsForCurrentQueue() {
+      return qaAllRows().filter(
+        (row) => row._qaQueue === qaState.queue && qaMatchesFilters(row),
+      );
+    }
+
+    function qaRenderState(kind = null, title = null, detail = null) {
+      if (!qaStateEl) return;
+      if (kind) {
+        qaStateEl.className = `qa-state ${kind}`;
+        qaStateEl.innerHTML = `<div><strong>${escapeHtml(title)}</strong><div class="muted">${escapeHtml(detail)}</div></div>`;
+        return;
+      }
+      const payload = qaState.payload || {};
+      const missing = QA_PILOT_TICKERS.filter((ticker) => {
+        const summary = payload.tickers?.[ticker]?.summary || {};
+        return Object.values(summary).every((value) => value === null || value === undefined);
+      });
+      if (payload.status === 'empty') {
+        qaRenderState('warn', 'No data', 'The server established an empty semantic QA result for this exact run and date window.');
+      } else if (payload.integrity?.status === 'fail') {
+        qaRenderState('bad', 'Payload integrity failed', 'Canonical/sample reconciliation or exact identity checks failed. Review the integrity section before disposition.');
+      } else if (missing.length) {
+        qaRenderState('warn', 'Partial pilot data', `Missing semantic review artifacts for: ${missing.join(', ')}.`);
+      } else if (payload.freshness?.state === 'stale') {
+        qaRenderState('warn', 'Stale advisory', 'The payload is reviewable, but source artifacts are older than the advisory freshness threshold.');
+      } else if (payload.status === 'warning') {
+        qaRenderState('warn', 'Review warnings present', 'The bounded payload loaded with warnings. Unknown canonical values remain Unknown rather than zero.');
+      } else {
+        qaRenderState('good', 'Four-ticker QA ready', 'Canonical summaries, bounded queues, exact identities, and browser-local review controls are available.');
+      }
+    }
+
+    function qaMetricButton(ticker, metric, value, tone = '') {
+      return `<button type="button" class="qa-metric-button ${tone}" data-qa-summary-filter="${metric}" data-ticker="${ticker}">${escapeHtml(qaNumber(value, metric === 'contribution' ? 3 : null))}</button>`;
+    }
+
+    function qaRenderSummary() {
+      const tickers = qaState.payload?.tickers || {};
+      qaSummaryBodyEl.innerHTML = QA_PILOT_TICKERS.map((ticker) => {
+        const summary = tickers[ticker]?.summary || {};
+        const leakage = summary.leakage_candidates;
+        const leakageTone = leakage === null || leakage === undefined ? 'review' : Number(leakage) > 0 ? 'issue' : '';
+        const borderlineTone = summary.borderline === null || summary.borderline === undefined || Number(summary.borderline) > 0 ? 'review' : '';
+        return `<tr>
+          <td><strong>${ticker}</strong></td>
+          <td>${qaMetricButton(ticker, 'signal', summary.signal_rows)}</td>
+          <td>${qaMetricButton(ticker, 'rejected', summary.rejected_rows)}</td>
+          <td>${qaMetricButton(ticker, 'leakage', leakage, leakageTone)}</td>
+          <td>${qaMetricButton(ticker, 'direct', summary.direct_accepted)}</td>
+          <td>${qaMetricButton(ticker, 'borderline', summary.borderline, borderlineTone)}</td>
+          <td>${qaMetricButton(ticker, 'contribution', summary.total_contribution)}</td>
+          <td><span class="badge">${escapeHtml(qaState.dispositions[ticker])}</span></td>
+        </tr>`;
+      }).join('');
+    }
+
+    function qaRenderFunnel() {
+      const tickers = qaState.payload?.tickers || {};
+      qaFunnelGridEl.innerHTML = QA_PILOT_TICKERS.map((ticker) => {
+        const funnel = tickers[ticker]?.funnel || {};
+        const stages = Object.keys(QA_FUNNEL_LABELS).map((stage) => {
+          const record = funnel[stage] || {};
+          return `<button type="button" class="qa-button qa-funnel-stage" data-qa-funnel-stage="${stage}" data-ticker="${ticker}">
+            <span>${escapeHtml(QA_FUNNEL_LABELS[stage])}</span>
+            <strong>${escapeHtml(qaNumber(record.canonical_count))}</strong>
+            <small>sample ${escapeHtml(qaNumber(record.sample_count))} · omitted ${escapeHtml(qaNumber(record.omitted_count))}</small>
+          </button>`;
+        }).join('');
+        return `<article class="qa-funnel-card"><h4>${ticker}</h4><div class="qa-funnel-flow">${stages}</div></article>`;
+      }).join('');
+    }
+
+    function qaRenderMatrix() {
+      const matrix = qaState.payload?.leakage_matrix || {};
+      const subjects = Object.keys(matrix);
+      if (!subjects.length) {
+        qaMatrixTableEl.innerHTML = '<div class="qa-empty">No data: no contributing evidence-owner cells were returned.</div>';
+        return;
+      }
+      const rows = subjects.map((subject) => {
+        const cells = QA_PILOT_TICKERS.map((ticker) => {
+          const cell = matrix[subject]?.[ticker] || {};
+          const count = cell.canonical_count;
+          const issue = cell.suspicious === true;
+          const tone = issue ? 'issue' : Number(count) > 0 ? 'pass' : '';
+          return `<td><button type="button" class="qa-cell ${tone}" data-qa-matrix-cell="true" data-subject="${escapeHtml(subject)}" data-ticker="${ticker}" title="${escapeHtml(subject)} evidence in ${ticker} signal; ${qaList(cell.row_ids).length} bounded row IDs">${escapeHtml(qaNumber(count))}</button></td>`;
+        }).join('');
+        return `<tr><th scope="row">${escapeHtml(subject)}</th>${cells}</tr>`;
+      }).join('');
+      qaMatrixTableEl.innerHTML = `<table class="qa-table"><thead><tr><th>Evidence subject</th>${QA_PILOT_TICKERS.map((ticker) => `<th>${ticker}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table>`;
+    }
+
+    function qaQueueTotals() {
+      const tickers = qaState.payload?.tickers || {};
+      const selected = qaState.filters.ticker ? [qaState.filters.ticker] : QA_PILOT_TICKERS;
+      let canonical = 0;
+      let sample = 0;
+      let omitted = 0;
+      let canonicalKnown = true;
+      let omittedKnown = true;
+      for (const ticker of selected) {
+        const queue = tickers[ticker]?.queues?.[qaState.queue] || {};
+        if (queue.canonical_count === null || queue.canonical_count === undefined) canonicalKnown = false;
+        else canonical += Number(queue.canonical_count);
+        sample += Number(queue.sample_count || 0);
+        if (queue.omitted_count === null || queue.omitted_count === undefined) omittedKnown = false;
+        else omitted += Number(queue.omitted_count);
+      }
+      return {canonical: canonicalKnown ? canonical : null, sample, omitted: omittedKnown ? omitted : null};
+    }
+
+    function qaRenderQueues() {
+      qaQueueTabsEl.innerHTML = Object.entries(QA_QUEUE_LABELS).map(([name, label]) => `<button type="button" class="qa-button ${qaState.queue === name ? 'active' : ''}" data-qa-queue="${name}">${escapeHtml(label)}</button>`).join('');
+      const rows = qaRowsForCurrentQueue();
+      const totals = qaQueueTotals();
+      qaQueueCountsEl.textContent = `Canonical ${qaNumber(totals.canonical)} · delivered ${qaNumber(totals.sample)} · omitted ${qaNumber(totals.omitted)} · matching filters ${rows.length}`;
+      if (!rows.length) {
+        qaQueueListEl.innerHTML = '<div class="qa-empty">No semantic QA rows match the current filters.</div>';
+        if (!qaState.selectedKey) qaRenderInspector(null);
+        return;
+      }
+      qaQueueListEl.innerHTML = rows.map((row) => {
+        const key = qaRowKey(row);
+        const headline = row.headline || row.article_context?.headline || row.article_id || 'Untitled evidence row';
+        const preview = row.text || row.chunk_local_evidence?.text || 'No chunk text was delivered in this bounded row.';
+        return `<button type="button" class="qa-row-button ${qaState.selectedKey === key ? 'selected' : ''}" data-qa-row-id="${escapeHtml(key)}">
+          <span><strong>${escapeHtml(row._qaTicker)}</strong> · ${escapeHtml(headline)}</span>
+          <span class="qa-preview">${escapeHtml(preview)}</span>
+          <span class="qa-row-meta"><span>decision: ${escapeHtml(qaDecision(row) || 'Unknown')}</span><span>source: ${escapeHtml(qaSource(row) || 'Unknown')}</span><span>reason: ${escapeHtml(qaReasons(row).join(', ') || 'Unknown')}</span><span>contribution: ${escapeHtml(qaNumber(qaNested(row, 'final_signal_contribution') ?? qaNested(row, 'final_contribution') ?? qaNested(row, 'effective_contribution'), 3))}</span></span>
+        </button>`;
+      }).join('');
+      if (!rows.some((row) => qaRowKey(row) === qaState.selectedKey)) selectQaRow(qaRowKey(rows[0]), false);
+    }
+
+    function qaKv(items) {
+      return `<dl class="qa-kv">${items.map(([label, value, exact]) => `<dt>${escapeHtml(label)}</dt><dd class="${exact ? 'qa-exact' : ''}" title="${escapeHtml(qaDisplay(value, 'Unknown'))}">${escapeHtml(qaDisplay(value, 'Unknown'))}</dd>`).join('')}</dl>`;
+    }
+
+    function qaRenderInspector(row) {
+      if (!row) {
+        qaInspectorEl.className = 'qa-empty';
+        qaInspectorEl.innerHTML = 'No semantic QA rows match the current selection. Change a filter or choose another queue.';
+        return;
+      }
+      qaInspectorEl.className = 'qa-inspector-grid';
+      const run = qaState.payload?.run || {};
+      const article = row.article_context || {};
+      const chunk = row.chunk_local_evidence || {};
+      const relevance = row.relevance || {};
+      const signal = row.signal || {};
+      const articleEntities = article.article_entities ?? article.entities ?? row.article_entities;
+      const localEntities = chunk.entity_mentions ?? chunk.local_company_mentions ?? row.entity_mentions;
+      const localTickers = chunk.ticker_mentions ?? row.ticker_mentions;
+      const reasonCodes = relevance.reason_codes ?? qaReasons(row);
+      const contamination = relevance.contamination_flags ?? row.contamination_flags;
+      const contribution = signal.final_signal_contribution ?? signal.final_contribution ?? signal.effective_contribution ?? row.final_signal_contribution ?? row.final_contribution ?? row.effective_contribution;
+      const artifacts = run.artifact_ids?.[row._qaTicker] || [];
+      qaInspectorEl.innerHTML = `
+        <article class="qa-evidence-panel"><h4>Identity and provenance</h4>${qaKv([
+          ['Ticker', row._qaTicker || row.ticker, true], ['Run ID', run.run_id, true],
+          ['Requested dates', `${qaDisplay(run.requested_start)} → ${qaDisplay(run.requested_end)}`, true],
+          ['Article ID', row.article_id, true], ['Chunk ID', row.chunk_id ?? row.chunk_index, true],
+          ['Sentence index', row.sentence_index, true], ['Artifact IDs', artifacts.join(', ') || 'No data', true],
+          ['Source / provider', qaSource(row) || null, false],
+        ])}</article>
+        <article class="qa-evidence-panel"><h4>Article-level context</h4>${qaKv([
+          ['Headline', article.headline ?? row.headline, false], ['Provider symbols / tags', article.provider_symbols ?? article.symbols, false],
+          ['Assignment', article.assignment ?? row.assignment, false], ['Article entities', qaList(articleEntities).join(', ') || null, false],
+          ['URL', article.url ?? row.url, true],
+        ])}</article>
+        <article class="qa-evidence-panel"><h4>Chunk-local evidence</h4>${qaKv([
+          ['Chunk text', row.text ?? chunk.text, false], ['Local ticker mentions', qaList(localTickers).join(', ') || null, false],
+          ['Local company / entities', qaList(localEntities).join(', ') || null, false],
+          ['Event / product keywords', qaList(chunk.event_keywords ?? row.event_keywords).join(', ') || null, false],
+          ['Target evidence score', chunk.target_evidence_score ?? row.target_evidence_score, false],
+          ['Material relationship', row.explicit_local_material_relationship, false],
+        ])}</article>
+        <article class="qa-evidence-panel"><h4>Relevance decision</h4>${qaKv([
+          ['Decision', qaDecision(row) || null, false], ['Category', relevance.relevance_category ?? row.relevance_category, false],
+          ['Reason codes', qaList(reasonCodes).join(', ') || null, false], ['Relevance score', relevance.relevance_score ?? row.relevance_score, false],
+          ['Evidence subject', qaSubject(row), false], ['Contamination flags', qaList(contamination).join(', ') || null, false],
+        ])}</article>
+        <article class="qa-evidence-panel"><h4>Signal contribution</h4>${qaKv([
+          ['Included in signal', qaIncluded(row) || null, false], ['Effective contribution', contribution, false],
+          ['Sentiment label', signal.finbert_label ?? row.sentiment_label, false], ['Sentiment score', signal.sentiment_score ?? row.sentiment_score, false],
+          ['Contribution weight', signal.contribution_weight ?? row.contribution_weight, false],
+        ])}</article>`;
+    }
+
+    function selectQaRow(key, reveal = true) {
+      const row = qaAllRows().find((candidate) => qaRowKey(candidate) === key) || null;
+      qaState.selectedKey = row ? key : '';
+      qaRenderInspector(row);
+      qaRenderQueues();
+      if (reveal && row) document.getElementById('semantic-qa-inspector')?.scrollIntoView({behavior: 'smooth', block: 'start'});
+    }
+
+    function applySemanticQaFilters(nextFilters = {}, queue = null, reveal = true) {
+      qaState.filters = {...qaState.filters, ...nextFilters};
+      if (queue) qaState.queue = queue;
+      qaState.selectedKey = '';
+      qaSyncFilterControls();
+      qaRenderQueues();
+      const first = qaRowsForCurrentQueue()[0];
+      if (first) selectQaRow(qaRowKey(first), reveal);
+      else qaRenderInspector(null);
+    }
+
+    function qaHandleSummaryDrilldown(metric, ticker) {
+      const base = {ticker, decision: '', included: '', relevance: '', reason: '', anomaly: '', subject: ''};
+      const mapping = {
+        signal: [{...base, included: 'true'}, 'top_contributors'],
+        rejected: [{...base, decision: 'rejected'}, 'potential_false_negatives'],
+        leakage: [{...base, included: 'true', anomaly: 'potential_false_positive'}, 'potential_false_positives'],
+        direct: [{...base, decision: 'accepted'}, 'top_contributors'],
+        borderline: [{...base, decision: 'borderline'}, 'top_contributors'],
+        contribution: [base, 'top_contributors'],
+      };
+      const [filters, queue] = mapping[metric] || [base, 'potential_false_positives'];
+      applySemanticQaFilters(filters, queue);
+    }
+
+    function qaHandleFunnelDrilldown(stage, ticker) {
+      const filters = {ticker, decision: '', included: '', relevance: '', reason: '', anomaly: '', subject: ''};
+      let queue = 'potential_false_positives';
+      if (stage === 'included_in_signal' || stage === 'nonzero_effective_contribution') {
+        filters.included = 'true';
+        queue = 'top_contributors';
+      } else if (stage === 'accepted_or_borderline') {
+        queue = 'top_contributors';
+      } else if (stage === 'article_context_only_rejected') {
+        filters.decision = 'rejected';
+        queue = 'potential_false_negatives';
+      }
+      applySemanticQaFilters(filters, queue);
+    }
+
+    function qaHandleMatrixDrilldown(subject, ticker) {
+      applySemanticQaFilters({
+        ticker, decision: '', included: 'true', relevance: '', reason: '', source: '',
+        anomaly: 'cross_ticker_anomaly', subject,
+      }, 'cross_ticker_anomalies');
+      const cell = qaState.payload?.leakage_matrix?.[subject]?.[ticker] || {};
+      const ids = qaList(cell.row_ids).map(String);
+      const candidate = qaAllRows().find((row) => row._qaTicker === ticker && ids.includes(qaRowId(row)));
+      if (candidate) selectQaRow(qaRowKey(candidate));
+    }
+
+    function qaRenderIntegrity() {
+      const payload = qaState.payload || {};
+      const integrity = payload.integrity || {};
+      const stages = integrity.stages || {};
+      const issueCodes = qaList(integrity.issue_codes).map(String);
+      const stageRows = Object.entries(stages).map(([name, record]) => {
+        const [ticker, ...stageParts] = name.split(':');
+        const stage = stageParts.join(':');
+        const reconciles = record.reconciles;
+        const status = reconciles === true ? 'PASS' : reconciles === false ? 'ISSUE' : 'Unknown';
+        const tone = reconciles === true ? 'qa-status-good' : reconciles === false ? 'qa-status-bad' : 'qa-status-warn';
+        return `<tr><td>${escapeHtml(ticker)}</td><td>${escapeHtml(QA_FUNNEL_LABELS[stage] || stage)}</td><td>${escapeHtml(qaNumber(record.canonical_count))}</td><td>${escapeHtml(qaNumber(record.sample_count))}</td><td>${escapeHtml(qaNumber(record.omitted_count))}</td><td class="${tone}">${status}</td></tr>`;
+      }).join('');
+      const run = payload.run || {};
+      const identityRows = [
+        ['Run ID', run.run_id, issueCodes.some((code) => code.includes('run_id_mismatch'))],
+        ['Requested start', run.requested_start, issueCodes.some((code) => code.includes('from_date_mismatch'))],
+        ['Requested end', run.requested_end, issueCodes.some((code) => code.includes('to_date_mismatch'))],
+        ['Schema ID', payload.schema_id, issueCodes.some((code) => code.includes('schema_id_mismatch'))],
+        ...QA_PILOT_TICKERS.map((ticker) => [`${ticker} artifact IDs`, qaList(run.artifact_ids?.[ticker]).join(', ') || 'No data', issueCodes.some((code) => code.startsWith(`${ticker}:ticker_mismatch`))]),
+      ];
+      qaIntegrityEl.innerHTML = `
+        <div class="qa-state ${integrity.status === 'fail' ? 'bad' : integrity.status === 'pass' ? 'good' : 'warn'}"><div><strong>${integrity.status === 'fail' ? 'Payload integrity failed' : integrity.status === 'pass' ? 'Payload integrity PASS' : 'Payload integrity needs review'}</strong><div class="muted">${escapeHtml(issueCodes.join(', ') || 'No identity or reconciliation issue codes.')}</div></div></div>
+        <div class="qa-scroll"><table class="qa-table"><thead><tr><th>Ticker</th><th>Stage</th><th>Canonical</th><th>Sampled</th><th>Omitted</th><th>Reconciles</th></tr></thead><tbody>${stageRows || '<tr><td colspan="6">No data</td></tr>'}</tbody></table></div>
+        <div class="qa-inspector-grid">${identityRows.map(([label, value, failed]) => `<div class="qa-evidence-panel"><strong>${escapeHtml(label)}</strong><div class="qa-exact" title="${escapeHtml(qaDisplay(value, 'Unknown'))}">${escapeHtml(qaDisplay(value, 'Unknown'))}</div><div class="${failed ? 'qa-status-bad' : 'qa-status-good'}">${failed ? 'ISSUE' : 'PASS'}</div></div>`).join('')}</div>`;
+    }
+
+    function qaUnresolvedRisk() {
+      const tickers = qaState.payload?.tickers || {};
+      const leakage = QA_PILOT_TICKERS.reduce((sum, ticker) => {
+        const value = tickers[ticker]?.summary?.leakage_candidates;
+        return sum + (Number.isFinite(Number(value)) ? Number(value) : 0);
+      }, 0);
+      return {leakage, integrityFailed: qaState.payload?.integrity?.status === 'fail'};
+    }
+
+    function qaRenderControls() {
+      qaDispositionsEl.innerHTML = QA_PILOT_TICKERS.map((ticker) => {
+        const current = qaState.dispositions[ticker];
+        const buttons = ['Pending', 'Accepted', 'Rejected', 'Needs Review'].map((value) => `<button type="button" class="qa-disposition ${current === value ? 'active' : ''}" data-qa-disposition="${value}" data-ticker="${ticker}">${value}</button>`).join('');
+        return `<article class="qa-disposition-card"><div><strong>${ticker}</strong> <span class="badge">${escapeHtml(current)}</span></div><div class="qa-disposition-actions">${buttons}</div><label class="qa-field">Reviewer notes<textarea class="qa-notes" data-qa-note="${ticker}" placeholder="Optional browser-local note">${escapeHtml(qaState.notes[ticker])}</textarea></label></article>`;
+      }).join('');
+      const allDisposed = QA_PILOT_TICKERS.every((ticker) => qaState.dispositions[ticker] !== 'Pending');
+      const risk = qaUnresolvedRisk();
+      const warning = risk.integrityFailed || risk.leakage > 0;
+      qaOverallEl.innerHTML = `<div><strong>Overall semantic gate</strong> <span class="badge">${escapeHtml(qaState.overall || 'Pending')}</span></div>
+        <p class="${warning ? 'qa-status-warn' : 'muted'}">${warning ? `Warning gate: ${risk.leakage} unresolved leakage candidate(s)${risk.integrityFailed ? ' and payload integrity failure' : ''}. Human confirmation is required for acceptance.` : 'No unresolved leakage or integrity failure is currently reported.'}</p>
+        <p class="muted">${allDisposed ? 'All four tickers have a non-Pending disposition.' : 'Overall acceptance is disabled until all four tickers have a non-Pending disposition.'}</p>
+        <div class="qa-disposition-actions"><button type="button" class="qa-disposition" data-qa-overall="Accept" ${allDisposed ? '' : 'disabled'}>ACCEPT FOUR-TICKER PILOT</button><button type="button" class="qa-disposition" data-qa-overall="Reject">REJECT PILOT</button><button type="button" class="qa-disposition" data-qa-overall="Needs More Review">NEEDS MORE REVIEW</button></div>`;
+      qaRenderSummary();
+    }
+
+    function setTickerDisposition(ticker, disposition) {
+      if (!QA_PILOT_TICKERS.includes(ticker)) return;
+      qaState.dispositions[ticker] = disposition;
+      qaState.overall = null;
+      qaRenderControls();
+    }
+
+    function setOverallDisposition(disposition) {
+      const allDisposed = QA_PILOT_TICKERS.every((ticker) => qaState.dispositions[ticker] !== 'Pending');
+      if (disposition === 'Accept' && !allDisposed) return;
+      const risk = qaUnresolvedRisk();
+      if (disposition === 'Accept' && (risk.integrityFailed || risk.leakage > 0)) {
+        const accepted = window.confirm('Unresolved leakage or payload integrity warnings remain. Record browser-local pilot acceptance anyway?');
+        if (!accepted) return;
+      }
+      qaState.overall = disposition;
+      qaRenderControls();
+    }
+
+    function qaRenderAll() {
+      qaRenderState();
+      qaRenderSummary();
+      qaRenderFunnel();
+      qaRenderMatrix();
+      qaRenderQueues();
+      qaRenderIntegrity();
+      qaRenderControls();
+    }
+
+    async function loadSemanticQa(force = false) {
+      if (qaState.loading || (qaState.loaded && !force)) return;
+      qaState.loading = true;
+      qaRenderState('warn', 'Loading four-ticker semantic QA…', 'Requesting bounded server-side aggregation with sample_limit=25.');
+      const params = new URLSearchParams();
+      params.set('run_id', qaRunIdEl.value || defaults.run_id);
+      params.set('from_date', qaFromDateEl.value || defaults.from_date);
+      params.set('to_date', qaToDateEl.value || defaults.to_date);
+      params.set('tickers', QA_PILOT_TICKERS.join(','));
+      params.set('sample_limit', '25');
+      try {
+        const response = await fetch(`/api/semantic-qa?${params.toString()}`);
+        const payload = await response.json();
+        if (!response.ok) {
+          const message = payload?.error?.message || 'The semantic QA endpoint returned an error.';
+          throw new Error(message);
+        }
+        qaState.payload = payload;
+        qaState.loaded = true;
+        qaState.selectedKey = '';
+        qaPopulateFilters();
+        qaSyncFilterControls();
+        qaRenderAll();
+      } catch (error) {
+        qaState.loaded = false;
+        qaRenderState('bad', 'Disconnected / error', error?.message || 'Could not load semantic QA data.');
+        qaQueueListEl.innerHTML = '<div class="qa-empty">No data is available while the semantic QA endpoint is disconnected.</div>';
+      } finally {
+        qaState.loading = false;
+      }
+    }
+
+    qaRunIdEl.value = defaults.run_id;
+    qaFromDateEl.value = defaults.from_date;
+    qaToDateEl.value = defaults.to_date;
+    qaRenderControls();
+    qaPanelEl?.addEventListener('click', (event) => {
+      const target = event.target.closest('button');
+      if (!target) return;
+      if (target.dataset.qaSummaryFilter) qaHandleSummaryDrilldown(target.dataset.qaSummaryFilter, target.dataset.ticker);
+      else if (target.dataset.qaFunnelStage) qaHandleFunnelDrilldown(target.dataset.qaFunnelStage, target.dataset.ticker);
+      else if (target.dataset.qaMatrixCell) qaHandleMatrixDrilldown(target.dataset.subject, target.dataset.ticker);
+      else if (target.dataset.qaQueue) { qaState.queue = target.dataset.qaQueue; qaState.selectedKey = ''; qaRenderQueues(); }
+      else if (target.dataset.qaRowId) selectQaRow(target.dataset.qaRowId);
+      else if (target.dataset.qaDisposition) setTickerDisposition(target.dataset.ticker, target.dataset.qaDisposition);
+      else if (target.dataset.qaOverall) setOverallDisposition(target.dataset.qaOverall);
+    });
+    qaPanelEl?.addEventListener('input', (event) => {
+      if (event.target.dataset.qaNote) qaState.notes[event.target.dataset.qaNote] = event.target.value;
+    });
+    for (const [key, id] of Object.entries({
+      ticker: 'qa-filter-ticker', decision: 'qa-filter-decision', included: 'qa-filter-included',
+      relevance: 'qa-filter-relevance', reason: 'qa-filter-reason', source: 'qa-filter-source',
+      anomaly: 'qa-filter-anomaly', subject: 'qa-filter-subject',
+    })) {
+      document.getElementById(id)?.addEventListener('change', (event) => {
+        qaState.filters[key] = event.target.value;
+        qaState.selectedKey = '';
+        qaRenderQueues();
+      });
+    }
+    document.getElementById('qa-reset-filters')?.addEventListener('click', () => {
+      qaState.filters = {ticker: '', decision: '', included: '', relevance: '', reason: '', source: '', anomaly: '', subject: ''};
+      qaState.selectedKey = '';
+      qaSyncFilterControls();
+      qaRenderQueues();
+    });
+    document.getElementById('qa-reload')?.addEventListener('click', () => loadSemanticQa(true));
+    document.querySelector('[data-tab-target="semantic-qa-tab"]')?.addEventListener('click', () => loadSemanticQa());
+"""
 
 
 def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
@@ -747,6 +1532,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
     .section-note {{ color: var(--muted); max-width: 90ch; }}
     .footer-note {{ color: var(--muted); font-size: 0.9rem; }}
     .loading {{ color: var(--muted); padding: 8px 0; }}
+{semantic_qa_css}
   </style>
 </head>
 <body data-smoke-status="loading">
@@ -771,6 +1557,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
         <button class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="topic-relevance-tab" data-tab-target="topic-relevance-tab">Topic / Relevance Pipeline</button>
         <button class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="semantic-aggregate-tab" data-tab-target="semantic-aggregate-tab">Ticker-Date Semantic Aggregates</button>
         <button class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="hmm-regime-tab" data-tab-target="hmm-regime-tab">HMM Regime</button>
+        <button class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="semantic-qa-tab" data-tab-target="semantic-qa-tab">Semantic QA / Human Review</button>
       </nav>
 
       <section class="panel tab-panel" id="summary-gate-tab" role="tabpanel">
@@ -850,6 +1637,8 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
           </div>
         </details>
       </section>
+
+{semantic_qa_html}
 
       <section class="panel">
         <h2>Why does it matter?</h2>
@@ -1698,6 +2487,14 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       const topicReviewRows = Array.isArray(topicReview.rows) ? topicReview.rows : [];
       const topicReviewCards = topicReviewTopics.slice(0, 6);
       const topicReviewWarning = topicReviewSummary.warning || summary.topic_review_warning || '';
+      const blockerRowsHtml = blockerPreview.length ? `<div class="row-list">${{blockerPreview.map((blocker) => `
+          <div class="compact-grid" style="margin-bottom: 12px;">
+            <div class="compact"><div class="k">Article</div><div class="v">${{escapeHtml(blocker.article_id || 'n/a')}}</div><div class="k">raw: article_id</div></div>
+            <div class="compact"><div class="k">Status</div><div class="v">${{escapeHtml(blocker.evidence_status || 'n/a')}}</div><div class="k">raw: evidence_status</div></div>
+            <div class="compact"><div class="k">Interpretation</div><div class="v">${{escapeHtml(blocker.relevance_score_interpretation || 'n/a')}}</div><div class="k">raw: relevance_score_interpretation</div></div>
+            <div class="compact"><div class="k">Missing evidence flags</div><div class="v">${{escapeHtml(topicReviewList(blocker.missing_evidence_flags || []))}}</div><div class="k">raw: missing_evidence_flags</div></div>
+          </div>`).join('')}}</div>` : '';
+      const reviewBlockerHtml = reviewable ? '' : `<div class="chart-blocker"><h3>Topic / relevance is not reviewable yet</h3><p>${{escapeHtml(summary.review_explanation || 'Missing topic, embedding, or relevance-gate evidence.')}}</p><p class="section-note">Missing embedding, topic, or relevance-gate evidence still blocks human acceptance. If a diagnostic is absent, that means unknown or not run — not clean.</p>${{blockerRowsHtml}}</div>`;
       topicRelevanceReviewEl.innerHTML = `
         <div class="hero-grid">
           ${{metricCard('Articles', summary.article_count ?? 0, 'topic_relevance_review.summary.article_count', 'Article-level topic/relevance evidence rows.')}}
@@ -1709,14 +2506,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
           ${{metricCard('Missing/default', summary.missing_or_default_count ?? 0, 'topic_relevance_review.summary.missing_or_default_count', 'Rows missing required topic, embedding, or relevance support.')}}
         </div>
         ${{topicReviewWarning ? `<div class="chart-blocker"><h3>Topic review diversity warning</h3><p>${{escapeHtml(topicReviewWarning)}}</p><p class="section-note">Layer 1 topic review should surface readable labels, keywords, and examples. This warning means the corpus is too concentrated or collapsed into a single catch-all topic, so the review evidence is not yet diverse.</p><p class="muted">Review rows: ${{Number(topicReviewRows.length || 0)}} · Topics: ${{Number(topicReviewCards.length || 0)}}</p></div>` : ''}}
-        ${{reviewable ? '' : `<div class="chart-blocker"><h3>Topic / relevance is not reviewable yet</h3><p>${{escapeHtml(summary.review_explanation || 'Missing topic, embedding, or relevance-gate evidence.')}}</p><p class="section-note">Missing embedding, topic, or relevance-gate evidence still blocks human acceptance. If a diagnostic is absent, that means unknown or not run — not clean.</p>${{blockerPreview.length ? `<div class="row-list">${{blockerPreview.map((blocker) => `
-          <div class="compact-grid" style="margin-bottom: 12px;">
-            <div class="compact"><div class="k">Article</div><div class="v">${{escapeHtml(blocker.article_id || 'n/a')}}</div><div class="k">raw: article_id</div></div>
-            <div class="compact"><div class="k">Status</div><div class="v">${{escapeHtml(blocker.evidence_status || 'n/a')}}</div><div class="k">raw: evidence_status</div></div>
-            <div class="compact"><div class="k">Interpretation</div><div class="v">${{escapeHtml(blocker.relevance_score_interpretation || 'n/a')}}</div><div class="k">raw: relevance_score_interpretation</div></div>
-            <div class="compact"><div class="k">Missing evidence flags</div><div class="v">${{escapeHtml(topicReviewList(blocker.missing_evidence_flags || []))}}</div><div class="k">raw: missing_evidence_flags</div></div>
-          </div>
-        `).join('')}}</div>` : ''}}</div>` : ''}}
+        ${{reviewBlockerHtml}}
         <div class="panel">
           <h3>Topic review cards</h3>
           <p class="section-note">Layer 1 topic review should surface readable labels, keywords, examples, row counts, and probability summaries before the review is accepted.</p>
@@ -1896,6 +2686,8 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       setActiveTab('summary-gate-tab');
     }}
 
+{semantic_qa_js}
+
     async function loadReview() {{
       const params = new URLSearchParams(window.location.search);
       if (!params.get('run_id')) params.set('run_id', defaults.run_id);
@@ -1920,7 +2712,12 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
   </script>
 </body>
 </html>"""
-    return template.format(defaults_json=defaults_json)
+    return template.format(
+        defaults_json=defaults_json,
+        semantic_qa_css=_SEMANTIC_QA_CSS,
+        semantic_qa_html=_SEMANTIC_QA_HTML,
+        semantic_qa_js=_SEMANTIC_QA_JS,
+    )
 
 
 if __name__ == "__main__":
