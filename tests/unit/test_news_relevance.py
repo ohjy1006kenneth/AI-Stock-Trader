@@ -470,3 +470,76 @@ def _rows_for_article(frame: pd.DataFrame, article_id: str) -> list[dict[str, ob
 def _reason_codes(row: pd.Series | dict[str, object]) -> set[str]:
     """Decode relevance reason codes from one audit row."""
     return set(json.loads(str(row["reason_codes"])))
+
+
+def test_news_relevance_gate_accepts_whale_activity_as_direct_signal() -> None:
+    """Direct whale/dark-pool activity for a target ticker should be accepted."""
+    articles = [
+        {
+            "id": "aapl-whale",
+            "headline": "Apple sees unusual dark pool institutional buying ahead of earnings",
+            "summary": "Large block trades in Apple shares signal institutional accumulation.",
+            "created_at": "2024-01-02T12:00:00+00:00",
+            "source": "benzinga",
+            "symbols": ["AAPL"],
+        },
+    ]
+
+    records = preprocess_news_articles(
+        articles,
+        as_of_date="2024-01-02",
+        point_in_time_tickers=("AAPL",),
+    )
+
+    result = apply_news_relevance_gate(
+        records,
+        embeddings=_embedding_frame(article["id"] for article in articles),
+        topic_labels=_topic_label_frame(article["id"] for article in articles),
+    )
+
+    audit = result.audit_frame
+    aapl = [row for row in _rows_for_article(audit, "aapl-whale") if row["ticker"] == "AAPL"]
+
+    assert any(row["relevance_category"] == "direct_target_event" for row in aapl)
+    assert any(row["relevance_decision"] in {"accepted", "borderline"} for row in aapl)
+    assert any("causal_channel:whale_activity" in _reason_codes(row) for row in aapl)
+    assert {record.article_id for record in result.finbert_records} >= {"aapl-whale"}
+
+
+def test_news_relevance_gate_downweights_whale_listicle_with_contamination() -> None:
+    """Multi-ticker whale roundup should be contamination-down-weighted."""
+    articles = [
+        {
+            "id": "whale-roundup",
+            "headline": "Whale activity surges in five mega-cap stocks this week",
+            "summary": "Institutional buying spikes in Apple, Microsoft, NVIDIA, AMD and Meta.",
+            "content": (
+                "Dark pool volume and large block trades drove unusual activity across "
+                "the Mag 7. Apple, Microsoft, NVIDIA and AMD all saw institutional "
+                "buying but the article only briefly covers each name in a roundup format. "
+                "Wall Street traders focused on broad market rotation."
+            ),
+            "created_at": "2024-01-02T12:00:00+00:00",
+            "source": "benzinga",
+            "symbols": list(TARGET_TICKERS),
+        },
+    ]
+
+    records = preprocess_news_articles(
+        articles,
+        as_of_date="2024-01-02",
+        point_in_time_tickers=TARGET_TICKERS,
+    )
+
+    result = apply_news_relevance_gate(
+        records,
+        embeddings=_embedding_frame(article["id"] for article in articles),
+        topic_labels=_topic_label_frame(article["id"] for article in articles),
+    )
+
+    audit = result.audit_frame
+    rows = _rows_for_article(audit, "whale-roundup")
+
+    assert max(row["article_contamination_ratio"] for row in rows) > 0.5
+    assert max(row["article_contribution_weight"] for row in rows) < 1.0
+    assert any("article_contribution_capped" in _reason_codes(row) for row in rows)
