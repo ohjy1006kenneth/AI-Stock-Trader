@@ -1833,6 +1833,11 @@ def test_semantic_review_dashboard_html_is_beginner_friendly_and_collapsed() -> 
     assert "hmm-summary-cards" in html
     assert "hmm-context-cards" in html
     assert "hmm-date-rows" in html
+    assert 'id="training-regime-chart"' in html
+    assert "training_regime_rows" in html
+    assert "training_regime_row_counts" in html
+    assert "Training-window regime probabilities" in html
+    assert "Training history was sampled" in html
     assert "not ready for final human acceptance" in html
     assert "What am I looking at?" in html
     assert "Why does it matter?" in html
