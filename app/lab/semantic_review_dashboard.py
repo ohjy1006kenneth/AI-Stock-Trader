@@ -167,7 +167,7 @@ class _DashboardRequestHandler(BaseHTTPRequestHandler):
             # FileNotFoundError but also found nothing) so the 404 path fires.
             for ticker in query["tickers"]:
                 report = reports.get(ticker)
-                if report is not None and is_all_artifacts_missing(report):
+                if report is not None and is_all_artifacts_missing(report.to_dict()):
                     reports[ticker] = None
             pilot_reports = {
                 t: reports[t] for t in query["tickers"] if t.upper() in PILOT_TICKERS

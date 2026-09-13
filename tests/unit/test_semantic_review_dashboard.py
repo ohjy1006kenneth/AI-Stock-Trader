@@ -1,9 +1,21 @@
-"""Unit tests for the Layer 1 semantic-review dashboard."""
+"""Unit tests for the Layer 1 semantic-review dashboard.
+
+B281-REV-003: Whale detection and contamination regression tests live in
+`tests/unit/test_news_relevance.py:test_whale_detection_ignores_listicle_when_no_local_evidence`
+and `tests/unit/test_news_relevance.py:test_whale_detection_accepts_strong_local_evidence`.
+
+B281-REV-004: Four-ticker endpoint smoke tests verify the `/api/semantic-qa`
+request normalizer, empty-payload shape, and the `build_semantic_qa_payload`
+aggregation contract.
+"""
 
 from __future__ import annotations
 
 import copy
 import json
+import threading
+import urllib.request
+import urllib.error
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, cast
@@ -11,7 +23,11 @@ from typing import Any, cast
 import pandas as pd
 import pytest
 
-from app.lab.semantic_review_dashboard import _DashboardDefaults, _render_dashboard_html
+from app.lab.semantic_review_dashboard import (
+    _DashboardDefaults,
+    _DashboardHTTPServer,
+    _render_dashboard_html,
+)
 from core.features.aapl_evidence import (
     _benchmark_context_dates,
     _load_training_regime_rows,
@@ -23,6 +39,7 @@ from core.features.semantic_qa import (
     PILOT_TICKERS,
     SEMANTIC_QA_SCHEMA_ID,
     build_semantic_qa_payload,
+    normalize_semantic_qa_query,
 )
 from core.features.semantic_review_dashboard import (
     _compact_layer1_semantic_review_dashboard_payload,
@@ -2548,3 +2565,218 @@ def test_semantic_qa_payload_non_pilot_only_no_pilot_match(tmp_path: Path) -> No
     assert payload["run"]["tickers"] == []
     assert len(payload["tickers"]) == 0
     assert len(payload["warnings"]) == 0
+
+
+class TestSemanticQAQueryNormalization:
+    """B281-REV-004: Verify the /api/semantic-qa request normalizer rejects invalid inputs
+    and defaults to all four pilot tickers when tickers param is omitted."""
+
+    def test_normalize_defaults_to_all_four_pilot_tickers(self):
+        """When tickers param is None/empty, default to all four pilot tickers."""
+        result = normalize_semantic_qa_query(
+            run_id="test-run",
+            from_date="2026-05-01",
+            to_date="2026-05-28",
+            tickers=None,
+            sample_limit=None,
+        )
+        assert result["tickers"] == ("AAPL", "AMD", "NVDA", "MSFT")
+        assert result["sample_limit"] == 25
+
+    def test_normalize_defaults_sample_limit_to_25(self):
+        """When sample_limit is None or empty string, default to 25."""
+        for limit_val in (None, ""):
+            result = normalize_semantic_qa_query(
+                run_id="test-run",
+                from_date="2026-05-01",
+                to_date="2026-05-28",
+                tickers=None,
+                sample_limit=limit_val,
+            )
+            assert result["sample_limit"] == 25
+
+    def test_normalize_accepts_custom_sample_limit(self):
+        """Valid sample_limit between 1 and 50 is accepted."""
+        for limit_val in (1, 10, 50):
+            result = normalize_semantic_qa_query(
+                run_id="test-run",
+                from_date="2026-05-01",
+                to_date="2026-05-28",
+                tickers=None,
+                sample_limit=str(limit_val),
+            )
+            assert result["sample_limit"] == limit_val
+
+    def test_normalize_rejects_sample_limit_out_of_range(self):
+        """sample_limit < 1 or > 50 raises ValueError."""
+        for limit_val in (0, -1, 51):
+            with pytest.raises(ValueError, match="1 to 50"):
+                normalize_semantic_qa_query(
+                    run_id="test-run",
+                    from_date="2026-05-01",
+                    to_date="2026-05-28",
+                    tickers=None,
+                    sample_limit=str(limit_val),
+                )
+
+    def test_normalize_rejects_missing_run_id(self):
+        """Missing or empty run_id raises ValueError."""
+        with pytest.raises(ValueError, match="run_id is required"):
+            normalize_semantic_qa_query(
+                run_id=None,
+                from_date="2026-05-01",
+                to_date="2026-05-28",
+                tickers=None,
+                sample_limit=None,
+            )
+
+    def test_normalize_rejects_invalid_date_format(self):
+        """Invalid date format raises ValueError."""
+        with pytest.raises(ValueError, match="YYYY-MM-DD"):
+            normalize_semantic_qa_query(
+                run_id="test-run",
+                from_date="2026/05/01",
+                to_date="2026-05-28",
+                tickers=None,
+                sample_limit=None,
+            )
+
+    def test_normalize_rejects_from_after_to(self):
+        """from_date > to_date raises ValueError."""
+        with pytest.raises(ValueError, match="on or before"):
+            normalize_semantic_qa_query(
+                run_id="test-run",
+                from_date="2026-05-28",
+                to_date="2026-05-01",
+                tickers=None,
+                sample_limit=None,
+            )
+
+    def test_normalize_rejects_non_pilot_tickers(self):
+        """Requesting non-pilot tickers raises ValueError."""
+        with pytest.raises(ValueError, match="unsupported tickers"):
+            normalize_semantic_qa_query(
+                run_id="test-run",
+                from_date="2026-05-01",
+                to_date="2026-05-28",
+                tickers="TSLA,GOOG",
+                sample_limit=None,
+            )
+
+    def test_normalize_filters_non_pilot_tickers_from_mixed_list(self):
+        """When requested tickers include both pilot and non-pilot,
+        only pilot tickers are normalized — non-pilot ones trigger error."""
+        with pytest.raises(ValueError, match="unsupported tickers"):
+            normalize_semantic_qa_query(
+                run_id="test-run",
+                from_date="2026-05-01",
+                to_date="2026-05-28",
+                tickers="AAPL,TSLA",
+                sample_limit=None,
+            )
+
+    def test_normalize_accepts_subset_of_pilot_tickers(self):
+        """Requesting a subset of pilot tickers is valid."""
+        result = normalize_semantic_qa_query(
+            run_id="test-run",
+            from_date="2026-05-01",
+            to_date="2026-05-28",
+            tickers="AAPL,NVDA",
+            sample_limit=None,
+        )
+        assert result["tickers"] == ("AAPL", "NVDA")
+
+    def test_normalize_preserves_ticker_order_from_pilot_list(self):
+        """Normalized tickers are ordered by PILOT_TICKERS order, not request order."""
+        result = normalize_semantic_qa_query(
+            run_id="test-run",
+            from_date="2026-05-01",
+            to_date="2026-05-28",
+            tickers="NVDA,AAPL,MSFT",
+            sample_limit=None,
+        )
+        assert result["tickers"] == ("AAPL", "NVDA", "MSFT")
+
+
+class TestSemanticQAEndpointHTTP:
+    """B281-REV-004: HTTP-level smoke tests for /api/semantic-qa."""
+
+    def test_semantic_qa_endpoint_returns_400_on_missing_run_id(self, tmp_path: Path):
+        """Request without run_id returns 400."""
+        defaults = _DashboardDefaults(
+            run_id="test-run",
+            from_date="2026-05-01",
+            to_date="2026-05-28",
+            ticker="AAPL",
+            host="127.0.0.1",
+            port=0,
+            local_root=tmp_path,
+        )
+        with _DashboardHTTPServer(("127.0.0.1", 0), defaults) as server:
+            thread = threading.Thread(target=server.serve_forever)
+            thread.daemon = True
+            thread.start()
+            port = server.server_address[1]
+            with pytest.raises(urllib.error.HTTPError) as exc_info:
+                urllib.request.urlopen(
+                    f"http://127.0.0.1:{port}/api/semantic-qa"
+                    f"?from_date=2026-05-01&to_date=2026-05-28",
+                    timeout=5,
+                )
+            assert exc_info.value.code == 400
+            error_body = json.loads(exc_info.value.read().decode())
+            assert error_body["error"]["code"] == "invalid_request"
+
+    def test_semantic_qa_endpoint_returns_404_when_no_artifacts(self, tmp_path: Path):
+        """When all four tickers have no artifacts, endpoint returns 404."""
+        defaults = _DashboardDefaults(
+            run_id="test-run",
+            from_date="2026-05-01",
+            to_date="2026-05-28",
+            ticker="AAPL",
+            host="127.0.0.1",
+            port=0,
+            local_root=tmp_path,
+        )
+        with _DashboardHTTPServer(("127.0.0.1", 0), defaults) as server:
+            thread = threading.Thread(target=server.serve_forever)
+            thread.daemon = True
+            thread.start()
+            port = server.server_address[1]
+            with pytest.raises(urllib.error.HTTPError) as exc_info:
+                urllib.request.urlopen(
+                    f"http://127.0.0.1:{port}/api/semantic-qa"
+                    f"?run_id=test-run"
+                    f"&from_date=2026-05-01"
+                    f"&to_date=2026-05-28",
+                    timeout=5,
+                )
+            assert exc_info.value.code == 404
+            error_body = json.loads(exc_info.value.read().decode())
+            assert error_body["error"]["code"] == "review_artifacts_not_found"
+
+    def test_semantic_qa_endpoint_validates_date_format(self, tmp_path: Path):
+        """Invalid date format returns 400."""
+        defaults = _DashboardDefaults(
+            run_id="test-run",
+            from_date="2026-05-01",
+            to_date="2026-05-28",
+            ticker="AAPL",
+            host="127.0.0.1",
+            port=0,
+            local_root=tmp_path,
+        )
+        with _DashboardHTTPServer(("127.0.0.1", 0), defaults) as server:
+            thread = threading.Thread(target=server.serve_forever)
+            thread.daemon = True
+            thread.start()
+            port = server.server_address[1]
+            with pytest.raises(urllib.error.HTTPError) as exc_info:
+                urllib.request.urlopen(
+                    f"http://127.0.0.1:{port}/api/semantic-qa"
+                    f"?run_id=test-run"
+                    f"&from_date=2026/05/01"
+                    f"&to_date=2026-05-28",
+                    timeout=5,
+                )
+            assert exc_info.value.code == 400

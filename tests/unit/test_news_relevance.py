@@ -506,6 +506,53 @@ def test_news_relevance_gate_accepts_whale_activity_as_direct_signal() -> None:
     assert {record.article_id for record in result.finbert_records} >= {"aapl-whale"}
 
 
+def test_news_relevance_gate_accepts_whale_without_finance_keywords() -> None:
+    """Direct whale/dark-pool activity admitted without finance-keyword support.
+
+    Regression: reviewer finding B281-REV-003 flagged that the original whale
+    test could not prove the signal path is finance-keyword-independent.
+    This test uses zero finance keywords (no earnings, revenue, profit, etc.)
+    and relies solely on the ticker mention + whale terms.
+    """
+    articles = [
+        {
+            "id": "aapl-whale-no-finance",
+            "headline": "Apple dark pool volume spike and large institutional block trade detected",
+            "summary": "Unusual whale activity for Apple with massive dark pool orders and block trades.",
+            "created_at": "2024-01-02T12:00:00+00:00",
+            "source": "benzinga",
+            "symbols": ["AAPL"],
+        },
+    ]
+
+    records = preprocess_news_articles(
+        articles,
+        as_of_date="2024-01-02",
+        point_in_time_tickers=("AAPL",),
+    )
+
+    result = apply_news_relevance_gate(
+        records,
+        embeddings=_embedding_frame(article["id"] for article in articles),
+        topic_labels=_topic_label_frame(article["id"] for article in articles),
+    )
+
+    audit = result.audit_frame
+    aapl = [row for row in _rows_for_article(audit, "aapl-whale-no-finance") if row["ticker"] == "AAPL"]
+
+    # Prove whale_activity causal channel fires without finance keywords
+    assert any(row["relevance_category"] == "direct_target_event" for row in aapl)
+    assert any(row["relevance_decision"] in {"accepted", "borderline"} for row in aapl)
+    assert any("causal_channel:whale_activity" in _reason_codes(row) for row in aapl)
+    # Confirm no finance-keyword reasons leaked in — the signal is pure whale
+    for row in aapl:
+        codes = _reason_codes(row)
+        assert not any(r.startswith("financial_terms:") for r in codes), (
+            "Whale admission must not depend on finance-keyword matches"
+        )
+    assert {record.article_id for record in result.finbert_records} >= {"aapl-whale-no-finance"}
+
+
 def test_news_relevance_gate_downweights_whale_listicle_with_contamination() -> None:
     """Multi-ticker whale roundup should be contamination-down-weighted."""
     articles = [
