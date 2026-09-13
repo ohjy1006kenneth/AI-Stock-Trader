@@ -694,6 +694,25 @@ def _decision_counts(rows: Sequence[Mapping[str, Any]]) -> tuple[int, int, int, 
     return accepted, borderline, rejected, observable
 
 
+def is_all_artifacts_missing(report: Mapping[str, Any]) -> bool:
+    """Return True when the producer found zero R2 artifacts for the requested range.
+
+    When all parquet files are missing, the producer returns a zero-row report
+    with ``row_count == 0`` and empty ``artifact_keys`` values rather than
+    raising ``FileNotFoundError``.  This helper normalises that shape so the
+    endpoint can route it to the same 404 path as a hard miss.
+    """
+    if report.get("row_count") != 0:
+        return False
+    artifact_keys: Any = report.get("artifact_keys")
+    if not isinstance(artifact_keys, Mapping):
+        return False
+    return all(
+        isinstance(v, list) and len(v) == 0
+        for v in artifact_keys.values()
+    )
+
+
 def _establishes_empty(report: Mapping[str, Any], rows: Sequence[Mapping[str, Any]]) -> bool:
     """Return True only when the producer canonically established an empty result."""
     if rows:
@@ -876,4 +895,5 @@ __all__ = [
     "SEMANTIC_QA_SCHEMA_ID",
     "build_semantic_qa_payload",
     "normalize_semantic_qa_query",
+    "is_all_artifacts_missing",
 ]

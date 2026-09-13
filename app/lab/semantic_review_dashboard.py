@@ -22,6 +22,7 @@ from core.features.semantic_qa import (
     PILOT_TICKERS,
     SEMANTIC_QA_SCHEMA_ID,
     build_semantic_qa_payload,
+    is_all_artifacts_missing,
     normalize_semantic_qa_query,
 )
 from core.features.semantic_review_dashboard import (
@@ -161,6 +162,12 @@ class _DashboardRequestHandler(BaseHTTPRequestHandler):
                         writer=writer,
                     )
                 except FileNotFoundError:
+                    reports[ticker] = None
+            # Normalise zero-row, zero-artifact reports (producer did not raise
+            # FileNotFoundError but also found nothing) so the 404 path fires.
+            for ticker in query["tickers"]:
+                report = reports.get(ticker)
+                if report is not None and is_all_artifacts_missing(report):
                     reports[ticker] = None
             pilot_reports = {
                 t: reports[t] for t in query["tickers"] if t.upper() in PILOT_TICKERS

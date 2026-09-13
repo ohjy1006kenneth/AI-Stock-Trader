@@ -12,6 +12,7 @@ from app.lab import semantic_review_dashboard as dashboard
 from core.features.semantic_qa import (
     SEMANTIC_QA_SCHEMA_ID,
     build_semantic_qa_payload,
+    is_all_artifacts_missing,
     normalize_semantic_qa_query,
 )
 
@@ -799,3 +800,146 @@ def test_endpoint_cache_key_isolates_limit_and_ticker_identities(
     _, _, body_ticker = _get(qa_server, f"{base}&tickers=AAPL&sample_limit=2")
     assert len(calls) == after_first + 5  # different ticker set is a distinct cache key
     assert set(json.loads(body_ticker)["tickers"]) == {"AAPL"}
+
+
+# --------------------------------------------------------------------------- #
+# B281-QA-601: is_all_artifacts_missing unit tests
+# --------------------------------------------------------------------------- #
+def _empty_artifact_keys() -> dict[str, list]:
+    return {
+        "news_preprocessing": [],
+        "text_embeddings": [],
+        "topic_labels": [],
+        "news_relevance_gate": [],
+        "news_sentiment_scored": [],
+        "sentiment_features": [],
+        "regime": [],
+        "regime_manifests": [],
+        "raw_prices": [],
+    }
+
+
+def test_is_all_artifacts_missing_zero_row_empty_keys_returns_true() -> None:
+    report: dict[str, Any] = {
+        "row_count": 0,
+        "artifact_keys": _empty_artifact_keys(),
+    }
+    assert is_all_artifacts_missing(report) is True
+
+
+def test_is_all_artifacts_missing_nonzero_row_returns_false() -> None:
+    report: dict[str, Any] = {
+        "row_count": 1,
+        "artifact_keys": _empty_artifact_keys(),
+    }
+    assert is_all_artifacts_missing(report) is False
+
+
+def test_is_all_artifacts_missing_zero_row_partial_keys_returns_false() -> None:
+    report: dict[str, Any] = {
+        "row_count": 0,
+        "artifact_keys": {"news_sentiment_scored": ["key.parquet"]},
+    }
+    assert is_all_artifacts_missing(report) is False
+
+
+def test_is_all_artifacts_missing_missing_artifact_keys_returns_false() -> None:
+    report: dict[str, Any] = {"row_count": 0}
+    assert is_all_artifacts_missing(report) is False
+
+
+def test_is_all_artifacts_missing_non_mapping_artifact_keys_returns_false() -> None:
+    report: dict[str, Any] = {"row_count": 0, "artifact_keys": []}
+    assert is_all_artifacts_missing(report) is False
+
+
+# --------------------------------------------------------------------------- #
+# B281-QA-601: endpoint returns 404 when producer returns zero-row report
+# --------------------------------------------------------------------------- #
+def _zero_row_report(ticker: str) -> dict[str, Any]:
+    """Mimic the producer's output when all R2 artifacts are missing."""
+    return {
+        "run_id": "run",
+        "ticker": ticker,
+        "from_date": "2026-05-21",
+        "to_date": "2026-05-22",
+        "row_count": 0,
+        "article_count": 0,
+        "sentence_count": 0,
+        "preprocessing_row_count": 0,
+        "embedding_row_count": 0,
+        "topic_label_row_count": 0,
+        "relevance_gate_row_count": 0,
+        "semantic_aggregate_row_count": 0,
+        "price_row_count": 0,
+        "hmm_regime_row_count": 0,
+        "date_count": 0,
+        "accepted_article_count": 0,
+        "flagged_article_count": 0,
+        "duplicate_article_count": 0,
+        "repeated_headline_count": 0,
+        "weak_article_count": 0,
+        "load_warnings": [
+            {
+                "scope": "sentence_rows",
+                "date": "2026-05-21",
+                "key": "missing.parquet",
+                "message": "Missing scored-news parquet for this trading date.",
+            }
+        ],
+        "artifact_keys": _empty_artifact_keys(),
+        "preprocessing_rows": [],
+        "embedding_rows": [],
+        "topic_label_rows": [],
+        "relevance_gate_rows": [],
+        "semantic_aggregate_rows": [],
+        "regime_rows": [],
+        "price_rows": [],
+        "market_regime_rows": [],
+        "article_groups": [],
+        "date_groups": [],
+        "summary": {"row_count": 0},
+    }
+
+
+def test_endpoint_zero_row_report_returns_404(
+    monkeypatch: pytest.MonkeyPatch, qa_server: object
+) -> None:
+    """When the producer returns a zero-row report with empty artifact keys,
+    the endpoint should treat it the same as FileNotFoundError and return 404."""
+    def zero_row(*, ticker: str, **_: object) -> dict[str, Any]:
+        return _zero_row_report(ticker)
+
+    monkeypatch.setattr(dashboard, "build_layer1_aapl_evidence_report", zero_row)
+    status, cache, body = _get(
+        qa_server, "/api/semantic-qa?run_id=run&from_date=2026-05-21&to_date=2026-05-22"
+    )
+    assert status == 404
+    assert cache == "no-store"
+    assert json.loads(body)["error"]["code"] == "review_artifacts_not_found"
+
+
+def test_endpoint_partial_zero_row_returns_200_with_warning(
+    monkeypatch: pytest.MonkeyPatch, qa_server: object
+) -> None:
+    """When one ticker has data and another has a zero-row report, return 200
+    with the working ticker's data and a missing_review_artifacts warning."""
+    def partial(*, ticker: str, **_: object) -> dict[str, Any]:
+        if ticker == "AAPL":
+            return _fp_report("AAPL", 3)
+        return _zero_row_report(ticker)
+
+    monkeypatch.setattr(dashboard, "build_layer1_aapl_evidence_report", partial)
+    status, cache, body = _get(
+        qa_server, "/api/semantic-qa?run_id=run&from_date=2026-05-21&to_date=2026-05-22"
+    )
+    assert status == 200
+    assert cache == "no-store"
+    payload = json.loads(body)
+    assert payload["tickers"]["AAPL"]["summary"]["signal_rows"] == 3
+    # AMD zero-row report is normalized to None, so it appears as missing
+    assert payload["tickers"]["AMD"]["summary"]["signal_rows"] is None
+    assert any(
+        w["code"] == "missing_review_artifacts" and w["ticker"] == "AMD"
+        for w in payload["warnings"]
+    )
