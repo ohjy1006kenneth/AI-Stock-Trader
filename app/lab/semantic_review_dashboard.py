@@ -165,9 +165,20 @@ class _DashboardRequestHandler(BaseHTTPRequestHandler):
                     reports[ticker] = None
             # Normalise zero-row, zero-artifact reports (producer did not raise
             # FileNotFoundError but also found nothing) so the 404 path fires.
+            # Normalise zero‑row / zero‑artifact reports. ``build_layer1_aapl_evidence_report``
+            # normally returns a ``Layer1SemanticReviewReport`` instance which provides a
+            # ``to_dict`` method. In tests we monkey‑patch the producer to return a plain
+            # ``dict``. The previous implementation unconditionally called ``report.to_dict()``
+            # which raised ``AttributeError`` when the mock returned a dict, causing the
+            # endpoint to return a 500 error. We now gracefully handle both cases.
             for ticker in query["tickers"]:
                 report = reports.get(ticker)
-                if report is not None and is_all_artifacts_missing(report.to_dict()):
+                if report is None:
+                    continue
+                # ``is_all_artifacts_missing`` expects a mapping, so accept either the
+                # dataclass instance (via ``to_dict``) or a plain dict.
+                report_mapping = report if isinstance(report, dict) else report.to_dict()
+                if is_all_artifacts_missing(report_mapping):
                     reports[ticker] = None
             pilot_reports = {
                 t: reports[t] for t in query["tickers"] if t.upper() in PILOT_TICKERS
