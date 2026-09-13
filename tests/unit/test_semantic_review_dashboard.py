@@ -14,8 +14,8 @@ from __future__ import annotations
 import copy
 import json
 import threading
-import urllib.request
 import urllib.error
+import urllib.request
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, cast
