@@ -1,4 +1,5 @@
 """Unit tests for the Layer 1 semantic-review dashboard."""
+
 from __future__ import annotations
 
 import copy
@@ -18,6 +19,11 @@ from core.features.aapl_evidence import (
     build_layer1_aapl_evidence_report,
 )
 from core.features.regime_training import HMM_OPTIONAL_FEATURE_COLUMNS
+from core.features.semantic_qa import (
+    PILOT_TICKERS,
+    SEMANTIC_QA_SCHEMA_ID,
+    build_semantic_qa_payload,
+)
 from core.features.semantic_review_dashboard import (
     _compact_layer1_semantic_review_dashboard_payload,
     _enforce_payload_pretty_byte_budget,
@@ -127,9 +133,7 @@ def test_public_builder_preserves_long_ids_and_audits_oversized_ids() -> None:
     oversized = "r" * 4_097
     oversized_payload = cast(
         dict[str, Any],
-        build_layer1_semantic_review_dashboard_payload(
-            {"ticker": "AAPL", "run_id": oversized}
-        ),
+        build_layer1_semantic_review_dashboard_payload({"ticker": "AAPL", "run_id": oversized}),
     )
     bounded_id = oversized_payload["controls"]["run_id"]
     assert bounded_id["exact_value_omitted"] is True
@@ -241,8 +245,10 @@ def _artifact_index_consistency(index: object) -> list[tuple[object, object, int
     problems: list[tuple[object, object, int]] = []
     for stage, values in index.items():
         if stage in {
-            "artifact_key_counts", "artifact_key_entry_count",
-            "artifact_key_omitted_entry_count", "artifact_key_truncated",
+            "artifact_key_counts",
+            "artifact_key_entry_count",
+            "artifact_key_omitted_entry_count",
+            "artifact_key_truncated",
         } or not isinstance(values, list):
             continue
         meta = counts.get(stage)
@@ -442,7 +448,9 @@ def test_semantic_review_payload_forwards_and_bounds_training_regime_rows() -> N
         },
     ],
 )
-def test_semantic_review_public_builder_bounds_arbitrary_scalar_routes(report: dict[str, object]) -> None:
+def test_semantic_review_public_builder_bounds_arbitrary_scalar_routes(
+    report: dict[str, object],
+) -> None:
     """Arbitrary retained scalars obey the strict pretty-byte budget with audit metadata."""
     payload = cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report))
     encoded = json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
@@ -471,14 +479,22 @@ def test_stratified_dashboard_sampling_preserves_relevance_strata_under_budget()
     sample, counts = _stratified_bounded_mappings(rows, 6)
 
     assert [row["article_id"] for row in sample] == [
-        "z-direct", "a-indirect", "b-broad", "c-contamination", "d-accepted", "e-rejected"
+        "z-direct",
+        "a-indirect",
+        "b-broad",
+        "c-contamination",
+        "d-accepted",
+        "e-rejected",
     ]
     assert counts["full_count"] == 6
     assert counts["omitted_count"] == 0
 
     truncated, truncated_counts = _stratified_bounded_mappings(list(reversed(rows)), 4)
     assert [row["article_id"] for row in truncated] == [
-        "z-direct", "a-indirect", "b-broad", "c-contamination"
+        "z-direct",
+        "a-indirect",
+        "b-broad",
+        "c-contamination",
     ]
     assert truncated_counts["full_count"] == 6
     assert truncated_counts["omitted_count"] == 2
@@ -578,12 +594,8 @@ def test_final_byte_compaction_preserves_protected_readiness_and_diagnostic_shap
         "diagnostic_summary",
     }
     payload = {
-        "run_readiness": {
-            key: {"value": "r" * 30_000} for key in readiness_keys
-        },
-        "diagnostic_states": {
-            key: {"value": "d" * 30_000} for key in diagnostic_keys
-        },
+        "run_readiness": {key: {"value": "r" * 30_000} for key in readiness_keys},
+        "diagnostic_states": {key: {"value": "d" * 30_000} for key in diagnostic_keys},
         "gate_cards": [
             {"key": f"gate-{index}", "label": "gate", "status": "WARN", "reason": "reason"}
             for index in range(10)
@@ -623,18 +635,28 @@ def test_semantic_review_payload_compacts_nested_dynamic_branches_deterministica
         for index in range(50)
     ]
     report = {
-        "ticker": "AAPL", "article_groups": rows,
+        "ticker": "AAPL",
+        "article_groups": rows,
         "date_groups": [{"date": "2026-05-01", "articles": rows}],
-        "price_series": [{"date": f"2026-01-{index + 1:02d}", "close": index} for index in range(100)],
+        "price_series": [
+            {"date": f"2026-01-{index + 1:02d}", "close": index} for index in range(100)
+        ],
         "pipeline_sections": {
-            "unknown-b": rows, "unknown-a": rows,
+            "unknown-b": rows,
+            "unknown-a": rows,
             "raw_preprocessing_rows": rows,
         },
     }
     first = cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report))
-    second = cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload({
-        **report, "article_groups": list(reversed(rows)),
-    }))
+    second = cast(
+        dict[str, Any],
+        build_layer1_semantic_review_dashboard_payload(
+            {
+                **report,
+                "article_groups": list(reversed(rows)),
+            }
+        ),
+    )
     encoded = json.dumps(first, indent=2, sort_keys=True).encode("utf-8")
     assert len(encoded) < 200_000
     assert encoded == json.dumps(second, indent=2, sort_keys=True).encode("utf-8")
@@ -687,7 +709,11 @@ def test_semantic_review_payload_preserves_collection_input_states_and_invalid_m
 def test_semantic_review_payload_evenly_samples_sorted_time_series() -> None:
     """Chart samples sort by date, preserve endpoints, and include spaced interior points."""
     dates = [(date(2026, 1, 1) + timedelta(days=index)).isoformat() for index in range(100)]
-    report = {"price_series": [{"date": value, "close": index} for index, value in enumerate(reversed(dates), 1)]}
+    report = {
+        "price_series": [
+            {"date": value, "close": index} for index, value in enumerate(reversed(dates), 1)
+        ]
+    }
     payload = cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report))
     sampled = cast(list[dict[str, Any]], payload["price_series"])
     assert len(sampled) == 32
@@ -729,7 +755,9 @@ def test_semantic_review_report_includes_benchmark_rows(tmp_path: Path) -> None:
         for item in cast(list[dict[str, Any]], report_dict["article_groups"])
     }
     aapl_one = article_groups["aapl-001"]
-    assert [row["sentence_index"] for row in cast(list[dict[str, Any]], aapl_one["sentence_rows"])] == [0, 1, 2]
+    assert [
+        row["sentence_index"] for row in cast(list[dict[str, Any]], aapl_one["sentence_rows"])
+    ] == [0, 1, 2]
     assert aapl_one["sentence_rows"][0]["text"] != aapl_one["sentence_rows"][1]["text"]
     assert aapl_one["sentence_rows"][0]["row_granularity"] == "sentence-level"
     assert aapl_one["sentence_rows"][0]["assignment_classification"] == "direct"
@@ -772,9 +800,14 @@ def test_semantic_review_report_includes_benchmark_rows(tmp_path: Path) -> None:
     assert semantic_rows[0]["ticker"] == "AAPL"
     assert semantic_rows[0]["row_granularity"] == "ticker-date"
     assert semantic_rows[0]["stage"] == "source_weighted_semantic_aggregation"
-    assert semantic_rows[0]["artifact_key"].endswith("sentiment_features/layer1-semantic-review-fixture.parquet")
+    assert semantic_rows[0]["artifact_key"].endswith(
+        "sentiment_features/layer1-semantic-review-fixture.parquet"
+    )
     assert semantic_rows[0]["features"]["nlp_article_count"] == 2.0
-    assert semantic_rows[0]["features"]["nlp_contributing_article_ids"] == ["aapl-001", "ferrari-001"]
+    assert semantic_rows[0]["features"]["nlp_contributing_article_ids"] == [
+        "aapl-001",
+        "ferrari-001",
+    ]
 
     semantic_group = cast(list[dict[str, Any]], date_groups["2026-05-21"]["semantic_aggregates"])
     assert semantic_group[0]["row_granularity"] == "ticker-date"
@@ -799,20 +832,21 @@ def test_benchmark_context_is_bounded_to_trailing_25_trading_days() -> None:
 def test_hmm_training_sufficiency_requires_explicit_threshold() -> None:
     """Absent thresholds stay unknown; explicit 98 >= 30 derives true."""
     assert _training_rows_sufficient([{"complete_training_rows": 98}]) is None
-    assert _training_rows_sufficient(
-        [{"complete_training_rows": 98, "min_training_rows": 30}]
-    ) is True
+    assert (
+        _training_rows_sufficient([{"complete_training_rows": 98, "min_training_rows": 30}]) is True
+    )
 
 
 def test_training_regime_rows_are_bounded_to_250_points(monkeypatch: pytest.MonkeyPatch) -> None:
     """Training-window chart context preserves endpoints while bounding payload size."""
+
     def fake_read(_writer: object, keys: tuple[str, str]) -> tuple[pd.DataFrame, str]:
         date_text = keys[0].split("/")[1]
-        return pd.DataFrame(
-            [{"date": date_text, "regime": "sideways", "confidence": 0.8}]
-        ), keys[0]
+        return pd.DataFrame([{"date": date_text, "regime": "sideways", "confidence": 0.8}]), keys[0]
 
-    monkeypatch.setattr("core.features.aapl_evidence._read_first_available_parquet_frame", fake_read)
+    monkeypatch.setattr(
+        "core.features.aapl_evidence._read_first_available_parquet_frame", fake_read
+    )
     rows = _load_training_regime_rows(
         writer=cast(Any, object()),
         manifests=[{"train_start_date": "2025-01-01", "train_end_date": "2026-03-31"}],
@@ -824,7 +858,9 @@ def test_training_regime_rows_are_bounded_to_250_points(monkeypatch: pytest.Monk
     assert rows[-1]["date"] == "2026-03-31"
 
 
-def test_semantic_review_report_loads_dated_stage_artifacts_for_parent_run_id(tmp_path: Path) -> None:
+def test_semantic_review_report_loads_dated_stage_artifacts_for_parent_run_id(
+    tmp_path: Path,
+) -> None:
     """Parent run ids should resolve dated scored-news and regime stage artifacts."""
     fixture = seed_semantic_review_fixture(local_root=tmp_path / "r2")
     writer = fixture["writer"]
@@ -888,8 +924,12 @@ def test_semantic_review_payload_flags_weak_and_duplicate_articles(tmp_path: Pat
     )
     payload = cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report))
 
-    flagged_ids = {str(item["article_id"]) for item in cast(list[dict[str, Any]], payload["flagged_articles"])}
-    accepted_ids = {str(item["article_id"]) for item in cast(list[dict[str, Any]], payload["accepted_articles"])}
+    flagged_ids = {
+        str(item["article_id"]) for item in cast(list[dict[str, Any]], payload["flagged_articles"])
+    }
+    accepted_ids = {
+        str(item["article_id"]) for item in cast(list[dict[str, Any]], payload["accepted_articles"])
+    }
     sections = cast(dict[str, Any], payload["pipeline_sections"])
 
     assert flagged_ids == {"aapl-001", "aapl-002", "ferrari-001"}
@@ -898,10 +938,26 @@ def test_semantic_review_payload_flags_weak_and_duplicate_articles(tmp_path: Pat
     assert payload["benchmark_ticker"] == "SPY"
     assert len(cast(list[dict[str, Any]], payload["benchmark_price_series"])) == 2
     assert len(cast(list[dict[str, Any]], payload["benchmark_market_regime_series"])) == 2
-    assert cast(dict[str, Any], payload["pipeline_section_counts"])["raw_preprocessing_rows"]["row_count"] == 8
-    assert cast(dict[str, Any], payload["pipeline_section_counts"])["topic_label_rows"]["row_count"] == 4
-    assert cast(dict[str, Any], payload["pipeline_section_counts"])["relevance_gate_rows"]["row_count"] == 8
-    assert cast(dict[str, Any], payload["pipeline_section_counts"])["semantic_aggregate_rows"]["row_count"] == 2
+    assert (
+        cast(dict[str, Any], payload["pipeline_section_counts"])["raw_preprocessing_rows"][
+            "row_count"
+        ]
+        == 8
+    )
+    assert (
+        cast(dict[str, Any], payload["pipeline_section_counts"])["topic_label_rows"]["row_count"]
+        == 4
+    )
+    assert (
+        cast(dict[str, Any], payload["pipeline_section_counts"])["relevance_gate_rows"]["row_count"]
+        == 8
+    )
+    assert (
+        cast(dict[str, Any], payload["pipeline_section_counts"])["semantic_aggregate_rows"][
+            "row_count"
+        ]
+        == 2
+    )
     assert len(cast(list[dict[str, Any]], sections["raw_preprocessing_rows"])) == 1
     assert len(cast(list[dict[str, Any]], sections["topic_label_rows"])) == 1
     assert len(cast(list[dict[str, Any]], sections["relevance_gate_rows"])) == 1
@@ -925,7 +981,9 @@ def test_semantic_review_payload_flags_weak_and_duplicate_articles(tmp_path: Pat
         for item in cast(list[dict[str, Any]], payload["finbert_sentence_review"]["articles"])
     }
     assert finbert_articles["ferrari-001"]["sentence_rows"][0]["sentence_index"] == 0
-    assert finbert_articles["ferrari-001"]["sentence_rows"][0]["text"].startswith("Ferrari shares fell sharply")
+    assert finbert_articles["ferrari-001"]["sentence_rows"][0]["text"].startswith(
+        "Ferrari shares fell sharply"
+    )
 
     duplicate = next(item for item in article_groups if item["article_id"] == "aapl-001")
     assert "duplicate_normalized_headline" in duplicate["contamination_flags"]
@@ -1067,8 +1125,12 @@ def test_semantic_review_payload_warns_on_one_point_hmm_chart(
         writer=fixture["writer"],
     )
     report_dict = cast(dict[str, Any], report.to_dict())
-    report_dict["benchmark_price_rows"] = cast(list[dict[str, Any]], report_dict["benchmark_price_rows"])[:1]
-    report_dict["benchmark_market_regime_rows"] = cast(list[dict[str, Any]], report_dict["benchmark_market_regime_rows"])[:1]
+    report_dict["benchmark_price_rows"] = cast(
+        list[dict[str, Any]], report_dict["benchmark_price_rows"]
+    )[:1]
+    report_dict["benchmark_market_regime_rows"] = cast(
+        list[dict[str, Any]], report_dict["benchmark_market_regime_rows"]
+    )[:1]
 
     payload = cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report_dict))
     readiness = cast(dict[str, Any], payload["run_readiness"])
@@ -1160,7 +1222,9 @@ def test_semantic_review_payload_adds_human_focused_aggregate_review(
     assert "single_source_concentration" in rows[0]["semantic_warning_codes"]
     assert rows[0]["sentiment_label"] in {"positive", "negative", "neutral"}
     assert rows[0]["human_review_summary"].startswith("Overall NLP sentiment is")
-    card_labels = {str(card["label"]) for card in cast(list[dict[str, Any]], rows[0]["review_value_cards"])}
+    card_labels = {
+        str(card["label"]) for card in cast(list[dict[str, Any]], rows[0]["review_value_cards"])
+    }
     assert {
         "Target impact direction",
         "Target impact magnitude",
@@ -1384,9 +1448,10 @@ def test_semantic_review_summary_gate_status_blocks_missing_evidence(tmp_path: P
     assert gates["benchmark_price_context"]["status"] == "blocked"
     assert "BERTopic labels" in missing_labels
     assert "Benchmark price rows" in missing_labels
-    assert layer1_topic_label_path("2026-05-21", run_id) in gates["topic_labels"][
-        "missing_or_tried_keys"
-    ]
+    assert (
+        layer1_topic_label_path("2026-05-21", run_id)
+        in gates["topic_labels"]["missing_or_tried_keys"]
+    )
 
 
 def test_semantic_review_summary_gate_status_blocks_missing_semantic_aggregate_rows(
@@ -1417,13 +1482,20 @@ def test_semantic_review_summary_gate_status_blocks_missing_semantic_aggregate_r
     }
 
     assert payload["warnings"]
-    assert any(item["scope"] == "sentiment_features" for item in cast(list[dict[str, Any]], payload["warnings"]))
+    assert any(
+        item["scope"] == "sentiment_features"
+        for item in cast(list[dict[str, Any]], payload["warnings"])
+    )
     assert readiness["ready_for_final_human_acceptance"] is False
     assert readiness["recommendation"] == "not ready for final human acceptance"
     assert readiness["human_review_status"] == "blocked_by_missing_pipeline_evidence"
     assert gates["sentiment_features"]["status"] == "blocked"
     assert "Ticker-Date Semantic Aggregates" in missing_labels
-    assert layer1_sentiment_feature_path("2026-05-22", run_id) in gates["sentiment_features"]["missing_or_tried_keys"]
+    assert (
+        layer1_sentiment_feature_path("2026-05-22", run_id)
+        in gates["sentiment_features"]["missing_or_tried_keys"]
+    )
+
 
 def test_semantic_review_summary_gate_status_blocks_cached_bundle_fallback(
     tmp_path: Path,
@@ -1445,7 +1517,9 @@ def test_semantic_review_summary_gate_status_blocks_cached_bundle_fallback(
         for item in cast(list[dict[str, Any]], payload["missing_pipeline_sections"])
     }
 
-    assert any(item["scope"] == "cached_bundle" for item in cast(list[dict[str, Any]], payload["warnings"]))
+    assert any(
+        item["scope"] == "cached_bundle" for item in cast(list[dict[str, Any]], payload["warnings"])
+    )
     assert readiness["ready_for_final_human_acceptance"] is False
     assert readiness["recommendation"] == "not ready for final human acceptance"
     assert "news_preprocessing" in sections
@@ -1509,7 +1583,9 @@ def test_semantic_review_payload_suppresses_benchmark_chart_when_benchmark_missi
     assert payload["benchmark_ticker"] == "SPY"
     assert payload["benchmark_price_series"] == []
     assert len(cast(list[dict[str, Any]], payload["benchmark_market_regime_series"])) == 2
-    assert any(item["scope"] == "price_series" for item in cast(list[dict[str, Any]], payload["warnings"]))
+    assert any(
+        item["scope"] == "price_series" for item in cast(list[dict[str, Any]], payload["warnings"])
+    )
     smoke = cast(dict[str, Any], payload["smoke"])
     assert smoke["status"] == "fail"
     failure_reasons = {item["reason"] for item in cast(list[dict[str, Any]], smoke["failures"])}
@@ -1527,7 +1603,9 @@ def test_semantic_review_smoke_reports_missing_hmm_manifest_metadata(tmp_path: P
         ticker="AAPL",
         writer=fixture["writer"],
     )
-    payload = copy.deepcopy(cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report)))
+    payload = copy.deepcopy(
+        cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report))
+    )
     hmm_context = cast(dict[str, Any], payload["hmm_evaluation_context"])
     hmm_context["source_manifest_keys"] = []
     hmm_context["training_windows"] = []
@@ -1557,7 +1635,9 @@ def test_semantic_review_smoke_allows_degraded_hmm_feature_set_when_layer2_ready
         ticker="AAPL",
         writer=fixture["writer"],
     )
-    payload = copy.deepcopy(cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report)))
+    payload = copy.deepcopy(
+        cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report))
+    )
     hmm_context = cast(dict[str, Any], payload["hmm_evaluation_context"])
     hmm_context["warnings"] = ["incomplete_hmm_feature_set"]
     hmm_context["dropped_feature_columns"] = list(HMM_OPTIONAL_FEATURE_COLUMNS)
@@ -1635,7 +1715,9 @@ def test_semantic_review_smoke_blocks_non_allowlisted_hmm_feature_drops(
         ticker="AAPL",
         writer=fixture["writer"],
     )
-    payload = copy.deepcopy(cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report)))
+    payload = copy.deepcopy(
+        cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report))
+    )
     hmm_context = cast(dict[str, Any], payload["hmm_evaluation_context"])
     hmm_context["warnings"] = ["incomplete_hmm_feature_set"]
     hmm_context["dropped_feature_columns"] = dropped_columns
@@ -1689,9 +1771,10 @@ def test_semantic_review_smoke_reports_missing_stage_keys(tmp_path: Path) -> Non
     assert smoke["status"] == "fail"
     assert topic_failure["reason"] == "missing_or_incomplete_artifacts"
     assert missing_key in topic_failure["missing_or_tried_keys"]
-    assert layer1_topic_label_path("2026-05-21", f"{run_id}-2026-05-21") in topic_failure[
-        "missing_or_tried_keys"
-    ]
+    assert (
+        layer1_topic_label_path("2026-05-21", f"{run_id}-2026-05-21")
+        in topic_failure["missing_or_tried_keys"]
+    )
 
 
 def test_semantic_review_dashboard_html_is_beginner_friendly_and_collapsed() -> None:
@@ -1743,9 +1826,91 @@ def test_semantic_review_dashboard_html_is_beginner_friendly_and_collapsed() -> 
     assert "Advanced HMM evidence and raw rows" in html
     assert "data-smoke-status" in html
     assert "<details open" not in html
-    assert "<table" not in html
+    assert '<table class="qa-table"' in html
     assert "date_aligned_price_hmm_rows" in html
     assert "/api/review" in html
+
+
+def test_semantic_qa_tab_exposes_ordered_human_review_surface() -> None:
+    """The seventh tab should expose every semantic QA section in the approved order."""
+    html = _render_dashboard_html(
+        _DashboardDefaults(
+            run_id="exact/run...id",
+            from_date="2026-05-21",
+            to_date="2026-05-22",
+            ticker="AAPL",
+            host="127.0.0.1",
+            port=8766,
+        )
+    )
+
+    assert "Semantic QA / Human Review" in html
+    assert 'id="semantic-qa-tab"' in html
+    section_ids = [
+        "semantic-qa-summary",
+        "semantic-qa-funnel",
+        "semantic-qa-matrix",
+        "semantic-qa-queues",
+        "semantic-qa-inspector",
+        "semantic-qa-integrity",
+        "semantic-qa-controls",
+    ]
+    positions = [html.index(f'id="{section_id}"') for section_id in section_ids]
+    assert positions == sorted(positions)
+    for filter_id in (
+        "qa-run-id",
+        "qa-from-date",
+        "qa-to-date",
+        "qa-filter-ticker",
+        "qa-filter-decision",
+        "qa-filter-included",
+        "qa-filter-relevance",
+        "qa-filter-reason",
+        "qa-filter-source",
+        "qa-filter-anomaly",
+        "qa-filter-subject",
+    ):
+        assert f'id="{filter_id}"' in html
+    assert "Loading four-ticker semantic QA" in html
+    assert "No semantic QA rows match" in html
+    assert "Partial pilot data" in html
+    assert "Stale advisory" in html
+    assert "Payload integrity failed" in html
+
+
+def test_semantic_qa_tab_uses_bounded_api_and_wires_local_interactions() -> None:
+    """The semantic QA UI should use the bounded API and browser-local shared selection state."""
+    html = _render_dashboard_html(
+        _DashboardDefaults(
+            run_id="exact/run...id",
+            from_date="2026-05-21",
+            to_date="2026-05-22",
+            ticker="AAPL",
+            host="127.0.0.1",
+            port=8766,
+        )
+    )
+
+    assert "fetch(`/api/semantic-qa?${params.toString()}`)" in html
+    assert "params.set('tickers', QA_PILOT_TICKERS.join(','))" in html
+    assert "params.set('sample_limit', '25')" in html
+    assert "loadSemanticQa" in html
+    assert "applySemanticQaFilters" in html
+    assert "selectQaRow" in html
+    assert "data-qa-summary-filter" in html
+    assert "data-qa-funnel-stage" in html
+    assert "data-qa-matrix-cell" in html
+    assert "data-qa-row-id" in html
+    assert "setTickerDisposition" in html
+    assert "setOverallDisposition" in html
+    assert "sample_count + omitted_count = canonical_count" in html
+    assert "Unknown" in html
+    assert "No data" in html
+    assert "min-height: 44px" in html
+    assert "@media (max-width: 600px)" in html
+    assert "localStorage" not in html
+    assert "R2_ACCESS_KEY" not in html
+    assert "R2_SECRET" not in html
 
 
 def test_semantic_review_dashboard_hmm_tab_puts_chart_before_diagnostics() -> None:
@@ -1860,7 +2025,9 @@ def test_semantic_review_dashboard_payload_is_bounded_and_valid(tmp_path: Path) 
     assert "report" not in payload
     assert "report_summary" in payload
     assert len(cast(list[dict[str, Any]], payload["article_groups"])) == 4
-    assert cast(list[dict[str, Any]], payload["article_groups"])[0]["sentence_rows_sample_count"] <= 3
+    assert (
+        cast(list[dict[str, Any]], payload["article_groups"])[0]["sentence_rows_sample_count"] <= 3
+    )
     finbert_articles = cast(list[dict[str, Any]], payload["finbert_sentence_review"]["articles"])
     first_finbert_article = finbert_articles[0]
     assert first_finbert_article["preprocessing_row_count"] == 3
@@ -1888,42 +2055,72 @@ def test_semantic_review_dashboard_smoke_payload_is_compact_and_valid(tmp_path: 
     assert "report" not in payload
     assert "article_groups" not in payload
     assert "date_groups" not in payload
-    assert len(cast(list[dict[str, Any]], payload["pipeline_sections"]["raw_preprocessing_rows"])) == 1
-    assert len(cast(list[dict[str, Any]], payload["pipeline_sections"]["finbert_sentence_rows"])) == 1
+    assert (
+        len(cast(list[dict[str, Any]], payload["pipeline_sections"]["raw_preprocessing_rows"])) == 1
+    )
+    assert (
+        len(cast(list[dict[str, Any]], payload["pipeline_sections"]["finbert_sentence_rows"])) == 1
+    )
     assert len(json.dumps(payload)) < 50_000
 
 
 def test_semantic_review_compaction_preserves_stable_readiness_schema() -> None:
     """A packet-sized payload keeps readiness, diagnostics, gates, and reasons intact."""
     readiness_keys = {
-        "readiness_status", "status_reason", "run_id", "ticker", "from_date", "to_date",
-        "topic_review_state", "topic_relevance_review_status", "relevance_informativeness_state",
-        "diagnostic_states", "diagnostic_summary",
+        "readiness_status",
+        "status_reason",
+        "run_id",
+        "ticker",
+        "from_date",
+        "to_date",
+        "topic_review_state",
+        "topic_relevance_review_status",
+        "relevance_informativeness_state",
+        "diagnostic_states",
+        "diagnostic_summary",
     }
     diagnostic_keys = {
-        "embedding_coverage", "hmm_chart_auditability", "relevance_informativeness",
-        "topic_review", "hmm_feature_set",
+        "embedding_coverage",
+        "hmm_chart_auditability",
+        "relevance_informativeness",
+        "topic_review",
+        "hmm_feature_set",
     }
-    payload = _compact_layer1_semantic_review_dashboard_payload({
-        "ticker": "AAPL",
-        "run_readiness": {
-            **{key: f"value-{key}" for key in readiness_keys if key not in {"diagnostic_states", "diagnostic_summary"}},
-            "diagnostic_states": {key: "WARN" for key in diagnostic_keys},
-            "diagnostic_summary": {"overall_state": "WARN"},
-        },
-        "gate_cards": [
-            {"key": f"gate-{index}", "label": f"Gate {index}", "status": "ready", "reason": "ok"}
-            for index in range(10)
-        ],
-        "missing_pipeline_sections": [
-            {"key": "topic_labels", "label": "Topics", "reason": "not present", "scope": "packet"}
-        ],
-        "article_groups": [
-            {"article_id": f"article-{index}", "headline": "x" * 2_000}
-            for index in range(32)
-        ],
-        "oversized_detail": [{"value": "y" * 10_000} for _ in range(32)],
-    })
+    payload = _compact_layer1_semantic_review_dashboard_payload(
+        {
+            "ticker": "AAPL",
+            "run_readiness": {
+                **{
+                    key: f"value-{key}"
+                    for key in readiness_keys
+                    if key not in {"diagnostic_states", "diagnostic_summary"}
+                },
+                "diagnostic_states": {key: "WARN" for key in diagnostic_keys},
+                "diagnostic_summary": {"overall_state": "WARN"},
+            },
+            "gate_cards": [
+                {
+                    "key": f"gate-{index}",
+                    "label": f"Gate {index}",
+                    "status": "ready",
+                    "reason": "ok",
+                }
+                for index in range(10)
+            ],
+            "missing_pipeline_sections": [
+                {
+                    "key": "topic_labels",
+                    "label": "Topics",
+                    "reason": "not present",
+                    "scope": "packet",
+                }
+            ],
+            "article_groups": [
+                {"article_id": f"article-{index}", "headline": "x" * 2_000} for index in range(32)
+            ],
+            "oversized_detail": [{"value": "y" * 10_000} for _ in range(32)],
+        }
+    )
 
     assert set(payload["run_readiness"]) == readiness_keys
     assert set(payload["run_readiness"]["diagnostic_states"]) == diagnostic_keys
@@ -1935,38 +2132,71 @@ def test_semantic_review_compaction_preserves_stable_readiness_schema() -> None:
 def test_semantic_review_final_compaction_preserves_control_plane_contract() -> None:
     """The final pretty-byte pass may compact evidence, not public control-plane shape."""
     readiness_keys = {
-        "readiness_status", "status_reason", "run_id", "ticker", "from_date", "to_date",
-        "topic_review_state", "topic_relevance_review_status", "relevance_informativeness_state",
-        "diagnostic_states", "diagnostic_summary",
+        "readiness_status",
+        "status_reason",
+        "run_id",
+        "ticker",
+        "from_date",
+        "to_date",
+        "topic_review_state",
+        "topic_relevance_review_status",
+        "relevance_informativeness_state",
+        "diagnostic_states",
+        "diagnostic_summary",
     }
     diagnostic_keys = {
-        "embedding_coverage", "hmm_chart_auditability", "relevance_informativeness",
-        "topic_review", "hmm_feature_set",
+        "embedding_coverage",
+        "hmm_chart_auditability",
+        "relevance_informativeness",
+        "topic_review",
+        "hmm_feature_set",
     }
     summary_cards = [
         {"label": f"Card {index}", "value": f"value-{index}", "field": f"field-{index}"}
         for index in range(10)
     ]
-    payload = cast(dict[str, Any], _enforce_payload_pretty_byte_budget({
-        "run_readiness": {
-            **{key: f"value-{key}" for key in readiness_keys if key not in {"diagnostic_states", "diagnostic_summary"}},
-            "diagnostic_states": {key: "WARN" for key in diagnostic_keys},
-            "diagnostic_summary": {"overall_state": "WARN"},
-        },
-        "summary_cards": summary_cards,
-        "gate_cards": [
-            {"key": f"gate-{index}", "label": f"Gate {index}", "status": "ready", "reason": "ok"}
-            for index in range(10)
-        ],
-        "missing_pipeline_sections": [
-            {"key": "topic_labels", "label": "Topics", "reason": "not present", "scope": "packet"}
-        ],
-        "article_group_counts": {
-            "full_count": 32, "sample_count": 6, "omitted_count": 26,
-            "truncated": True, "sampling_method": "extremes",
-        },
-        "oversized_detail": [{"value": "x" * 20_000} for _ in range(32)],
-    }))
+    payload = cast(
+        dict[str, Any],
+        _enforce_payload_pretty_byte_budget(
+            {
+                "run_readiness": {
+                    **{
+                        key: f"value-{key}"
+                        for key in readiness_keys
+                        if key not in {"diagnostic_states", "diagnostic_summary"}
+                    },
+                    "diagnostic_states": {key: "WARN" for key in diagnostic_keys},
+                    "diagnostic_summary": {"overall_state": "WARN"},
+                },
+                "summary_cards": summary_cards,
+                "gate_cards": [
+                    {
+                        "key": f"gate-{index}",
+                        "label": f"Gate {index}",
+                        "status": "ready",
+                        "reason": "ok",
+                    }
+                    for index in range(10)
+                ],
+                "missing_pipeline_sections": [
+                    {
+                        "key": "topic_labels",
+                        "label": "Topics",
+                        "reason": "not present",
+                        "scope": "packet",
+                    }
+                ],
+                "article_group_counts": {
+                    "full_count": 32,
+                    "sample_count": 6,
+                    "omitted_count": 26,
+                    "truncated": True,
+                    "sampling_method": "extremes",
+                },
+                "oversized_detail": [{"value": "x" * 20_000} for _ in range(32)],
+            }
+        ),
+    )
 
     assert payload["payload_budget"]["compacted"] is True
     assert payload["payload_budget"]["truncated"] is True
@@ -1980,7 +2210,11 @@ def test_semantic_review_final_compaction_preserves_control_plane_contract() -> 
     assert len(payload["gate_cards"]) == 10
     assert payload["missing_pipeline_sections"][0]["reason"] == "not present"
     assert set(payload["article_group_counts"]) >= {
-        "full_count", "sample_count", "omitted_count", "truncated", "sampling_method"
+        "full_count",
+        "sample_count",
+        "omitted_count",
+        "truncated",
+        "sampling_method",
     }
 
 
@@ -2046,7 +2280,11 @@ def test_semantic_review_feature_diagnostics_adopt_loaded_records(tmp_path: Path
     report_dict = _report_dict_for_ticker(tmp_path, "AAPL")
     report_dict["feature_diagnostics"] = {
         "heatmap": {"state": "PASS", "reason": "Heatmap regenerated cleanly.", "reviewable": True},
-        "null_rate": {"state": "FAIL", "reason": "Null rate exceeds threshold.", "reviewable": False},
+        "null_rate": {
+            "state": "FAIL",
+            "reason": "Null rate exceeds threshold.",
+            "reviewable": False,
+        },
     }
 
     payload = cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report_dict))
@@ -2135,7 +2373,9 @@ def test_semantic_review_hmm_chart_point_count_survives_one_point_compaction(
 ) -> None:
     """S5: a one-point chart keeps WARN state plus numeric point/minimum facts."""
     report_dict = _report_dict_for_ticker(tmp_path, "AAPL")
-    report_dict["benchmark_price_rows"] = cast(list[dict[str, Any]], report_dict["benchmark_price_rows"])[:1]
+    report_dict["benchmark_price_rows"] = cast(
+        list[dict[str, Any]], report_dict["benchmark_price_rows"]
+    )[:1]
     report_dict["benchmark_market_regime_rows"] = cast(
         list[dict[str, Any]], report_dict["benchmark_market_regime_rows"]
     )[:1]
@@ -2158,9 +2398,7 @@ def test_semantic_review_compaction_preserves_explicit_review_fields(tmp_path: P
         payload = cast(dict[str, Any], build_layer1_semantic_review_dashboard_payload(report_dict))
         # Double compaction with oversized synthetic evidence branches attached.
         payload["oversized_detail"] = [{"value": "x" * 20_000} for _ in range(32)]
-        compacted = cast(
-            dict[str, Any], _compact_layer1_semantic_review_dashboard_payload(payload)
-        )
+        compacted = cast(dict[str, Any], _compact_layer1_semantic_review_dashboard_payload(payload))
         assert compacted["payload_budget"]["compacted"] is True
         assert compacted["payload_budget"]["truncated"] is True
 
@@ -2173,3 +2411,140 @@ def test_semantic_review_compaction_preserves_explicit_review_fields(tmp_path: P
         for check in ("heatmap", "null_rate", "recomputation", "formula", "leakage", "outlier"):
             assert cast(dict[str, Any], fd[check])["state"] == "NOT_RUN"
         assert compacted["payload_budget"]["within_budget"] is True
+
+
+# -- Missing artifact fallback tests ------------------------------------------------
+
+
+def test_semantic_qa_payload_all_tickers_missing_returns_empty_status() -> None:
+    """When no review reports exist for any pilot ticker, the payload should
+    return status 'empty' with missing_review_artifacts warnings for all four
+    pilot tickers."""
+    payload = build_semantic_qa_payload(
+        reports={},
+        run_id="test-run-id",
+        from_date="2026-01-01",
+        to_date="2026-01-01",
+        tickers=list(PILOT_TICKERS),
+    )
+
+    assert payload["ok"] is True
+    assert payload["status"] == "empty"
+    assert payload["schema_id"] == SEMANTIC_QA_SCHEMA_ID
+    assert payload["run"]["tickers"] == list(PILOT_TICKERS)
+
+    # All four pilot tickers must be present as empty placeholders
+    for ticker in PILOT_TICKERS:
+        ticker_data = payload["tickers"][ticker]
+        assert ticker_data["summary"]["signal_rows"] is None
+        assert ticker_data["queues"]["potential_false_positives"]["sample_count"] == 0
+
+    # Each ticker must have a missing_review_artifacts warning
+    warning_codes = [w["code"] for w in payload["warnings"]]
+    assert warning_codes.count("missing_review_artifacts") == len(PILOT_TICKERS)
+
+    # Artifact IDs must be empty lists for all missing tickers
+    for ticker in PILOT_TICKERS:
+        assert payload["run"]["artifact_ids"][ticker] == []
+
+
+def test_semantic_qa_payload_partial_missing_returns_warning_status(tmp_path: Path) -> None:
+    """When only two of four pilot tickers have reports, the payload should
+    return status 'warning' with the two missing tickers rendered as empty
+    placeholders and missing_review_artifacts warnings."""
+    run_id = "test-run-id"
+    from_date = "2026-05-20"
+    to_date = "2026-05-22"
+    # Seed AAPL and AMD with full reports (fixture dates are 2026-05-21)
+    for ticker in ("AAPL", "AMD"):
+        seed_semantic_review_fixture(local_root=tmp_path / ticker)
+
+    writer = R2Writer(local_root=tmp_path)
+
+    # Build reports only for AAPL and AMD
+    reports = {}
+    for ticker in ("AAPL", "AMD"):
+        try:
+            reports[ticker] = build_layer1_aapl_evidence_report(
+                run_id=run_id,
+                from_date=from_date,
+                to_date=to_date,
+                ticker=ticker,
+                writer=writer,
+            )
+        except FileNotFoundError:
+            pass
+
+    # NVDA and MSFT are missing (reports dict has no entry for them)
+    payload = build_semantic_qa_payload(
+        reports=reports,
+        run_id="test-run-id",
+        from_date="2026-01-01",
+        to_date="2026-01-01",
+        tickers=list(PILOT_TICKERS),
+    )
+
+    assert payload["ok"] is True
+    assert payload["status"] == "warning"
+
+    # Present tickers (AAPL, AMD) must have real data
+    for ticker in ("AAPL", "AMD"):
+        ticker_data = payload["tickers"][ticker]
+        # summary.signal_rows is either an int or a summary-count dict — never None for real reports
+        # The key distinction: empty tickers have ALL summary fields as None
+        assert ticker_data["summary"]["signal_rows"] is not None or \
+               ticker_data["summary"]["rejected_rows"] is not None
+
+    # Missing tickers (NVDA, MSFT) must be empty placeholders
+    for ticker in ("NVDA", "MSFT"):
+        ticker_data = payload["tickers"][ticker]
+        assert ticker_data["summary"]["signal_rows"] is None
+        assert ticker_data["summary"]["rejected_rows"] is None
+
+    # Exactly two missing_review_artifacts warnings (one per missing ticker)
+    missing_warnings = [
+        w for w in payload["warnings"] if w["code"] == "missing_review_artifacts"
+    ]
+    assert len(missing_warnings) == 2
+    missing_tickers = {w["ticker"] for w in missing_warnings}
+    assert missing_tickers == {"NVDA", "MSFT"}
+
+
+def test_semantic_qa_payload_non_pilot_tickers_excluded_from_response() -> None:
+    """Requesting only non-pilot tickers should produce an empty payload with
+    no tickers and no warnings — the request normalizes to zero pilot tickers."""
+    payload = build_semantic_qa_payload(
+        reports={},
+        run_id="test-run-id",
+        from_date="2026-01-01",
+        to_date="2026-01-01",
+        tickers=["TSLA", "GOOG", "MSFT"],
+    )
+
+    assert payload["ok"] is True
+    # MSFT is a pilot ticker so it should be in the normalized list
+    assert payload["run"]["tickers"] == ["MSFT"]
+    # MSFT should be an empty placeholder since reports is empty
+    assert payload["tickers"]["MSFT"]["summary"]["signal_rows"] is None
+    missing_warnings = [
+        w for w in payload["warnings"] if w["code"] == "missing_review_artifacts"
+    ]
+    assert len(missing_warnings) == 1
+    assert missing_warnings[0]["ticker"] == "MSFT"
+
+
+def test_semantic_qa_payload_non_pilot_only_no_pilot_match(tmp_path: Path) -> None:
+    """When requested tickers share no overlap with PILOT_TICKERS, the
+    normalized ticker list is empty and no warnings are emitted."""
+    payload = build_semantic_qa_payload(
+        reports={},
+        run_id="test-run-id",
+        from_date="2026-01-01",
+        to_date="2026-01-01",
+        tickers=["TSLA", "GOOG"],
+    )
+
+    assert payload["ok"] is True
+    assert payload["run"]["tickers"] == []
+    assert len(payload["tickers"]) == 0
+    assert len(payload["warnings"]) == 0
