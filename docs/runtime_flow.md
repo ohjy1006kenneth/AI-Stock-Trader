@@ -144,7 +144,9 @@ Execution chain:
    - Compute market, NLP, context, and optional order-book spread / imbalance features for today
    - Write authoritative date-first feature shards at `features/{YYYY-MM-DD}/{TICKER}.parquet`
      for every ticker in the point-in-time universe; legacy per-ticker histories under
-     `features/layer1/TICKER.parquet` may be refreshed only as compatibility artifacts
+     `features/layer1/TICKER.parquet` are **deprecated** (GH#203) and will no longer be
+     written after the date-first migration — use `scripts/migrate_layer1_date_first.py`
+     to clean up legacy R2 keys
    - Run final archive validation, persist the JSON report under
      `artifacts/reports/integration/layer1_archive_validation_{run_id}_{from}_to_{to}.json`,
      and return nonzero unless `ready_for_layer2=true`

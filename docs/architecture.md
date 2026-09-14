@@ -375,8 +375,10 @@ Final feature table shape: `(N_dates × N_tickers)` rows × `M_features` columns
 Production Layer 1 archives are date-first: each complete feature row is stored at
 `features/{date}/{ticker}.parquet`, and each date partition must contain the complete
 point-in-time universe for that date. Legacy per-ticker histories under
-`features/layer1/{ticker}.parquet` may exist temporarily as compatibility artifacts or
-migration inputs, but they are not the authoritative production handoff path.
+`features/layer1/{ticker}.parquet` are **deprecated** (GH#203) — they are no longer
+written by Layer 1 and will be removed from R2 after the date-first migration runs.
+Regime artifacts under `features/layer1_5/` are similarly deprecated. Use
+`scripts/migrate_layer1_date_first.py` to clean up legacy R2 keys.
 
 The Layer 1 news review contract keeps two separate concepts clear:
 - provenance classes (`direct`, `indirect`, `broad_market`, `contamination`) are used for
