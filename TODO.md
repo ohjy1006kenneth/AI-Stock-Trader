@@ -42,6 +42,10 @@
   and `Q`/`IQV` transition boundaries, but residual non-aliased delisting or
   archive-gap mismatches (for example stale `AGN` boundary holes in old
   membership exports) still need data cleanup or an explicit exception policy.
+- [x] Issue `#203` deprecated the `features/layer1/` and `features/layer1_5/` R2 prefixes
+  and added `scripts/migrate_layer1_date_first.py` to clean up legacy keys once canonical
+  date-first shards exist. Legacy keys are no longer written by Layer 1 after the
+  date-first migration.
 - [x] Issue `#184` closed the strict-readiness SimFin provider gaps for `BF-B`, `BRK-B`,
   `GEV`, `SOLV`, `SW`, `TKO`, and `VLTO` by keeping the existing Layer 0 archive contract
   and recovering zero-row tickers from the public SEC company-facts API instead of adding

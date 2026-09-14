@@ -430,9 +430,11 @@ Input note:
 - canonical production archives store each FeatureRecord row at
   `features/{date}/{ticker}.parquet`; every date partition must contain the complete
   point-in-time universe for that date before the archive is ready for Layer 2
-- legacy per-ticker histories under `features/layer1/{ticker}.parquet` may remain as
-  compatibility artifacts or migration inputs, but they are not the authoritative production
-  handoff path
+- **DEPRECATED:** legacy prefixes `features/layer1/` and `features/layer1_5/` are no
+  longer written by Layer 1 after the date-first migration (GH#203). Objects under
+  those prefixes may remain temporarily as migration artifacts but are not part of the
+  authoritative handoff path. Use `scripts/migrate_layer1_date_first.py` to clean up
+  legacy keys once canonical date-first shards exist.
 - regime features (`regime_label`, `regime_confidence`, `regime_prob_bear`,
   `regime_prob_sideways`, `regime_prob_bull`) follow a two-tier rule:
   when the bounded HMM train window has enough complete history and the target-date
