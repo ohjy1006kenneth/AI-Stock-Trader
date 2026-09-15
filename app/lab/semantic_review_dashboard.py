@@ -614,6 +614,9 @@ _SEMANTIC_QA_CSS = """
     }
     .qa-field { display: grid; gap: 5px; min-width: 0; }
     .qa-field label { color: var(--muted); font-size: 0.78rem; font-weight: 700; }
+    .qa-chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; grid-column: 1 / -1; padding: 4px 0; }
+    .qa-chip { min-height: auto; padding: 4px 10px; font-size: 0.8rem; border-radius: 16px; background: rgba(56, 189, 248, 0.1); border-color: rgba(56, 189, 248, 0.3); color: var(--accent); }
+    .qa-chip:hover { border-color: var(--accent); background: rgba(56, 189, 248, 0.18); }
     .qa-field input, .qa-field select, .qa-notes {
       width: 100%;
       min-height: 44px;
@@ -719,6 +722,7 @@ _SEMANTIC_QA_HTML = """
             <div><strong>Loading four-ticker semantic QA…</strong><div class="muted">Open this tab to load the bounded review payload.</div></div>
           </div>
           <div class="qa-filter-bar" id="semantic-qa-filter-bar" aria-label="Semantic QA filters">
+            <div id="qa-filter-chips" class="qa-chips"></div>
             <div class="qa-field"><label for="qa-run-id">Exact run ID</label><input id="qa-run-id" type="text" /></div>
             <div class="qa-field"><label for="qa-from-date">Requested start</label><input id="qa-from-date" type="date" /></div>
             <div class="qa-field"><label for="qa-to-date">Requested end</label><input id="qa-to-date" type="date" /></div>
@@ -924,7 +928,7 @@ _SEMANTIC_QA_JS = """
       qaSetSelectOptions('qa-filter-relevance', 'All categories', rows.map(qaCategory));
       qaSetSelectOptions('qa-filter-reason', 'All reason codes', rows.flatMap(qaReasons));
       qaSetSelectOptions('qa-filter-source', 'All sources', rows.map(qaSource));
-      qaSetSelectOptions('qa-filter-anomaly', 'All anomaly types', rows.map((row) => row.reason_code));
+      qaSetSelectOptions('qa-filter-anomaly', 'All anomaly types', rows.map((row) => row.anomaly_type));
       const matrixSubjects = Object.keys(qaState.payload?.leakage_matrix || {});
       qaSetSelectOptions('qa-filter-subject', 'All subjects', [
         ...rows.map(qaSubject), ...matrixSubjects,
@@ -942,6 +946,13 @@ _SEMANTIC_QA_JS = """
         const element = document.getElementById(id);
         if (element) element.value = qaState.filters[key] || '';
       }
+      const chipsEl = document.getElementById('qa-filter-chips');
+      if (!chipsEl) return;
+      const active = Object.entries(qaState.filters).filter(([k, v]) => v);
+      if (!active.length) { chipsEl.innerHTML = ''; return; }
+      chipsEl.innerHTML = active.map(([k, v]) =>
+        `<button type="button" class="qa-chip" data-qa-filter-key="${k}">${escapeHtml(v)} ×</button>`
+      ).join('') + `<button type="button" class="qa-chip" id="qa-clear-chips">Clear all</button>`;
     }
 
     function qaMatchesFilters(row) {
@@ -952,7 +963,7 @@ _SEMANTIC_QA_JS = """
       if (filters.relevance && qaCategory(row) !== filters.relevance) return false;
       if (filters.reason && !qaReasons(row).includes(filters.reason)) return false;
       if (filters.source && qaSource(row) !== filters.source) return false;
-      if (filters.anomaly && row.reason_code !== filters.anomaly) return false;
+      if (filters.anomaly && row.anomaly_type !== filters.anomaly) return false;
       if (filters.subject && qaSubject(row) !== filters.subject) return false;
       return true;
     }
@@ -991,7 +1002,8 @@ _SEMANTIC_QA_JS = """
     }
 
     function qaMetricButton(ticker, metric, value, tone = '') {
-      return `<button type="button" class="qa-metric-button ${tone}" data-qa-summary-filter="${metric}" data-ticker="${ticker}">${escapeHtml(qaNumber(value, metric === 'contribution' ? 3 : null))}</button>`;
+      const metricLabel = `${escapeHtml(QA_METRIC_LABELS[metric] || metric)} ${value} · View ${escapeHtml(QA_METRIC_LABELS[metric] || metric)} sample`;
+      return `<button type="button" class="qa-metric-button ${tone}" data-qa-summary-filter="${metric}" data-ticker="${ticker}" title="${metricLabel}">${escapeHtml(qaNumber(value, metric === 'contribution' ? 3 : null))}</button>`;
     }
 
     function qaRenderSummary() {
@@ -1413,6 +1425,22 @@ _SEMANTIC_QA_JS = """
     });
     document.getElementById('qa-reload')?.addEventListener('click', () => loadSemanticQa(true));
     document.querySelector('[data-tab-target="semantic-qa-tab"]')?.addEventListener('click', () => loadSemanticQa());
+    document.getElementById('qa-filter-chips')?.addEventListener('click', (event) => {
+      const target = event.target.closest('[data-qa-filter-key]');
+      if (target) {
+        qaState.filters[target.dataset.qaFilterKey] = '';
+        qaState.selectedKey = '';
+        qaSyncFilterControls();
+        qaRenderQueues();
+        return;
+      }
+      if (target?.id === 'qa-clear-chips') {
+        qaState.filters = {ticker: '', decision: '', included: '', relevance: '', reason: '', source: '', anomaly: '', subject: ''};
+        qaState.selectedKey = '';
+        qaSyncFilterControls();
+        qaRenderQueues();
+      }
+    });
 """
 
 
@@ -1627,16 +1655,16 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       </section>
 
       <nav class="tab-bar" aria-label="Semantic dashboard tabs">
-        <button class="tab-button active" type="button" role="tab" aria-selected="true" aria-controls="summary-gate-tab" data-tab-target="summary-gate-tab">Summary / Gate Status</button>
+        <button class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="summary-gate-tab" data-tab-target="summary-gate-tab">Summary / Gate Status</button>
         <button class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="article-review-tab" data-tab-target="article-review-tab">Article Review</button>
         <button class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="finbert-sentence-review-tab" data-tab-target="finbert-sentence-review-tab">FinBERT Sentence Review</button>
         <button class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="topic-relevance-tab" data-tab-target="topic-relevance-tab">Topic / Relevance Pipeline</button>
         <button class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="semantic-aggregate-tab" data-tab-target="semantic-aggregate-tab">Ticker-Date Semantic Aggregates</button>
         <button class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="hmm-regime-tab" data-tab-target="hmm-regime-tab">HMM Regime</button>
-        <button class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="semantic-qa-tab" data-tab-target="semantic-qa-tab">Semantic QA / Human Review</button>
+        <button class="tab-button active" type="button" role="tab" aria-selected="true" aria-controls="semantic-qa-tab" data-tab-target="semantic-qa-tab">Semantic QA / Human Review</button>
       </nav>
 
-      <section class="panel tab-panel" id="summary-gate-tab" role="tabpanel">
+      <section class="panel tab-panel hidden" id="summary-gate-tab" role="tabpanel" aria-hidden="true">
         <div>
           <h2>Summary / Gate Status</h2>
           <p class="readiness-line" id="readiness-line">Loading run readiness…</p>
