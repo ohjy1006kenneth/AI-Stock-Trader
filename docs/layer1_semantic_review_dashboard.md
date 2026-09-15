@@ -218,3 +218,103 @@ empty, missing, loaded from the cached AAPL bundle, or blocked by HMM manifest /
 training-window warnings, the recommendation is `not ready for final human
 acceptance` and `human_review_status` is
 `blocked_by_missing_pipeline_evidence`.
+
+## `/api/semantic-qa` endpoint — four-ticker cross-ticker QA
+
+The `/api/semantic-qa` endpoint aggregates per-ticker `/api/review` reports into
+a single bounded four-ticker QA payload. It is the cross-cutting review surface
+for the Semantic QA dashboard tab.
+
+### Request parameters
+
+| Parameter     | Required | Description                                      |
+|---------------|----------|--------------------------------------------------|
+| `run_id`      | Yes      | Layer 1 run identifier (e.g. `layer1-aapl-...`)  |
+| `from_date`   | Yes      | Start date in `YYYY-MM-DD` format                |
+| `to_date`     | Yes      | End date in `YYYY-MM-DD` format                  |
+| `tickers`     | No       | Comma-separated pilot tickers (default: all 4)   |
+| `sample_limit`| No       | Max rows per queue per ticker, 1-50 (default: 25) |
+
+Pilot tickers are always `AAPL`, `AMD`, `NVDA`, `MSFT`. Non-pilot tickers
+raise a `400 Bad Request`. The endpoint normalizes the request against the
+pilot ticker list and returns results only for the intersection.
+
+### Response shape
+
+```json
+{
+  "ok": true,
+  "status": "ready|warning|empty",
+  "schema_id": "layer1-semantic-qa/v1",
+  "generated_at": "...",
+  "run": {
+    "run_id": "...",
+    "requested_start": "...",
+    "requested_end": "...",
+    "tickers": ["AAPL", "AMD", "NVDA", "MSFT"],
+    "artifact_ids": {"AAPL": [...], "AMD": [...], ...}
+  },
+  "freshness": { "state": "fresh|stale", "oldest_source_ago_s": 0 },
+  "tickers": {
+    "AAPL": {
+      "stage_counts": { "total_preprocessed_chunks": N, ... },
+      "queues": {
+        "potential_false_positives": [...],
+        "potential_false_negatives": [...],
+        "top_contributors": [...],
+        "cross_ticker_anomalies": [...]
+      },
+      "summary": { "row_count": N, ... }
+    },
+    ...
+  },
+  "leakage_matrix": { "subjects": [...], "ticker_cells": [...] },
+  "integrity": { "status": "pass|warn|fail", "issues": [...] },
+  "human_gate": {
+    "ticker_dispositions": {"AAPL": null, ...},
+    "overall_disposition": null,
+    "all_tickers_disposed": false,
+    "can_accept_four_ticker_pilot": false
+  },
+  "warnings": [...]
+}
+```
+
+The `status` field is `"ready"` when all tickers have data, `"warning"` when
+data exists but warnings or stale freshness are present, and `"empty"` when no
+ticker returns evidence rows.
+
+### Four-ticker semantics
+
+The endpoint loads each ticker's `/api/review` report independently via
+`build_layer1_aapl_evidence_report()`, then aggregates through
+`build_semantic_qa_payload()` in `core/features/semantic_qa.py`. Tickers
+missing from R2 or with zero artifacts are treated as absent (404-equivalent).
+When all requested tickers are absent, the endpoint returns `404`.
+
+Cross-ticker anomaly detection compares each evidence row's `evidence_owner`
+against the requested ticker. Rows included in-signal but owned by another
+ticker (or with no explicit local-material relationship) enter the
+`cross_ticker_anomalies` queue. The `leakage_matrix` summarizes evidence
+subject overlap across all four tickers.
+
+### API example
+
+```bash
+# Request all four pilot tickers (default)
+curl -fsS 'http://127.0.0.1:8766/api/semantic-qa?run_id=...&from_date=2026-05-06&to_date=2026-05-28'
+
+# Request specific tickers only
+curl -fsS 'http://127.0.0.1:8766/api/semantic-qa?run_id=...&from_date=2026-05-06&to_date=2026-05-28&tickers=AAPL,NVDA'
+
+# With custom sample limit
+curl -fsS 'http://127.0.0.1:8766/api/semantic-qa?run_id=...&from_date=2026-05-06&to_date=2026-05-28&sample_limit=10'
+```
+
+### Error responses
+
+| Status | `error.code`              | When                                               |
+|--------|---------------------------|----------------------------------------------------|
+| 400    | `invalid_request`         | Missing/invalid `run_id`, dates, or tickers        |
+| 404    | `review_artifacts_not_found` | All requested tickers have no review artifacts  |
+| 500    | `semantic_qa_build_failed` | Unexpected payload construction error             |

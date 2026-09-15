@@ -140,6 +140,12 @@ _DIRECT_TARGET_BUSINESS_TERMS: tuple[str, ...] = (
     "sec",
     "software",
     "vision pro",
+    "whale",
+    "whale activity",
+    "dark pool",
+    "institutional buying",
+    "institutional selling",
+    "block trade",
 )
 _SUPPLIER_INPUT_COST_TERMS: tuple[str, ...] = (
     "foundry",
@@ -200,6 +206,7 @@ _BUSINESS_CONTEXT_CHANNELS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("ownership", ("ownership", "stake", "shareholder", "shareholders", "buyback", "dividend")),
     ("ai_chip_device", ("ai chip", "chip", "chips", "compute", "datacenter", "gpu", "server", "servers")),
     ("options_market", ("options", "calls", "puts", "volatility")),
+    ("whale_activity", ("whale", "whale activity", "dark pool", "institutional buying", "institutional selling", "block trade")),
     ("enterprise_cloud", ("azure", "cloud", "copilot", "openai", "enterprise software", "subscription")),
 )
 
@@ -639,6 +646,7 @@ def _target_conditioned_metadata(
             "options_market",
             "enterprise_cloud",
             "ai_chip_device",
+            "whale_activity",
         }
         or financial_score >= 0.35
     ):
@@ -765,7 +773,7 @@ def _impact_magnitude(channel: str) -> str:
     """Return a coarse impact magnitude by causal channel."""
     if channel in {"legal_regulatory", "ai_chip_device", "enterprise_cloud"}:
         return "high"
-    if channel in {"supplier_input_cost", "competitor_readthrough", "product_device", "analyst_investor", "ownership", "options_market"}:
+    if channel in {"supplier_input_cost", "competitor_readthrough", "product_device", "analyst_investor", "ownership", "options_market", "whale_activity"}:
         return "medium"
     if channel == "industry_macro":
         return "low"
