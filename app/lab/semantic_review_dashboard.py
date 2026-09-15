@@ -449,7 +449,7 @@ def _render_smoke_html(defaults: _DashboardDefaults, payload: Mapping[str, objec
         `<span>run_id: ${{defaults.run_id}}</span>`,
         `<span>ticker: ${{defaults.ticker}}</span>`,
         `<span>benchmark: ${{payload.benchmark_ticker || 'SPY'}}</span>`,
-        `<span>rows: ${{rows.length}}</span>`,
+        `<span>Canonical: ${{rows.length}} · Displayed: ${{rows.length}} · Omitted: 0</span>`,
       ].join('');
       chartContainerEl.innerHTML = '<svg class="chart" viewBox="0 0 1040 360" role="img" aria-label="Smoke chart"></svg>';
     }} catch (error) {{
@@ -519,7 +519,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--ticker",
         required=True,
-        help="Ticker symbol to review, for example AAPL.",
+        help="Ticker symbol to review, for example AAPL or AMD.",
     )
     parser.add_argument(
         "--host",
@@ -797,6 +797,7 @@ _SEMANTIC_QA_JS = """
       payload: null,
       loaded: false,
       loading: false,
+      currentRunIdentity: null,
       queue: 'potential_false_positives',
       filters: {
         ticker: '', decision: '', included: '', relevance: '', reason: '', source: '',
@@ -1229,16 +1230,59 @@ _SEMANTIC_QA_JS = """
       qaIntegrityEl.innerHTML = `
         <div class="qa-state ${integrity.status === 'fail' ? 'bad' : integrity.status === 'pass' ? 'good' : 'warn'}"><div><strong>${integrity.status === 'fail' ? 'Payload integrity failed' : integrity.status === 'pass' ? 'Payload integrity PASS' : 'Payload integrity needs review'}</strong><div class="muted">${escapeHtml(issueCodes.join(', ') || 'No identity or reconciliation issue codes.')}</div></div></div>
         <div class="qa-scroll"><table class="qa-table"><thead><tr><th>Ticker</th><th>Stage</th><th>Canonical</th><th>Sampled</th><th>Omitted</th><th>Reconciles</th></tr></thead><tbody>${stageRows || '<tr><td colspan="6">No data</td></tr>'}</tbody></table></div>
-        <div class="qa-inspector-grid">${identityRows.map(([label, value, failed]) => `<div class="qa-evidence-panel"><strong>${escapeHtml(label)}</strong><div class="qa-exact" title="${escapeHtml(qaDisplay(value, 'Unknown'))}">${escapeHtml(qaDisplay(value, 'Unknown'))}</div><div class="${failed ? 'qa-status-bad' : 'qa-status-good'}">${failed ? 'ISSUE' : 'PASS'}</div></div>`).join('')}</div>`;
+        <div class="qa-inspector-grid">${identityRows.map(([label, value, failed]) => {
+          const display = qaDisplay(value, 'Unknown');
+          // P0-4: three-state integrity — Unknown blocks acceptance
+          let status, tone;
+          if (failed) { status = 'ISSUE'; tone = 'qa-status-bad'; }
+          else if (display === 'Unknown' || display === 'No data') { status = 'Unknown'; tone = 'qa-status-warn'; }
+          else { status = 'PASS'; tone = 'qa-status-good'; }
+          return `<div class="qa-evidence-panel"><strong>${escapeHtml(label)}</strong><div class="qa-exact" title="${escapeHtml(display)}">${escapeHtml(display)}</div><div class="${tone}">${status}</div></div>`;
+        }).join('')}</div>`;
     }
 
     function qaUnresolvedRisk() {
-      const tickers = qaState.payload?.tickers || {};
-      const leakage = QA_PILOT_TICKERS.reduce((sum, ticker) => {
+      const reasons = [];
+      if (!qaState.loaded || !qaState.payload) {
+        reasons.push('QA data not loaded');
+        return { blocked: true, block_reasons: reasons, leakage: 0, integrityFailed: false };
+      }
+      const integrity = qaState.payload.integrity || {};
+      if (integrity.status !== 'pass') {
+        reasons.push('Integrity not pass (' + (integrity.status || 'unknown') + ')');
+      }
+      const tickers = qaState.payload.tickers || {};
+      for (const t of QA_PILOT_TICKERS) {
+        const funnel = tickers[t]?.funnel || {};
+        if (funnel.sentiment_scored?.canonical_count == null) {
+          reasons.push(t + ' canonical counts unknown');
+        }
+      }
+      const run = qaState.payload.run || {};
+      if (!run.run_id || run.run_id === 'Unknown') {
+        reasons.push('Run ID unknown');
+      }
+      if (!run.schema_id || run.schema_id === 'Unknown') {
+        reasons.push('Schema ID unknown');
+      }
+      let leakage = 0;
+      for (const ticker of QA_PILOT_TICKERS) {
         const value = tickers[ticker]?.summary?.leakage_candidates;
-        return sum + (Number.isFinite(Number(value)) ? Number(value) : 0);
-      }, 0);
-      return {leakage, integrityFailed: qaState.payload?.integrity?.status === 'fail'};
+        leakage += Number.isFinite(Number(value)) ? Number(value) : 0;
+      }
+      return { blocked: reasons.length > 0, block_reasons: reasons, leakage, integrityFailed: integrity.status === 'fail' };
+    }
+
+    function resetReviewState() {
+      qaState.dispositions = Object.fromEntries(QA_PILOT_TICKERS.map((ticker) => [ticker, 'Pending']));
+      qaState.notes = Object.fromEntries(QA_PILOT_TICKERS.map((ticker) => [ticker, '']));
+      qaState.overall = null;
+      qaState.selectedKey = '';
+      qaState.queue = 'potential_false_positives';
+      qaState.filters = {
+        ticker: '', decision: '', included: '', relevance: '', reason: '', source: '',
+        anomaly: '', subject: '',
+      };
     }
 
     function qaRenderControls() {
@@ -1250,10 +1294,14 @@ _SEMANTIC_QA_JS = """
       const allDisposed = QA_PILOT_TICKERS.every((ticker) => qaState.dispositions[ticker] !== 'Pending');
       const risk = qaUnresolvedRisk();
       const warning = risk.integrityFailed || risk.leakage > 0;
+      const blockHtml = risk.blocked
+        ? `<div class="qa-status-bad" style="background:#ffebee;color:#b71c1c;padding:8px 12px;border-radius:6px;margin:8px 0;"><strong>Acceptance blocked</strong><ul>${risk.block_reasons.map((r) => `<li>${escapeHtml(r)}</li>`).join('')}</ul></div>`
+        : '';
       qaOverallEl.innerHTML = `<div><strong>Overall semantic gate</strong> <span class="badge">${escapeHtml(qaState.overall || 'Pending')}</span></div>
         <p class="${warning ? 'qa-status-warn' : 'muted'}">${warning ? `Warning gate: ${risk.leakage} unresolved leakage candidate(s)${risk.integrityFailed ? ' and payload integrity failure' : ''}. Human confirmation is required for acceptance.` : 'No unresolved leakage or integrity failure is currently reported.'}</p>
+        ${blockHtml}
         <p class="muted">${allDisposed ? 'All four tickers have a non-Pending disposition.' : 'Overall acceptance is disabled until all four tickers have a non-Pending disposition.'}</p>
-        <div class="qa-disposition-actions"><button type="button" class="qa-disposition" data-qa-overall="Accept" ${allDisposed ? '' : 'disabled'}>ACCEPT FOUR-TICKER PILOT</button><button type="button" class="qa-disposition" data-qa-overall="Reject">REJECT PILOT</button><button type="button" class="qa-disposition" data-qa-overall="Needs More Review">NEEDS MORE REVIEW</button></div>`;
+        <div class="qa-disposition-actions"><button type="button" class="qa-disposition" data-qa-overall="Accept" ${(allDisposed && !risk.blocked) ? '' : 'disabled'}>ACCEPT FOUR-TICKER PILOT</button><button type="button" class="qa-disposition" data-qa-overall="Reject">REJECT PILOT</button><button type="button" class="qa-disposition" data-qa-overall="Needs More Review">NEEDS MORE REVIEW</button></div>`;
       qaRenderSummary();
     }
 
@@ -1268,8 +1316,9 @@ _SEMANTIC_QA_JS = """
       const allDisposed = QA_PILOT_TICKERS.every((ticker) => qaState.dispositions[ticker] !== 'Pending');
       if (disposition === 'Accept' && !allDisposed) return;
       const risk = qaUnresolvedRisk();
-      if (disposition === 'Accept' && (risk.integrityFailed || risk.leakage > 0)) {
-        const accepted = window.confirm('Unresolved leakage or payload integrity warnings remain. Record browser-local pilot acceptance anyway?');
+      if (disposition === 'Accept' && risk.blocked) {
+        const msg = 'The following blockers prevent acceptance:\n' + risk.block_reasons.join('\n') + '\n\nForce accept anyway?';
+        const accepted = window.confirm(msg);
         if (!accepted) return;
       }
       qaState.overall = disposition;
@@ -1303,6 +1352,12 @@ _SEMANTIC_QA_JS = """
           const message = payload?.error?.message || 'The semantic QA endpoint returned an error.';
           throw new Error(message);
         }
+        // P0-2: Reset dispositions on run identity change
+        const newIdentity = payload.run?.run_id + '|' + payload.run?.requested_start + '|' + payload.run?.requested_end + '|' + payload.run?.schema_id;
+        if (qaState.currentRunIdentity && newIdentity !== qaState.currentRunIdentity) {
+          resetReviewState();
+        }
+        qaState.currentRunIdentity = newIdentity;
         qaState.payload = payload;
         qaState.loaded = true;
         qaState.selectedKey = '';
@@ -1310,7 +1365,10 @@ _SEMANTIC_QA_JS = """
         qaSyncFilterControls();
         qaRenderAll();
       } catch (error) {
+        // P0-3: Clear stale payload on failed reload
+        qaState.payload = null;
         qaState.loaded = false;
+        resetReviewState();
         qaRenderState('bad', 'Disconnected / error', error?.message || 'Could not load semantic QA data.');
         qaQueueListEl.innerHTML = '<div class="qa-empty">No data is available while the semantic QA endpoint is disconnected.</div>';
       } finally {
@@ -1556,7 +1614,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
 <body data-smoke-status="loading">
   <header>
     <h1>Layer 1 semantic-review dashboard</h1>
-    <p class="subtitle">A calm, beginner-friendly review page for checking whether the Apple news signal and the market benchmark story make sense before anyone relies on them.</p>
+    <p class="subtitle">A calm, beginner-friendly review page for checking whether the four-ticker news signal and the market benchmark story make sense before anyone relies on them.</p>
     <div class="topline" id="meta"></div>
   </header>
   <main>
@@ -1591,7 +1649,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       <section class="panel tab-panel hidden" id="article-review-tab" role="tabpanel" aria-hidden="true">
         <div>
           <h2>Article Review</h2>
-          <p class="section-note">Accepted AAPL article groups appear first. Articles with contamination, weak ticker evidence, or non-AAPL focus are separated below so they cannot be mistaken for clean evidence.</p>
+          <p class="section-note">Accepted article groups appear first. Articles with contamination, weak ticker evidence, or non-target focus are separated below so they cannot be mistaken for clean evidence.</p>
         </div>
         <div id="article-review-content"></div>
       </section>
@@ -1671,7 +1729,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
           </div>
           <div class="explain">
             <h3>What changes the answer?</h3>
-            <p>Look for direct Apple evidence, the market benchmark trend, and whether the HMM metadata says the model was actually ready on the dates shown.</p>
+            <p>Look for direct target-company evidence, the market benchmark trend, and whether the HMM metadata says the model was actually ready on the dates shown.</p>
           </div>
         </div>
       </section>
@@ -2111,7 +2169,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
             <span class="badge" title="Raw field: article_status">status: ${{escapeHtml(articleStatus)}}</span>
           </summary>
           <div class="body">
-            <p class="article-copy">What am I looking at? A single story and the evidence that tells us whether it really belongs in the Apple review. Why does it matter? Good articles should mention Apple directly or show strong Apple-specific context; bad articles should be obviously unrelated or too weak to trust. What would make this good or bad? Good: direct Apple/AAPL support, useful topic labels, and matching relevance-gate rows. Bad: unrelated company mentions, duplicate headlines, or missing provenance.</p>
+            <p class="article-copy">What am I looking at? A single story and the evidence that tells us whether it really belongs in the review. Why does it matter? Good articles should mention the target company directly or show strong company-specific context; bad articles should be obviously unrelated or too weak to trust. What would make this good or bad? Good: direct target-company support, useful topic labels, and matching relevance-gate rows. Bad: unrelated company mentions, duplicate headlines, or missing provenance.</p>
             <div class="compact-grid">
               <div class="compact"><div class="k">Published</div><div class="v">${{escapeHtml(article.published_at || 'n/a')}}</div><div class="k">raw: published_at</div></div>
               <div class="compact"><div class="k">Source</div><div class="v">${{escapeHtml(article.source || 'n/a')}}</div><div class="k">raw: source</div></div>
@@ -2171,7 +2229,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
             <span class="badge" title="Raw field: close / adj_close">price: ${{formatNumber(closeValue, 2)}}</span>
           </summary>
           <div class="body">
-            <p class="article-copy">What am I looking at? One trading day of Apple review evidence. Why does it matter? It shows whether the news rows, benchmark context, and regime label line up for that date. What would make this good or bad? Good: a few clear Apple stories and a readable regime signal. Bad: unrelated news, missing benchmark context, or warnings about price or HMM data.</p>
+            <p class="article-copy">What am I looking at? One trading day of review evidence. Why does it matter? It shows whether the news rows, benchmark context, and regime label line up for that date. What would make this good or bad? Good: a few clear target-company stories and a readable regime signal. Bad: unrelated news, missing benchmark context, or warnings about price or HMM data.</p>
             <div class="compact-grid">
               <div class="compact"><div class="k">HMM regime</div><div class="v">${{escapeHtml(regimeLabel)}}</div><div class="k">raw: regime</div></div>
               <div class="compact"><div class="k">Confidence</div><div class="v">${{formatNumber(regime.confidence, 2)}}</div><div class="k">raw: confidence</div></div>
@@ -2202,7 +2260,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
             <span class="badge" title="Article count">articles: ${{Number(group.article_count || 0)}}</span>
           </summary>
           <div class="body">
-            <p class="article-copy">What am I looking at? A date bucket for ${{escapeHtml(group.date || 'n/a')}}. Why does it matter? It keeps the accepted Apple articles together and makes contamination easy to separate. What would make this good or bad? Good: the accepted bucket contains Apple-focused stories with strong ticker evidence. Bad: the contamination bucket contains unrelated or weak stories that should not be treated as Apple evidence.</p>
+            <p class="article-copy">What am I looking at? A date bucket for ${{escapeHtml(group.date || 'n/a')}}. Why does it matter? It keeps the accepted articles together and makes contamination easy to separate. What would make this good or bad? Good: the accepted bucket contains target-company stories with strong ticker evidence. Bad: the contamination bucket contains unrelated or weak stories that should not be treated as clean evidence.</p>
             <div class="row-list">
               ${{articles.map(renderArticleDetails).join('') || '<p class="muted">No articles were loaded for this date.</p>'}}
             </div>
@@ -2257,7 +2315,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       const rows = Array.isArray(article.sentence_rows) ? article.sentence_rows : [];
       const sampleCount = rows.length;
       const totalCount = Number(article.sentence_row_count || sampleCount);
-      const rowCount = sampleCount;
+      const omittedCount = Math.max(0, totalCount - sampleCount);
       const scoredText = article.full_scored_text_preview || article.full_scored_text || '';
       return `
         <details class="article">
@@ -2266,10 +2324,10 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
             <span class="badge ${{article.article_status === 'accepted' ? 'good' : 'warn'}}">${{article.article_status === 'accepted' ? 'Accepted for review' : 'Needs a closer look'}}</span>
             <span class="badge" title="Derived from sentence-level sentiment labels">${{escapeHtml(sentimentLabelCounts(article.sentiment_label_counts))}}</span>
             <span class="badge" title="Raw field: article_id">article_id: ${{escapeHtml(article.article_id || 'n/a')}}</span>
-            <span class="badge" title="Raw field: sentence rows">rows: ${{rowCount}} / ${{totalCount}}</span>
+            <span class="badge" title="Canonical / Displayed / Omitted">Canonical: ${{totalCount}} · Displayed: ${{sampleCount}} · Omitted: ${{omittedCount}}</span>
           </summary>
           <div class="body">
-            <p class="article-copy">What am I looking at? The scored text for one article and a representative sample of its sentence-level rows. Why does it matter? Reviewers can verify the exact text that was scored, the source-text field/order, and the sentiment/relevance outputs without guessing. What would make this good or bad? Good: the sample matches the scored artifact and the total row count is visible. Bad: missing text or a source-artifact gap.</p>
+            <p class="article-copy">What am I looking at? The scored text for one article and a representative sample of its sentence-level rows. Why does it matter? Reviewers can verify the exact text that was scored, the source-text field/order, and the sentiment/relevance outputs without guessing. What would make this good or bad? Good: the sample matches the scored artifact and the canonical row count is visible. Bad: missing text or a source-artifact gap.</p>
             <div class="compact-grid">
               <div class="compact"><div class="k">Published</div><div class="v">${{escapeHtml(article.published_at || 'n/a')}}</div><div class="k">raw: published_at</div></div>
               <div class="compact"><div class="k">Source</div><div class="v">${{escapeHtml(article.source || 'n/a')}}</div><div class="k">raw: source</div></div>
@@ -2298,20 +2356,20 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
         : 'none';
       articleReviewEl.innerHTML = `
         <div class="hero-grid">
-          ${{metricCard('Accepted stories', acceptedArticles, 'article_review.accepted_article_count', 'Accepted Apple article groups that remain in the clean review path.')}}
+          ${{metricCard('Accepted stories', acceptedArticles, 'article_review.accepted_article_count', 'Accepted article groups that remain in the clean review path.')}}
           ${{metricCard('Contamination stories', contaminationArticles, 'article_review.contamination_article_count', 'Flagged or off-topic stories that are intentionally separated from the clean article review path.')}}
           ${{metricCard('Contamination flags', flagSummary, 'article_review.contamination_flag_counts', 'Why the contamination section exists.')}}
         </div>
         <div class="panel">
-          <h3>Accepted AAPL article groups</h3>
-          <p class="section-note">These groups are the default article-review path. They should read like Apple evidence, not a mixed pile of unrelated rows.</p>
+          <h3>Accepted article groups</h3>
+          <p class="section-note">These groups are the default article-review path. They should read like clean evidence, not a mixed pile of unrelated rows.</p>
           <div class="date-grid">
             ${{acceptedDateGroups.length ? acceptedDateGroups.map(renderArticleReviewGroup).join('') : '<p class="muted">No accepted article groups were found for this run.</p>'}}
           </div>
         </div>
         <div class="panel">
           <h3>Contamination / no-ticker-evidence articles</h3>
-          <p class="section-note">These groups are separated on purpose so reviewers can see what should not be treated as clean Apple evidence.</p>
+          <p class="section-note">These groups are separated on purpose so reviewers can see what should not be treated as clean evidence.</p>
           <div class="date-grid">
             ${{contaminationDateGroups.length ? contaminationDateGroups.map(renderArticleReviewGroup).join('') : '<p class="muted">No contamination articles were found for this run.</p>'}}
           </div>
@@ -2658,7 +2716,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
         const truncated = counts?.[key]?.truncated === true;
         return `
           <details>
-            <summary>${{escapeHtml(label)}} <span class="badge">rows: ${{sampleCount}} / ${{rowCount}}</span>${{truncated ? ' <span class="badge warn">sampled</span>' : ''}}</summary>
+            <summary>${{escapeHtml(label)}} <span class="badge">Canonical: ${{qaNumber(counts?.[key]?.canonical_count ?? rowCount)}} · Sampled: ${{qaNumber(sampleCount)}} · Omitted: ${{qaNumber(counts?.[key]?.omitted_count ?? 0)}}</span>${{truncated ? ' <span class="badge warn">sampled</span>' : ''}}</summary>
             <div class="body">
               <p class="section-note">What am I looking at? A technical sample from the ${{escapeHtml(label.toLowerCase())}} stage. Why does it matter? It helps debug the pipeline when the human-friendly view says something is missing. What would make this good or bad? Good: rows exist and the sample is coherent. Bad: an empty section or a sample that shows unexpected nulls or keys.${{truncated ? ' The payload is intentionally bounded, so only representative rows are shown here.' : ''}}</p>
               ${{sample ? `<div class="row-item"><pre>${{escapeHtml(JSON.stringify(sample, null, 2))}}</pre></div>` : '<p class="muted">No rows available.</p>'}}
@@ -2678,7 +2736,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
         const sample = rows[0] || null;
         return `
           <details>
-            <summary>${{escapeHtml(label)}} <span class="badge">rows: ${{rows.length}}</span></summary>
+            <summary>${{escapeHtml(label)}} <span class="badge">Canonical: ${{qaNumber(rows.length)}} · Displayed: ${{qaNumber(rows.length)}} · Omitted: ${{qaNumber(0)}}</span></summary>
             <div class="body">
               <p class="section-note">What am I looking at? A technical sample from the ${{escapeHtml(label.toLowerCase())}} stage. Why does it matter? It confirms the HMM tab is backed by real date-level regime rows and benchmark price context. What would make this good or bad? Good: rows exist and the sample is coherent. Bad: an empty section or a sample that shows unexpected nulls or keys.</p>
               ${{sample ? `<div class="row-item"><pre>${{escapeHtml(JSON.stringify(sample, null, 2))}}</pre></div>` : '<p class="muted">No rows available.</p>'}}
