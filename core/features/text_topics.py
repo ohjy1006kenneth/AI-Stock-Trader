@@ -274,10 +274,25 @@ def build_topic_review_payload(
             "rows": [],
         }
 
-    _require_columns(topic_labels, TOPIC_LABEL_COLUMNS)
+    try:
+        _require_columns(topic_labels, TOPIC_LABEL_COLUMNS)
+    except ValueError:
+        return {
+            "status": "warn",
+            "diversity_status": "incomplete_topic_labels",
+            "diversity_reason": "Topic label frame missing required columns.",
+            "row_count": 0,
+            "topic_count": 0,
+            "dominant_topic_id": None,
+            "dominant_topic_share": None,
+            "topics": [],
+            "rows": [],
+        }
+
     frame = topic_labels.copy()
     frame.columns = [str(column) for column in frame.columns]
-    frame["topic_id"] = frame["topic_id"].map(int)
+    pd = _require_pandas()
+    frame["topic_id"] = pd.to_numeric(frame["topic_id"], errors="coerce").fillna(-1).astype(int)
     frame["topic_probability"] = frame["topic_probability"].map(float)
 
     topic_info = _topic_info_lookup(topic_labeler)

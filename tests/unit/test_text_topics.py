@@ -14,6 +14,7 @@ from core.features.text_topics import (
     TOPIC_LABEL_COLUMNS,
     TextEmbeddingConfig,
     TopicModelConfig,
+    build_topic_review_payload,
     compute_sentence_embeddings,
     compute_text_topics,
     compute_topic_labels,
@@ -405,3 +406,52 @@ def _runtime_config() -> TextModelRuntimeConfig:
         topic_config=_topic_config(),
         min_topic_size=2,
     )
+
+
+def test_build_topic_review_payload_with_string_topic_id() -> None:
+    """String topic_id values (e.g. '1.0') are parsed to int without crashing."""
+    topic_labels = pd.DataFrame(
+        {
+            "date": ["2025-01-02", "2025-01-02"],
+            "ticker": ["AAPL", "MSFT"],
+            "article_id": ["a-1", "a-2"],
+            "normalized_headline": ["headline 1", "headline 2"],
+            "text": ["text one", "text two"],
+            "article_sentence_count": [1, 1],
+            "embedding_cache_key": ["k1", "k2"],
+            "topic_model": ["bm25", "bm25"],
+            "topic_model_version": ["1.0", "1.0"],
+            "topic_id": ["1.0", "0.0"],
+            "topic_probability": [0.9, 0.8],
+        }
+    )
+
+    payload = build_topic_review_payload(topic_labels)
+
+    assert payload["status"] == "pass"
+    assert payload["topic_count"] == 2
+
+
+def test_build_topic_review_payload_handles_nan_topic_id_as_outlier() -> None:
+    """NaN topic_id values are treated as outliers (-1) rather than crashing."""
+    topic_labels = pd.DataFrame(
+        {
+            "date": ["2025-01-02", "2025-01-02"],
+            "ticker": ["AAPL", "MSFT"],
+            "article_id": ["a-1", "a-2"],
+            "normalized_headline": ["headline 1", "headline 2"],
+            "text": ["text one", "text two"],
+            "article_sentence_count": [1, 1],
+            "embedding_cache_key": ["k1", "k2"],
+            "topic_model": ["bm25", "bm25"],
+            "topic_model_version": ["1.0", "1.0"],
+            "topic_id": [0, float("nan")],
+            "topic_probability": [0.9, 0.3],
+        }
+    )
+
+    payload = build_topic_review_payload(topic_labels)
+
+    assert payload["topic_count"] == 1
+    outlier_rows = [row for row in payload["rows"] if row.get("topic_id") == -1]
+    assert len(outlier_rows) == 1
