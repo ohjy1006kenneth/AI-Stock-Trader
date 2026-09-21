@@ -74,13 +74,17 @@ The design principle is:
 
 The version-controlled `app/pi/run_layer0_layer1_refresh.py` is the bounded Pi cron
 orchestrator for catching up Layer 0 and Layer 1 archives without entering Layer 2 or
-later trading stages. It selects only regular US equity sessions using
-`core.common.trading_calendar`, applies the New York 18:00 readiness cutoff, and fails
-closed unless each date has its durable `ready_for_layer2=true` validation report. For
-default history discovery, a report contributes coverage only when its referenced completed
-Layer 1 manifest has the same run ID, an empty `requested_tickers` list, and an exact
-regular-session `processed_dates` set for the report range; ticker-scoped or malformed
-publications cannot establish full-universe readiness.
+later trading stages. For normal runs, it always targets the regular US equity session
+strictly before the current `America/New_York` calendar date, regardless of wall-clock
+time. For example, a run at 22:45 New York time on 2026-09-17 targets 2026-09-16, as does
+the equivalent 2026-09-18 02:45 UTC invocation. An explicit `--target-date` is the only
+supported current-date override. The orchestrator selects sessions using
+`core.common.trading_calendar` and fails closed unless each date has its durable
+`ready_for_layer2=true` validation report. For default history discovery, a report
+contributes coverage only when its referenced completed Layer 1 manifest has the same run
+ID, an empty `requested_tickers` list, and an exact regular-session `processed_dates` set
+for the report range; ticker-scoped or malformed publications cannot establish
+full-universe readiness.
 
 ---
 
