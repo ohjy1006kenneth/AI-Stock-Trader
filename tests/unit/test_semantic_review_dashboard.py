@@ -1920,6 +1920,8 @@ def test_semantic_qa_tab_uses_bounded_api_and_wires_local_interactions() -> None
     assert "data-qa-row-id" in html
     assert "setTickerDisposition" in html
     assert "setOverallDisposition" in html
+    assert "prevent acceptance:\\n' + risk.block_reasons.join('\\n')" in html
+    assert "prevent acceptance:\n' + risk.block_reasons.join('\n')" not in html
     assert "sample_count + omitted_count = canonical_count" in html
     assert "Unknown" in html
     assert "No data" in html

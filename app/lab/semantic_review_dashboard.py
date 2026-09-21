@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 import subprocess
 import tempfile
@@ -152,33 +153,36 @@ class _DashboardRequestHandler(BaseHTTPRequestHandler):
                 else R2Writer()
             )
             reports: dict[str, Any] = {}
+            # Load reports sequentially, keeping only QA-relevant fields to avoid
+            # OOM from holding all four full reports in memory simultaneously.
+            from core.features.semantic_qa import extract_semantic_qa_fields  # noqa: E402
+
             for ticker in query["tickers"]:
                 try:
-                    reports[ticker] = build_layer1_aapl_evidence_report(
+                    full_report = build_layer1_aapl_evidence_report(
                         run_id=query["run_id"],
                         from_date=query["from_date"],
                         to_date=query["to_date"],
                         ticker=ticker,
                         writer=writer,
                     )
+                    report_dict = (
+                        full_report if isinstance(full_report, dict)
+                        else full_report.to_dict()
+                    )
+                    reports[ticker] = extract_semantic_qa_fields(report_dict)
+                    # Drop the full report reference so GC can reclaim it
+                    # before the next ticker loads.
+                    del full_report, report_dict
+                    gc.collect()
                 except FileNotFoundError:
                     reports[ticker] = None
-            # Normalise zero-row, zero-artifact reports (producer did not raise
-            # FileNotFoundError but also found nothing) so the 404 path fires.
-            # Normalise zero‑row / zero‑artifact reports. ``build_layer1_aapl_evidence_report``
-            # normally returns a ``Layer1SemanticReviewReport`` instance which provides a
-            # ``to_dict`` method. In tests we monkey‑patch the producer to return a plain
-            # ``dict``. The previous implementation unconditionally called ``report.to_dict()``
-            # which raised ``AttributeError`` when the mock returned a dict, causing the
-            # endpoint to return a 500 error. We now gracefully handle both cases.
+            # Normalise zero‑row / zero‑artifact reports so the 404 path fires.
             for ticker in query["tickers"]:
                 report = reports.get(ticker)
                 if report is None:
                     continue
-                # ``is_all_artifacts_missing`` expects a mapping, so accept either the
-                # dataclass instance (via ``to_dict``) or a plain dict.
-                report_mapping = report if isinstance(report, dict) else report.to_dict()
-                if is_all_artifacts_missing(report_mapping):
+                if is_all_artifacts_missing(report):
                     reports[ticker] = None
             pilot_reports = {
                 t: reports[t] for t in query["tickers"] if t.upper() in PILOT_TICKERS
@@ -779,7 +783,7 @@ _SEMANTIC_QA_HTML = """
 """
 
 
-_SEMANTIC_QA_JS = """
+_SEMANTIC_QA_JS = r"""
     const QA_PILOT_TICKERS = ['AAPL', 'AMD', 'NVDA', 'MSFT'];
     const QA_QUEUE_LABELS = {
       potential_false_positives: 'Potential false positives',

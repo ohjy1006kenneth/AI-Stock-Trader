@@ -12,6 +12,7 @@ from app.lab import semantic_review_dashboard as dashboard
 from core.features.semantic_qa import (
     SEMANTIC_QA_SCHEMA_ID,
     build_semantic_qa_payload,
+    extract_semantic_qa_fields,
     is_all_artifacts_missing,
     normalize_semantic_qa_query,
 )
@@ -851,6 +852,70 @@ def test_is_all_artifacts_missing_missing_artifact_keys_returns_false() -> None:
 def test_is_all_artifacts_missing_non_mapping_artifact_keys_returns_false() -> None:
     report: dict[str, Any] = {"row_count": 0, "artifact_keys": []}
     assert is_all_artifacts_missing(report) is False
+
+
+# --------------------------------------------------------------------------- #
+# B281-QA-601: endpoint returns 404 when producer returns zero-row report
+# --------------------------------------------------------------------------- #
+# Tests for extract_semantic_qa_fields
+# --------------------------------------------------------------------------- #
+def test_extract_semantic_qa_fields_strips_excess_fields() -> None:
+    """extract_semantic_qa_fields should only return QA-relevant keys."""
+    full_report: dict[str, Any] = {
+        "run_id": "run",
+        "ticker": "AAPL",
+        "from_date": "2026-05-21",
+        "to_date": "2026-05-22",
+        "row_count": 5,
+        "preprocessing_rows": [{"col": 1}],
+        "relevance_gate_rows": [{"col": 2}],
+        "article_groups": [{"col": 3}],
+        "signal_rows": [{"col": 4}],
+        "artifact_keys": {"news_sentiment_scored": ["key.parquet"]},
+        # These should be stripped:
+        "embedding_rows": list(range(1000)),
+        "topic_label_rows": list(range(1000)),
+        "semantic_aggregate_rows": list(range(1000)),
+        "regime_rows": list(range(1000)),
+        "price_rows": list(range(1000)),
+        "date_groups": list(range(1000)),
+        "benchmark_rows": list(range(1000)),
+        "summary": {"row_count": 5},
+    }
+    trimmed = extract_semantic_qa_fields(full_report)
+    assert "run_id" in trimmed
+    assert "ticker" in trimmed
+    assert "row_count" in trimmed
+    assert "preprocessing_rows" in trimmed
+    assert "relevance_gate_rows" in trimmed
+    assert "article_groups" in trimmed
+    assert "signal_rows" in trimmed
+    assert "artifact_keys" in trimmed
+    assert "summary" in trimmed
+    # Excess fields should be stripped
+    assert "embedding_rows" not in trimmed
+    assert "topic_label_rows" not in trimmed
+    assert "semantic_aggregate_rows" not in trimmed
+    assert "regime_rows" not in trimmed
+    assert "price_rows" not in trimmed
+    assert "date_groups" not in trimmed
+    assert "benchmark_rows" not in trimmed
+
+
+def test_extract_semantic_qa_fields_tolerance_to_missing_keys() -> None:
+    """extract_semantic_qa_fields should tolerate missing optional keys."""
+    minimal: dict[str, Any] = {
+        "run_id": "run",
+        "ticker": "AAPL",
+    }
+    trimmed = extract_semantic_qa_fields(minimal)
+    assert trimmed["run_id"] == "run"
+    assert trimmed["ticker"] == "AAPL"
+
+
+def test_extract_semantic_qa_fields_empty_input() -> None:
+    """extract_semantic_qa_fields should return empty dict for empty input."""
+    assert extract_semantic_qa_fields({}) == {}
 
 
 # --------------------------------------------------------------------------- #
