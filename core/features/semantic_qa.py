@@ -158,6 +158,39 @@ def build_semantic_qa_payload(
     }
 
 
+_EXTRACT_QA_FIELDS = frozenset({
+    # identity / metadata
+    "run_id", "ticker", "from_date", "to_date", "generated_at",
+    # top-level counts used by _canonical / _establishes_empty
+    "row_count", "summary",
+    # stage canonical count fields
+    "preprocessing_row_count", "local_target_evidence_count",
+    "materially_relevant_count", "accepted_or_borderline_count",
+    "sentence_count", "sentiment_scored_count",
+    "included_in_signal_count", "signal_rows",
+    "nonzero_effective_contribution_count",
+    "article_context_only_rejected_count",
+    "rejected_rows", "direct_accepted", "borderline",
+    "total_contribution",
+    # evidence rows (these are large but essential)
+    "relevance_gate_rows", "preprocessing_rows", "article_groups",
+    # artifact provenance
+    "artifact_keys",
+})
+
+
+def extract_semantic_qa_fields(report: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a lightweight copy of only the fields the QA payload actually reads.
+
+    The full ``Layer1SemanticReviewReport`` contains every pipeline artifact
+    (embeddings, regime rows, benchmark data, date groups, etc.) — only a
+    small subset is consumed by ``build_semantic_qa_payload``.  This function
+    strips the rest so the caller can ``del`` the original report and call
+    ``gc.collect()`` before the next ticker loads.
+    """
+    return {key: report[key] for key in _EXTRACT_QA_FIELDS if key in report}
+
+
 def _build_ticker(
     report: Mapping[str, Any], ticker: str, limit: int, warnings: list[dict[str, Any]]
 ) -> dict[str, Any]:
@@ -896,4 +929,5 @@ __all__ = [
     "build_semantic_qa_payload",
     "normalize_semantic_qa_query",
     "is_all_artifacts_missing",
+    "extract_semantic_qa_fields",
 ]
