@@ -239,12 +239,9 @@ def install_signal_handlers(config: RefreshConfig) -> None:
 
 
 def latest_target(now: datetime | None = None) -> str:
-    """Return the latest eligible regular session in New York time."""
+    """Return the latest regular session strictly before the current New York date."""
     current = (now or datetime.now(ZoneInfo("America/New_York"))).astimezone(ZoneInfo("America/New_York"))
-    today = current.date()
-    if current.hour < 18 or not is_us_equity_trading_session(today):
-        return previous_trading_day(today.isoformat())
-    return today.isoformat()
+    return previous_trading_day(current.date().isoformat())
 
 
 def _payload_completeness_claim(payload: dict) -> bool:

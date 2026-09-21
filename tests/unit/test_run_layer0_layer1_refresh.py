@@ -44,11 +44,13 @@ class FakeR2:
         return key in self.objects
 
 
-def test_latest_target_holiday_weekend_and_cutoff() -> None:
+def test_latest_target_always_selects_session_strictly_before_new_york_date() -> None:
     assert latest_target(datetime.fromisoformat("2026-06-19T19:00:00-04:00")) == "2026-06-18"
     assert latest_target(datetime.fromisoformat("2026-06-20T12:00:00-04:00")) == "2026-06-18"
     assert latest_target(datetime.fromisoformat("2026-06-22T17:59:00-04:00")) == "2026-06-18"
-    assert latest_target(datetime.fromisoformat("2026-06-22T18:00:00-04:00")) == "2026-06-22"
+    assert latest_target(datetime.fromisoformat("2026-06-22T18:00:00-04:00")) == "2026-06-18"
+    assert latest_target(datetime.fromisoformat("2026-09-17T22:45:00-04:00")) == "2026-09-16"
+    assert latest_target(datetime.fromisoformat("2026-09-18T02:45:00+00:00")) == "2026-09-16"
 
 
 def test_build_plan_skips_holiday_weekend_filters_ready_and_caps() -> None:
@@ -207,11 +209,11 @@ def test_refresh_stops_after_first_failed_stage(tmp_path: Path, monkeypatch: pyt
 
     def fake_run(command: list[str], *args: object, **kwargs: object) -> CommandResult:
         calls.append(command)
-        return CommandResult(command, 9)
+        return CommandResult(command, 22, "403 Client Error: Forbidden for canonical feed=sip")
 
     monkeypatch.setattr("app.pi.run_layer0_layer1_refresh.run_command", fake_run)
     args = type("Args", (), {"target_date": "2026-06-18", "from_date": "2026-06-18", "max_days": 1, "dry_run": False})()
-    with pytest.raises(PipelineError, match="failed"):
+    with pytest.raises(PipelineError, match="2026-06-18.*exit code 22"):
         refresh(args, RefreshConfig(repo_root=tmp_path, home=tmp_path), lambda _env: client)
     assert len(calls) == 1
 
