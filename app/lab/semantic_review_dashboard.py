@@ -1590,8 +1590,14 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       color: #fde68a;
     }}
     .chart {{ width: 100%; height: 360px; border: 1px solid var(--border); border-radius: 14px; background: #0a1220; }}
+    .chart.training-chart {{ height: 260px; }}
     .chart text {{ fill: #cbd5e1; font-size: 11px; }}
     .axis {{ stroke: #33506d; stroke-width: 1; }}
+    .probability-line {{ fill: none; stroke-width: 2.25; vector-effect: non-scaling-stroke; }}
+    .gap-marker {{ pointer-events: all; cursor: help; }}
+    .training-chart-shell {{ display: grid; gap: 10px; padding-top: 14px; border-top: 1px solid var(--border); }}
+    .training-chart-shell h4 {{ margin: 0; }}
+    .training-truncation-note {{ color: #fde68a; margin: 0; }}
     .price-line {{ fill: none; stroke: var(--accent); stroke-width: 2.75; }}
     .price-dot {{ stroke: #0a1220; stroke-width: 2; }}
     .legend {{ display: flex; flex-wrap: wrap; gap: 12px; align-items: center; color: var(--muted); font-size: 0.92rem; }}
@@ -1728,6 +1734,12 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
           <p class="chart-note">HMM regime is market-wide and date-level, so the default chart uses <strong>SPY</strong> as the benchmark instead of the selected company ticker. The line shows the benchmark price trend; the colored markers and bars show which regime was most likely on each date and how confident the model was.</p>
           <div id="chart-meta" class="chart-meta"></div>
           <div id="chart-container" class="loading">Loading benchmark chart…</div>
+          <div class="training-chart-shell">
+            <h4>Training-window regime probabilities</h4>
+            <p class="chart-note">The three probability curves show the model's bear, sideways, and bull probabilities across the HMM training window on the dates supplied by <code>training_regime_rows</code>.</p>
+            <div id="training-regime-meta" class="chart-meta"></div>
+            <div id="training-regime-chart" class="loading">Loading training-window chart…</div>
+          </div>
         </section>
         <details class="panel" id="hmm-context-section">
           <summary>Model inputs and date-by-date regime rows</summary>
@@ -1781,6 +1793,8 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
     const stateExplainerEl = document.getElementById('state-explainer');
     const chartMetaEl = document.getElementById('chart-meta');
     const chartContainerEl = document.getElementById('chart-container');
+    const trainingRegimeMetaEl = document.getElementById('training-regime-meta');
+    const trainingRegimeChartEl = document.getElementById('training-regime-chart');
     const articleReviewEl = document.getElementById('article-review-content');
     const finbertReviewEl = document.getElementById('finbert-sentence-review-content');
     const topicRelevanceReviewEl = document.getElementById('topic-relevance-content');
@@ -2181,6 +2195,142 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
         </div>
         <p class="chart-note">What am I looking at? The market benchmark price line with HMM regime bands and probabilities on the same date axis. Why does it matter? The regime model is market-wide, so this gives the right context for the day. What would make this good or bad? Good: visible benchmark prices, non-empty probabilities, and a complete manifest. Bad: empty rows, all-null regime values, or missing training metadata.</p>
         <p class="chart-note muted">Model notes: ${{escapeHtml(chartWarnings)}}.</p>`;
+    }}
+
+    function renderTrainingRegimeChart(payload) {{
+      const sourceRows = Array.isArray(payload.training_regime_rows) ? payload.training_regime_rows : [];
+      const rows = sourceRows.filter((row) => row && !row.payload_compaction_marker && row.date).slice(0, 250);
+      const counts = payload.training_regime_row_counts || {{}};
+      const fullCountValue = Number(counts.full_count);
+      const fullCount = Number.isFinite(fullCountValue) ? fullCountValue : sourceRows.length;
+      const truncated = counts.truncated === true || sourceRows.length > rows.length;
+
+      const probabilityFields = ['prob_bear', 'prob_sideways', 'prob_bull'];
+      const probabilityFor = (row, field) => {{
+        const raw = row?.[field];
+        if (raw === null || raw === undefined || raw === '') return null;
+        const value = Number(raw);
+        return Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : null;
+      }};
+
+      const missingObservations = rows.filter((row) => probabilityFields.some((field) => probabilityFor(row, field) === null)).length;
+      trainingRegimeMetaEl.innerHTML = [
+        badge('points shown', rows.length),
+        badge('full training rows', fullCount),
+        badge('missing observations', missingObservations),
+        badge('date range', rows.length ? `${{rows[0].date || 'n/a'}} → ${{rows[rows.length - 1].date || 'n/a'}}` : 'n/a'),
+      ].join('');
+
+      if (!rows.length) {{
+        trainingRegimeChartEl.className = 'chart-blocker';
+        trainingRegimeChartEl.innerHTML = '<h3>Training-window chart unavailable</h3><p>No training_regime_rows were supplied for this review payload.</p>';
+        return;
+      }}
+      const hasProbabilitySeries = rows.some((row) => probabilityFields.some((field) => {{
+        const value = row?.[field];
+        return value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value));
+      }}));
+      if (!hasProbabilitySeries) {{
+        trainingRegimeChartEl.className = 'chart-blocker';
+        trainingRegimeChartEl.innerHTML = `<h3>Training-window probabilities unavailable</h3><p>Training dates are present, but no numeric bear, sideways, or bull probabilities were supplied.</p>${{truncated ? `<p class="training-truncation-note">Training history was sampled: showing ${{rows.length}} of ${{fullCount}} rows (maximum 250 chart points).</p>` : ''}}`;
+        return;
+      }}
+
+      const width = 1040;
+      const height = 260;
+      const left = 64;
+      const right = 18;
+      const top = 20;
+      const bottom = 205;
+      const plotWidth = width - left - right;
+      const plotHeight = bottom - top;
+      const step = rows.length > 1 ? plotWidth / (rows.length - 1) : 0;
+      const xFor = (index) => left + index * step;
+      const yFor = (value) => bottom - value * plotHeight;
+      const series = [
+        {{ field: 'prob_bear', label: 'bear probability', color: '#fb7185' }},
+        {{ field: 'prob_sideways', label: 'sideways probability', color: '#fbbf24' }},
+        {{ field: 'prob_bull', label: 'bull probability', color: '#4ade80' }},
+      ];
+
+      // Build per-index probability map for gap detection
+      const probByIndex = rows.map((row, index) =>
+        probabilityFields.map((field) => {{
+          const probability = probabilityFor(row, field);
+          return {{ field, probability, index, row }};
+        }})
+      );
+      const gapIndexes = new Set(
+        probByIndex.flatMap((fields, index) =>
+          fields.some((f) => f.probability === null) ? [index] : []
+        )
+      );
+
+      // Build contiguous segments per series (no bridging across nulls)
+      const seriesMarkup = series.map((item) => {{
+        const allValues = rows.map((row, index) => ({{
+          row,
+          index,
+          probability: probabilityFor(row, item.field)
+        }}));
+
+        // Group consecutive non-null values into segments
+        const segments = [];
+        let current = [];
+        for (const value of allValues) {{
+          if (value.probability === null) {{
+            if (current.length) {{ segments.push(current); current = []; }}
+          }} else {{
+            current.push(value);
+          }}
+        }}
+        if (current.length) segments.push(current);
+
+        let markup = '';
+        for (const segment of segments) {{
+          // Polyline for multi-point segments
+          if (segment.length > 1) {{
+            const points = segment.map((value) => `${{xFor(value.index)}},${{yFor(value.probability)}}`).join(' ');
+            markup += `<polyline class="probability-line" stroke="${{item.color}}" points="${{points}}"><title>${{item.label}}</title></polyline>`;
+          }}
+          // Dots on every point (always rendered for visibility)
+          const dots = segment.map((value) => `<circle cx="${{xFor(value.index)}}" cy="${{yFor(value.probability)}}" r="3.5" fill="${{item.color}}"><title>${{escapeHtml(value.row.date || 'n/a')}}: ${{item.label}} ${{formatNumber(value.probability, 3)}}</title></circle>`).join('');
+          markup += dots;
+        }}
+        return markup;
+      }}).join('');
+
+      // Gap markers: hollow diamonds at null positions where adjacent points exist
+      const gapMarkers = Array.from(gapIndexes).map((index) => {{
+        const x = xFor(index);
+        return `<polygon class="gap-marker" points="${{x}},${{top}} ${{x + 5}},${{(top + bottom) / 2}} ${{x}},${{bottom}} ${{x - 5}},${{(top + bottom) / 2}}" fill="none" stroke="#94a3b8" stroke-width="1"><title>Date ${{escapeHtml(String(rows[index].date || 'n/a'))}}: missing probability data</title></polygon>`;
+      }}).join('');
+      const labelCount = Math.min(rows.length, 7);
+      const labelIndexes = Array.from(new Set(Array.from({{ length: labelCount }}, (_, index) =>
+        labelCount === 1 ? 0 : Math.round(index * (rows.length - 1) / (labelCount - 1))
+      )));
+      const dateLabels = labelIndexes.map((index) =>
+        `<text x="${{xFor(index)}}" y="232" text-anchor="middle">${{escapeHtml(String(rows[index].date || '').slice(5))}}</text>`
+      ).join('');
+      const grid = [0, 0.5, 1].map((value) => `
+        <line class="axis" x1="${{left}}" y1="${{yFor(value)}}" x2="${{width - right}}" y2="${{yFor(value)}}"></line>
+        <text x="20" y="${{yFor(value) + 4}}">${{value.toFixed(1)}}</text>`
+      ).join('');
+
+      trainingRegimeChartEl.className = '';
+      trainingRegimeChartEl.innerHTML = `
+        <svg class="chart training-chart" viewBox="0 0 ${{width}} ${{height}}" role="img" aria-label="HMM training-window regime probability chart" data-point-count="${{rows.length}}">
+          ${{grid}}
+          ${{gapMarkers}}
+          ${{seriesMarkup}}
+          ${{dateLabels}}
+        </svg>
+        <div class="legend">
+          <span class="legend-item"><span class="swatch bear"></span>bear probability</span>
+          <span class="legend-item"><span class="swatch sideways"></span>sideways probability</span>
+          <span class="legend-item"><span class="swatch bull"></span>bull probability</span>
+        </div>
+        ${{truncated ? `<p class="training-truncation-note">Training history was sampled: showing ${{rows.length}} of ${{fullCount}} rows (maximum 250 chart points).</p>` : ''}}`;
     }}
 
     function renderArticleDetails(article) {{
@@ -2784,6 +2934,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       renderMetrics(payload);
       renderSummaryGateStatus(payload);
       renderChart(payload);
+      renderTrainingRegimeChart(payload);
       renderArticleReview(payload);
       renderFinbertSentenceReview(payload);
       renderTopicRelevanceReview(payload);
