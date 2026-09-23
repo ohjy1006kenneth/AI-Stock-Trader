@@ -1594,6 +1594,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
     .chart text {{ fill: #cbd5e1; font-size: 11px; }}
     .axis {{ stroke: #33506d; stroke-width: 1; }}
     .probability-line {{ fill: none; stroke-width: 2.25; vector-effect: non-scaling-stroke; }}
+    .gap-marker {{ pointer-events: all; cursor: help; }}
     .training-chart-shell {{ display: grid; gap: 10px; padding-top: 14px; border-top: 1px solid var(--border); }}
     .training-chart-shell h4 {{ margin: 0; }}
     .training-truncation-note {{ color: #fde68a; margin: 0; }}
@@ -2204,9 +2205,19 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       const fullCount = Number.isFinite(fullCountValue) ? fullCountValue : sourceRows.length;
       const truncated = counts.truncated === true || sourceRows.length > rows.length;
 
+      const probabilityFields = ['prob_bear', 'prob_sideways', 'prob_bull'];
+      const probabilityFor = (row, field) => {{
+        const raw = row?.[field];
+        if (raw === null || raw === undefined || raw === '') return null;
+        const value = Number(raw);
+        return Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : null;
+      }};
+
+      const missingObservations = rows.filter((row) => probabilityFields.some((field) => probabilityFor(row, field) === null)).length;
       trainingRegimeMetaEl.innerHTML = [
         badge('points shown', rows.length),
         badge('full training rows', fullCount),
+        badge('missing observations', missingObservations),
         badge('date range', rows.length ? `${{rows[0].date || 'n/a'}} → ${{rows[rows.length - 1].date || 'n/a'}}` : 'n/a'),
       ].join('');
 
@@ -2215,7 +2226,6 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
         trainingRegimeChartEl.innerHTML = '<h3>Training-window chart unavailable</h3><p>No training_regime_rows were supplied for this review payload.</p>';
         return;
       }}
-      const probabilityFields = ['prob_bear', 'prob_sideways', 'prob_bull'];
       const hasProbabilitySeries = rows.some((row) => probabilityFields.some((field) => {{
         const value = row?.[field];
         return value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value));
@@ -2236,32 +2246,64 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       const plotHeight = bottom - top;
       const step = rows.length > 1 ? plotWidth / (rows.length - 1) : 0;
       const xFor = (index) => left + index * step;
-      const probabilityFor = (row, field) => {{
-        const raw = row?.[field];
-        if (raw === null || raw === undefined || raw === '') return null;
-        const value = Number(raw);
-        return Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : null;
-      }};
       const yFor = (value) => bottom - value * plotHeight;
       const series = [
         {{ field: 'prob_bear', label: 'bear probability', color: '#fb7185' }},
         {{ field: 'prob_sideways', label: 'sideways probability', color: '#fbbf24' }},
         {{ field: 'prob_bull', label: 'bull probability', color: '#4ade80' }},
       ];
+
+      // Build per-index probability map for gap detection
+      const probByIndex = rows.map((row, index) =>
+        probabilityFields.map((field) => {{
+          const probability = probabilityFor(row, field);
+          return {{ field, probability, index, row }};
+        }})
+      );
+      const gapIndexes = new Set(
+        probByIndex.flatMap((fields, index) =>
+          fields.some((f) => f.probability === null) ? [index] : []
+        )
+      );
+
+      // Build contiguous segments per series (no bridging across nulls)
       const seriesMarkup = series.map((item) => {{
-        const values = rows.map((row, index) => {{
-          const probability = probabilityFor(row, item.field);
-          return probability === null ? null : {{ row, index, probability }};
-        }}).filter(Boolean);
-        if (!values.length) return '';
-        const points = values.map((value) => `${{xFor(value.index)}},${{yFor(value.probability)}}`).join(' ');
-        const line = values.length > 1
-          ? `<polyline class="probability-line" stroke="${{item.color}}" points="${{points}}"><title>${{item.label}}</title></polyline>`
-          : '';
-        const dots = (rows.length <= 40 || values.length === 1)
-          ? values.map((value) => `<circle cx="${{xFor(value.index)}}" cy="${{yFor(value.probability)}}" r="3.5" fill="${{item.color}}"><title>${{escapeHtml(value.row.date || 'n/a')}}: ${{item.label}} ${{formatNumber(value.probability, 3)}}</title></circle>`).join('')
-          : '';
-        return line + dots;
+        const allValues = rows.map((row, index) => ({{
+          row,
+          index,
+          probability: probabilityFor(row, item.field)
+        }}));
+
+        // Group consecutive non-null values into segments
+        const segments = [];
+        let current = [];
+        for (const value of allValues) {{
+          if (value.probability === null) {{
+            if (current.length) {{ segments.push(current); current = []; }}
+          }} else {{
+            current.push(value);
+          }}
+        }}
+        if (current.length) segments.push(current);
+
+        let markup = '';
+        for (const segment of segments) {{
+          // Polyline for multi-point segments
+          if (segment.length > 1) {{
+            const points = segment.map((value) => `${{xFor(value.index)}},${{yFor(value.probability)}}`).join(' ');
+            markup += `<polyline class="probability-line" stroke="${{item.color}}" points="${{points}}"><title>${{item.label}}</title></polyline>`;
+          }}
+          // Dots on every point (always rendered for visibility)
+          const dots = segment.map((value) => `<circle cx="${{xFor(value.index)}}" cy="${{yFor(value.probability)}}" r="3.5" fill="${{item.color}}"><title>${{escapeHtml(value.row.date || 'n/a')}}: ${{item.label}} ${{formatNumber(value.probability, 3)}}</title></circle>`).join('');
+          markup += dots;
+        }}
+        return markup;
+      }}).join('');
+
+      // Gap markers: hollow diamonds at null positions where adjacent points exist
+      const gapMarkers = Array.from(gapIndexes).map((index) => {{
+        const x = xFor(index);
+        return `<polygon class="gap-marker" points="${{x}},${{top}} ${{x + 5}},${{(top + bottom) / 2}} ${{x}},${{bottom}} ${{x - 5}},${{(top + bottom) / 2}}" fill="none" stroke="#94a3b8" stroke-width="1"><title>Date ${{escapeHtml(String(rows[index].date || 'n/a'))}}: missing probability data</title></polygon>`;
       }}).join('');
       const labelCount = Math.min(rows.length, 7);
       const labelIndexes = Array.from(new Set(Array.from({{ length: labelCount }}, (_, index) =>
@@ -2279,6 +2321,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       trainingRegimeChartEl.innerHTML = `
         <svg class="chart training-chart" viewBox="0 0 ${{width}} ${{height}}" role="img" aria-label="HMM training-window regime probability chart" data-point-count="${{rows.length}}">
           ${{grid}}
+          ${{gapMarkers}}
           ${{seriesMarkup}}
           ${{dateLabels}}
         </svg>
