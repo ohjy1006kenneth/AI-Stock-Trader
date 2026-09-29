@@ -2897,6 +2897,120 @@ class TestTrainingChartBehavior:
         missing_found = any("missing observations" in b.lower() for b in badges)
         assert missing_found, f"Expected 'missing observations' badge in {badges}"
 
+    def test_chart_does_not_split_for_friday_to_monday_weekend(self) -> None:
+        """A normal Friday-to-Monday weekend remains one contiguous segment per series."""
+        payload = self._chart_payload_with_gaps(
+            [
+                {
+                    "date": "2026-01-02",
+                    "prob_bear": 0.2,
+                    "prob_sideways": 0.3,
+                    "prob_bull": 0.5,
+                },
+                {
+                    "date": "2026-01-05",
+                    "prob_bear": 0.3,
+                    "prob_sideways": 0.4,
+                    "prob_bull": 0.3,
+                },
+                {
+                    "date": "2026-01-06",
+                    "prob_bear": 0.4,
+                    "prob_sideways": 0.2,
+                    "prob_bull": 0.4,
+                },
+            ]
+        )
+        report = self._run_harness(payload)
+        svg = report.get("svgAnalysis")
+        assert svg is not None, "Expected SVG chart, got blocker"
+        assert svg["polylineCount"] == 3
+        assert svg["gapMarkerCount"] == 0
+
+    def test_chart_splits_when_weekday_trading_sessions_are_missing(self) -> None:
+        """A Monday-to-Friday jump breaks each series and marks one missing observation."""
+        payload = self._chart_payload_with_gaps(
+            [
+                {
+                    "date": "2026-01-02",
+                    "prob_bear": 0.2,
+                    "prob_sideways": 0.3,
+                    "prob_bull": 0.5,
+                },
+                {
+                    "date": "2026-01-05",
+                    "prob_bear": 0.3,
+                    "prob_sideways": 0.4,
+                    "prob_bull": 0.3,
+                },
+                {
+                    "date": "2026-01-09",
+                    "prob_bear": 0.1,
+                    "prob_sideways": 0.2,
+                    "prob_bull": 0.7,
+                },
+                {
+                    "date": "2026-01-12",
+                    "prob_bear": 0.4,
+                    "prob_sideways": 0.3,
+                    "prob_bull": 0.3,
+                },
+            ]
+        )
+        report = self._run_harness(payload)
+        svg = report.get("svgAnalysis")
+        assert svg is not None, "Expected SVG chart, got blocker"
+        assert svg["polylineCount"] == 6
+        assert svg["gapMarkerCount"] == 1
+        assert "missing observations: 1" in report.get("metaBadges", [])
+        assert "missing trading-session observations before this date" in report.get(
+            "chartHtml", ""
+        )
+
+    def test_chart_treats_unparseable_date_as_missing_observation(self) -> None:
+        """An invalid date breaks probability lines even when its probabilities are numeric."""
+        payload = self._chart_payload_with_gaps(
+            [
+                {
+                    "date": "2026-01-02",
+                    "prob_bear": 0.2,
+                    "prob_sideways": 0.3,
+                    "prob_bull": 0.5,
+                },
+                {
+                    "date": "2026-01-05",
+                    "prob_bear": 0.3,
+                    "prob_sideways": 0.4,
+                    "prob_bull": 0.3,
+                },
+                {
+                    "date": "not-a-date",
+                    "prob_bear": 0.1,
+                    "prob_sideways": 0.2,
+                    "prob_bull": 0.7,
+                },
+                {
+                    "date": "2026-01-09",
+                    "prob_bear": 0.4,
+                    "prob_sideways": 0.3,
+                    "prob_bull": 0.3,
+                },
+                {
+                    "date": "2026-01-12",
+                    "prob_bear": 0.2,
+                    "prob_sideways": 0.4,
+                    "prob_bull": 0.4,
+                },
+            ]
+        )
+        report = self._run_harness(payload)
+        svg = report.get("svgAnalysis")
+        assert svg is not None, "Expected SVG chart, got blocker"
+        assert svg["polylineCount"] == 6
+        assert svg["gapMarkerCount"] == 1
+        assert "missing observations: 1" in report.get("metaBadges", [])
+        assert "invalid or unparseable date" in report.get("chartHtml", "")
+
     def test_chart_multiple_gaps(self) -> None:
         """Multiple gaps produce multiple segments and multiple markers."""
         payload = self._chart_payload_with_gaps(

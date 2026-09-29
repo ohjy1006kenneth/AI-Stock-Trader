@@ -2199,7 +2199,7 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
 
     function renderTrainingRegimeChart(payload) {{
       const sourceRows = Array.isArray(payload.training_regime_rows) ? payload.training_regime_rows : [];
-      const rows = sourceRows.filter((row) => row && !row.payload_compaction_marker && row.date).slice(0, 250);
+      const rows = sourceRows.filter((row) => row && !row.payload_compaction_marker).slice(0, 250);
       const counts = payload.training_regime_row_counts || {{}};
       const fullCountValue = Number(counts.full_count);
       const fullCount = Number.isFinite(fullCountValue) ? fullCountValue : sourceRows.length;
@@ -2213,7 +2213,36 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
         return Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : null;
       }};
 
-      const missingObservations = rows.filter((row) => probabilityFields.some((field) => probabilityFor(row, field) === null)).length;
+      const calendarDayFor = (row) => {{
+        const date = String(row?.date ?? '');
+        if (!/^\\d{{4}}-\\d{{2}}-\\d{{2}}$/.test(date)) return null;
+        const timestamp = Date.parse(`${{date}}T00:00:00Z`);
+        if (!Number.isFinite(timestamp)) return null;
+        return new Date(timestamp).toISOString().slice(0, 10) === date
+          ? timestamp / 86400000
+          : null;
+      }};
+      const calendarDays = rows.map(calendarDayFor);
+      const dateGapBefore = rows.map((_row, index) =>
+        index > 0
+          && calendarDays[index] !== null
+          && calendarDays[index - 1] !== null
+          && calendarDays[index] - calendarDays[index - 1] > 3
+      );
+      const chartProbabilityFor = (row, index, field) =>
+        calendarDays[index] === null ? null : probabilityFor(row, field);
+      const missingIndexes = new Set(
+        rows.flatMap((row, index) =>
+          calendarDays[index] === null
+            || dateGapBefore[index]
+            || probabilityFields.some(
+              (field) => chartProbabilityFor(row, index, field) === null
+            )
+            ? [index]
+            : []
+        )
+      );
+      const missingObservations = missingIndexes.size;
       trainingRegimeMetaEl.innerHTML = [
         badge('points shown', rows.length),
         badge('full training rows', fullCount),
@@ -2226,10 +2255,11 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
         trainingRegimeChartEl.innerHTML = '<h3>Training-window chart unavailable</h3><p>No training_regime_rows were supplied for this review payload.</p>';
         return;
       }}
-      const hasProbabilitySeries = rows.some((row) => probabilityFields.some((field) => {{
-        const value = row?.[field];
-        return value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value));
-      }}));
+      const hasProbabilitySeries = rows.some((row, index) =>
+        probabilityFields.some(
+          (field) => chartProbabilityFor(row, index, field) !== null
+        )
+      );
       if (!hasProbabilitySeries) {{
         trainingRegimeChartEl.className = 'chart-blocker';
         trainingRegimeChartEl.innerHTML = `<h3>Training-window probabilities unavailable</h3><p>Training dates are present, but no numeric bear, sideways, or bull probabilities were supplied.</p>${{truncated ? `<p class="training-truncation-note">Training history was sampled: showing ${{rows.length}} of ${{fullCount}} rows (maximum 250 chart points).</p>` : ''}}`;
@@ -2253,31 +2283,20 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
         {{ field: 'prob_bull', label: 'bull probability', color: '#4ade80' }},
       ];
 
-      // Build per-index probability map for gap detection
-      const probByIndex = rows.map((row, index) =>
-        probabilityFields.map((field) => {{
-          const probability = probabilityFor(row, field);
-          return {{ field, probability, index, row }};
-        }})
-      );
-      const gapIndexes = new Set(
-        probByIndex.flatMap((fields, index) =>
-          fields.some((f) => f.probability === null) ? [index] : []
-        )
-      );
-
       // Build contiguous segments per series (no bridging across nulls)
       const seriesMarkup = series.map((item) => {{
         const allValues = rows.map((row, index) => ({{
           row,
           index,
-          probability: probabilityFor(row, item.field)
+          probability: chartProbabilityFor(row, index, item.field),
+          dateGapBefore: dateGapBefore[index],
         }}));
 
         // Group consecutive non-null values into segments
         const segments = [];
         let current = [];
         for (const value of allValues) {{
+          if (value.dateGapBefore && current.length) {{ segments.push(current); current = []; }}
           if (value.probability === null) {{
             if (current.length) {{ segments.push(current); current = []; }}
           }} else {{
@@ -2300,10 +2319,16 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
         return markup;
       }}).join('');
 
-      // Gap markers: hollow diamonds at null positions where adjacent points exist
-      const gapMarkers = Array.from(gapIndexes).map((index) => {{
+      // Gap markers: hollow diamonds at null/invalid rows and before missing sessions.
+      const gapMarkers = Array.from(missingIndexes).map((index) => {{
         const x = xFor(index);
-        return `<polygon class="gap-marker" points="${{x}},${{top}} ${{x + 5}},${{(top + bottom) / 2}} ${{x}},${{bottom}} ${{x - 5}},${{(top + bottom) / 2}}" fill="none" stroke="#94a3b8" stroke-width="1"><title>Date ${{escapeHtml(String(rows[index].date || 'n/a'))}}: missing probability data</title></polygon>`;
+        const date = escapeHtml(String(rows[index].date || 'n/a'));
+        const reason = calendarDays[index] === null
+          ? 'invalid or unparseable date'
+          : dateGapBefore[index]
+            ? 'missing trading-session observations before this date'
+            : 'missing probability data';
+        return `<polygon class="gap-marker" points="${{x}},${{top}} ${{x + 5}},${{(top + bottom) / 2}} ${{x}},${{bottom}} ${{x - 5}},${{(top + bottom) / 2}}" fill="none" stroke="#94a3b8" stroke-width="1"><title>Date ${{date}}: ${{reason}}</title></polygon>`;
       }}).join('');
       const labelCount = Math.min(rows.length, 7);
       const labelIndexes = Array.from(new Set(Array.from({{ length: labelCount }}, (_, index) =>
