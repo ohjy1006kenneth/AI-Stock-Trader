@@ -2199,11 +2199,16 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
 
     function renderTrainingRegimeChart(payload) {{
       const sourceRows = Array.isArray(payload.training_regime_rows) ? payload.training_regime_rows : [];
-      const rows = sourceRows.filter((row) => row && !row.payload_compaction_marker && row.date).slice(0, 250);
+      const rows = sourceRows.filter((row) => row && !row.payload_compaction_marker).slice(0, 250);
       const counts = payload.training_regime_row_counts || {{}};
       const fullCountValue = Number(counts.full_count);
       const fullCount = Number.isFinite(fullCountValue) ? fullCountValue : sourceRows.length;
-      const truncated = counts.truncated === true || sourceRows.length > rows.length;
+      const sampleCount = counts.sample_count == null ? rows.length : Number(counts.sample_count);
+      const truncated = counts.truncated === true
+        || Number(counts.omitted_row_count) > 0
+        || (Number.isFinite(fullCountValue) && fullCountValue >= 0
+          && Number.isFinite(sampleCount) && sampleCount >= 0 && fullCountValue > sampleCount)
+        || sourceRows.length > rows.length;
 
       const probabilityFields = ['prob_bear', 'prob_sideways', 'prob_bull'];
       const probabilityFor = (row, field) => {{
@@ -2213,7 +2218,95 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
         return Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : null;
       }};
 
-      const missingObservations = rows.filter((row) => probabilityFields.some((field) => probabilityFor(row, field) === null)).length;
+      const calendarDayFor = (row) => {{
+        const date = String(row?.date ?? '');
+        if (!/^\\d{{4}}-\\d{{2}}-\\d{{2}}$/.test(date)) return null;
+        const timestamp = Date.parse(`${{date}}T00:00:00Z`);
+        if (!Number.isFinite(timestamp)) return null;
+        return new Date(timestamp).toISOString().slice(0, 10) === date
+          ? timestamp / 86400000
+          : null;
+      }};
+      const calendarDays = rows.map(calendarDayFor);
+      // Mirror core.common.trading_calendar's regular full-day session rules.
+      // UTC day numbers avoid local-time/DST shifts; no live calendar lookup.
+      const dayNumber = (year, month, day) => {{
+        const date = new Date(0);
+        date.setUTCFullYear(year, month - 1, day);
+        return date.getTime() / 86400000;
+      }};
+      const weekday = (day) => new Date(day * 86400000).getUTCDay();
+      const observedFixed = (year, month, day) => {{
+        const date = dayNumber(year, month, day);
+        return date + (weekday(date) === 6 ? -1 : weekday(date) === 0 ? 1 : 0);
+      }};
+      const nthWeekday = (year, month, target, n) => {{
+        const first = dayNumber(year, month, 1);
+        return first + (target - weekday(first) + 7) % 7 + 7 * (n - 1);
+      }};
+      const lastWeekday = (year, month, target) => {{
+        const last = dayNumber(year, month + 1, 1) - 1;
+        return last - (weekday(last) - target + 7) % 7;
+      }};
+      const easterSunday = (year) => {{
+        const a = year % 19;
+        const b = Math.floor(year / 100);
+        const c = year % 100;
+        const d = Math.floor(b / 4);
+        const e = b % 4;
+        const f = Math.floor((b + 8) / 25);
+        const g = Math.floor((b - f + 1) / 3);
+        const h = (19 * a + b - d - g + 15) % 30;
+        const i = Math.floor(c / 4);
+        const k = c % 4;
+        const correction = (32 + 2 * e + 2 * i - h - k) % 7;
+        const m = Math.floor((a + 11 * h + 22 * correction) / 451);
+        const value = h + correction - 7 * m + 114;
+        return dayNumber(year, Math.floor(value / 31), value % 31 + 1);
+      }};
+      const holidaysByYear = new Map();
+      const isRegularSession = (day) => {{
+        if (weekday(day) === 0 || weekday(day) === 6) return false;
+        const year = new Date(day * 86400000).getUTCFullYear();
+        if (!holidaysByYear.has(year)) {{
+          const holidays = new Set([
+            observedFixed(year, 1, 1), nthWeekday(year, 1, 1, 3),
+            nthWeekday(year, 2, 1, 3), easterSunday(year) - 2,
+            lastWeekday(year, 5, 1), observedFixed(year, 7, 4),
+            nthWeekday(year, 9, 1, 1), nthWeekday(year, 11, 4, 4),
+            observedFixed(year, 12, 25),
+          ]);
+          if (year >= 2022) holidays.add(observedFixed(year, 6, 19));
+          const nextNewYear = observedFixed(year + 1, 1, 1);
+          if (new Date(nextNewYear * 86400000).getUTCFullYear() === year) holidays.add(nextNewYear);
+          holidaysByYear.set(year, holidays);
+        }}
+        return !holidaysByYear.get(year).has(day);
+      }};
+      const hasMissingSession = (previous, next) => {{
+        if (truncated || previous === null || next === null || next <= previous) return false;
+        for (let day = previous + 1; day < next; day += 1) {{
+          if (isRegularSession(day)) return true;
+        }}
+        return false;
+      }};
+      const dateGapBefore = rows.map((_row, index) =>
+        index > 0 && hasMissingSession(calendarDays[index - 1], calendarDays[index])
+      );
+      const chartProbabilityFor = (row, index, field) =>
+        calendarDays[index] === null ? null : probabilityFor(row, field);
+      const missingIndexes = new Set(
+        rows.flatMap((row, index) =>
+          calendarDays[index] === null
+            || dateGapBefore[index]
+            || probabilityFields.some(
+              (field) => chartProbabilityFor(row, index, field) === null
+            )
+            ? [index]
+            : []
+        )
+      );
+      const missingObservations = missingIndexes.size;
       trainingRegimeMetaEl.innerHTML = [
         badge('points shown', rows.length),
         badge('full training rows', fullCount),
@@ -2226,10 +2319,11 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
         trainingRegimeChartEl.innerHTML = '<h3>Training-window chart unavailable</h3><p>No training_regime_rows were supplied for this review payload.</p>';
         return;
       }}
-      const hasProbabilitySeries = rows.some((row) => probabilityFields.some((field) => {{
-        const value = row?.[field];
-        return value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value));
-      }}));
+      const hasProbabilitySeries = rows.some((row, index) =>
+        probabilityFields.some(
+          (field) => chartProbabilityFor(row, index, field) !== null
+        )
+      );
       if (!hasProbabilitySeries) {{
         trainingRegimeChartEl.className = 'chart-blocker';
         trainingRegimeChartEl.innerHTML = `<h3>Training-window probabilities unavailable</h3><p>Training dates are present, but no numeric bear, sideways, or bull probabilities were supplied.</p>${{truncated ? `<p class="training-truncation-note">Training history was sampled: showing ${{rows.length}} of ${{fullCount}} rows (maximum 250 chart points).</p>` : ''}}`;
@@ -2253,31 +2347,20 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
         {{ field: 'prob_bull', label: 'bull probability', color: '#4ade80' }},
       ];
 
-      // Build per-index probability map for gap detection
-      const probByIndex = rows.map((row, index) =>
-        probabilityFields.map((field) => {{
-          const probability = probabilityFor(row, field);
-          return {{ field, probability, index, row }};
-        }})
-      );
-      const gapIndexes = new Set(
-        probByIndex.flatMap((fields, index) =>
-          fields.some((f) => f.probability === null) ? [index] : []
-        )
-      );
-
       // Build contiguous segments per series (no bridging across nulls)
       const seriesMarkup = series.map((item) => {{
         const allValues = rows.map((row, index) => ({{
           row,
           index,
-          probability: probabilityFor(row, item.field)
+          probability: chartProbabilityFor(row, index, item.field),
+          dateGapBefore: dateGapBefore[index],
         }}));
 
         // Group consecutive non-null values into segments
         const segments = [];
         let current = [];
         for (const value of allValues) {{
+          if (value.dateGapBefore && current.length) {{ segments.push(current); current = []; }}
           if (value.probability === null) {{
             if (current.length) {{ segments.push(current); current = []; }}
           }} else {{
@@ -2300,10 +2383,16 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
         return markup;
       }}).join('');
 
-      // Gap markers: hollow diamonds at null positions where adjacent points exist
-      const gapMarkers = Array.from(gapIndexes).map((index) => {{
+      // Gap markers: hollow diamonds at null/invalid rows and before missing sessions.
+      const gapMarkers = Array.from(missingIndexes).map((index) => {{
         const x = xFor(index);
-        return `<polygon class="gap-marker" points="${{x}},${{top}} ${{x + 5}},${{(top + bottom) / 2}} ${{x}},${{bottom}} ${{x - 5}},${{(top + bottom) / 2}}" fill="none" stroke="#94a3b8" stroke-width="1"><title>Date ${{escapeHtml(String(rows[index].date || 'n/a'))}}: missing probability data</title></polygon>`;
+        const date = escapeHtml(String(rows[index].date || 'n/a'));
+        const reason = calendarDays[index] === null
+          ? 'invalid or unparseable date'
+          : dateGapBefore[index]
+            ? 'missing trading-session observations before this date'
+            : 'missing probability data';
+        return `<polygon class="gap-marker" points="${{x}},${{top}} ${{x + 5}},${{(top + bottom) / 2}} ${{x}},${{bottom}} ${{x - 5}},${{(top + bottom) / 2}}" fill="none" stroke="#94a3b8" stroke-width="1"><title>Date ${{date}}: ${{reason}}</title></polygon>`;
       }}).join('');
       const labelCount = Math.min(rows.length, 7);
       const labelIndexes = Array.from(new Set(Array.from({{ length: labelCount }}, (_, index) =>
