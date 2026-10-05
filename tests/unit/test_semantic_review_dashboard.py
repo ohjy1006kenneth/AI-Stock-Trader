@@ -2796,12 +2796,115 @@ class TestTrainingChartBehavior:
 
     HARNESS = Path(__file__).parent / "chart_test_harness.mjs"
 
+    def test_frontend_cap_does_not_infer_gaps(self) -> None:
+        """Local 250-point capping implies sampling even without producer metadata."""
+        from datetime import date, timedelta
+
+        rows = [
+            {"date": (date(2025, 1, 1) + timedelta(days=7 * i)).isoformat(),
+             "prob_bear": 0.2, "prob_sideways": 0.3, "prob_bull": 0.5}
+            for i in range(251)
+        ]
+        report = self._run_harness({"training_regime_rows": rows})
+        assert report["svgAnalysis"]["polylineCount"] == 3
+        assert report["svgAnalysis"]["gapMarkerCount"] == 0
+        assert any("points shown: 250" in b for b in report["metaBadges"])
+        assert any("missing observations: 0" in b for b in report["metaBadges"])
+
+    def test_installed_node_failure_is_not_skipped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An installed harness failing at runtime is a test failure, not a skip."""
+        import subprocess
+
+        monkeypatch.setattr("shutil.which", lambda _: "/usr/bin/node")
+        monkeypatch.setattr(subprocess, "run", lambda *a, **kw: subprocess.CompletedProcess(
+            a, 1, stdout="", stderr="deliberate syntax failure"
+        ))
+        with pytest.raises(pytest.fail.Exception, match="deliberate syntax failure"):
+            self._run_harness({})
+
+    @pytest.mark.parametrize("dates", [
+        ("2026-01-05", "2026-01-07"),
+        ("2026-01-16", "2026-01-20"),
+        ("2026-05-01", "2026-05-04"),
+        ("2026-05-04", "2026-05-05"),
+        ("2026-05-01", "2026-05-08"),
+        ("2026-04-02", "2026-04-06"),
+        ("2026-05-22", "2026-05-26"),
+        ("2026-06-18", "2026-06-22"),
+        ("2026-07-02", "2026-07-06"),
+        ("2026-09-04", "2026-09-08"),
+        ("2026-11-25", "2026-11-27"),
+        ("2026-12-24", "2026-12-28"),
+        ("2021-12-30", "2022-01-03"),
+        ("2021-06-18", "2021-06-22"),
+        ("2026-02-13", "2026-02-17"),
+    ])
+    def test_regular_session_boundaries(self, dates: tuple[str, str]) -> None:
+        """Rendered connections must agree with the canonical regular-session calendar."""
+        from core.common.trading_calendar import trading_dates
+
+        missing = int(any(dates[0] < day < dates[1] for day in trading_dates(*dates)))
+        report = self._run_harness(self._chart_payload_with_gaps([
+            {"date": day, "prob_bear": 0.2, "prob_sideways": 0.3, "prob_bull": 0.5}
+            for day in dates
+        ]))
+        assert report["svgAnalysis"]["polylineCount"] == (0 if missing else 3)
+        assert report["svgAnalysis"]["gapMarkerCount"] == missing
+        assert any(f"missing observations: {missing}" in b for b in report["metaBadges"])
+        assert ("missing trading-session observations" in report["chartHtml"].lower()) == bool(missing)
+
+    @pytest.mark.parametrize("counts", [
+        {"full_count": 10, "sample_count": 2, "truncated": True, "omitted_row_count": 8},
+        {"full_count": 10, "sample_count": 2, "truncated": False},
+        {"full_count": 10},
+        {"omitted_row_count": 8},
+        {"truncated": True},
+    ])
+    def test_sampling_does_not_claim_missing_sessions(self, counts: dict[str, Any]) -> None:
+        """Deliberately spaced samples retain connections and sampling disclosure."""
+        payload = self._chart_payload_with_gaps([
+            {"date": day, "prob_bear": 0.2, "prob_sideways": 0.3, "prob_bull": 0.5}
+            for day in ("2026-01-05", "2026-01-09")
+        ])
+        payload["training_regime_row_counts"] = counts
+        report = self._run_harness(payload)
+        assert report["svgAnalysis"]["polylineCount"] == 3
+        assert report["svgAnalysis"]["gapMarkerCount"] == 0
+        assert any("missing observations: 0" in b for b in report["metaBadges"])
+        assert "Training history was sampled" in report["chartHtml"]
+
+    @pytest.mark.parametrize("sampled", [False, True])
+    @pytest.mark.parametrize("invalid", [
+        {"prob_bear": None}, {"prob_bear": "not-a-number"},
+        {"prob_bear": "Infinity"}, {"date": "2026-02-30"},
+        {"date": "2026-1-06"},
+    ])
+    def test_explicit_invalid_rows_still_split(
+        self, sampled: bool, invalid: dict[str, Any]
+    ) -> None:
+        """Explicit missing data splits only affected series, once per row."""
+        rows = [
+            {"date": day, "prob_bear": 0.2, "prob_sideways": 0.3, "prob_bull": 0.5}
+            for day in ("2026-01-05", "2026-01-06", "2026-01-07")
+        ]
+        rows[1].update(invalid)
+        payload = self._chart_payload_with_gaps(rows)
+        payload["training_regime_row_counts"]["truncated"] = sampled
+        report = self._run_harness(payload)
+        assert report["svgAnalysis"]["polylineCount"] == (0 if "date" in invalid else 2)
+        assert report["svgAnalysis"]["gapMarkerCount"] == 1
+        assert any("missing observations: 1" in b for b in report["metaBadges"])
+
     @staticmethod
     def _run_harness(payload: dict[str, Any]) -> dict[str, Any]:
         """Render dashboard HTML, run the chart harness, and return the JSON report."""
         import os
+        import shutil
         import subprocess
         import tempfile
+
+        if shutil.which("node") is None:
+            pytest.skip("Node is not installed; rendered chart harness requires Node")
 
         defaults = _DashboardDefaults(
             run_id="test-run",
@@ -2833,10 +2936,12 @@ class TestTrainingChartBehavior:
                 timeout=15,
             )
             if result.returncode != 0:
-                pytest.skip(
+                pytest.fail(
                     f"Node harness failed: {result.stderr}"
                 )
-            return json.loads(result.stdout)
+            report = json.loads(result.stdout)
+            assert not report.get("errors"), report
+            return report
         finally:
             try:
                 os.unlink(html_path)

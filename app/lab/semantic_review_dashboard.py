@@ -2203,7 +2203,12 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
       const counts = payload.training_regime_row_counts || {{}};
       const fullCountValue = Number(counts.full_count);
       const fullCount = Number.isFinite(fullCountValue) ? fullCountValue : sourceRows.length;
-      const truncated = counts.truncated === true || sourceRows.length > rows.length;
+      const sampleCount = counts.sample_count == null ? rows.length : Number(counts.sample_count);
+      const truncated = counts.truncated === true
+        || Number(counts.omitted_row_count) > 0
+        || (Number.isFinite(fullCountValue) && fullCountValue >= 0
+          && Number.isFinite(sampleCount) && sampleCount >= 0 && fullCountValue > sampleCount)
+        || sourceRows.length > rows.length;
 
       const probabilityFields = ['prob_bear', 'prob_sideways', 'prob_bull'];
       const probabilityFor = (row, field) => {{
@@ -2223,11 +2228,70 @@ def _render_dashboard_html(defaults: _DashboardDefaults) -> str:
           : null;
       }};
       const calendarDays = rows.map(calendarDayFor);
+      // Mirror core.common.trading_calendar's regular full-day session rules.
+      // UTC day numbers avoid local-time/DST shifts; no live calendar lookup.
+      const dayNumber = (year, month, day) => {{
+        const date = new Date(0);
+        date.setUTCFullYear(year, month - 1, day);
+        return date.getTime() / 86400000;
+      }};
+      const weekday = (day) => new Date(day * 86400000).getUTCDay();
+      const observedFixed = (year, month, day) => {{
+        const date = dayNumber(year, month, day);
+        return date + (weekday(date) === 6 ? -1 : weekday(date) === 0 ? 1 : 0);
+      }};
+      const nthWeekday = (year, month, target, n) => {{
+        const first = dayNumber(year, month, 1);
+        return first + (target - weekday(first) + 7) % 7 + 7 * (n - 1);
+      }};
+      const lastWeekday = (year, month, target) => {{
+        const last = dayNumber(year, month + 1, 1) - 1;
+        return last - (weekday(last) - target + 7) % 7;
+      }};
+      const easterSunday = (year) => {{
+        const a = year % 19;
+        const b = Math.floor(year / 100);
+        const c = year % 100;
+        const d = Math.floor(b / 4);
+        const e = b % 4;
+        const f = Math.floor((b + 8) / 25);
+        const g = Math.floor((b - f + 1) / 3);
+        const h = (19 * a + b - d - g + 15) % 30;
+        const i = Math.floor(c / 4);
+        const k = c % 4;
+        const correction = (32 + 2 * e + 2 * i - h - k) % 7;
+        const m = Math.floor((a + 11 * h + 22 * correction) / 451);
+        const value = h + correction - 7 * m + 114;
+        return dayNumber(year, Math.floor(value / 31), value % 31 + 1);
+      }};
+      const holidaysByYear = new Map();
+      const isRegularSession = (day) => {{
+        if (weekday(day) === 0 || weekday(day) === 6) return false;
+        const year = new Date(day * 86400000).getUTCFullYear();
+        if (!holidaysByYear.has(year)) {{
+          const holidays = new Set([
+            observedFixed(year, 1, 1), nthWeekday(year, 1, 1, 3),
+            nthWeekday(year, 2, 1, 3), easterSunday(year) - 2,
+            lastWeekday(year, 5, 1), observedFixed(year, 7, 4),
+            nthWeekday(year, 9, 1, 1), nthWeekday(year, 11, 4, 4),
+            observedFixed(year, 12, 25),
+          ]);
+          if (year >= 2022) holidays.add(observedFixed(year, 6, 19));
+          const nextNewYear = observedFixed(year + 1, 1, 1);
+          if (new Date(nextNewYear * 86400000).getUTCFullYear() === year) holidays.add(nextNewYear);
+          holidaysByYear.set(year, holidays);
+        }}
+        return !holidaysByYear.get(year).has(day);
+      }};
+      const hasMissingSession = (previous, next) => {{
+        if (truncated || previous === null || next === null || next <= previous) return false;
+        for (let day = previous + 1; day < next; day += 1) {{
+          if (isRegularSession(day)) return true;
+        }}
+        return false;
+      }};
       const dateGapBefore = rows.map((_row, index) =>
-        index > 0
-          && calendarDays[index] !== null
-          && calendarDays[index - 1] !== null
-          && calendarDays[index] - calendarDays[index - 1] > 3
+        index > 0 && hasMissingSession(calendarDays[index - 1], calendarDays[index])
       );
       const chartProbabilityFor = (row, index, field) =>
         calendarDays[index] === null ? null : probabilityFor(row, field);
