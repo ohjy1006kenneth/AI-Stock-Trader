@@ -50,6 +50,7 @@ Future work that stays compatible with this baseline:
 
 - `app/` — runnable deployment surfaces
    - `app/lab/` — Cloud Lab workloads (feature generation, training, evaluation, packaging)
+     and the separate guarded read-only `app/lab/stock_evidence_site/` consumer
    - `app/cloud/` — Cloud Oracle inference service and contract handling
    - `app/pi/` — Edge Pi runtime for fetch, execution, reconciliation, and reporting
 - `core/` — shared business and domain logic
@@ -81,6 +82,13 @@ If you want to understand the architecture first, read:
 2. `docs/runtime_flow.md`
 3. `docs/data_contracts.md`
 4. `docs/deployment.md`
+
+The [standalone stock evidence reviewer](docs/stock_evidence_site.md) is outside
+daily orchestration and is not deployed or semantically accepted. It uses an
+explicit local historical preview or configured private backend without fallback.
+The default preview fixture is untracked/excluded and absent from a clean checkout;
+fixture provisioning, runtime dependency declarations and separate rollout/security/
+browser/human gates remain prerequisites, not claims of current readiness.
 
 ## CI and local tests
 

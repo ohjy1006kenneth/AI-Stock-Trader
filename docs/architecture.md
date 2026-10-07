@@ -70,6 +70,20 @@ The design principle is:
 - long-only execution first, with contracts and risk policy kept compatible with later
   hedge overlays and long-short expansion
 
+### Standalone read-only stock evidence consumer
+
+`app/lab/stock_evidence_site/` is a separate lab/local review entrypoint, outside
+the daily trading pipeline and independent of the Homelab dashboard. It consumes
+either an explicitly selected local historical preview or an independently
+configured private packet backend through httpx, with source-specific identity
+validation and no fallback between sources. It renders evidence or returns wrapper
+JSON; it does not generate features, write storage, call brokerage, or establish
+semantic acceptance. This adds no inter-layer schema, R2 layout, or daily-flow
+change. The default preview artifact is untracked/excluded and absent from a clean
+checkout; provisioning and runtime dependency declarations remain rollout gates.
+See [the consumer contract](stock_evidence_site.md) and
+[guarded runtime prerequisites](deployment.md). No live deployment is claimed.
+
 ### Pi data-only refresh entrypoint
 
 The version-controlled `app/pi/run_layer0_layer1_refresh.py` is the bounded Pi cron

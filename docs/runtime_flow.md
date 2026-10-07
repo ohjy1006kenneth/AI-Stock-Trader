@@ -12,6 +12,21 @@ Execution context:
 
 ---
 
+## Independent stock evidence review (outside daily orchestration)
+
+The separate read-only `app/lab/stock_evidence_site/` request path is:
+GET request -> wrapper validation -> explicitly selected local historical preview
+or configured private backend -> source-specific payload/identity correlation ->
+HTML evidence/error page or audit JSON. There is no backend-to-local fallback,
+automatic polling, trading action, data generation, or daily pipeline ordering
+change. Root caught packet errors render HTTP 200 with explicit error text; audit
+JSON uses PacketError statuses 400/404/409/422/502. Delivered-empty evidence remains
+distinct from unavailable/error states. Producer readiness is not human acceptance.
+The default local artifact is not included in a clean checkout. Runtime provisioning,
+real backend/browser verification, deployment/security and human gates remain
+separate from fixture/mock tests. See [the wrapper contract](stock_evidence_site.md)
+and [guarded invocation](deployment.md).
+
 ## Phase 0 - One-time setup (run before first live trading)
 
 This phase builds the historical database in R2 that all downstream layers depend on.

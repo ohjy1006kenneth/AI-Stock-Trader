@@ -4,9 +4,53 @@ This document describes deployment surfaces and responsibilities.
 
 ## Surfaces
 
-- app/lab: cloud training and packaging jobs
+- app/lab: cloud training and packaging jobs; separate guarded local read-only
+  stock evidence consumer at `app/lab/stock_evidence_site/` (not daily orchestration)
 - app/cloud: hosted inference service
 - app/pi: edge runtime and execution process (containerized on Pi)
+
+## Guarded standalone evidence preview (not activated)
+
+From the repository root, only after reviewer environment/source provisioning:
+
+```bash
+<run-dir>/venv/bin/python -m uvicorn app.lab.stock_evidence_site.app:app --host 127.0.0.1 --port 8890
+```
+
+Run from the candidate root; replace `<run-dir>` with the absolute run evidence
+directory containing the isolated reviewer environment, not the shared project venv.
+
+The app defaults to `source=local`, the admitted historical packet/date and
+AAPL/AMD/MSFT/NVDA. Its default JSON fixture under `artifacts/reports/diagnostics/`
+is untracked and excluded from integration: a clean checkout does **not** include
+it. The approved historical preview separately copies the existing bounded packet,
+unchanged, to the identical candidate-relative path. Verify size 114845 bytes and
+SHA256 `634039d3c8b5ecb775b738d284b57a64b5cd42506f137ae17bc6d11c10c39737`;
+do not regenerate, edit, or commit the fixture. Missing fixture errors do not prove
+preview delivery: local audit returns 404 and the root renders an explicit error
+even though its HTTP status is 200. For the separate private source, set `STOCK_EVIDENCE_BACKEND`
+before app import/start and explicitly use `source=backend`; no local fallback
+is allowed. Programmatic source construction also accepts a backend base URL.
+
+Runtime declarations, not installed-venv availability, are the prerequisite:
+loguru is declared in `requirements/base.txt`; FastAPI and uvicorn are declared
+in `requirements/pi.txt`, alongside direct `httpx>=0.27,<1`. The approved boundary
+is the existing Pi -> base chain, not a dedicated standalone dependency surface.
+Use `uv venv --python python3.11 <run-dir>/venv` then
+`uv pip install --python <run-dir>/venv/bin/python -r <candidate>/requirements/pi.txt`
+and `uv pip check --python <run-dir>/venv/bin/python`. Run the loopback command
+from the candidate root with that environment's uvicorn; do not modify the shared
+daily/project environment. Local evidence remains historical/not current readiness.
+
+This loopback command is not a rollout instruction. Independent technical review
+and Trading integration acceptance, clean-checkout packaging, real private-backend
+compatibility and packet identity/provenance, authentication/exposure/security,
+deployed health and rollback, browser rendering evidence, and designated human
+semantic acceptance remain separate unfulfilled gates. No Tailscale/SSH access or
+Serve activation is verified or authorized here. Fixture/mock test success and
+producer readiness do not close #328 or satisfy #281's human gate. The consumer
+does not change storage, schemas, brokerage, or the daily deployment sequence.
+See [source configuration and wrapper semantics](stock_evidence_site.md).
 
 ## External dependency roles
 
