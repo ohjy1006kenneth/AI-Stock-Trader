@@ -1,0 +1,16 @@
+{
+  "fixture_kind": "synthetic_unit_test",
+  "audit": "Synthetic unit-test sample; not production evidence",
+  "run_id": "issue281-post-pr306-current-prod-20260904-v1",
+  "git_head": "aaa29eca6fe6e55d3529b4f134471eb6fbe70c85",
+  "review_date": "2026-09-04",
+  "generated_at": "2026-09-08T06:05:01.278755+00:00",
+  "tickers": ["AAPL", "AMD", "NVDA", "MSFT"],
+  "scope": "synthetic unit-test sample",
+  "ticker_audits": {
+    "AAPL": {"ticker": "AAPL", "articles": []},
+    "AMD": {"ticker": "AMD", "articles": []},
+    "NVDA": {"ticker": "NVDA", "articles": []},
+    "MSFT": {"ticker": "MSFT", "articles": []}
+  }
+}

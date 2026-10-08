@@ -243,6 +243,7 @@ ai-stock-trader/
 │   │   ├── model_architecture/   # Model and policy architecture area
 │   │   │   └── policy/           # Portfolio policy logic area
 │   │   ├── backtesting/          # Evaluation and promotion metrics
+│   │   ├── stock_evidence_site/  # Standalone read-only stock evidence reviewer
 │   │   └── training/             # Training orchestration area
 │   ├── cloud/                    # Cloud Oracle inference service surface
 │   └── pi/                       # Edge Pi runtime surface
