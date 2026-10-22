@@ -290,6 +290,33 @@ def _no_grants() -> dict[str, bool]:
     }
 
 
+def _assessment_plan_is_valid(plan: Any) -> bool:
+    """Check the fixed identity invariants consumed by export assessment."""
+    if not isinstance(plan, dict):
+        return False
+    source_sha = plan.get("source_sha")
+    run_id = plan.get("proposed_run_id")
+    tickers = plan.get("tickers")
+    window = plan.get("window")
+    if not isinstance(source_sha, str) or _SHA_RE.fullmatch(source_sha) is None:
+        return False
+    if not isinstance(run_id, str) or run_id == REJECTED_PACKET_ID:
+        return False
+    try:
+        _validate_run_id(run_id)
+    except PilotPreparationError:
+        return False
+    if not isinstance(tickers, list) or tickers != list(REQUIRED_TICKERS):
+        return False
+    return (
+        isinstance(window, dict)
+        and isinstance(window.get("start"), str)
+        and isinstance(window.get("end"), str)
+        and window["start"] == WINDOW_START
+        and window["end"] == WINDOW_END
+    )
+
+
 def _assess_export_identity(
     identity: Any, *, plan: dict[str, Any], rejections: list[str]
 ) -> None:
@@ -409,14 +436,7 @@ def assess_export_evidence(
             "rejections": ["malformed_export_container"],
         }
 
-    if (
-        not isinstance(plan, dict)
-        or not isinstance(plan.get("tickers"), list)
-        or not all(_is_nonblank_str(ticker) for ticker in plan["tickers"])
-        or not isinstance(plan.get("proposed_run_id"), str)
-        or not isinstance(plan.get("source_sha"), str)
-        or not isinstance(plan.get("window"), dict)
-    ):
+    if not _assessment_plan_is_valid(plan):
         return {
             "grants": _no_grants(),
             "machine_complete": False,

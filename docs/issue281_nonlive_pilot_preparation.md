@@ -60,6 +60,13 @@ replacement draft, not resumed previously reviewed bytes.
   completeness grants nothing: semantic acceptance, live freshness, execution
   authority, and pilot readiness all remain false.
 
+  Assessment validates the plan identity itself before comparing export values:
+  lowercase 40-hex source-SHA format, safe non-retired run id, exact unique
+  AAPL/AMD/MSFT/NVDA ticker list, and the fixed 2026-10-05..2026-10-09 window.
+  The SHA comparison is a caller-provided consistency check only; it does not
+  independently verify Git provenance or authorize execution. Malformed plans
+  return `malformed_assessment_plan` with every grant false.
+
 ## Local API/export shape example
 
 This illustrates only the helper's local validation contract; the values are

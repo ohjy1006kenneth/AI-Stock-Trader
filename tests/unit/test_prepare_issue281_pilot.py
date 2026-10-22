@@ -587,6 +587,53 @@ class ExportContainerValidationTests(unittest.TestCase):
             self.assertFalse(result["machine_complete"], plan)
             self.assertIn("malformed_assessment_plan", result["rejections"], plan)
 
+    def test_assessment_rejects_forged_or_shallow_valid_plans(self) -> None:
+        valid_plan = _build_plan()
+        cases = (
+            ("empty_tickers", {**valid_plan, "tickers": []}, {"tickers": {}}),
+            ("aapl_only", {**valid_plan, "tickers": ["AAPL"]}, None),
+            (
+                "traversal_run_id",
+                {**valid_plan, "proposed_run_id": "../../../features"},
+                None,
+            ),
+            ("bogus_source_sha", {**valid_plan, "source_sha": "bogus"}, None),
+            (
+                "wrong_window",
+                {**valid_plan, "window": {"start": "wrong", "end": "wrong"}},
+                None,
+            ),
+            ("missing_window_keys", {**valid_plan, "window": {}}, None),
+            (
+                "malformed_nested_types",
+                {**valid_plan, "window": {"start": [], "end": "2026-10-09"}},
+                None,
+            ),
+            (
+                "minimal_empty_plan",
+                {
+                    "tickers": [],
+                    "proposed_run_id": "",
+                    "source_sha": "",
+                    "window": {"start": None, "end": None},
+                },
+                {"tickers": {}},
+            ),
+        )
+        for label, plan, export_override in cases:
+            with self.subTest(plan=label):
+                export = export_override or _complete_export(valid_plan)
+                if export_override is None:
+                    identity = export["export_identity"]
+                    identity["run_id"] = plan["proposed_run_id"]
+                    identity["source_sha"] = plan["source_sha"]
+                    identity["window"] = plan["window"]
+                    identity["tickers"] = plan["tickers"]
+                result = prep.assess_export_evidence(export, plan=plan)
+                self.assertFalse(result["machine_complete"])
+                self.assertEqual(result["rejections"], ["malformed_assessment_plan"])
+                self.assertTrue(all(value is False for value in result["grants"].values()))
+
     def test_assessment_rejects_malformed_identity_tickers(self) -> None:
         for value in (None, 1, "AAPL", [["AAPL"], ["AMD"], ["MSFT"], ["NVDA"]]):
             export = _complete_export(self.plan)
