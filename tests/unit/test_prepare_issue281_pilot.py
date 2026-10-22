@@ -132,6 +132,17 @@ class PlanValidationTests(unittest.TestCase):
                 tickers=("AAPL", "AMD", "MSFT", "NVDA", "SPY"),
             )
 
+    def test_plan_rejects_malformed_ticker_arguments_deliberately(self) -> None:
+        for value in (None, 1, "AAPL,AMD,MSFT,NVDA", ("AAPL", 1, "MSFT", "NVDA")):
+            with self.subTest(tickers=value), self.assertRaises(prep.PilotPreparationError):
+                prep.build_pilot_preparation_plan(
+                    source_sha=SOURCE_SHA,
+                    expected_source_sha=SOURCE_SHA,
+                    proposed_run_id=RUN_ID,
+                    proposed_generation_time=GENERATION_TIME,
+                    tickers=value,  # type: ignore[arg-type]
+                )
+
     def test_plan_rejects_wrong_window(self) -> None:
         with self.assertRaises(prep.PilotPreparationError):
             prep.build_pilot_preparation_plan(
@@ -249,6 +260,17 @@ class StagePathValidationTests(unittest.TestCase):
     def test_path_validator_accepts_stage_owned_path(self) -> None:
         path = f"{prep.STAGE_NAMESPACE}/{RUN_ID}/nlp_diagnostics/2026-10-05.json"
         self.assertEqual(prep.validate_stage_artifact_path(path, run_id=RUN_ID), path)
+
+    def test_path_validator_rejects_ambiguous_path_characters(self) -> None:
+        for path in (
+            f"{prep.STAGE_NAMESPACE}/{RUN_ID}/bad\\name.json",
+            f"{prep.STAGE_NAMESPACE}/{RUN_ID}/bad\x00name.json",
+            f"{prep.STAGE_NAMESPACE}/{RUN_ID}/ ",
+            f"{prep.STAGE_NAMESPACE}/{RUN_ID}/.",
+            f"{prep.STAGE_NAMESPACE}/{RUN_ID}/",
+        ):
+            with self.subTest(path=path), self.assertRaises(prep.PilotPreparationError):
+                prep.validate_stage_artifact_path(path, run_id=RUN_ID)
 
 
 class ExportAssessmentTests(unittest.TestCase):
@@ -488,7 +510,7 @@ class ExportEvidenceStrictnessTests(unittest.TestCase):
             )
 
     def test_assessment_rejects_invalid_effective_contribution(self) -> None:
-        for value in (None, "bogus", float("nan"), float("inf"), True):
+        for value in (None, "bogus", float("nan"), float("inf"), True, 10**10000):
             export = _complete_export(self.plan)
             export["tickers"]["AAPL"]["chunks"][0]["effective_contribution"] = value
             self.assertIn(
@@ -514,7 +536,7 @@ class ExportEvidenceStrictnessTests(unittest.TestCase):
         self.assertIn("missing_chunk_text:AAPL", self._rejections(export))
 
     def test_assessment_rejects_unsupported_relevance_decision(self) -> None:
-        for value in (None, "bogus", 1):
+        for value in (None, "bogus", 1, [], {}):
             export = _complete_export(self.plan)
             export["tickers"]["NVDA"]["chunks"][0]["relevance_decision"] = value
             self.assertIn(
@@ -557,6 +579,13 @@ class ExportContainerValidationTests(unittest.TestCase):
                 "pilot_readiness",
             ):
                 self.assertFalse(result["grants"][key], key)
+
+    def test_assessment_rejects_malformed_plan_safely(self) -> None:
+        export = _complete_export(_build_plan())
+        for plan in (None, {}, {"tickers": 1}, {"tickers": ["AAPL"]}):
+            result = prep.assess_export_evidence(export, plan=plan)  # type: ignore[arg-type]
+            self.assertFalse(result["machine_complete"], plan)
+            self.assertIn("malformed_assessment_plan", result["rejections"], plan)
 
     def test_assessment_rejects_malformed_identity_tickers(self) -> None:
         for value in (None, 1, "AAPL", [["AAPL"], ["AMD"], ["MSFT"], ["NVDA"]]):

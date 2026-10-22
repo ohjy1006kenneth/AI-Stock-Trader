@@ -50,9 +50,59 @@ replacement draft, not resumed previously reviewed bytes.
   machine completeness against a plan: export identity (run id, source SHA,
   window, ticker coverage), cached-fallback use, per-ticker chunk text,
   relevance decision, reason codes, inclusion flag, effective contribution,
-  and article context. Machine completeness grants nothing: semantic
-  acceptance, live freshness, execution authority, and pilot readiness all
-  remain false.
+  and article context. The local export contract requires unique ticker arrays;
+  nonblank string chunk text; a relevance decision exactly `accepted`,
+  `borderline`, or `rejected`; nonempty lists of nonblank reason-code strings;
+  a real boolean inclusion flag; finite numeric (not boolean) contribution;
+  explicit `cached_fallback_used: false`; and a nonempty article-context map
+  whose entries have nonblank string `headline` and `source`. Invalid/malformed
+  evidence yields rejection diagnostics rather than completeness. Machine
+  completeness grants nothing: semantic acceptance, live freshness, execution
+  authority, and pilot readiness all remain false.
+
+## Local API/export shape example
+
+This illustrates only the helper's local validation contract; the values are
+synthetic, not pipeline output or evidence:
+
+```python
+plan = build_pilot_preparation_plan(
+    source_sha="c76d7671a26c07145e863ef6969b21a32ec28781",
+    expected_source_sha="c76d7671a26c07145e863ef6969b21a32ec28781",
+    proposed_run_id="example-replacement-v1",
+    proposed_generation_time="2026-10-20T12:00:00+00:00",
+)
+export = {
+    "export_identity": {
+        "run_id": plan["proposed_run_id"],
+        "source_sha": plan["source_sha"],
+        "window": plan["window"],
+        "tickers": ["AAPL", "AMD", "MSFT", "NVDA"],  # unique array
+    },
+    "cached_fallback_used": False,  # explicit proof field; not missing/null
+    "tickers": {
+        ticker: {
+            "chunks": [{
+                "text": "Synthetic nonblank chunk text",
+                "relevance_decision": "borderline",  # accepted|borderline|rejected
+                "reason_codes": ["direct_target_event"],
+                "included_in_signal": True,  # actual bool
+                "effective_contribution": 0.25,  # finite number, never bool
+            }],
+            "article_context": {
+                "article-1": {"headline": "Synthetic headline", "source": "synthetic"}
+            },
+        }
+        for ticker in plan["tickers"]
+    },
+}
+assessment = assess_export_evidence(export, plan=plan)
+assert assessment["machine_complete"]  # no acceptance/readiness is implied
+assert all(value is False for value in assessment["grants"].values())
+```
+
+The plan's resource fields are proposal labels only, not an allocation or
+reservation.
 
 ## What the helper does not do
 
@@ -73,7 +123,7 @@ Focused tests (stdlib unittest, direct file execution):
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3 -B tests/unit/test_prepare_issue281_pilot.py -v
 ```
 
-Result at implementation time: 33 tests, all OK.
+Result at this revision: 68 tests, all OK.
 
 Full-suite pytest, `ruff check .`, and CI gates were unavailable in the
 system interpreter for this task and remain explicitly pending rather than

@@ -164,6 +164,10 @@ def build_pilot_preparation_plan(
             "proposed_run_id reuses the retired rejected packet id; "
             "the replacement pilot must be a new run, not resumed bytes"
         )
+    if not isinstance(tickers, (tuple, list)) or any(
+        not isinstance(ticker, str) for ticker in tickers
+    ):
+        raise PilotPreparationError("tickers must be a sequence of ticker strings")
     if tuple(tickers) != REQUIRED_TICKERS:
         raise PilotPreparationError(
             f"tickers must be exactly {REQUIRED_TICKERS}, got {tuple(tickers)}"
@@ -253,6 +257,11 @@ def validate_stage_artifact_path(path: str, *, run_id: str) -> str:
     _validate_run_id(run_id)
     if not isinstance(path, str) or not path:
         raise PilotPreparationError(f"artifact path must be a non-empty string: {path!r}")
+    if "\\" in path or "\x00" in path or any(
+        not component or component.strip() != component
+        for component in path.split("/")
+    ):
+        raise PilotPreparationError(f"unsafe artifact path characters: {path!r}")
     if path.startswith("/"):
         raise PilotPreparationError(f"absolute path not allowed: {path!r}")
     if any(component in ("", ".", "..") for component in path.split("/")):
@@ -320,7 +329,10 @@ def _assess_chunk(chunk: Any, *, ticker: str, ticker_rejections: set[str]) -> No
         ticker_rejections.add(f"missing_chunk_text:{ticker}")
     if "relevance_decision" not in chunk:
         ticker_rejections.add(f"missing_relevance_decision:{ticker}")
-    elif chunk["relevance_decision"] not in SUPPORTED_RELEVANCE_DECISIONS:
+    elif (
+        not isinstance(chunk["relevance_decision"], str)
+        or chunk["relevance_decision"] not in SUPPORTED_RELEVANCE_DECISIONS
+    ):
         ticker_rejections.add(f"invalid_relevance_decision:{ticker}")
     if "reason_codes" not in chunk:
         ticker_rejections.add(f"missing_reason_codes:{ticker}")
@@ -343,9 +355,17 @@ def _assess_chunk(chunk: Any, *, ticker: str, ticker_rejections: set[str]) -> No
         if (
             isinstance(contribution, bool)
             or not isinstance(contribution, (int, float))
-            or not math.isfinite(contribution)
+            or not _is_finite_contribution(contribution)
         ):
             ticker_rejections.add(f"invalid_effective_contribution:{ticker}")
+
+
+def _is_finite_contribution(value: int | float) -> bool:
+    """Return whether a numeric contribution is finite without overflow."""
+    try:
+        return math.isfinite(value)
+    except (OverflowError, TypeError, ValueError):
+        return False
 
 
 def _assess_article_context(
@@ -387,6 +407,20 @@ def assess_export_evidence(
             "grants": _no_grants(),
             "machine_complete": False,
             "rejections": ["malformed_export_container"],
+        }
+
+    if (
+        not isinstance(plan, dict)
+        or not isinstance(plan.get("tickers"), list)
+        or not all(_is_nonblank_str(ticker) for ticker in plan["tickers"])
+        or not isinstance(plan.get("proposed_run_id"), str)
+        or not isinstance(plan.get("source_sha"), str)
+        or not isinstance(plan.get("window"), dict)
+    ):
+        return {
+            "grants": _no_grants(),
+            "machine_complete": False,
+            "rejections": ["malformed_assessment_plan"],
         }
 
     rejections: list[str] = []
