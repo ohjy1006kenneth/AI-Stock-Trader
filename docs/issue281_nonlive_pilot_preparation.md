@@ -1,0 +1,80 @@
+# Issue #281 — Non-live pilot preparation helper (local-only)
+
+Status: bounded local preparation only. No pilot execution, launch, network,
+Modal/R2/provider calls, canonical feature writes, backfill, brokerage,
+deployment, publication, merge, or semantic acceptance is performed or
+authorized by this work. All original issue-level holds remain intact.
+
+## Context
+
+Issue #281 was REJECTED for semantic acceptance on 2026-10-13 (issue comment
+6156849004). The historical packet `issue281-post-pr306-current-prod-20260904-v1`
+is retired as an acceptance candidate. The required replacement is a newly
+executed AAPL/AMD/MSFT/NVDA post-fix pilot with actual chunk text, relevance
+decisions/reason codes, signal inclusion flags, effective contribution, and
+separate article context.
+
+This change adds only a stdlib-only, local-only helper module
+(`app/lab/data_pipelines/prepare_issue281_pilot.py`), its focused unit tests
+(`tests/unit/test_prepare_issue281_pilot.py`), and this document. It is a new
+replacement draft, not resumed previously reviewed bytes.
+
+## What the helper does
+
+- `build_pilot_preparation_plan(...)` builds a JSON-serializable,
+  proposal-only plan for a bounded stage-only pilot:
+  - requires an exact lowercase 40-hex source SHA matching the expected SHA;
+  - refuses to reuse the retired rejected packet id as a run id;
+  - pins tickers to exactly AAPL/AMD/MSFT/NVDA;
+  - pins the candidate window to the archived five sessions
+    2026-10-05..2026-10-09;
+  - requires the proposed generation time to be strictly after the input
+    cutoff date 2026-10-09;
+  - labels the input cutoff vs. generation time and never claims live
+    freshness;
+  - records the historical input observations (missing raw news and universe
+    for 2026-10-12, missing macro for 2026-10-09) as unverified observations
+    requiring revalidation — they are labels/proposals, not revalidated data;
+  - plans artifacts only under `stage/issue281-nonlive-pilot/<run_id>/`
+    (`nlp_diagnostics`, `hmm_diagnostics` per date, plus an `export_plan`),
+    and explicitly prohibits canonical `features/{date}/{ticker}.parquet`
+    output, full-universe output, namespace escape, and path traversal;
+  - marks resources as proposal-only (no reservation, no launch) and grants
+    no authority of any kind.
+
+- `validate_stage_artifact_path(path, run_id=...)` rejects absolute paths,
+  `..` traversal, canonical feature paths, and any escape from the stage
+  namespace; it returns the path unchanged when valid.
+
+- `assess_export_evidence(export, plan=...)` checks an export payload for
+  machine completeness against a plan: export identity (run id, source SHA,
+  window, ticker coverage), cached-fallback use, per-ticker chunk text,
+  relevance decision, reason codes, inclusion flag, effective contribution,
+  and article context. Machine completeness grants nothing: semantic
+  acceptance, live freshness, execution authority, and pilot readiness all
+  remain false.
+
+## What the helper does not do
+
+- No execution, launch, subprocess, network, Modal/R2/provider calls, data or
+  model downloads, canonical feature writes, daily orchestration, backfill,
+  brokerage, viewer changes, deployments, publication, merge, or semantic
+  acceptance.
+- No clearing of legacy holds. Human acceptance remains false; pilot
+  readiness remains false until actual output completeness, freshness,
+  fallback status, and semantic checks pass on a genuinely fresh post-fix
+  pilot, followed by human review of the new evidence.
+
+## Verification
+
+Focused tests (stdlib unittest, direct file execution):
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3 -B tests/unit/test_prepare_issue281_pilot.py -v
+```
+
+Result at implementation time: 33 tests, all OK.
+
+Full-suite pytest, `ruff check .`, and CI gates were unavailable in the
+system interpreter for this task and remain explicitly pending rather than
+fabricated; `git diff --check` was run and passed.
