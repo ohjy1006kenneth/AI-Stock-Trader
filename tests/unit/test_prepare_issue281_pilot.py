@@ -335,6 +335,293 @@ class ExportAssessmentTests(unittest.TestCase):
         self.assertTrue(json.dumps(result))
 
 
+class RunIdValidationTests(unittest.TestCase):
+    """Regression tests for reviewer finding 1: unsafe run-id plan paths."""
+
+    def _assert_run_id_rejected(self, run_id: object) -> None:
+        with self.assertRaises(prep.PilotPreparationError):
+            prep.build_pilot_preparation_plan(
+                source_sha=SOURCE_SHA,
+                expected_source_sha=SOURCE_SHA,
+                proposed_run_id=run_id,  # type: ignore[arg-type]
+                proposed_generation_time=GENERATION_TIME,
+            )
+
+    def test_plan_rejects_traversal_run_id(self) -> None:
+        self._assert_run_id_rejected("../../../features")
+
+    def test_plan_rejects_nested_run_id(self) -> None:
+        self._assert_run_id_rejected("nested/run")
+
+    def test_plan_rejects_backslash_run_id(self) -> None:
+        self._assert_run_id_rejected("nested\\run")
+
+    def test_plan_rejects_whitespace_only_run_id(self) -> None:
+        self._assert_run_id_rejected("   ")
+
+    def test_plan_rejects_run_id_with_inner_whitespace(self) -> None:
+        self._assert_run_id_rejected("run id")
+
+    def test_plan_rejects_dot_run_ids(self) -> None:
+        self._assert_run_id_rejected(".")
+        self._assert_run_id_rejected("..")
+        self._assert_run_id_rejected("v1.2")
+
+    def test_plan_rejects_non_string_run_id(self) -> None:
+        self._assert_run_id_rejected(None)
+        self._assert_run_id_rejected(123)
+
+    def test_plan_validates_every_generated_artifact_path(self) -> None:
+        plan = _build_plan()
+        artifacts = plan["planned_artifacts"]
+        self.assertTrue(artifacts)
+        for artifact in artifacts:
+            self.assertEqual(
+                prep.validate_stage_artifact_path(artifact["path"], run_id=RUN_ID),
+                artifact["path"],
+            )
+
+    def test_path_validator_rejects_unsafe_run_id(self) -> None:
+        for bad in ("../escape", "nested/run", " ", ".", ".."):
+            with self.assertRaises(prep.PilotPreparationError, msg=bad):
+                prep.validate_stage_artifact_path(
+                    f"{prep.STAGE_NAMESPACE}/{bad}/x.json", run_id=bad
+                )
+
+
+class ExactShaFormatTests(unittest.TestCase):
+    """Regression tests for reviewer finding 4: exact full-string SHA check."""
+
+    def test_plan_rejects_trailing_newline_source_sha(self) -> None:
+        bad = SOURCE_SHA + "\n"
+        with self.assertRaises(prep.PilotPreparationError):
+            prep.build_pilot_preparation_plan(
+                source_sha=bad,
+                expected_source_sha=bad,
+                proposed_run_id=RUN_ID,
+                proposed_generation_time=GENERATION_TIME,
+            )
+
+    def test_plan_rejects_non_string_source_sha(self) -> None:
+        with self.assertRaises(prep.PilotPreparationError):
+            prep.build_pilot_preparation_plan(
+                source_sha=None,  # type: ignore[arg-type]
+                expected_source_sha=None,  # type: ignore[arg-type]
+                proposed_run_id=RUN_ID,
+                proposed_generation_time=GENERATION_TIME,
+            )
+
+    def test_plan_rejects_non_string_expected_source_sha(self) -> None:
+        with self.assertRaises(prep.PilotPreparationError):
+            prep.build_pilot_preparation_plan(
+                source_sha=SOURCE_SHA,
+                expected_source_sha=123,  # type: ignore[arg-type]
+                proposed_run_id=RUN_ID,
+                proposed_generation_time=GENERATION_TIME,
+            )
+
+
+class GenerationTimeValidationTests(unittest.TestCase):
+    """Timezone-consistent generation-vs-cutoff regression tests."""
+
+    def test_plan_rejects_pre_cutoff_utc_despite_later_local_date(self) -> None:
+        # 2026-10-10T01:00:00+02:00 == 2026-10-09T23:00:00Z, which is not
+        # strictly after the 2026-10-09 input cutoff date in UTC.
+        with self.assertRaises(prep.PilotPreparationError):
+            prep.build_pilot_preparation_plan(
+                source_sha=SOURCE_SHA,
+                expected_source_sha=SOURCE_SHA,
+                proposed_run_id=RUN_ID,
+                proposed_generation_time="2026-10-10T01:00:00+02:00",
+            )
+
+    def test_plan_accepts_post_cutoff_utc_with_negative_offset(self) -> None:
+        # 2026-10-09T23:30:00-05:00 == 2026-10-10T04:30:00Z, strictly after
+        # the cutoff date when compared timezone-consistently in UTC.
+        plan = prep.build_pilot_preparation_plan(
+            source_sha=SOURCE_SHA,
+            expected_source_sha=SOURCE_SHA,
+            proposed_run_id=RUN_ID,
+            proposed_generation_time="2026-10-09T23:30:00-05:00",
+        )
+        self.assertEqual(
+            plan["timing"]["proposed_generation_time"], "2026-10-09T23:30:00-05:00"
+        )
+
+    def test_plan_rejects_naive_generation_time(self) -> None:
+        with self.assertRaises(prep.PilotPreparationError):
+            prep.build_pilot_preparation_plan(
+                source_sha=SOURCE_SHA,
+                expected_source_sha=SOURCE_SHA,
+                proposed_run_id=RUN_ID,
+                proposed_generation_time="2026-10-20T12:00:00",
+            )
+
+    def test_plan_rejects_non_string_generation_time(self) -> None:
+        with self.assertRaises(prep.PilotPreparationError):
+            prep.build_pilot_preparation_plan(
+                source_sha=SOURCE_SHA,
+                expected_source_sha=SOURCE_SHA,
+                proposed_run_id=RUN_ID,
+                proposed_generation_time=None,  # type: ignore[arg-type]
+            )
+
+
+class ExportEvidenceStrictnessTests(unittest.TestCase):
+    """Regression tests for reviewer finding 2: no false machine completeness."""
+
+    def setUp(self) -> None:
+        self.plan = _build_plan()
+
+    def _rejections(self, export: dict) -> list[str]:
+        return prep.assess_export_evidence(export, plan=self.plan)["rejections"]
+
+    def test_assessment_rejects_missing_or_ambiguous_cached_fallback(self) -> None:
+        export = _complete_export(self.plan)
+        del export["cached_fallback_used"]
+        self.assertIn("missing_cached_fallback_proof", self._rejections(export))
+        for value in (None, 0, ""):
+            export = _complete_export(self.plan)
+            export["cached_fallback_used"] = value
+            self.assertIn(
+                "missing_cached_fallback_proof", self._rejections(export), value
+            )
+
+    def test_assessment_rejects_invalid_effective_contribution(self) -> None:
+        for value in (None, "bogus", float("nan"), float("inf"), True):
+            export = _complete_export(self.plan)
+            export["tickers"]["AAPL"]["chunks"][0]["effective_contribution"] = value
+            self.assertIn(
+                "invalid_effective_contribution:AAPL", self._rejections(export), value
+            )
+
+    def test_assessment_rejects_non_boolean_inclusion_flag(self) -> None:
+        for value in ("false", 1, None):
+            export = _complete_export(self.plan)
+            export["tickers"]["AMD"]["chunks"][0]["included_in_signal"] = value
+            self.assertIn(
+                "invalid_inclusion_flag:AMD", self._rejections(export), value
+            )
+
+    def test_assessment_rejects_whitespace_only_chunk_text(self) -> None:
+        export = _complete_export(self.plan)
+        export["tickers"]["AAPL"]["chunks"][0]["text"] = "   \n  "
+        self.assertIn("missing_chunk_text:AAPL", self._rejections(export))
+
+    def test_assessment_rejects_non_string_chunk_text(self) -> None:
+        export = _complete_export(self.plan)
+        export["tickers"]["AAPL"]["chunks"][0]["text"] = 42
+        self.assertIn("missing_chunk_text:AAPL", self._rejections(export))
+
+    def test_assessment_rejects_unsupported_relevance_decision(self) -> None:
+        for value in (None, "bogus", 1):
+            export = _complete_export(self.plan)
+            export["tickers"]["NVDA"]["chunks"][0]["relevance_decision"] = value
+            self.assertIn(
+                "invalid_relevance_decision:NVDA", self._rejections(export), value
+            )
+
+    def test_assessment_accepts_supported_relevance_decisions(self) -> None:
+        for value in sorted(prep.SUPPORTED_RELEVANCE_DECISIONS):
+            export = _complete_export(self.plan)
+            export["tickers"]["NVDA"]["chunks"][0]["relevance_decision"] = value
+            self.assertNotIn(
+                "invalid_relevance_decision:NVDA", self._rejections(export), value
+            )
+
+    def test_assessment_rejects_invalid_reason_codes(self) -> None:
+        for value in (" ", "direct_target_event", [], ["direct", " "], [1]):
+            export = _complete_export(self.plan)
+            export["tickers"]["AMD"]["chunks"][0]["reason_codes"] = value
+            self.assertIn("invalid_reason_codes:AMD", self._rejections(export), value)
+
+
+class ExportContainerValidationTests(unittest.TestCase):
+    """Regression tests for reviewer finding 3: safe malformed containers."""
+
+    def setUp(self) -> None:
+        self.plan = _build_plan()
+
+    def _rejections(self, export: object) -> list[str]:
+        return prep.assess_export_evidence(export, plan=self.plan)["rejections"]  # type: ignore[arg-type]
+
+    def test_assessment_rejects_non_dict_export_safely(self) -> None:
+        for bad in (None, [], "export", 1):
+            result = prep.assess_export_evidence(bad, plan=self.plan)  # type: ignore[arg-type]
+            self.assertFalse(result["machine_complete"], bad)
+            self.assertIn("malformed_export_container", result["rejections"], bad)
+            for key in (
+                "semantic_acceptance",
+                "live_freshness",
+                "execution_authority",
+                "pilot_readiness",
+            ):
+                self.assertFalse(result["grants"][key], key)
+
+    def test_assessment_rejects_malformed_identity_tickers(self) -> None:
+        for value in (None, 1, "AAPL", [["AAPL"], ["AMD"], ["MSFT"], ["NVDA"]]):
+            export = _complete_export(self.plan)
+            export["export_identity"]["tickers"] = value
+            self.assertIn("malformed_identity_tickers", self._rejections(export), value)
+
+    def test_assessment_rejects_dict_identity_tickers(self) -> None:
+        export = _complete_export(self.plan)
+        export["export_identity"]["tickers"] = {
+            "AAPL": 1,
+            "AMD": 1,
+            "MSFT": 1,
+            "NVDA": 1,
+        }
+        self.assertIn("malformed_identity_tickers", self._rejections(export))
+
+    def test_assessment_rejects_duplicate_identity_tickers(self) -> None:
+        export = _complete_export(self.plan)
+        export["export_identity"]["tickers"] = [
+            "AAPL",
+            "AAPL",
+            "AMD",
+            "MSFT",
+            "NVDA",
+        ]
+        self.assertIn("duplicate_ticker_entries", self._rejections(export))
+
+    def test_assessment_rejects_malformed_chunks_container(self) -> None:
+        for value in (1, "chunks", {"text": "x"}):
+            export = _complete_export(self.plan)
+            export["tickers"]["AAPL"]["chunks"] = value
+            self.assertIn("malformed_chunks:AAPL", self._rejections(export), value)
+
+    def test_assessment_rejects_malformed_article_context(self) -> None:
+        for value in (" ", 1, ["not context"]):
+            export = _complete_export(self.plan)
+            export["tickers"]["MSFT"]["article_context"] = value
+            self.assertIn(
+                "malformed_article_context:MSFT", self._rejections(export), value
+            )
+
+    def test_assessment_rejects_invalid_article_context_entry(self) -> None:
+        for value in (
+            {"x": None},
+            {"x": {"headline": " ", "source": "s"}},
+            {"x": {"headline": "h"}},
+            {" ": {"headline": "h", "source": "s"}},
+        ):
+            export = _complete_export(self.plan)
+            export["tickers"]["MSFT"]["article_context"] = value
+            self.assertIn(
+                "invalid_article_context_entry:MSFT", self._rejections(export), value
+            )
+
+    def test_assessment_rejects_malformed_top_level_tickers_block(self) -> None:
+        for value in (None, [], "tickers", 1):
+            export = _complete_export(self.plan)
+            export["tickers"] = value
+            rejections = self._rejections(export)
+            self.assertIn("malformed_tickers_block", rejections, value)
+            for ticker in self.plan["tickers"]:
+                self.assertIn(f"missing_ticker_export:{ticker}", rejections, value)
+
+
 class ModuleSafetyTests(unittest.TestCase):
     def test_module_has_no_network_subprocess_or_launch_surface(self) -> None:
         tree = ast.parse(inspect.getsource(prep))

@@ -12,8 +12,9 @@ recorded on issue #281.
 
 from __future__ import annotations
 
+import math
 import re
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 SOURCE_SHA = "c76d7671a26c07145e863ef6969b21a32ec28781"
@@ -44,7 +45,18 @@ INPUT_CUTOFF_DATE = WINDOW_END
 
 CANONICAL_FEATURE_PARQUET_PATTERN = "features/{date}/{ticker}.parquet"
 
-_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+# Local preparation-evidence validation literals only. These are the
+# relevance_decision values this helper accepts when checking a pilot
+# export for machine completeness; they are NOT a new canonical pipeline
+# schema and imply no inferred semantics about the pipeline itself.
+SUPPORTED_RELEVANCE_DECISIONS = frozenset({"accepted", "borderline", "rejected"})
+
+_SHA_RE = re.compile(r"[0-9a-f]{40}")
+
+# Run ids must be a single safe path component: no separators, no dots,
+# no whitespace, no NUL, bounded length. This is validated identically
+# by the plan builder and the stage path validator.
+_RUN_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
 
 # Historical input observations from the read-only R2 preflight. They
 # are recorded as unverified observations requiring revalidation; this
@@ -60,12 +72,21 @@ class PilotPreparationError(ValueError):
     """Raised when a pilot preparation proposal violates bounded scope."""
 
 
-def _validate_source_sha(source_sha: str, expected_source_sha: str) -> None:
-    """Require an exact lowercase 40-hex SHA matching the expected value."""
-    if not _SHA_RE.match(source_sha):
-        raise PilotPreparationError(
-            f"source_sha must be a lowercase 40-hex commit SHA, got {source_sha!r}"
-        )
+def _is_nonblank_str(value: Any) -> bool:
+    """Return True only for an actual string with non-whitespace content."""
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _validate_source_sha(source_sha: Any, expected_source_sha: Any) -> None:
+    """Require exact lowercase 40-hex SHAs (full-string) that match."""
+    for label, value in (
+        ("source_sha", source_sha),
+        ("expected_source_sha", expected_source_sha),
+    ):
+        if not isinstance(value, str) or _SHA_RE.fullmatch(value) is None:
+            raise PilotPreparationError(
+                f"{label} must be a lowercase 40-hex commit SHA, got {value!r}"
+            )
     if source_sha != expected_source_sha:
         raise PilotPreparationError(
             "source_sha does not match expected_source_sha; "
@@ -73,24 +94,50 @@ def _validate_source_sha(source_sha: str, expected_source_sha: str) -> None:
         )
 
 
-def _validate_generation_time(proposed_generation_time: str) -> None:
-    """Require generation time to be strictly after the input cutoff date."""
+def _validate_run_id(run_id: Any) -> str:
+    """Require a nonblank, safe, single path component run id.
+
+    Rejects traversal, slashes/backslashes, NUL, dots, empty or
+    whitespace-bearing values, and non-strings. Returns the run id
+    unchanged when valid.
+    """
+    if not isinstance(run_id, str) or _RUN_ID_RE.fullmatch(run_id) is None:
+        raise PilotPreparationError(
+            "run id must be a nonblank single safe path component matching "
+            f"{_RUN_ID_RE.pattern!r} (no separators, dots, or whitespace), "
+            f"got {run_id!r}"
+        )
+    return run_id
+
+
+def _validate_generation_time(proposed_generation_time: Any) -> None:
+    """Require an aware ISO-8601 time strictly after the cutoff date in UTC."""
+    if not isinstance(proposed_generation_time, str):
+        raise PilotPreparationError(
+            "proposed_generation_time must be an ISO-8601 string, got "
+            f"{proposed_generation_time!r}"
+        )
     try:
         generated = datetime.fromisoformat(proposed_generation_time)
     except ValueError as exc:
         raise PilotPreparationError(
             f"proposed_generation_time is not ISO-8601: {proposed_generation_time!r}"
         ) from exc
-    cutoff = datetime.fromisoformat(f"{INPUT_CUTOFF_DATE}T00:00:00+00:00")
     if generated.tzinfo is None:
         raise PilotPreparationError(
             "proposed_generation_time must be timezone-aware"
         )
-    if generated.date() <= cutoff.date():
+    # Timezone-consistent comparison: convert to UTC and require the
+    # generation instant to be at or after the first instant after the
+    # input cutoff date, rather than comparing local calendar dates.
+    cutoff_end = datetime.fromisoformat(
+        f"{INPUT_CUTOFF_DATE}T00:00:00+00:00"
+    ) + timedelta(days=1)
+    if generated.astimezone(timezone.utc) < cutoff_end:
         raise PilotPreparationError(
             "proposed_generation_time must be strictly after input cutoff "
-            f"{INPUT_CUTOFF_DATE}; a generation at or before the cutoff "
-            "cannot be a fresh post-fix pilot"
+            f"{INPUT_CUTOFF_DATE} (UTC); a generation at or before the "
+            "cutoff cannot be a fresh post-fix pilot"
         )
 
 
@@ -111,13 +158,12 @@ def build_pilot_preparation_plan(
     namespace, never a launch, reservation, or semantic acceptance.
     """
     _validate_source_sha(source_sha, expected_source_sha)
+    _validate_run_id(proposed_run_id)
     if proposed_run_id == REJECTED_PACKET_ID:
         raise PilotPreparationError(
             "proposed_run_id reuses the retired rejected packet id; "
             "the replacement pilot must be a new run, not resumed bytes"
         )
-    if not proposed_run_id:
-        raise PilotPreparationError("proposed_run_id must be non-empty")
     if tuple(tickers) != REQUIRED_TICKERS:
         raise PilotPreparationError(
             f"tickers must be exactly {REQUIRED_TICKERS}, got {tuple(tickers)}"
@@ -147,6 +193,11 @@ def build_pilot_preparation_plan(
             "kind": "export_plan",
         }
     )
+
+    # Defense in depth: every generated artifact path is validated
+    # against the stage namespace before the plan is returned.
+    for artifact in planned_artifacts:
+        validate_stage_artifact_path(artifact["path"], run_id=proposed_run_id)
 
     return {
         "artifact_lineage": "new_replacement",
@@ -193,14 +244,21 @@ def build_pilot_preparation_plan(
 def validate_stage_artifact_path(path: str, *, run_id: str) -> str:
     """Validate that an artifact path stays inside the stage namespace.
 
-    Returns the path unchanged when valid; raises PilotPreparationError
-    for absolute paths, traversal, canonical feature paths, or any
-    namespace escape.
+    Both the path and the run id must be safe: the run id must be a
+    single safe path component, and the path must be relative, free of
+    traversal, outside canonical feature output, and strictly inside
+    ``{STAGE_NAMESPACE}/{run_id}/``. Returns the path unchanged when
+    valid; raises PilotPreparationError otherwise.
     """
+    _validate_run_id(run_id)
+    if not isinstance(path, str) or not path:
+        raise PilotPreparationError(f"artifact path must be a non-empty string: {path!r}")
     if path.startswith("/"):
         raise PilotPreparationError(f"absolute path not allowed: {path!r}")
-    if ".." in path.split("/"):
-        raise PilotPreparationError(f"path traversal not allowed: {path!r}")
+    if any(component in ("", ".", "..") for component in path.split("/")):
+        raise PilotPreparationError(
+            f"empty, dot, or traversal path components not allowed: {path!r}"
+        )
     if path.startswith("features/"):
         raise PilotPreparationError(
             f"canonical feature output path is prohibited: {path!r}"
@@ -213,77 +271,167 @@ def validate_stage_artifact_path(path: str, *, run_id: str) -> str:
     return path
 
 
+def _no_grants() -> dict[str, bool]:
+    """Return a fresh all-false grant mapping for an assessment result."""
+    return {
+        "semantic_acceptance": False,
+        "live_freshness": False,
+        "execution_authority": False,
+        "pilot_readiness": False,
+    }
+
+
+def _assess_export_identity(
+    identity: Any, *, plan: dict[str, Any], rejections: list[str]
+) -> None:
+    """Validate the export identity block against the plan."""
+    if not isinstance(identity, dict) or not all(
+        key in identity for key in ("run_id", "source_sha", "window", "tickers")
+    ):
+        rejections.append("incomplete_export_identity")
+        return
+    run_id = identity["run_id"]
+    if run_id == REJECTED_PACKET_ID:
+        rejections.append("historical_packet_substitution")
+    if run_id != plan["proposed_run_id"]:
+        rejections.append("mismatched_run_id")
+    if identity["source_sha"] != plan["source_sha"]:
+        rejections.append("mismatched_source_sha")
+    expected_window = {"start": plan["window"]["start"], "end": plan["window"]["end"]}
+    if identity["window"] != expected_window:
+        rejections.append("mismatched_window")
+    tickers_value = identity["tickers"]
+    if not isinstance(tickers_value, list) or any(
+        not _is_nonblank_str(ticker) for ticker in tickers_value
+    ):
+        rejections.append("malformed_identity_tickers")
+    elif len(set(tickers_value)) != len(tickers_value):
+        rejections.append("duplicate_ticker_entries")
+    elif set(tickers_value) != set(plan["tickers"]):
+        rejections.append("incomplete_ticker_coverage")
+
+
+def _assess_chunk(chunk: Any, *, ticker: str, ticker_rejections: set[str]) -> None:
+    """Validate one chunk object for typed machine completeness."""
+    if not isinstance(chunk, dict):
+        ticker_rejections.add(f"malformed_chunk:{ticker}")
+        return
+    if not _is_nonblank_str(chunk.get("text")):
+        ticker_rejections.add(f"missing_chunk_text:{ticker}")
+    if "relevance_decision" not in chunk:
+        ticker_rejections.add(f"missing_relevance_decision:{ticker}")
+    elif chunk["relevance_decision"] not in SUPPORTED_RELEVANCE_DECISIONS:
+        ticker_rejections.add(f"invalid_relevance_decision:{ticker}")
+    if "reason_codes" not in chunk:
+        ticker_rejections.add(f"missing_reason_codes:{ticker}")
+    else:
+        reason_codes = chunk["reason_codes"]
+        if (
+            not isinstance(reason_codes, list)
+            or not reason_codes
+            or any(not _is_nonblank_str(code) for code in reason_codes)
+        ):
+            ticker_rejections.add(f"invalid_reason_codes:{ticker}")
+    if "included_in_signal" not in chunk:
+        ticker_rejections.add(f"missing_inclusion_flag:{ticker}")
+    elif not isinstance(chunk["included_in_signal"], bool):
+        ticker_rejections.add(f"invalid_inclusion_flag:{ticker}")
+    if "effective_contribution" not in chunk:
+        ticker_rejections.add(f"missing_effective_contribution:{ticker}")
+    else:
+        contribution = chunk["effective_contribution"]
+        if (
+            isinstance(contribution, bool)
+            or not isinstance(contribution, (int, float))
+            or not math.isfinite(contribution)
+        ):
+            ticker_rejections.add(f"invalid_effective_contribution:{ticker}")
+
+
+def _assess_article_context(
+    article_context: Any, *, ticker: str, rejections: list[str]
+) -> None:
+    """Validate the per-ticker article context mapping."""
+    if article_context is None:
+        rejections.append(f"missing_article_context:{ticker}")
+        return
+    if not isinstance(article_context, dict):
+        rejections.append(f"malformed_article_context:{ticker}")
+        return
+    if not article_context:
+        rejections.append(f"missing_article_context:{ticker}")
+        return
+    for article_id, article in article_context.items():
+        if (
+            not _is_nonblank_str(article_id)
+            or not isinstance(article, dict)
+            or not _is_nonblank_str(article.get("headline"))
+            or not _is_nonblank_str(article.get("source"))
+        ):
+            rejections.append(f"invalid_article_context_entry:{ticker}")
+            return
+
+
 def assess_export_evidence(
     export: dict[str, Any], *, plan: dict[str, Any]
 ) -> dict[str, Any]:
     """Assess an export payload for machine completeness against a plan.
 
-    Machine completeness only proves required fields are present and
-    consistent with the plan; it grants no semantic acceptance, live
-    freshness, execution authority, or pilot readiness.
+    Machine completeness only proves required fields are present, typed,
+    and consistent with the plan; it grants no semantic acceptance, live
+    freshness, execution authority, or pilot readiness. Malformed
+    containers produce bounded rejection diagnostics, never exceptions.
     """
+    if not isinstance(export, dict):
+        return {
+            "grants": _no_grants(),
+            "machine_complete": False,
+            "rejections": ["malformed_export_container"],
+        }
+
     rejections: list[str] = []
 
-    identity = export.get("export_identity")
-    if not isinstance(identity, dict) or not all(
-        key in identity for key in ("run_id", "source_sha", "window", "tickers")
-    ):
-        rejections.append("incomplete_export_identity")
-    else:
-        run_id = identity["run_id"]
-        if run_id == REJECTED_PACKET_ID:
-            rejections.append("historical_packet_substitution")
-        if run_id != plan["proposed_run_id"]:
-            rejections.append("mismatched_run_id")
-        if identity["source_sha"] != plan["source_sha"]:
-            rejections.append("mismatched_source_sha")
-        expected_window = {"start": plan["window"]["start"], "end": plan["window"]["end"]}
-        if identity["window"] != expected_window:
-            rejections.append("mismatched_window")
-        if set(identity["tickers"]) != set(plan["tickers"]):
-            rejections.append("incomplete_ticker_coverage")
+    _assess_export_identity(
+        export.get("export_identity"), plan=plan, rejections=rejections
+    )
 
-    if export.get("cached_fallback_used"):
+    fallback = export.get("cached_fallback_used")
+    if fallback is True:
         rejections.append("cached_fallback_used")
+    elif fallback is not False:
+        rejections.append("missing_cached_fallback_proof")
 
     ticker_exports = export.get("tickers")
     if not isinstance(ticker_exports, dict):
+        rejections.append("malformed_tickers_block")
         ticker_exports = {}
     for ticker in plan["tickers"]:
         block = ticker_exports.get(ticker)
         if not isinstance(block, dict):
             rejections.append(f"missing_ticker_export:{ticker}")
             continue
-        chunks = block.get("chunks")
-        if not chunks:
+        if "chunks" not in block:
             rejections.append(f"missing_chunks:{ticker}")
-            chunks = []
+            chunks: list[Any] = []
+        else:
+            chunks_value = block["chunks"]
+            if not isinstance(chunks_value, list):
+                rejections.append(f"malformed_chunks:{ticker}")
+                chunks = []
+            else:
+                chunks = chunks_value
+                if not chunks:
+                    rejections.append(f"missing_chunks:{ticker}")
         ticker_rejections: set[str] = set()
         for chunk in chunks:
-            if not isinstance(chunk, dict):
-                ticker_rejections.add(f"malformed_chunk:{ticker}")
-                continue
-            if not chunk.get("text"):
-                ticker_rejections.add(f"missing_chunk_text:{ticker}")
-            if "relevance_decision" not in chunk:
-                ticker_rejections.add(f"missing_relevance_decision:{ticker}")
-            if not chunk.get("reason_codes"):
-                ticker_rejections.add(f"missing_reason_codes:{ticker}")
-            if "included_in_signal" not in chunk:
-                ticker_rejections.add(f"missing_inclusion_flag:{ticker}")
-            if "effective_contribution" not in chunk:
-                ticker_rejections.add(f"missing_effective_contribution:{ticker}")
+            _assess_chunk(chunk, ticker=ticker, ticker_rejections=ticker_rejections)
         rejections.extend(sorted(ticker_rejections))
-        if not block.get("article_context"):
-            rejections.append(f"missing_article_context:{ticker}")
+        _assess_article_context(
+            block.get("article_context"), ticker=ticker, rejections=rejections
+        )
 
     return {
-        "grants": {
-            "semantic_acceptance": False,
-            "live_freshness": False,
-            "execution_authority": False,
-            "pilot_readiness": False,
-        },
+        "grants": _no_grants(),
         "machine_complete": not rejections,
         "rejections": rejections,
     }
