@@ -2,8 +2,13 @@
 
 Status: bounded local preparation only. No pilot execution, launch, network,
 Modal/R2/provider calls, canonical feature writes, backfill, brokerage,
-deployment, publication, merge, or semantic acceptance is performed or
-authorized by this work. All original issue-level holds remain intact.
+deployment, viewer changes, or semantic acceptance is performed or
+authorized by this work. Source-only integration of this preparation change
+(controller-run publication, PR, CI, lead domain acceptance, and merge) has
+been newly authorized by the user for this phase; the helper itself still
+performs and authorizes none of those actions. All actual
+pilot/cloud/data/brokerage/backfill/viewer and human semantic-acceptance
+holds remain in force.
 
 ## Context
 
@@ -130,8 +135,22 @@ Focused tests (stdlib unittest, direct file execution):
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3 -B tests/unit/test_prepare_issue281_pilot.py -v
 ```
 
-Result at this revision: 68 tests, all OK.
+Result at this revision: 69 tests, all OK.
 
-Full-suite pytest, `ruff check .`, and CI gates were unavailable in the
-system interpreter for this task and remain explicitly pending rather than
-fabricated; `git diff --check` was run and passed.
+Local Ruff check (verified read-only checker):
+
+```bash
+/var/lib/hermes/tools/ruff-0.17.2/ruff check --no-cache \
+  app/lab/data_pipelines/prepare_issue281_pilot.py \
+  tests/unit/test_prepare_issue281_pilot.py
+```
+
+Result at this revision: all checks passed. A prior `UP017` finding at
+`prepare_issue281_pilot.py:136` was corrected by using `datetime.UTC`
+instead of `timezone.utc`; behavior is unchanged.
+
+`git diff --check` passed for both the working tree and the diff against
+source base `c76d7671a26c07145e863ef6969b21a32ec28781`. Full-suite pytest,
+repository-wide lint, typecheck, and remote CI were not executed locally
+and remain explicitly pending rather than fabricated; remote lint and
+unit-tests CI on the published head remains mandatory.

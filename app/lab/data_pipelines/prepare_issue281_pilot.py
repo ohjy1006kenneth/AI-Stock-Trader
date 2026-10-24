@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import math
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 SOURCE_SHA = "c76d7671a26c07145e863ef6969b21a32ec28781"
@@ -133,7 +133,7 @@ def _validate_generation_time(proposed_generation_time: Any) -> None:
     cutoff_end = datetime.fromisoformat(
         f"{INPUT_CUTOFF_DATE}T00:00:00+00:00"
     ) + timedelta(days=1)
-    if generated.astimezone(timezone.utc) < cutoff_end:
+    if generated.astimezone(UTC) < cutoff_end:
         raise PilotPreparationError(
             "proposed_generation_time must be strictly after input cutoff "
             f"{INPUT_CUTOFF_DATE} (UTC); a generation at or before the "
