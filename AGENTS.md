@@ -51,22 +51,22 @@ reviewer or portfolio-steward agents.
 
 ---
 
-## Start of every session — read these first
+## Task-scoped context and token discipline
 
-Before touching any code or issue, read these files in order:
-
-1. `AGENTS.md` (this file) — rules, structure, contracts
-2. `TODO.md` — known gaps, pending decisions, technical debt
-3. `docs/architecture.md` — system design baseline
-4. `docs/data_contracts.md` — canonical inter-layer contracts
-5. `core/contracts/schemas.py` — Pydantic schemas (source of truth)
-
-If you are about to create or comment on a GitHub issue, also read:
-- `.github/ISSUE_TEMPLATE/codex_task.md`
-- `.github/ISSUE_TEMPLATE/production_readiness.md`
-- `.github/ISSUE_TEMPLATE/schema_migration.md`
-- `.github/ISSUE_TEMPLATE/bug_report.md`
-- `.github/ISSUE_TEMPLATE/my_task.md`
+1. Read this `AGENTS.md`, the assigned GitHub issue, its root Kanban card,
+   dependencies and last durable checkpoint **first**.
+2. Inspect the actual affected files/tests. Read only the relevant canonical
+   domain references from `docs/architecture.md`,
+   `docs/runtime_flow.md`, `docs/data_contracts.md`,
+   `core/contracts/schemas.py`, and `docs/deployment.md`.
+3. Consult `TODO.md` for affected debt; use the appropriate issue/PR
+   templates when creating or editing those artifacts. Do not load every
+   issue template or historical review at the start of every task.
+4. Reuse existing branch, artifacts, accepted evidence and PR before
+   starting a fresh attempt. Independent technical review and CI apply
+   to the *changed* head; do not replay unchanged expensive tests.
+5. If an architectural or financial-risk decision remains unresolved,
+   request a lead/human decision rather than fabricating a contract.
 
 ---
 
@@ -255,17 +255,13 @@ owns the GitHub lifecycle and implementation workers keep child execution in Kan
     owner may perform a routine merge only after the current-head gates above pass, while
     waiting for any designated Stock-tab evidence review or other exceptional human gate.
 
-## Required docs to read first
+## Task-specific technical references
 
-Before implementation, read these sources when they exist:
-- docs/architecture.md
-- docs/runtime_flow.md
-- docs/data_contracts.md
-- docs/deployment.md
-- .github/ISSUE_TEMPLATE/ (all templates relevant to the issue type)
-- TODO.md (if present)
-
-If multiple docs conflict, block and ask for a human decision.
+The assigned issue determines which sources are required; do **not**
+load all design, deployment, data and runtime docs into every short
+Codex implementation session. Preserve the authoritative contract
+hierarchy and cite the actual affected paths in the handoff. See the
+task-scoped reading rules above and `docs/agent_workflow.md`.
 
 ---
 
