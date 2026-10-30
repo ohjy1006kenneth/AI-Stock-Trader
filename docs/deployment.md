@@ -1,5 +1,12 @@
 # Deployment
 
+> **Release boundary:** Hermes Kanban / `trading-dev` builds source code,
+> not a brokerage deployment authority. GitHub PR/CI approval is necessary
+> but insufficient for market-facing changes, paper-order execution,
+> credential/config changes, schema migrations, or consequential backfills.
+> Follow the existing runtime-specific release and human-risk gates in
+> [agent_workflow.md](agent_workflow.md) and [AGENTS.md](../AGENTS.md).
+
 This document describes deployment surfaces and responsibilities.
 
 ## Surfaces

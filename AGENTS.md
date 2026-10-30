@@ -8,33 +8,65 @@ using signals generated after the previous day's close.
 
 Pi runtime assumption:
 - The Pi runtime executes inside a Docker container.
-- OpenClaw is the runtime engine inside that container.
+- OpenClaw is the historically specified **application runtime** engine inside that container; it is **not** the coding-agent supervisor. Reconcile the actually installed runtime before changing deployment.
 - Cron on the Pi host triggers the containerized daily run.
 
-Most development is driven by Codex. The responsible domain owner owns the GitHub
-issue, PR, review, and merge lifecycle; exceptional human gates remain mandatory
-where this document or the outcome issue requires them.
+Development is handled through the Hermes Kanban architecture described below.
+The project lead owns GitHub issue/PR acceptance and review/merge gates; a
+developer worker may not self-approve or merge. Exceptional human gates remain
+mandatory for trading-risk, schema and consequential data operations.
 Do not wait for human input mid-task unless you are genuinely blocked. If blocked,
 follow the BLOCKED protocol below.
 
 ---
 
-## Start of every session — read these first
+## Hermes autonomous development (not the trading runtime)
 
-Before touching any code or issue, read these files in order:
+The **development** control plane is separate from the paper-trading
+application's Pi/Docker/Modal/OpenClaw runtime. It uses GitHub Issues for
+requirements/acceptance, Hermes Kanban for priority/dependencies/execution,
+a scheduled project lead for planning and review, a **single** claimed
+implementation task on an isolated workspace/branch, and a deterministic
+(non-LLM) supervisor for liveness, cooldown and recovery.
 
-1. `AGENTS.md` (this file) — rules, structure, contracts
-2. `TODO.md` — known gaps, pending decisions, technical debt
-3. `docs/architecture.md` — system design baseline
-4. `docs/data_contracts.md` — canonical inter-layer contracts
-5. `core/contracts/schemas.py` — Pydantic schemas (source of truth)
+The project-specific **target** profile names are `trading-lead` and
+`trading-dev` when installed. They do not imply two continuously running
+LLMs. The lead's actual cron schedule has to be read from Hermes; **only
+CupMemo's 10:00/22:00 planning cadence has been explicitly specified**, so
+do not copy that schedule to Trading without an owner decision.
 
-If you are about to create or comment on a GitHub issue, also read:
-- `.github/ISSUE_TEMPLATE/codex_task.md`
-- `.github/ISSUE_TEMPLATE/production_readiness.md`
-- `.github/ISSUE_TEMPLATE/schema_migration.md`
-- `.github/ISSUE_TEMPLATE/bug_report.md`
-- `.github/ISSUE_TEMPLATE/my_task.md`
+`trading-dev` uses Hermes' `openai-codex` provider with authorized
+credential pool A -> B for genuine quota-capacity fallback, not concurrent
+workers or bypass of provider security refusals. A non-LLM Kanban dispatcher
+selects eligible work; the deterministic supervisor persists leases,
+attempts and provider cooldowns. A GitHub PR/CI and independent review
+(where required) gate merge. A merged coding PR never itself authorizes
+live brokerage execution, schema migration, consequential backfill or
+production release.
+
+See [`docs/agent_workflow.md`](docs/agent_workflow.md) for the full
+handoff and continuity policy. Historical profile names and issue receipts
+are audit evidence, not instructions to resurrect old code-monkey,
+reviewer or portfolio-steward agents.
+
+---
+
+## Task-scoped context and token discipline
+
+1. Read this `AGENTS.md`, the assigned GitHub issue, its root Kanban card,
+   dependencies and last durable checkpoint **first**.
+2. Inspect the actual affected files/tests. Read only the relevant canonical
+   domain references from `docs/architecture.md`,
+   `docs/runtime_flow.md`, `docs/data_contracts.md`,
+   `core/contracts/schemas.py`, and `docs/deployment.md`.
+3. Consult `TODO.md` for affected debt; use the appropriate issue/PR
+   templates when creating or editing those artifacts. Do not load every
+   issue template or historical review at the start of every task.
+4. Reuse existing branch, artifacts, accepted evidence and PR before
+   starting a fresh attempt. Independent technical review and CI apply
+   to the *changed* head; do not replay unchanged expensive tests.
+5. If an architectural or financial-risk decision remains unresolved,
+   request a lead/human decision rather than fabricating a contract.
 
 ---
 
@@ -107,14 +139,13 @@ and agent-fixable failures remain Kanban-only. Existing GitHub Project data is p
 and its future role is a high-level human roadmap, with no destructive archival in this
 change.
 
-While acting as the HQ Portfolio Steward, the Steward may inspect registered GitHub
-repositories read-only to detect external or human changes, prevent duplicates, and route
-reconciliation to the correct domain owner. The Steward must not create or close domain
-Issues, mutate labels, comments, or project status, open, close, or merge domain PRs, or
-perform centralized outbound milestone synchronization. Cross-project repository and
-project identity must come from explicit task links or an external project registry; this
-repository does not implement that registry and the global Steward is not hardcoded to
-this repository.
+Cross-project reconciliation is a **deterministic supervisor**
+responsibility, not a continuously running HQ Portfolio Steward LLM. It
+may inspect registered repositories and existing task identities to
+prevent duplicates but must not invent scope, change product acceptance
+or independently create/merge/close domain issues or PRs. Existing HQ
+Steward receipts remain historical evidence; cross-project identity
+must derive from explicit repository/issue/card links.
 
 For routine merges, the responsible domain owner may approve and merge only when all of
 these gates are true against the current head:
@@ -131,12 +162,15 @@ is required before schema migration implementation, designated Stock-tab semanti
 review must be completed, and consequential broad backfills require explicit human
 authorization.
 
-Named team boundaries remain mandatory: Trading specifies and accepts semantics;
-`code-monkey-trading` implements; `trading-code-reviewer` independently reviews;
-DashCraft owns dashboard execution after contract handoff; and the responsible domain
-owner performs the GitHub lifecycle while humans perform designated exceptional evidence
-review. `blocked` is reserved for genuine human decisions/actions. Runtime, tooling, and
-agent failures use Kanban recovery and must not create false GitHub blocked states.
+Named responsibility boundaries remain mandatory: `trading-lead`
+specifies and accepts domain semantics; `trading-dev` implements one
+claimed task; independent review is a **gate**, not a permanent
+`trading-code-reviewer` profile; specialized dashboard work receives a
+bounded contract handoff rather than a continuously active DashCraft
+agent. The lead controls the GitHub lifecycle and designated humans
+perform exceptional semantic/risk evidence review. `blocked` means
+a genuine human decision; capacity, tooling and runtime errors are
+supervised/reconciled in Kanban without fabricating GitHub blockers.
 
 ### Board/status references
 
@@ -198,6 +232,11 @@ Waiting for: human to comment with decision
 
 ## Task execution workflow
 
+Follow the lead/dispatcher/developer separation and durable handoff in
+`docs/agent_workflow.md`. The operating lead owns the GitHub lifecycle;
+implementation is a single leased `trading-dev` task, not an ongoing
+LLM coordination conversation.
+
 For every root issue/graph, follow this sequence exactly; the responsible domain owner
 owns the GitHub lifecycle and implementation workers keep child execution in Kanban:
 1. Read AGENTS.md, TODO.md, docs/architecture.md,
@@ -216,17 +255,13 @@ owns the GitHub lifecycle and implementation workers keep child execution in Kan
     owner may perform a routine merge only after the current-head gates above pass, while
     waiting for any designated Stock-tab evidence review or other exceptional human gate.
 
-## Required docs to read first
+## Task-specific technical references
 
-Before implementation, read these sources when they exist:
-- docs/architecture.md
-- docs/runtime_flow.md
-- docs/data_contracts.md
-- docs/deployment.md
-- .github/ISSUE_TEMPLATE/ (all templates relevant to the issue type)
-- TODO.md (if present)
-
-If multiple docs conflict, block and ask for a human decision.
+The assigned issue determines which sources are required; do **not**
+load all design, deployment, data and runtime docs into every short
+Codex implementation session. Preserve the authoritative contract
+hierarchy and cite the actual affected paths in the handoff. See the
+task-scoped reading rules above and `docs/agent_workflow.md`.
 
 ---
 

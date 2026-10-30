@@ -1,5 +1,11 @@
 # Architecture
 
+> **Scope:** The sections below describe the trading **application** and
+> its cloud/Pi data-processing runtime, not the software-development agents.
+> Development uses the Hermes Kanban lead/dispatcher/`trading-dev` flow in
+> [agent_workflow.md](agent_workflow.md). Do not replace or restart the
+> application trading runtime when migrating its coding orchestration.
+
 ## Overview
 
 This repository implements a production-oriented quantitative trading system for U.S. equities.

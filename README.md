@@ -2,6 +2,22 @@
 
 A cloud-native, paper-trading stock research and execution system.
 
+## Autonomous engineering workflow
+
+The **coding** workflow is separate from the market-data/trading runtime:
+GitHub Issues -> scheduled `trading-lead` planning -> Hermes Kanban ->
+deterministic dispatcher -> one `trading-dev` task ->
+Hermes `openai-codex` credential pool A then B (capacity only) ->
+GitHub PR/CI -> independent review and merge gates -> separately authorized
+deployment. A deterministic supervisor manages worker liveness, cooldowns
+and restart reconciliation without another permanent LLM agent.
+
+Trading's project-specific planning cadence is **not assumed** to be the
+CupMemo 10 a.m./10 p.m. schedule. Verify the installed profile/cron
+configuration. See [development-agent workflow](docs/agent_workflow.md)
+and [agent rules](AGENTS.md). The former HQ code-monkey/reviewer profile
+names are obsolete operating instructions, not proof of installed state.
+
 ## What this project is
 
 This repo builds a layered quantitative trading system with a strict deployment split:
